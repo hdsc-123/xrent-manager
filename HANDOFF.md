@@ -13,7 +13,7 @@ Le projet est au stade **Sprint 0 — fondation documentaire**. Le dépôt conti
 - la page d'accueil et le layout par défaut fournis par `create-next-app` (aucune page métier) ;
 - la documentation fondatrice du projet (ce document et les huit autres listés dans [README.md](./README.md)).
 
-Le dépôt est un dépôt git local (branche `main`) **sans aucun commit** au moment de la rédaction de ce document, et sans dépôt distant configuré.
+Le dépôt est un dépôt git (branche `main`) avec un commit initial : `e673184` — "chore: initialize XRent Manager project". Le remote `origin` est configuré vers le dépôt GitHub privé `https://github.com/hdsc-123/xrent-manager.git`, et `main` est synchronisée avec `origin/main`. Le tag `v0.1.0` a été créé et envoyé, correspondant au socle initial.
 
 ## 2. Ce qui est terminé
 
@@ -21,6 +21,9 @@ Le dépôt est un dépôt git local (branche `main`) **sans aucun commit** au mo
 - Validation de `npm run lint` (aucune erreur).
 - Validation de `npm run build` (build de production réussi, 2 routes statiques : `/` et `/_not-found`).
 - Documentation fondatrice (Sprint 0) : CLAUDE.md, HANDOFF.md, PROJECT_MAP.md, ARCHITECTURE.md, DOMAINRULES.md, SECURITY.md, TESTREPORT.md, INCIDENTS.md, README.md.
+- Initialisation Git et commit initial (`e673184` — "chore: initialize XRent Manager project") sur la branche `main`.
+- Connexion au dépôt GitHub privé `hdsc-123/xrent-manager` (remote `origin`) et synchronisation de `main` avec `origin/main`.
+- Création et envoi (push) du tag `v0.1.0`, correspondant au socle initial.
 
 ## 3. Ce qui n'est pas commencé
 
@@ -30,7 +33,6 @@ Le dépôt est un dépôt git local (branche `main`) **sans aucun commit** au mo
 - Toute notion de tenant/agence implémentée en code (le concept est défini au niveau documentaire uniquement, voir [DOMAINRULES.md](./DOMAINRULES.md)).
 - Le dashboard-admin.
 - Toute stratégie de test automatisé (aucun framework de test n'est installé).
-- Le premier commit git.
 - Tout environnement de test, staging ou production réel.
 
 ## 4. Prochaine action recommandée
@@ -62,7 +64,6 @@ Aucune décision technique définitive (base de données, ORM, fournisseur d'aut
 
 - **Absence de tests** : aucun module métier ne pourra être considéré comme fiable sans stratégie de test mise en place avant ou en parallèle du développement (voir [TESTREPORT.md](./TESTREPORT.md)).
 - **Isolation multi-tenant non implémentée** : c'est une exigence de sécurité, pas seulement fonctionnelle ; un mauvais choix initial d'architecture serait coûteux à corriger a posteriori.
-- **Absence de commit git** : tout travail actuel n'est pas encore historisé ; un premier commit devra être fait dès validation de cette documentation.
 - **Aucune stratégie de gestion des paiements/cautions définie** : à trancher avant tout développement du module paiement, en particulier le choix d'un prestataire évitant le stockage de données de carte bancaire en clair.
 
 ## 8. Points à valider avec le propriétaire du projet
