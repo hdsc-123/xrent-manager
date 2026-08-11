@@ -1,0 +1,264 @@
+import type { Invoice, InvoiceStatus } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
+import { getLocationById } from "@/lib/locations";
+
+/** taxRate est exprimé en points de base (ex. 2000 = 20,00 %), pas en pourcentage flottant. */
+const TAX_RATE_BASIS = 10_000;
+
+export class InvoiceLocationNotFoundError extends Error {
+  constructor() {
+    super("Location introuvable.");
+    this.name = "InvoiceLocationNotFoundError";
+  }
+}
+
+export class InvalidInvoiceAmountError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidInvoiceAmountError";
+  }
+}
+
+export class InvoiceNotEditableError extends Error {
+  constructor() {
+    super("Seule une facture DRAFT peut voir son sous-total, sa TVA ou sa remise modifiés.");
+    this.name = "InvoiceNotEditableError";
+  }
+}
+
+export class InvalidInvoiceStatusTransitionError extends Error {
+  constructor(from: InvoiceStatus, to: InvoiceStatus) {
+    super(`Transition de statut invalide : ${from} → ${to}.`);
+    this.name = "InvalidInvoiceStatusTransitionError";
+  }
+}
+
+export class InvoiceNotDeletableError extends Error {
+  constructor() {
+    super("Seule une facture DRAFT sans paiement peut être supprimée ; sinon, annulez-la (status).");
+    this.name = "InvoiceNotDeletableError";
+  }
+}
+
+/**
+ * Transitions manuelles autorisées via PATCH. PARTIALLY_PAID et PAID ne sont jamais
+ * atteints par une transition manuelle : ils sont dérivés automatiquement de la somme
+ * des paiements (voir src/lib/payments.ts, recomputeInvoiceStatus) pour garantir que
+ * amountPaid et status restent toujours cohérents.
+ */
+const ALLOWED_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
+  DRAFT: ["SENT", "CANCELLED"],
+  SENT: ["CANCELLED"],
+  PARTIALLY_PAID: ["CANCELLED"],
+  PAID: [],
+  CANCELLED: [],
+};
+
+export function canTransition(from: InvoiceStatus, to: InvoiceStatus): boolean {
+  return ALLOWED_TRANSITIONS[from].includes(to);
+}
+
+export interface InvoiceTotals {
+  taxAmount: number;
+  totalAmount: number;
+}
+
+/**
+ * totalAmount = subtotal - discountAmount + taxAmount, jamais négatif (une remise ne
+ * peut pas dépasser subtotal + taxAmount). Règles d'arrondi au-delà de ceci : DOMAINRULES.md.
+ */
+export function computeInvoiceTotals(subtotal: number, taxRate: number, discountAmount: number): InvoiceTotals {
+  const taxAmount = Math.round((subtotal * taxRate) / TAX_RATE_BASIS);
+  const totalAmount = subtotal - discountAmount + taxAmount;
+
+  if (totalAmount < 0) {
+    throw new InvalidInvoiceAmountError("La remise ne peut pas dépasser le sous-total plus la TVA.");
+  }
+
+  return { taxAmount, totalAmount };
+}
+
+function validateAmountInputs(taxRate: number, discountAmount: number): void {
+  if (!Number.isInteger(taxRate) || taxRate < 0) {
+    throw new InvalidInvoiceAmountError("taxRate doit être un entier positif ou nul (points de base).");
+  }
+  if (!Number.isInteger(discountAmount) || discountAmount < 0) {
+    throw new InvalidInvoiceAmountError("discountAmount doit être un entier positif ou nul.");
+  }
+}
+
+/**
+ * Génère un numéro de facture unique par tenant, au format INV-{année}-{5 chiffres},
+ * ex. INV-2026-00001 — compteur basé sur le nombre de factures déjà émises cette année
+ * pour ce tenant. Pas de table de séquence dédiée (À DÉCIDER si le volume l'exige) :
+ * en cas de collision sous forte concurrence, createInvoice réessaie (voir plus bas).
+ */
+async function generateInvoiceNumber(tenantId: string, year: number): Promise<string> {
+  const prefix = `INV-${year}-`;
+  const count = await prisma.invoice.count({
+    where: { tenantId, number: { startsWith: prefix } },
+  });
+  return `${prefix}${String(count + 1).padStart(5, "0")}`;
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}
+
+export interface InvoiceFilters {
+  status?: InvoiceStatus;
+  agencyId?: string;
+  clientId?: string;
+  locationId?: string;
+  from?: Date;
+  to?: Date;
+}
+
+export async function getInvoices(tenantId: string, filters: InvoiceFilters = {}): Promise<Invoice[]> {
+  return prisma.invoice.findMany({
+    where: {
+      tenantId,
+      ...(filters.status ? { status: filters.status } : {}),
+      ...(filters.agencyId ? { agencyId: filters.agencyId } : {}),
+      ...(filters.clientId ? { clientId: filters.clientId } : {}),
+      ...(filters.locationId ? { locationId: filters.locationId } : {}),
+      ...(filters.from ? { issuedAt: { gte: filters.from } } : {}),
+      ...(filters.to ? { issuedAt: { lte: filters.to } } : {}),
+    },
+    orderBy: { issuedAt: "desc" },
+  });
+}
+
+export async function getInvoiceById(tenantId: string, invoiceId: string): Promise<Invoice | null> {
+  return prisma.invoice.findFirst({ where: { id: invoiceId, tenantId } });
+}
+
+export interface CreateInvoiceInput {
+  tenantId: string;
+  locationId: string;
+  taxRate?: number;
+  discountAmount?: number;
+  dueDate?: Date;
+  notes?: string;
+}
+
+const MAX_NUMBER_GENERATION_ATTEMPTS = 5;
+
+export async function createInvoice(data: CreateInvoiceInput): Promise<Invoice> {
+  const taxRate = data.taxRate ?? 0;
+  const discountAmount = data.discountAmount ?? 0;
+  validateAmountInputs(taxRate, discountAmount);
+
+  const location = await getLocationById(data.tenantId, data.locationId);
+  if (!location) {
+    throw new InvoiceLocationNotFoundError();
+  }
+
+  const subtotal = location.totalPrice;
+  const { taxAmount, totalAmount } = computeInvoiceTotals(subtotal, taxRate, discountAmount);
+  const year = new Date().getFullYear();
+
+  for (let attempt = 0; attempt < MAX_NUMBER_GENERATION_ATTEMPTS; attempt++) {
+    const number = await generateInvoiceNumber(data.tenantId, year);
+    try {
+      return await prisma.invoice.create({
+        data: {
+          tenantId: data.tenantId,
+          agencyId: location.agencyId,
+          locationId: location.id,
+          clientId: location.clientId,
+          number,
+          subtotal,
+          taxRate,
+          taxAmount,
+          discountAmount,
+          totalAmount,
+          currency: location.currency,
+          dueDate: data.dueDate,
+          notes: data.notes,
+        },
+      });
+    } catch (error) {
+      if (isUniqueConstraintError(error) && attempt < MAX_NUMBER_GENERATION_ATTEMPTS - 1) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error("Impossible de générer un numéro de facture unique.");
+}
+
+export interface UpdateInvoiceInput {
+  status?: InvoiceStatus;
+  taxRate?: number;
+  discountAmount?: number;
+  dueDate?: Date | null;
+  notes?: string;
+}
+
+export async function updateInvoice(
+  tenantId: string,
+  invoiceId: string,
+  data: UpdateInvoiceInput
+): Promise<Invoice | null> {
+  const existing = await getInvoiceById(tenantId, invoiceId);
+  if (!existing) {
+    return null;
+  }
+
+  const wantsAmountChange = data.taxRate !== undefined || data.discountAmount !== undefined;
+  if (wantsAmountChange && existing.status !== "DRAFT") {
+    throw new InvoiceNotEditableError();
+  }
+
+  if (data.status && data.status !== existing.status && !canTransition(existing.status, data.status)) {
+    throw new InvalidInvoiceStatusTransitionError(existing.status, data.status);
+  }
+
+  const taxRate = data.taxRate ?? existing.taxRate;
+  const discountAmount = data.discountAmount ?? existing.discountAmount;
+  if (wantsAmountChange) {
+    validateAmountInputs(taxRate, discountAmount);
+  }
+  const { taxAmount, totalAmount } = wantsAmountChange
+    ? computeInvoiceTotals(existing.subtotal, taxRate, discountAmount)
+    : { taxAmount: existing.taxAmount, totalAmount: existing.totalAmount };
+
+  return prisma.invoice.update({
+    where: { id: invoiceId },
+    data: {
+      ...(data.status ? { status: data.status } : {}),
+      taxRate,
+      discountAmount,
+      taxAmount,
+      totalAmount,
+      ...(data.dueDate !== undefined ? { dueDate: data.dueDate } : {}),
+      ...(data.notes !== undefined ? { notes: data.notes } : {}),
+    },
+  });
+}
+
+export async function deleteInvoice(tenantId: string, invoiceId: string): Promise<boolean> {
+  const existing = await getInvoiceById(tenantId, invoiceId);
+  if (!existing) {
+    return false;
+  }
+
+  if (existing.status !== "DRAFT" || existing.amountPaid > 0) {
+    throw new InvoiceNotDeletableError();
+  }
+
+  const paymentCount = await prisma.payment.count({ where: { invoiceId } });
+  if (paymentCount > 0) {
+    throw new InvoiceNotDeletableError();
+  }
+
+  await prisma.invoice.delete({ where: { id: invoiceId } });
+  return true;
+}

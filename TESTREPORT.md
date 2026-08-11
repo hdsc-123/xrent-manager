@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Un framework de test (Vitest) est installé depuis le Sprint 2 et couvre l'isolation multi-tenant de la couche d'accès aux données ; depuis le Sprint 5, il couvre également le premier module métier (véhicules, locations) — voir section 3.
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Un framework de test (Vitest) est installé depuis le Sprint 2 et couvre l'isolation multi-tenant de la couche d'accès aux données ; depuis le Sprint 5, il couvre également le premier module métier (véhicules, locations) ; depuis le Sprint 6, la facturation, les paiements et les rapports — voir section 3.
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -21,6 +21,9 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 | 2026-08-11 | `npm run build` (Sprint 5) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; nouvelles routes API `/api/vehicles*`, `/api/locations*`, `/api/clients` + 6 nouvelles pages `/dashboard/vehicles*`/`/dashboard/locations*` compilées |
 | 2026-08-11 | `npm run test` (Vitest, Sprint 5) | ✅ Validé | 76/76 tests passés sur 7 fichiers (ajout de `vehicles.test.ts` et `locations.test.ts`), voir section 3 « Tests métier véhicules et locations (Sprint 5) » |
 | 2026-08-11 | `npm run lint` / `npm run test` / `npm run build` (changement de devise par défaut EUR → MAD) | ✅ Validé | Aucune régression : 76/76 tests toujours passés après migration `20260811203931_change_default_currency_to_mad` et mise à jour des assertions `currency` dans `vehicles.test.ts`/`locations.test.ts` |
+| 2026-08-11 | `npm run lint` (Sprint 6, facturation + paiements + rapports) | ✅ Validé | Aucune erreur ESLint |
+| 2026-08-11 | `npm run build` (Sprint 6) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; nouvelles routes API `/api/invoices*`, `/api/payments*`, `/api/reports/*` + 4 nouvelles pages `/dashboard/invoices*`/`/dashboard/payments`/`/dashboard/reports` compilées |
+| 2026-08-11 | `npm run test` (Vitest, Sprint 6) | ✅ Validé | 106/106 tests passés sur 10 fichiers (ajout de `invoices.test.ts`, `payments.test.ts`, `reports.test.ts`), voir section 3 « Tests facturation, paiements et rapports (Sprint 6) » |
 
 **Premier test métier disponible depuis le Sprint 5** (véhicules, locations) — jusqu'ici, aucun module métier n'existait dans le code (voir [HANDOFF.md](./HANDOFF.md) et [PROJECT_MAP.md](./PROJECT_MAP.md)). La couche d'accès aux données technique (`src/lib/db.ts`), l'authentification, le CRUD tenants/agences et désormais véhicules/locations disposent de tests d'isolation multi-tenant et multi-agence.
 
@@ -28,7 +31,7 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 
 - Framework installé : **Vitest** (`npm run test`), choisi en Sprint 2 pour sa compatibilité native avec TypeScript/ESM et Next.js 16.
 - Base de test dédiée : **`xrent_test`**, distincte de `xrent_dev`. `vitest.config.mts` charge `DATABASE_URL` depuis `.env.test` via `loadEnv` de Vite (mode `test`) ; la migration `init_tenant_agency_user` y est appliquée via `prisma migrate deploy`.
-- Tests disponibles : isolation multi-tenant de la couche d'accès aux données (`src/__tests__/db.test.ts`, section 3 « Tests multi-tenant ») ; tests métier véhicules/locations depuis le Sprint 5 (section 3 « Tests métier véhicules et locations (Sprint 5) »).
+- Tests disponibles : isolation multi-tenant de la couche d'accès aux données (`src/__tests__/db.test.ts`, section 3 « Tests multi-tenant ») ; tests métier véhicules/locations depuis le Sprint 5 (section 3 « Tests métier véhicules et locations (Sprint 5) ») ; tests métier facturation/paiements/rapports depuis le Sprint 6 (section 3 « Tests facturation, paiements et rapports (Sprint 6) »).
 - Non encore disponible : tests de concurrence, de charge, de sécurité (OWASP WSTG) ou de régression.
 
 ## 3. Stratégie future de tests
@@ -108,6 +111,32 @@ Couverture `locations.test.ts` :
 - Isolation multi-tenant sur `GET`/`PATCH /api/locations/[id]` (404 sur une ressource d'un autre tenant).
 
 Limite connue, partagée avec les autres suites HTTP : dépendance à un serveur `next dev` démarré pour la durée de la suite (port 3811).
+
+### Tests facturation, paiements et rapports (Sprint 6)
+
+`src/__tests__/invoices.test.ts` et `src/__tests__/payments.test.ts` prolongent l'approche « intégration HTTP réelle » ; `src/__tests__/reports.test.ts` teste directement les fonctions de `src/lib/reports.ts` (pas de route dédiée par métrique, juste `/api/reports/revenue` et `/api/reports/vehicles`).
+
+Couverture `invoices.test.ts` :
+- Création à partir d'une `Location` : `subtotal` = snapshot de `Location.totalPrice`, `agencyId`/`clientId`/`currency` toujours dérivés de la location (jamais du client), statut `DRAFT` par défaut.
+- Isolation multi-tenant sur `locationId` (404) et contrôle d'agence (403 pour un MEMBER non rattaché).
+- Numérotation : format `INV-{année}-{5 chiffres}` vérifié par regex, unicité vérifiée en créant deux factures consécutives pour le même tenant.
+- Calcul `taxAmount`/`totalAmount` à partir de `taxRate` (points de base) et `discountAmount` ; refus (400) si la remise dépasse sous-total + TVA.
+- Machine à états : transition manuelle `DRAFT → SENT` acceptée, transition manuelle vers `PARTIALLY_PAID`/`PAID` refusée (409, ces statuts ne sont atteignables qu'automatiquement via un paiement, jamais par `PATCH` direct).
+- Édition de `taxRate`/`discountAmount` bloquée (409) une fois la facture sortie de `DRAFT`.
+- Suppression : autorisée pour `DRAFT`, refusée (409) pour `SENT`.
+
+Couverture `payments.test.ts` :
+- Isolation multi-tenant sur `invoiceId` (404) ; refus (409) d'un montant dépassant le solde restant dû.
+- Paiement partiel → facture `PARTIALLY_PAID` ; paiement soldant intégralement → facture `PAID` ; refus (409) de tout paiement sur une facture `CANCELLED`.
+- `PATCH`/`DELETE /api/payments/[id]` recalculent systématiquement `amountPaid`/`status` de la facture à partir de la somme réelle des paiements (`recomputeInvoiceStatus`), jamais par incrément/décrément direct — testé explicitement après modification et après suppression d'un paiement.
+- **Point notable** : après suppression du dernier paiement d'une facture `PAID`, le statut retombe à `SENT`, jamais à `DRAFT` — décision délibérée pour ne jamais rouvrir l'édition de `taxRate`/`discountAmount` d'une facture déjà émise (voir `InvoiceNotEditableError` dans `src/lib/invoices.ts`).
+
+Couverture `reports.test.ts` :
+- `getRevenueReport` : agrégation des `Payment.amount` par mois d'encaissement (`paidAt`), isolée par tenant.
+- `getVehicleUtilizationReport` : jours loués = chevauchement entre la période de la `Location` et la période demandée (même convention de calcul — différence de temps, pas décompte inclusif — que `calculateTotalPrice` dans `src/lib/locations.ts`) ; les locations `PENDING`/`CANCELLED` ne comptent jamais.
+- `getTopVehicles` : classement par revenu facturé (`Location.totalPrice`, statuts `ACTIVE`/`COMPLETED` uniquement), limite respectée.
+
+Limite connue : `getRevenueReport` suppose une devise unique par tenant (voir DOMAINRULES.md section 14) ; pas de test multi-devises (aucun tenant multi-devises n'existe à ce jour).
 
 ### Tests de concurrence
 Vérifieront le comportement du système en cas d'accès concurrent à une même ressource (ex. deux réservations simultanées sur le même véhicule). Aucun test de concurrence n'existe à ce jour.

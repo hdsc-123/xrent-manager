@@ -13,7 +13,7 @@ xrent-manager/
 │   ├── vercel.svg
 │   └── window.svg
 ├── prisma/
-│   ├── schema.prisma        # Tenant, Agency, User (passwordHash, role), UserAgency, Client, Vehicle, Location, Account, Session, VerificationToken
+│   ├── schema.prisma        # Tenant, Agency, User (passwordHash, role), UserAgency, Client, Vehicle, Location, Invoice, Payment, Account, Session, VerificationToken
 │   └── migrations/
 │       ├── migration_lock.toml
 │       ├── 20260811133155_init_tenant_agency_user/
@@ -22,7 +22,9 @@ xrent-manager/
 │       │   └── migration.sql
 │       ├── 20260811201341_add_vehicle_and_location_models/
 │       │   └── migration.sql
-│       └── 20260811203931_change_default_currency_to_mad/
+│       ├── 20260811203931_change_default_currency_to_mad/
+│       │   └── migration.sql
+│       └── 20260811205048_add_invoice_and_payment_models/
 │           └── migration.sql
 ├── components.json          # Config shadcn/ui (style base-nova, alias @/components, @/lib, @/hooks)
 ├── src/
@@ -59,6 +61,14 @@ xrent-manager/
 │   │   │   │   ├── page.tsx, LocationsTable.tsx, loading.tsx
 │   │   │   │   ├── new/page.tsx
 │   │   │   │   └── [id]/page.tsx, LocationActions.tsx
+│   │   │   ├── invoices/           # (Sprint 6) CRUD, machine à états, PDF, paiements
+│   │   │   │   ├── page.tsx, InvoicesTable.tsx, loading.tsx
+│   │   │   │   ├── new/page.tsx
+│   │   │   │   └── [id]/page.tsx, InvoiceActions.tsx
+│   │   │   ├── payments/           # (Sprint 6) Liste + filtres (lecture seule, création via facture)
+│   │   │   │   ├── page.tsx, PaymentsTable.tsx, loading.tsx
+│   │   │   ├── reports/            # (Sprint 6) KPIs, graphiques (recharts), export CSV — ADMIN uniquement
+│   │   │   │   ├── page.tsx, ReportsCharts.tsx, ExportCsvButton.tsx, loading.tsx
 │   │   │   └── settings/page.tsx   # Nom du tenant (éditable) ; profil user en lecture seule
 │   │   └── api/
 │   │       ├── auth/
@@ -82,11 +92,23 @@ xrent-manager/
 │   │       ├── locations/                  # (Sprint 5)
 │   │       │   ├── route.ts                # GET (liste, filtres)/POST — vérifie disponibilité, calcule totalPrice
 │   │       │   └── [id]/route.ts           # GET/PATCH (statut/dates/notes)/DELETE (si PENDING/CANCELLED)
-│   │       └── clients/route.ts            # (Sprint 5) GET (liste)/POST — tenant-scopé, pas de page dédiée
+│   │       ├── clients/route.ts            # (Sprint 5) GET (liste)/POST — tenant-scopé, pas de page dédiée
+│   │       ├── invoices/                   # (Sprint 6)
+│   │       │   ├── route.ts                # GET (liste, filtres)/POST — dérive agencyId/clientId/currency de la Location
+│   │       │   └── [id]/
+│   │       │       ├── route.ts            # GET/PATCH (statut/TVA/remise/notes)/DELETE (si DRAFT sans paiement)
+│   │       │       └── pdf/route.tsx       # GET — PDF (@react-pdf/renderer), extension .tsx (JSX dans un route handler)
+│   │       ├── payments/                   # (Sprint 6)
+│   │       │   ├── route.ts                # GET (liste, filtres)/POST — valide amount ≤ solde restant, recalcule la facture
+│   │       │   └── [id]/route.ts           # GET/PATCH/DELETE — recalcule systématiquement amountPaid/status de la facture
+│   │       └── reports/                    # (Sprint 6) GET, réservées ADMIN
+│   │           ├── revenue/route.ts        # Revenu encaissé (Payment), par mois, sur une période
+│   │           └── vehicles/route.ts       # Utilisation véhicule + classement par revenu facturé
 │   ├── proxy.ts              # Redirige vers /login sur /dashboard*, /settings* si non authentifié (middleware.ts est déprécié dans cette version de Next.js)
 │   ├── components/
 │   │   ├── ui/               # Composants shadcn/ui (générés) + index.ts (ré-export)
-│   │   └── layout/            # Sidebar.tsx, Header.tsx, DashboardLayout.tsx, DataTable.tsx (TanStack Table v9)
+│   │   ├── layout/            # Sidebar.tsx, Header.tsx, DashboardLayout.tsx, DataTable.tsx (TanStack Table v9)
+│   │   └── invoices/          # (Sprint 6) InvoicePdf.tsx — template @react-pdf/renderer (pas de logo, aucun asset de marque)
 │   ├── hooks/
 │   │   ├── useUser.ts        # Lecture client de GET /api/auth/me
 │   │   └── useTenant.ts      # Lecture client de GET /api/tenants
@@ -100,6 +122,9 @@ xrent-manager/
 │   │   ├── clients.ts       # (Sprint 5) getClients, getClientById, createClient — tenant-scopé
 │   │   ├── vehicles.ts      # (Sprint 5) CRUD + checkAvailability — tenant/agence-scopé
 │   │   ├── locations.ts     # (Sprint 5) CRUD + calculateTotalPrice + machine à états (canTransition)
+│   │   ├── invoices.ts      # (Sprint 6) CRUD + génération numéro (INV-{année}-{5 chiffres}) + calcul TVA/remise/total + machine à états
+│   │   ├── payments.ts      # (Sprint 6) CRUD + recomputeInvoiceStatus (recalcule toujours amountPaid/status de la facture depuis les paiements réels)
+│   │   ├── reports.ts       # (Sprint 6) getRevenueReport, getVehicleUtilizationReport, getTopVehicles — tenant-scopé
 │   │   └── utils.ts         # cn() — généré par shadcn init
 │   └── __tests__/
 │       ├── db.test.ts        # Tests d'isolation multi-tenant (Vitest) sur src/lib/db.ts
@@ -109,6 +134,9 @@ xrent-manager/
 │       ├── ui.test.tsx       # Tests d'intégration HTTP sur le rendu des pages (login/register/dashboard/users)
 │       ├── vehicles.test.ts   # (Sprint 5) CRUD, disponibilité/conflits, isolation multi-tenant/multi-agence
 │       ├── locations.test.ts  # (Sprint 5) CRUD, pricing, conflits, machine à états, isolation multi-tenant/multi-agence
+│       ├── invoices.test.ts   # (Sprint 6) CRUD, numérotation, calcul TVA/remise, machine à états, isolation multi-tenant/multi-agence
+│       ├── payments.test.ts   # (Sprint 6) CRUD, validation solde restant, recalcul automatique du statut de la facture
+│       ├── reports.test.ts    # (Sprint 6) getRevenueReport/getVehicleUtilizationReport/getTopVehicles, isolation tenant
 │       └── helpers/          # testServer.ts (port/URL), http.ts (fetch + cookies), fixtures.ts (register/login de test)
 ├── vitest.global-setup.ts    # Démarre/arrête un vrai serveur `next dev` de test (requis par NextAuth, voir TESTREPORT.md)
 ├── AGENTS.md                # Règles agent Next.js, régénéré automatiquement par `next dev`
@@ -133,7 +161,7 @@ xrent-manager/
 
 `.env` et `.env.test` (non versionnés, exclus par `.gitignore`) contiennent `DATABASE_URL` (`xrent_dev`/`xrent_test`) et `AUTH_SECRET` (secret de signature/chiffrement des sessions JWT NextAuth, généré localement).
 
-`src/components` (Sprint 4) accueille l'UI : `ui/` (shadcn/ui) et `layout/` (coquille dashboard). Aucun dossier `server/`, `data/`, `tests/`, etc. n'existe à ce jour. `src/lib` accueille la couche d'accès aux données technique, la configuration d'authentification, le wrapper `fetch` pour l'UI (`api.ts`) et désormais la première logique **métier** (`vehicles.ts`, `locations.ts`, `clients.ts`, Sprint 5) — ce choix (rester dans `src/lib` plutôt que créer un dossier `server/`/`data/` dédié) prolonge le pattern déjà en place pour `db.ts`/`authz.ts`, mais reste révisable si le volume de logique métier croît (voir section 3). Les pages d'interface `/login`, `/register`, `/dashboard/*` (dont `/dashboard/vehicles*` et `/dashboard/locations*` depuis le Sprint 5) existent désormais ; les domaines contrats, clients (page dédiée), paiements, cautions, incidents et audit restent entièrement à construire.
+`src/components` (Sprint 4) accueille l'UI : `ui/` (shadcn/ui), `layout/` (coquille dashboard) et désormais `invoices/` (Sprint 6, template PDF). Aucun dossier `server/`, `data/`, `tests/`, etc. n'existe à ce jour. `src/lib` accueille la couche d'accès aux données technique, la configuration d'authentification, le wrapper `fetch` pour l'UI (`api.ts`) et désormais la logique **métier** (`vehicles.ts`, `locations.ts`, `clients.ts` depuis le Sprint 5 ; `invoices.ts`, `payments.ts`, `reports.ts` depuis le Sprint 6) — ce choix (rester dans `src/lib` plutôt que créer un dossier `server/`/`data/` dédié) prolonge le pattern déjà en place pour `db.ts`/`authz.ts`, mais reste révisable si le volume de logique métier croît (voir section 3). Les pages d'interface `/login`, `/register`, `/dashboard/*` (dont `/dashboard/vehicles*` et `/dashboard/locations*` depuis le Sprint 5, `/dashboard/invoices*`/`/dashboard/payments`/`/dashboard/reports` depuis le Sprint 6) existent désormais ; les domaines contrats, clients (page dédiée), cautions, incidents et audit restent entièrement à construire.
 
 ## 2. Rôle des principaux fichiers existants
 
@@ -147,7 +175,7 @@ xrent-manager/
 | `eslint.config.mjs` | Configuration ESLint basée sur `eslint-config-next` (core-web-vitals + typescript). |
 | `AGENTS.md` | Fichier régénéré automatiquement par `next dev` ; contient les règles spécifiques à cette version de Next.js pour les agents IA. Ne pas éditer manuellement son contenu généré. |
 | `CLAUDE.md` | Règles impératives pour les assistants IA et développeurs sur ce projet ; importe `AGENTS.md`. |
-| `prisma/schema.prisma` | Schéma de données : `Tenant`, `Agency`, `User` (`passwordHash`, `role`), `UserAgency`, `Client`, `Vehicle`, `Location` (Sprint 5), isolation par `tenantId`/`agencyId` ; `Account`/`Session`/`VerificationToken` pour l'adaptateur NextAuth (OAuth futur, non utilisés pour les sessions actuelles). |
+| `prisma/schema.prisma` | Schéma de données : `Tenant`, `Agency`, `User` (`passwordHash`, `role`), `UserAgency`, `Client`, `Vehicle`, `Location` (Sprint 5), `Invoice`, `Payment` (Sprint 6), isolation par `tenantId`/`agencyId` ; `Account`/`Session`/`VerificationToken` pour l'adaptateur NextAuth (OAuth futur, non utilisés pour les sessions actuelles). |
 | `src/lib/prisma.ts` | Singleton `PrismaClient`, réutilisé en développement pour éviter l'épuisement de connexions au hot reload Next.js. |
 | `src/lib/db.ts` | Couche d'accès aux données minimale : `getTenantById`, `getAgencyById`, `getUserById`, chacune filtrée par `tenantId` côté serveur. |
 | `src/lib/auth.ts` | Configuration NextAuth v5 : `CredentialsProvider` (email/password, `bcryptjs`), sessions JWT, callbacks `jwt`/`session` (portent `id`/`tenantId`/`role`), exporte `handlers`/`auth`/`signIn`/`signOut`. |
@@ -161,12 +189,17 @@ xrent-manager/
 | `src/app/api/vehicles/route.ts`, `[id]/route.ts`, `[id]/availability/route.ts` | (Sprint 5) CRUD `Vehicle` + disponibilité, scopé tenant + agence (`canAccessAgency`), immatriculation unique par tenant, suppression bloquée si des locations existent. |
 | `src/app/api/locations/route.ts`, `[id]/route.ts` | (Sprint 5) CRUD `Location`, `agencyId` toujours dérivé du véhicule côté serveur (jamais du client), vérification de disponibilité et calcul de `totalPrice` à la création, machine à états sur `PATCH`, suppression restreinte aux statuts `PENDING`/`CANCELLED`. |
 | `src/app/api/clients/route.ts` | (Sprint 5) `GET`/`POST` — liste/création de `Client`, tenant-scopé, pas de page dashboard dédiée (voir section 4). |
+| `src/app/api/invoices/route.ts`, `[id]/route.ts`, `[id]/pdf/route.tsx` | (Sprint 6) CRUD `Invoice`, `agencyId`/`clientId`/`currency`/`subtotal` toujours dérivés de la `Location` côté serveur, numérotation par tenant, machine à états sur `PATCH` (transitions manuelles uniquement, `PARTIALLY_PAID`/`PAID` réservés à `recomputeInvoiceStatus`), suppression restreinte à `DRAFT` sans paiement, PDF via `@react-pdf/renderer`. |
+| `src/app/api/payments/route.ts`, `[id]/route.ts` | (Sprint 6) CRUD `Payment`, `currency` toujours dérivée de l'`Invoice`, montant validé contre le solde restant dû, chaque mutation recalcule `Invoice.amountPaid`/`status` depuis la somme réelle des paiements. |
+| `src/app/api/reports/revenue/route.ts`, `vehicles/route.ts` | (Sprint 6) `GET`, réservées `ADMIN` — revenu encaissé par mois (`Payment`), utilisation véhicule et classement par revenu facturé (`Location`). |
 | `src/app/dashboard/layout.tsx` | (Sprint 4) Server Component : résout la session et le tenant courant, redirige vers `/login` si non authentifié, fournit `DashboardLayout`. |
 | `src/components/layout/DataTable.tsx` | (Sprint 4) Table générique (TanStack Table **v9** — API `useTable`/`tableFeatures`, pas `useReactTable` — voir `node_modules/@tanstack/react-table/skills/migrate-v8-to-v9/`), tri par colonne et pagination, réutilisée par les pages tenants/agencies/users. |
 | `src/lib/api.ts` | (Sprint 4) Wrapper `fetch` pour les appels `/api/*` côté client ; lève `ApiError` avec le message `{ error }` renvoyé par la route. |
 | `src/__tests__/db.test.ts` | Tests Vitest vérifiant qu'`getAgencyById`/`getUserById` ne retournent jamais une ressource d'un autre tenant ; crée puis nettoie ses propres données dans `xrent_test`. |
 | `src/__tests__/auth.test.ts`, `tenants.test.ts`, `agencies.test.ts` | Tests d'intégration HTTP contre un vrai serveur `next dev` de test (voir `vitest.global-setup.ts`) : authentification, CRUD, isolation multi-tenant/multi-agence. |
 | `src/__tests__/vehicles.test.ts`, `locations.test.ts` | (Sprint 5) Tests d'intégration HTTP : CRUD, disponibilité/conflits de réservation, calcul de `totalPrice`, machine à états des locations, isolation multi-tenant/multi-agence. |
+| `src/__tests__/invoices.test.ts`, `payments.test.ts` | (Sprint 6) Tests d'intégration HTTP : CRUD, numérotation, calcul TVA/remise, machine à états, validation solde restant, recalcul automatique du statut de la facture, isolation multi-tenant/multi-agence. |
+| `src/__tests__/reports.test.ts` | (Sprint 6) Tests directs de `src/lib/reports.ts` (`getRevenueReport`/`getVehicleUtilizationReport`/`getTopVehicles`), isolation par tenant. |
 | `src/__tests__/ui.test.tsx` | (Sprint 4) Tests d'intégration HTTP sur le rendu des pages `/login`, `/register`, `/dashboard*` ; voir [TESTREPORT.md](./TESTREPORT.md) pour la note sur `redirect()` en contexte de streaming. |
 
 ## 3. Structure cible indicative (non existante à ce jour)
@@ -200,12 +233,14 @@ D'après les principes produit de démarrage :
 - Véhicules (CRUD + UI + disponibilité implémentés, Sprint 5 ; catégorie = champ texte libre sur `Vehicle`, pas de modèle `Category` dédié — voir DOMAINRULES.md section 6)
 - Réservations et contrats (fusionnés en un seul modèle `Location` avec machine à états, Sprint 5 — décision explicite, voir HANDOFF.md et DOMAINRULES.md section 7/8)
 - Clients (modèle `Client` minimal implémenté Sprint 5 — nom/email/téléphone, pas de page `/dashboard/clients` dédiée, uniquement sélection/création inline depuis le formulaire de location)
-- Paiements
+- Facturation (modèle `Invoice` implémenté Sprint 6 — liée à une `Location`, numérotation par tenant, TVA/remise/total, machine à états, export PDF)
+- Paiements (modèle `Payment` implémenté Sprint 6 — enregistrement manuel uniquement, pas d'intégration Stripe/PayPal ; voir HANDOFF.md section 8 pour les points encore ouverts)
+- Rapports (implémentés Sprint 6 — revenu par mois, utilisation véhicule, classement véhicules, export CSV ; réservés ADMIN)
 - Cautions
 - Incidents (véhicule/location)
 - Audit
-- Export / Import
-- Dashboard-admin (coquille + pages de base implémentées, Sprint 4 ; module métier véhicules/locations depuis Sprint 5)
+- Export / Import (CSV disponible pour les rapports depuis le Sprint 6 ; pas d'import, pas d'export pour les autres modules)
+- Dashboard-admin (coquille + pages de base implémentées, Sprint 4 ; module métier véhicules/locations depuis Sprint 5 ; facturation/paiements/rapports depuis Sprint 6)
 
 Le détail des règles associées à chaque domaine est en cours de définition dans [DOMAINRULES.md](./DOMAINRULES.md) ; beaucoup de points y sont marqués **À DÉCIDER**.
 

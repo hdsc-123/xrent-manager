@@ -2,11 +2,21 @@
 
 Document destiné à toute personne (ou assistant IA) reprenant le projet, pour comprendre rapidement où en est XRent Manager sans avoir à relire tout l'historique.
 
-Dernière mise à jour : 2026-08-11 — Sprint 5 (premier module métier : véhicules + locations) validé : modèles `Vehicle`/`Location`/`Client`, CRUD API + dashboard complets, disponibilité/conflits de réservation, machine à états, calcul de prix, isolation multi-tenant/multi-agence testée (76/76 tests). Correctif post-Sprint 5 (même date) : devise par défaut changée de `"EUR"` à `"MAD"` (migration `20260811203931_change_default_currency_to_mad`).
+Dernière mise à jour : 2026-08-11 — Sprint 6 (facturation + paiements + rapports) validé : modèles `Invoice`/`Payment`, CRUD API + dashboard complets, numérotation de facture, calcul TVA/remise/total, machine à états, PDF (`@react-pdf/renderer`), paiements enregistrés manuellement (pas de Stripe/PayPal), rapports (revenu, utilisation véhicule, top véhicules, export CSV, réservés ADMIN), isolation multi-tenant/multi-agence testée (106/106 tests).
 
 ## 1. État actuel
 
-Le projet est au stade **Sprint 5 — premier module métier (véhicules + locations)**. Le dépôt contient désormais, en plus des sprints précédents :
+Le projet est au stade **Sprint 6 — facturation, paiements et rapports**. Le dépôt contient désormais, en plus des sprints précédents :
+
+- `prisma/schema.prisma` : modèles `Invoice`, `Payment` + enums `InvoiceStatus`/`PaymentMethod`, migration `20260811205048_add_invoice_and_payment_models` appliquée sur `xrent_dev` et `xrent_test` ;
+- `src/lib/{invoices,payments,reports}.ts` : couche métier (CRUD, génération de numéro de facture, calcul TVA/remise/total, machine à états `canTransition`, `recomputeInvoiceStatus`, `getRevenueReport`/`getVehicleUtilizationReport`/`getTopVehicles`), toujours scopée `tenantId` (+ `agencyId` dérivé de la `Location`/`Invoice` ciblée) ;
+- routes API `/api/invoices*` (CRUD + `/[id]/pdf`), `/api/payments*` (CRUD), `/api/reports/{revenue,vehicles}` (réservées `ADMIN`) — toutes vérifient tenant + appartenance à l'agence côté serveur ;
+- pages `/dashboard/invoices*` (liste avec filtres, création depuis une location, détail avec téléchargement PDF/enregistrement de paiement/changement de statut), `/dashboard/payments` (liste avec filtres), `/dashboard/reports` (KPIs, graphiques `recharts`, export CSV `papaparse`, réservée ADMIN) branchées sur ces routes ;
+- `src/components/invoices/InvoicePdf.tsx` : template PDF (`@react-pdf/renderer`), sans logo (aucun asset de marque n'existe dans le dépôt) ;
+- `src/__tests__/{invoices,payments,reports}.test.ts` : 30 nouveaux tests (CRUD, numérotation, calcul TVA/remise, machine à états, validation solde restant, recalcul automatique du statut de facture, rapports, isolation multi-tenant/multi-agence) — 106/106 tests passés au total ;
+- `npm run lint` / `npm run test` / `npm run build` validés.
+
+### Sprint 5 (rappel)
 
 - `prisma/schema.prisma` : modèles `Client`, `Vehicle`, `Location` + enums `VehicleStatus`/`LocationStatus`, migration `20260811201341_add_vehicle_and_location_models` appliquée sur `xrent_dev` et `xrent_test` ;
 - `src/lib/{vehicles,locations,clients}.ts` : couche métier (CRUD, `checkAvailability`, `calculateTotalPrice`, machine à états `canTransition`), toujours scopée `tenantId` (+ `agencyId` pour véhicules/locations) ;
@@ -15,6 +25,7 @@ Le projet est au stade **Sprint 5 — premier module métier (véhicules + locat
 - pages `/dashboard/vehicles*` et `/dashboard/locations*` (liste avec filtres, création, détail/édition, actions de changement de statut/annulation) branchées sur ces routes ; pas de page `/dashboard/clients` dédiée (sélection/création inline uniquement) ;
 - `src/__tests__/{vehicles,locations}.test.ts` : 30 nouveaux tests (CRUD, disponibilité/conflits, pricing, machine à états, isolation multi-tenant/multi-agence) — 76/76 tests passés au total ;
 - `npm run lint` / `npm run test` / `npm run build` validés ; parcours complet vérifié manuellement contre un serveur `next dev` réel (inscription → agence → véhicule → client → location → pages dashboard), données de test nettoyées après vérification.
+- Correctif post-Sprint 5 (même date) : devise par défaut changée de `"EUR"` à `"MAD"` (migration `20260811203931_change_default_currency_to_mad`).
 
 ### Sprint 4 (rappel)
 
@@ -136,10 +147,12 @@ Les principes d'architecture validés lors du Sprint 1 (voir section 6) sont dé
 - **Sprint 3** : authentification NextAuth.js v5 (sessions JWT), champs `passwordHash`/`role` sur `User`, migration `add_nextauth_models_and_user_auth_fields` appliquée sur `xrent_dev` et `xrent_test`, routes `/api/auth/*`, CRUD `/api/tenants*` et `/api/agencies*` scopés serveur, `src/proxy.ts`, tests d'intégration HTTP (37/37 passés) — voir la section Sprint 3 ci-dessus et [TESTREPORT.md](./TESTREPORT.md).
 - **Sprint 4** : shadcn/ui + TanStack Table v9 + lucide-react, pages `/login`/`/register`/`/dashboard` (+ `tenants`, `agencies`, `users` en lecture seule, `settings`), coquille dashboard (Sidebar/Header/DashboardLayout), `GET /api/users`, `src/lib/api.ts`, `src/hooks/{useUser,useTenant}.ts`, tests d'intégration HTTP sur le rendu des pages (46/46 passés au total) — voir la section Sprint 4 ci-dessus et [TESTREPORT.md](./TESTREPORT.md).
 - **Sprint 5** : modèles `Client`/`Vehicle`/`Location`, CRUD API + dashboard complets (véhicules, locations), disponibilité/conflits de réservation, machine à états, calcul de prix (`totalPrice`), `src/lib/{vehicles,locations,clients,format}.ts`, extension de `src/lib/authz.ts` (`canAccessAgency`/`getAccessibleAgencyIds`, avec correction d'une faille de vérification tenant), 76/76 tests passés au total — voir la section Sprint 5 ci-dessus et [TESTREPORT.md](./TESTREPORT.md).
+- **Sprint 6** : modèles `Invoice`/`Payment`, CRUD API + dashboard complets (factures, paiements), numérotation de facture par tenant, calcul TVA/remise/total, machine à états, export PDF, paiements manuels (pas d'intégration Stripe/PayPal), rapports (revenu/utilisation véhicule/top véhicules, export CSV, réservés ADMIN), `src/lib/{invoices,payments,reports}.ts`, `src/components/invoices/InvoicePdf.tsx`, 106/106 tests passés au total — voir la section Sprint 6 ci-dessus et [TESTREPORT.md](./TESTREPORT.md).
 
 ## 3. Ce qui n'est pas commencé
 
-- Paiements, cautions, incidents de location, contenu détaillé de contrat (conditions générales, franchise, kilométrage inclus).
+- Cautions, incidents de location, contenu détaillé de contrat/facture (conditions générales, franchise, kilométrage inclus, mentions légales, TVA intracommunautaire, avoirs/factures rectificatives).
+- Intégration d'un prestataire de paiement (Stripe/PayPal ou autre) — paiements enregistrés manuellement uniquement (décision explicite Sprint 6, voir DOMAINRULES.md section 10) ; pas de remboursement/paiement négatif modélisé.
 - Modèle `Category` dédié pour les véhicules (reste un champ texte libre sur `Vehicle`) ; page `/dashboard/clients` dédiée (recherche, historique, fusion de doublons).
 - Gestion de la maintenance et de l'historique kilométrique des véhicules.
 - Modification de rôle et suppression d'utilisateurs, invitation effective dans un tenant existant (voir section 8, points 2 et 17) — `/dashboard/users` est volontairement en lecture seule (Sprint 4).
@@ -150,18 +163,25 @@ Les principes d'architecture validés lors du Sprint 1 (voir section 6) sont dé
 - Fuseau horaire par agence (aucun champ `timezone` sur `Agency`).
 - Tout environnement de staging ou de production réel.
 - Tout script de seed de développement.
+- Modèle `Category` dédié pour les véhicules (reste un champ texte libre sur `Vehicle`) ; page `/dashboard/clients` dédiée (recherche, historique, fusion de doublons).
+- Gestion de la maintenance et de l'historique kilométrique des véhicules.
+- Modification de rôle et suppression d'utilisateurs, invitation effective dans un tenant existant (voir section 8, points 2 et 17) — `/dashboard/users` est volontairement en lecture seule (Sprint 4).
+- Édition du profil utilisateur (nom, email, mot de passe) — aucune route de mutation du profil n'existe encore.
+- Limitation du nombre de tentatives de connexion, réinitialisation de mot de passe, MFA (voir [SECURITY.md](./SECURITY.md) section 3).
+- Tout rôle transverse à plusieurs tenants ("superadmin" plateforme) — seul `ADMIN`, scopé à un tenant, existe.
+- Toute table ou mécanisme d'audit (décidé en principe, non implémenté — voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 12).
 
 ## 4. Prochaine action recommandée
 
-Le premier module métier (véhicules + locations) étant en place (Sprint 5), avec authentification, autorisation serveur (tenant/agence/rôle) et CRUD `Tenant`/`Agency`/`Vehicle`/`Location` (Sprints 3–5), la prochaine étape reste conditionnée par les décisions encore ouvertes (section 8) — en particulier : confirmer ou ajuster la granularité de rôle provisoire (MEMBER peut gérer véhicules/locations de son agence, point 21), le prochain module métier à construire (clients à part entière ? paiements ? cautions ?), et le flux d'invitation/gestion d'utilisateurs dans un tenant existant. Conformément à [CLAUDE.md](./CLAUDE.md), aucun code métier ou dépendance supplémentaire ne doit être ajouté sans validation explicite distincte de celle de ce sprint.
+Facturation, paiements et rapports étant en place (Sprint 6), en plus de l'authentification, l'autorisation serveur (tenant/agence/rôle) et le CRUD `Tenant`/`Agency`/`Vehicle`/`Location`/`Invoice`/`Payment` (Sprints 3–6), la prochaine étape reste conditionnée par les décisions encore ouvertes (section 8) — en particulier : confirmer les décisions prises en cours d'implémentation sans validation préalable distincte (granularité de rôle véhicules/locations, point 21 ; accès aux rapports réservé ADMIN, point 24), le prochain module métier à construire (cautions ? incidents ? module clients à part entière ?), et le flux d'invitation/gestion d'utilisateurs dans un tenant existant. Conformément à [CLAUDE.md](./CLAUDE.md), aucun code métier ou dépendance supplémentaire ne doit être ajouté sans validation explicite distincte de celle de ce sprint.
 
 ## 5. Commandes déjà validées
 
 | Commande | Statut | Résultat observé |
 |---|---|---|
 | `npm run lint` | ✅ Validé | Aucune erreur ESLint |
-| `npm run test` | ✅ Validé | 76/76 tests passés (Vitest) — isolation multi-tenant/multi-agence, authentification, CRUD (tenants/agencies/vehicles/locations), disponibilité/conflits, pricing, machine à états, rendu des pages UI, aucune donnée résiduelle après nettoyage |
-| `npm run build` | ✅ Validé | Build de production réussi (Turbopack, Next.js 16.3.0), TypeScript strict sans erreur, 17 routes API + 15 pages `/dashboard/*` + `/login`/`/register` + Proxy |
+| `npm run test` | ✅ Validé | 106/106 tests passés (Vitest) — isolation multi-tenant/multi-agence, authentification, CRUD (tenants/agencies/vehicles/locations/invoices/payments), disponibilité/conflits, pricing, machine à états (locations + invoices), numérotation de facture, recalcul automatique du statut de facture, rapports, rendu des pages UI, aucune donnée résiduelle après nettoyage |
+| `npm run build` | ✅ Validé | Build de production réussi (Turbopack, Next.js 16.3.0), TypeScript strict sans erreur, 23 routes API + 20 pages `/dashboard/*` + `/login`/`/register` + Proxy |
 
 Migrations de développement appliquées via `npx prisma migrate dev` (sur `xrent_dev`) puis répercutées sur `xrent_test` via `npx prisma migrate deploy` — jamais l'inverse, et jamais de commande interactive/destructive en production (aucun environnement de production n'existe à ce jour). Aucune commande de seed n'a été exécutée à ce jour.
 
@@ -210,6 +230,16 @@ Décisions techniques Sprint 5 (2026-08-11), validées par le propriétaire du p
 - **Décision non soumise à validation préalable, prise en cours d'implémentation et documentée a posteriori** : granularité de rôle pour véhicules/locations — un `MEMBER` rattaché à une agence peut créer/modifier/supprimer (pas seulement lire) les véhicules et locations de cette agence, contrairement au modèle `Tenant`/`Agency` où l'écriture reste ADMIN uniquement. Choix pragmatique cohérent avec le modèle `UserAgency` déjà validé, mais **à confirmer explicitement** — voir section 8, point 21.
 - **Correction de sécurité, pas une décision produit** : `canAccessAgency` vérifie désormais que l'agence appartient au tenant de l'utilisateur avant toute logique de rôle (voir section « Sprint 5 » ci-dessus pour le détail de la faille corrigée).
 
+Décisions techniques Sprint 6 (2026-08-11), validées par le propriétaire du projet **avant** implémentation (brief de sprint explicite, conformément à CLAUDE.md section 8) :
+
+- Bibliothèques : **`@react-pdf/renderer`** (PDF), **`papaparse`** (CSV), **`recharts`** (graphiques) — seules nouvelles dépendances ajoutées à `package.json` pour ce sprint.
+- **Aucune intégration Stripe/PayPal** : les paiements sont enregistrés manuellement par le personnel d'agence (voir DOMAINRULES.md section 10).
+- `taxRate` en points de base (entier, ex. `2000` = 20 %) et `discountAmount` en montant fixe (entier, plus petite unité monétaire) — cohérent avec la règle « jamais de `float` pour un montant financier » (voir DOMAINRULES.md section 14 et 17).
+- Numérotation de facture `INV-{année}-{5 chiffres}`, unique par tenant, générée par comptage (pas de table de séquence dédiée) avec réessai en cas de collision — voir DOMAINRULES.md section 17.
+- `Invoice.amountPaid`/`status` ne sont jamais modifiés directement : toujours recalculés depuis la somme réelle des `Payment` (`recomputeInvoiceStatus`) — voir DOMAINRULES.md section 10.
+- **Décision non soumise à validation préalable, prise en cours d'implémentation et documentée a posteriori** : les rapports financiers (`/api/reports/*`, `/dashboard/reports`) sont réservés au rôle `ADMIN` — choix pragmatique (données agrégées sur tout le tenant), **à confirmer explicitement**, voir section 8 point 24.
+- **Décision non soumise à validation préalable, prise en cours d'implémentation et documentée a posteriori** : `Invoice` peut être créée en plusieurs exemplaires pour une même `Location` (aucune contrainte d'unicité `locationId`) — le schéma ne l'empêche pas, mais aucun cas d'usage (facture partielle, avoir) n'a été explicitement demandé, **à confirmer**, voir section 8 point 25.
+
 Décisions techniques encore ouvertes : voir section 8.
 
 ## 7. Risques identifiés
@@ -217,9 +247,11 @@ Décisions techniques encore ouvertes : voir section 8.
 - **Résolution du tenant à la connexion ambiguë** : `User.email` n'est unique que par tenant (`@@unique([tenantId, email])`). `/api/auth/login` résout l'utilisateur par email seul (`findFirst`) ; si deux tenants différents utilisent un jour le même email, ce lookup devient ambigu. Aucun mécanisme de désambiguïsation (sous-domaine, sélection de tenant explicite) n'existe — voir [SECURITY.md](./SECURITY.md) section 3 et section 8 point 16 ci-dessous.
 - **Sessions JWT non révocables côté serveur** : la déconnexion efface le cookie mais un jeton déjà émis reste valide jusqu'à expiration (pas de table de sessions consultée à chaque requête). Acceptable pour ce sprint, mais à réévaluer si un besoin de révocation immédiate apparaît (ex. compromission de compte) — voir [SECURITY.md](./SECURITY.md) section 5.
 - **Aucune limitation des tentatives de connexion** : `/api/auth/login` n'implémente aucun rate-limiting — risque de brute force, à traiter avant mise en production (voir [SECURITY.md](./SECURITY.md) section 3).
-- **Aucune stratégie de gestion des paiements/cautions définie** : à trancher avant tout développement du module paiement, en particulier le choix d'un prestataire évitant le stockage de données de carte bancaire en clair.
-- **Devise `"MAD"` codée en dur par défaut (Sprint 5, changée depuis `"EUR"`)** : `Vehicle`/`Location` ont un champ `currency` mais toute création actuelle utilise `"MAD"` par défaut faute de décision multi-devises tranchée (voir section 8, point 3) — à revoir avant d'onboarder un tenant hors zone MAD (le champ existe justement pour permettre EUR, USD, etc. sans nouvelle migration).
+- **Aucune stratégie de gestion des cautions définie** : à trancher avant tout développement du module cautions (voir DOMAINRULES.md section 11). Le module paiements existe désormais mais reste manuel uniquement (aucun prestataire de paiement intégré, décision explicite Sprint 6).
+- **Devise `"MAD"` codée en dur par défaut (Sprint 5, changée depuis `"EUR"`)** : `Vehicle`/`Location` ont un champ `currency` mais toute création actuelle utilise `"MAD"` par défaut faute de décision multi-devises tranchée (voir section 8, point 3) — à revoir avant d'onboarder un tenant hors zone MAD (le champ existe justement pour permettre EUR, USD, etc. sans nouvelle migration). `Invoice`/`Payment` héritent de la même devise par dérivation (jamais fournie par le client) ; `getRevenueReport` (Sprint 6) suppose une devise unique par tenant pour son agrégation.
 - **Granularité de rôle véhicules/locations non validée formellement** : un `MEMBER` rattaché à une agence peut aujourd'hui créer/modifier/supprimer les véhicules et locations de cette agence (voir section 6, décisions Sprint 5) — décision pragmatique prise en cours d'implémentation, pas explicitement validée au préalable comme l'exige CLAUDE.md section 8 pour la logique métier ; à confirmer ou ajuster avec le propriétaire du projet (section 8, point 21).
+- **Numérotation de facture non garantie sous forte concurrence** (Sprint 6) : `generateInvoiceNumber` compte les factures existantes plutôt que d'utiliser une séquence PostgreSQL dédiée ; en cas de collision, `createInvoice` réessaie (jusqu'à 5 fois) mais ne garantit pas une absence totale d'échec sous charge concurrente élevée sur un même tenant — acceptable pour ce sprint (volume de facturation manuel, un utilisateur à la fois en pratique), à réévaluer si le volume augmente (voir DOMAINRULES.md section 17).
+- **Accès aux rapports financiers restreint à ADMIN sans validation préalable** (Sprint 6) : décision pragmatique prise en cours d'implémentation, pas explicitement validée au préalable comme l'exige CLAUDE.md section 8 ; à confirmer avec le propriétaire du projet (section 8, point 24).
 
 ## 8. Points à valider avec le propriétaire du projet
 
@@ -229,7 +261,7 @@ Les points suivants restent explicitement **À DÉCIDER**. Détail dans [DOMAINR
 2. Rôles et permissions détaillés au-delà de `ADMIN`/`MEMBER` (granularité par module/action).
 3. Devise initiale et support multi-devises.
 4. Règles d'arrondi financier.
-5. Prestataire de paiement et modalités des cautions.
+5. ~~Prestataire de paiement.~~ Tranché (Sprint 6) : aucun, paiements enregistrés manuellement. Modalités des cautions restent **À DÉCIDER**.
 6. Hébergeur précis et gestionnaire de secrets en production.
 7. Stratégie détaillée de sauvegarde.
 8. Outil de test de charge.
@@ -248,5 +280,9 @@ Les points suivants restent explicitement **À DÉCIDER**. Détail dans [DOMAINR
 21. **Nouveau (Sprint 5)** : confirmer (ou ajuster) la décision provisoire selon laquelle un `MEMBER` rattaché à une agence peut créer/modifier/supprimer les véhicules et locations de cette agence (pas seulement les consulter) — voir section 6 et section 7. À trancher avant d'étendre ce pattern à d'autres modules métier.
 22. **Nouveau (Sprint 5, mis à jour)** : devise(s) réellement supportée(s) en production (le champ `currency` existe, mais `"MAD"` est actuellement codé en dur comme valeur par défaut à la création, changé depuis `"EUR"`) — précise le point 3 ci-dessus.
 23. **Nouveau (Sprint 5)** : un module `Client` à part entière (page dédiée, recherche, historique de locations, fusion de doublons, documents d'identité/permis) est-il nécessaire, ou le modèle minimal actuel (sélection/création inline) suffit-il pour la suite du MVP ?
+24. **Nouveau (Sprint 6)** : confirmer (ou ajuster) la décision provisoire selon laquelle les rapports financiers (`/api/reports/*`, `/dashboard/reports`) sont réservés au rôle `ADMIN`, y compris pour un `MEMBER` rattaché à toutes les agences pertinentes — voir section 6 et section 7.
+25. **Nouveau (Sprint 6)** : une `Location` peut-elle avoir plusieurs `Invoice` (facture partielle, avoir, facture rectificative), ou une seule facture par location est-elle la règle ? Le schéma ne l'empêche pas techniquement — voir DOMAINRULES.md section 17.
+26. **Nouveau (Sprint 6)** : règles de remise en pourcentage (aujourd'hui `discountAmount` est un montant fixe, pas un pourcentage) et règles d'arrondi financier au-delà du calcul de jours de location — précise le point 4 ci-dessus.
+27. **Nouveau (Sprint 6)** : contenu détaillé de facture (mentions légales, conditions générales, TVA intracommunautaire) — dépend en partie de la juridiction cible (point 10) ; gestion des remboursements/paiements négatifs, non modélisée à ce stade.
 
 Framework de test : **tranché** (Vitest, voir section 2) — les outils e2e et de test de charge restent À DÉCIDER.

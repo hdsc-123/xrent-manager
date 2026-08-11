@@ -1,0 +1,156 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { prisma } from "@/lib/prisma";
+import { getRevenueReport, getVehicleUtilizationReport, getTopVehicles } from "@/lib/reports";
+import { apiFetch } from "./helpers/http";
+import { registerTenantAdmin, type AuthenticatedTestUser } from "./helpers/fixtures";
+
+const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
+const createdTenantIds: string[] = [];
+
+let admin: AuthenticatedTestUser;
+let vehicleId: string;
+let clientId: string;
+
+async function createLocation(overrides: Record<string, unknown>) {
+  const response = await apiFetch("/api/locations", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ vehicleId, clientId, startDate: "2030-01-10", endDate: "2030-01-13", ...overrides }),
+  });
+  return (await response.json()).location as { id: string; totalPrice: number };
+}
+
+beforeAll(async () => {
+  admin = await registerTenantAdmin({
+    tenantName: "Reports Test",
+    tenantSlug: `reports-test-${runId}`,
+    name: "Admin",
+    email: `admin-${runId}@test.local`,
+    password: "correct-horse-battery-staple",
+  });
+  createdTenantIds.push(admin.tenantId);
+
+  const agencyResponse = await apiFetch("/api/agencies", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ name: "Agence", slug: `agence-${runId}` }),
+  });
+  const agencyId = (await agencyResponse.json()).agency.id;
+
+  const vehicleResponse = await apiFetch("/api/vehicles", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({
+      agencyId,
+      name: "Clio",
+      licensePlate: `REP-${runId}`,
+      make: "Renault",
+      model: "Clio",
+      year: 2022,
+      category: "Citadine",
+      pricePerDay: 5000,
+    }),
+  });
+  vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+  const clientResponse = await apiFetch("/api/clients", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ name: "Client", email: `client-${runId}@test.local` }),
+  });
+  clientId = (await clientResponse.json()).client.id;
+});
+
+afterAll(async () => {
+  await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
+  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await prisma.$disconnect();
+});
+
+describe("getRevenueReport", () => {
+  it("ignore un tenant vide", async () => {
+    const report = await getRevenueReport("nonexistent-tenant-id", new Date("2030-01-01"), new Date("2030-12-31"));
+    expect(report.totalRevenue).toBe(0);
+    expect(report.byMonth).toHaveLength(0);
+  });
+
+  it("agrège les paiements par mois sur la période, isolé par tenant", async () => {
+    const location = await createLocation({ startDate: "2030-03-01", endDate: "2030-03-04" });
+    const invoiceResponse = await apiFetch("/api/invoices", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ locationId: location.id }),
+    });
+    const invoice = (await invoiceResponse.json()).invoice;
+
+    await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({
+        invoiceId: invoice.id,
+        amount: invoice.totalAmount,
+        method: "CASH",
+        paidAt: "2030-03-15",
+      }),
+    });
+
+    const report = await getRevenueReport(admin.tenantId, new Date("2030-03-01"), new Date("2030-03-31"));
+    expect(report.totalRevenue).toBe(invoice.totalAmount);
+    expect(report.currency).toBe("MAD");
+    expect(report.byMonth).toEqual([{ month: "2030-03", revenue: invoice.totalAmount }]);
+  });
+});
+
+describe("getVehicleUtilizationReport", () => {
+  it("calcule les jours loués comme le chevauchement entre la location et la période demandée", async () => {
+    await createLocation({ startDate: "2030-04-10", endDate: "2030-04-15", status: "CONFIRMED" });
+
+    // La transition CONFIRMED -> ACTIVE nécessite de récupérer la location créée : on filtre par véhicule.
+    const locations = await prisma.location.findMany({ where: { vehicleId, tenantId: admin.tenantId } });
+    const target = locations.find((l) => l.startDate.toISOString().startsWith("2030-04-10"));
+    if (target) {
+      await prisma.location.update({ where: { id: target.id }, data: { status: "ACTIVE" } });
+    }
+
+    const report = await getVehicleUtilizationReport(admin.tenantId, new Date("2030-04-01"), new Date("2030-04-30"));
+    const entry = report.find((r) => r.vehicleId === vehicleId);
+    expect(entry).toBeDefined();
+    expect(entry?.rentedDays).toBeGreaterThanOrEqual(5);
+    // 2030-04-01 -> 2030-04-30 = 29 (même convention que calculateTotalPrice dans
+    // src/lib/locations.ts : différence de temps, pas un décompte inclusif des jours).
+    expect(entry?.periodDays).toBe(29);
+  });
+
+  it("ignore les locations PENDING/CANCELLED (pas encore une occupation réelle)", async () => {
+    await createLocation({ startDate: "2030-05-01", endDate: "2030-05-05" });
+
+    const report = await getVehicleUtilizationReport(admin.tenantId, new Date("2030-05-01"), new Date("2030-05-31"));
+    const entry = report.find((r) => r.vehicleId === vehicleId);
+    // La location de mai reste PENDING (jamais confirmée) : elle ne doit pas compter.
+    expect(entry?.rentedDays).toBe(0);
+  });
+});
+
+describe("getTopVehicles", () => {
+  it("classe les véhicules par revenu facturé décroissant, limité au tenant", async () => {
+    const location = await createLocation({ startDate: "2030-06-01", endDate: "2030-06-04", status: "CONFIRMED" });
+    await prisma.location.update({ where: { id: location.id }, data: { status: "COMPLETED" } });
+
+    const top = await getTopVehicles(admin.tenantId, 5);
+    const entry = top.find((v) => v.vehicleId === vehicleId);
+    expect(entry).toBeDefined();
+    expect(entry!.revenue).toBeGreaterThanOrEqual(location.totalPrice);
+  });
+
+  it("respecte la limite demandée", async () => {
+    const top = await getTopVehicles(admin.tenantId, 1);
+    expect(top.length).toBeLessThanOrEqual(1);
+  });
+});

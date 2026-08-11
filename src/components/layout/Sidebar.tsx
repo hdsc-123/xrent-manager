@@ -3,9 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BarChart3,
   Building2,
   Car,
   CalendarRange,
+  CreditCard,
+  FileText,
   LayoutDashboard,
   Settings,
   Store,
@@ -27,6 +30,9 @@ const navItems: NavItem[] = [
   { href: "/dashboard/agencies", label: "Agences", icon: Store },
   { href: "/dashboard/vehicles", label: "Véhicules", icon: Car },
   { href: "/dashboard/locations", label: "Locations", icon: CalendarRange },
+  { href: "/dashboard/invoices", label: "Factures", icon: FileText },
+  { href: "/dashboard/payments", label: "Paiements", icon: CreditCard },
+  { href: "/dashboard/reports", label: "Rapports", icon: BarChart3 },
   { href: "/dashboard/users", label: "Utilisateurs", icon: Users },
   { href: "/dashboard/settings", label: "Paramètres", icon: Settings },
 ];
