@@ -1,23 +1,10 @@
 import { notFound } from "next/navigation";
-import { getSessionUser, type SessionUser } from "@/lib/authz";
+import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { getAgencyById } from "@/lib/db";
-import { prisma } from "@/lib/prisma";
 import { EditAgencyForm } from "./EditAgencyForm";
 
 interface PageProps {
   params: Promise<{ id: string }>;
-}
-
-async function canAccessAgency(user: SessionUser, agencyId: string): Promise<boolean> {
-  if (user.role === "ADMIN") {
-    return true;
-  }
-
-  const link = await prisma.userAgency.findUnique({
-    where: { userId_agencyId: { userId: user.id, agencyId } },
-  });
-
-  return link !== null;
 }
 
 export default async function AgencyDetailPage({ params }: PageProps) {

@@ -13,12 +13,16 @@ xrent-manager/
 │   ├── vercel.svg
 │   └── window.svg
 ├── prisma/
-│   ├── schema.prisma        # Tenant, Agency, User (passwordHash, role), UserAgency, Account, Session, VerificationToken
+│   ├── schema.prisma        # Tenant, Agency, User (passwordHash, role), UserAgency, Client, Vehicle, Location, Account, Session, VerificationToken
 │   └── migrations/
 │       ├── migration_lock.toml
 │       ├── 20260811133155_init_tenant_agency_user/
 │       │   └── migration.sql
-│       └── 20260811141912_add_nextauth_models_and_user_auth_fields/
+│       ├── 20260811141912_add_nextauth_models_and_user_auth_fields/
+│       │   └── migration.sql
+│       ├── 20260811201341_add_vehicle_and_location_models/
+│       │   └── migration.sql
+│       └── 20260811203931_change_default_currency_to_mad/
 │           └── migration.sql
 ├── components.json          # Config shadcn/ui (style base-nova, alias @/components, @/lib, @/hooks)
 ├── src/
@@ -47,6 +51,14 @@ xrent-manager/
 │   │   │   │   └── [id]/page.tsx, EditAgencyForm.tsx
 │   │   │   ├── users/              # Lecture seule (voir HANDOFF.md) : pas d'actions modifier/supprimer/rôle
 │   │   │   │   ├── page.tsx, UsersTable.tsx, loading.tsx
+│   │   │   ├── vehicles/           # (Sprint 5) CRUD complet, scopé agence
+│   │   │   │   ├── page.tsx, VehiclesTable.tsx, loading.tsx
+│   │   │   │   ├── new/page.tsx
+│   │   │   │   └── [id]/page.tsx, EditVehicleForm.tsx
+│   │   │   ├── locations/          # (Sprint 5) CRUD complet, machine à états, scopé agence
+│   │   │   │   ├── page.tsx, LocationsTable.tsx, loading.tsx
+│   │   │   │   ├── new/page.tsx
+│   │   │   │   └── [id]/page.tsx, LocationActions.tsx
 │   │   │   └── settings/page.tsx   # Nom du tenant (éditable) ; profil user en lecture seule
 │   │   └── api/
 │   │       ├── auth/
@@ -61,7 +73,16 @@ xrent-manager/
 │   │       ├── agencies/
 │   │       │   ├── route.ts                # GET (liste du tenant connecté)/POST (ADMIN)
 │   │       │   └── [id]/route.ts           # GET/PATCH/DELETE — scopé tenant + agence (UserAgency)
-│   │       └── users/route.ts              # GET — liste du tenant, ADMIN uniquement (Sprint 4, lecture seule)
+│   │       ├── users/route.ts              # GET — liste du tenant, ADMIN uniquement (Sprint 4, lecture seule)
+│   │       ├── vehicles/                   # (Sprint 5)
+│   │       │   ├── route.ts                # GET (liste, filtres)/POST — scopé tenant + agence
+│   │       │   └── [id]/
+│   │       │       ├── route.ts            # GET/PATCH/DELETE (bloqué si locations existantes)
+│   │       │       └── availability/route.ts  # GET — disponibilité sur une période
+│   │       ├── locations/                  # (Sprint 5)
+│   │       │   ├── route.ts                # GET (liste, filtres)/POST — vérifie disponibilité, calcule totalPrice
+│   │       │   └── [id]/route.ts           # GET/PATCH (statut/dates/notes)/DELETE (si PENDING/CANCELLED)
+│   │       └── clients/route.ts            # (Sprint 5) GET (liste)/POST — tenant-scopé, pas de page dédiée
 │   ├── proxy.ts              # Redirige vers /login sur /dashboard*, /settings* si non authentifié (middleware.ts est déprécié dans cette version de Next.js)
 │   ├── components/
 │   │   ├── ui/               # Composants shadcn/ui (générés) + index.ts (ré-export)
@@ -73,8 +94,12 @@ xrent-manager/
 │   │   ├── prisma.ts        # Singleton PrismaClient (gère le hot reload Next.js)
 │   │   ├── db.ts            # getTenantById, getAgencyById, getUserById — scopés tenantId
 │   │   ├── auth.ts          # Config NextAuth (CredentialsProvider, sessions JWT, callbacks jwt/session/signIn)
-│   │   ├── authz.ts         # getSessionUser() — point d'entrée session pour les route handlers
+│   │   ├── authz.ts         # getSessionUser(), canAccessAgency(), getAccessibleAgencyIds() — session + autorisation agence
 │   │   ├── api.ts           # Wrapper fetch pour /api/* (normalise les erreurs { error })
+│   │   ├── format.ts        # (Sprint 5) formatMoney() — formatage des montants entiers + devise
+│   │   ├── clients.ts       # (Sprint 5) getClients, getClientById, createClient — tenant-scopé
+│   │   ├── vehicles.ts      # (Sprint 5) CRUD + checkAvailability — tenant/agence-scopé
+│   │   ├── locations.ts     # (Sprint 5) CRUD + calculateTotalPrice + machine à états (canTransition)
 │   │   └── utils.ts         # cn() — généré par shadcn init
 │   └── __tests__/
 │       ├── db.test.ts        # Tests d'isolation multi-tenant (Vitest) sur src/lib/db.ts
@@ -82,6 +107,8 @@ xrent-manager/
 │       ├── tenants.test.ts   # Tests CRUD tenants + isolation multi-tenant
 │       ├── agencies.test.ts  # Tests CRUD agencies + isolation multi-tenant/multi-agence
 │       ├── ui.test.tsx       # Tests d'intégration HTTP sur le rendu des pages (login/register/dashboard/users)
+│       ├── vehicles.test.ts   # (Sprint 5) CRUD, disponibilité/conflits, isolation multi-tenant/multi-agence
+│       ├── locations.test.ts  # (Sprint 5) CRUD, pricing, conflits, machine à états, isolation multi-tenant/multi-agence
 │       └── helpers/          # testServer.ts (port/URL), http.ts (fetch + cookies), fixtures.ts (register/login de test)
 ├── vitest.global-setup.ts    # Démarre/arrête un vrai serveur `next dev` de test (requis par NextAuth, voir TESTREPORT.md)
 ├── AGENTS.md                # Règles agent Next.js, régénéré automatiquement par `next dev`
@@ -106,7 +133,7 @@ xrent-manager/
 
 `.env` et `.env.test` (non versionnés, exclus par `.gitignore`) contiennent `DATABASE_URL` (`xrent_dev`/`xrent_test`) et `AUTH_SECRET` (secret de signature/chiffrement des sessions JWT NextAuth, généré localement).
 
-`src/components` (Sprint 4) accueille l'UI : `ui/` (shadcn/ui) et `layout/` (coquille dashboard). Aucun dossier `server/`, `data/`, `tests/`, etc. n'existe à ce jour. `src/lib` accueille la couche d'accès aux données technique, la configuration d'authentification et désormais le wrapper `fetch` pour l'UI (`api.ts`) — l'emplacement exact de la future logique **métier** (véhicules, réservations…) reste **À DÉCIDER** (voir section 3). Les pages d'interface `/login`, `/register` et `/dashboard/*` existent désormais (Sprint 4) ; aucune page métier (véhicules, réservations…) n'existe encore.
+`src/components` (Sprint 4) accueille l'UI : `ui/` (shadcn/ui) et `layout/` (coquille dashboard). Aucun dossier `server/`, `data/`, `tests/`, etc. n'existe à ce jour. `src/lib` accueille la couche d'accès aux données technique, la configuration d'authentification, le wrapper `fetch` pour l'UI (`api.ts`) et désormais la première logique **métier** (`vehicles.ts`, `locations.ts`, `clients.ts`, Sprint 5) — ce choix (rester dans `src/lib` plutôt que créer un dossier `server/`/`data/` dédié) prolonge le pattern déjà en place pour `db.ts`/`authz.ts`, mais reste révisable si le volume de logique métier croît (voir section 3). Les pages d'interface `/login`, `/register`, `/dashboard/*` (dont `/dashboard/vehicles*` et `/dashboard/locations*` depuis le Sprint 5) existent désormais ; les domaines contrats, clients (page dédiée), paiements, cautions, incidents et audit restent entièrement à construire.
 
 ## 2. Rôle des principaux fichiers existants
 
@@ -120,22 +147,26 @@ xrent-manager/
 | `eslint.config.mjs` | Configuration ESLint basée sur `eslint-config-next` (core-web-vitals + typescript). |
 | `AGENTS.md` | Fichier régénéré automatiquement par `next dev` ; contient les règles spécifiques à cette version de Next.js pour les agents IA. Ne pas éditer manuellement son contenu généré. |
 | `CLAUDE.md` | Règles impératives pour les assistants IA et développeurs sur ce projet ; importe `AGENTS.md`. |
-| `prisma/schema.prisma` | Schéma de données : `Tenant`, `Agency`, `User` (`passwordHash`, `role`), `UserAgency`, isolation par `tenantId`/`agencyId` ; `Account`/`Session`/`VerificationToken` pour l'adaptateur NextAuth (OAuth futur, non utilisés pour les sessions actuelles). |
+| `prisma/schema.prisma` | Schéma de données : `Tenant`, `Agency`, `User` (`passwordHash`, `role`), `UserAgency`, `Client`, `Vehicle`, `Location` (Sprint 5), isolation par `tenantId`/`agencyId` ; `Account`/`Session`/`VerificationToken` pour l'adaptateur NextAuth (OAuth futur, non utilisés pour les sessions actuelles). |
 | `src/lib/prisma.ts` | Singleton `PrismaClient`, réutilisé en développement pour éviter l'épuisement de connexions au hot reload Next.js. |
 | `src/lib/db.ts` | Couche d'accès aux données minimale : `getTenantById`, `getAgencyById`, `getUserById`, chacune filtrée par `tenantId` côté serveur. |
 | `src/lib/auth.ts` | Configuration NextAuth v5 : `CredentialsProvider` (email/password, `bcryptjs`), sessions JWT, callbacks `jwt`/`session` (portent `id`/`tenantId`/`role`), exporte `handlers`/`auth`/`signIn`/`signOut`. |
-| `src/lib/authz.ts` | `getSessionUser()` — récupère l'utilisateur de la session courante pour les route handlers ; ne fait aucune vérification de rôle/tenant (à la charge de chaque route). |
+| `src/lib/authz.ts` | `getSessionUser()` — récupère l'utilisateur de la session courante. `canAccessAgency()` (Sprint 5) — vérifie qu'une agence appartient au tenant de l'utilisateur *et* (ADMIN, ou MEMBER rattaché via `UserAgency`) ; centralise une vérification auparavant dupliquée dans les routes/pages agencies. `getAccessibleAgencyIds()` (Sprint 5) — liste des agences accessibles (`null` = toutes, pour un ADMIN). |
 | `src/proxy.ts` | Redirection optimiste vers `/login` pour `/dashboard*`/`/settings*` si non authentifié (lecture du JWT côté cookie uniquement, pas de requête base de données). |
 | `src/app/api/auth/register/route.ts` | Crée un `Tenant` et son premier `User` (`role: "ADMIN"`), mot de passe haché avec `bcryptjs`. |
 | `src/app/api/auth/login/route.ts` | Authentifie via `signIn("credentials", …)`, retourne le même message d'erreur pour mot de passe incorrect et compte inexistant. |
 | `src/app/api/tenants/route.ts`, `[id]/route.ts` | CRUD `Tenant`, réservé aux `ADMIN`, strictement scopé au tenant de l'utilisateur connecté (jamais de liste globale). |
 | `src/app/api/agencies/route.ts`, `[id]/route.ts` | CRUD `Agency`, scopé tenant ; lecture ouverte aux `MEMBER` explicitement rattachés via `UserAgency`, écriture réservée aux `ADMIN`. |
 | `src/app/api/users/route.ts` | (Sprint 4) `GET` — liste les users du tenant, réservé ADMIN, ne sélectionne jamais `passwordHash`. Lecture seule : pas de `PATCH`/`DELETE` (voir [HANDOFF.md](./HANDOFF.md)). |
+| `src/app/api/vehicles/route.ts`, `[id]/route.ts`, `[id]/availability/route.ts` | (Sprint 5) CRUD `Vehicle` + disponibilité, scopé tenant + agence (`canAccessAgency`), immatriculation unique par tenant, suppression bloquée si des locations existent. |
+| `src/app/api/locations/route.ts`, `[id]/route.ts` | (Sprint 5) CRUD `Location`, `agencyId` toujours dérivé du véhicule côté serveur (jamais du client), vérification de disponibilité et calcul de `totalPrice` à la création, machine à états sur `PATCH`, suppression restreinte aux statuts `PENDING`/`CANCELLED`. |
+| `src/app/api/clients/route.ts` | (Sprint 5) `GET`/`POST` — liste/création de `Client`, tenant-scopé, pas de page dashboard dédiée (voir section 4). |
 | `src/app/dashboard/layout.tsx` | (Sprint 4) Server Component : résout la session et le tenant courant, redirige vers `/login` si non authentifié, fournit `DashboardLayout`. |
 | `src/components/layout/DataTable.tsx` | (Sprint 4) Table générique (TanStack Table **v9** — API `useTable`/`tableFeatures`, pas `useReactTable` — voir `node_modules/@tanstack/react-table/skills/migrate-v8-to-v9/`), tri par colonne et pagination, réutilisée par les pages tenants/agencies/users. |
 | `src/lib/api.ts` | (Sprint 4) Wrapper `fetch` pour les appels `/api/*` côté client ; lève `ApiError` avec le message `{ error }` renvoyé par la route. |
 | `src/__tests__/db.test.ts` | Tests Vitest vérifiant qu'`getAgencyById`/`getUserById` ne retournent jamais une ressource d'un autre tenant ; crée puis nettoie ses propres données dans `xrent_test`. |
 | `src/__tests__/auth.test.ts`, `tenants.test.ts`, `agencies.test.ts` | Tests d'intégration HTTP contre un vrai serveur `next dev` de test (voir `vitest.global-setup.ts`) : authentification, CRUD, isolation multi-tenant/multi-agence. |
+| `src/__tests__/vehicles.test.ts`, `locations.test.ts` | (Sprint 5) Tests d'intégration HTTP : CRUD, disponibilité/conflits de réservation, calcul de `totalPrice`, machine à états des locations, isolation multi-tenant/multi-agence. |
 | `src/__tests__/ui.test.tsx` | (Sprint 4) Tests d'intégration HTTP sur le rendu des pages `/login`, `/register`, `/dashboard*` ; voir [TESTREPORT.md](./TESTREPORT.md) pour la note sur `redirect()` en contexte de streaming. |
 
 ## 3. Structure cible indicative (non existante à ce jour)
@@ -166,16 +197,15 @@ D'après les principes produit de démarrage :
 - Tenants (CRUD + UI implémentés, Sprint 3–4)
 - Agences (CRUD + UI implémentés, Sprint 3–4)
 - Utilisateurs et rôles (inscription + rôles `ADMIN`/`MEMBER` implémentés Sprint 3 ; liste en lecture seule Sprint 4 ; modification de rôle, suppression, invitation et granularité fine des permissions restent À DÉCIDER)
-- Véhicules et catégories de véhicules
-- Réservations
-- Contrats
-- Clients
+- Véhicules (CRUD + UI + disponibilité implémentés, Sprint 5 ; catégorie = champ texte libre sur `Vehicle`, pas de modèle `Category` dédié — voir DOMAINRULES.md section 6)
+- Réservations et contrats (fusionnés en un seul modèle `Location` avec machine à états, Sprint 5 — décision explicite, voir HANDOFF.md et DOMAINRULES.md section 7/8)
+- Clients (modèle `Client` minimal implémenté Sprint 5 — nom/email/téléphone, pas de page `/dashboard/clients` dédiée, uniquement sélection/création inline depuis le formulaire de location)
 - Paiements
 - Cautions
 - Incidents (véhicule/location)
 - Audit
 - Export / Import
-- Dashboard-admin (coquille + pages de base implémentées, Sprint 4 ; pas de module métier)
+- Dashboard-admin (coquille + pages de base implémentées, Sprint 4 ; module métier véhicules/locations depuis Sprint 5)
 
 Le détail des règles associées à chaque domaine est en cours de définition dans [DOMAINRULES.md](./DOMAINRULES.md) ; beaucoup de points y sont marqués **À DÉCIDER**.
 

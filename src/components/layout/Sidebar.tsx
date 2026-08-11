@@ -4,6 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Building2,
+  Car,
+  CalendarRange,
   LayoutDashboard,
   Settings,
   Store,
@@ -23,6 +25,8 @@ const navItems: NavItem[] = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
   { href: "/dashboard/tenants", label: "Tenants", icon: Building2 },
   { href: "/dashboard/agencies", label: "Agences", icon: Store },
+  { href: "/dashboard/vehicles", label: "Véhicules", icon: Car },
+  { href: "/dashboard/locations", label: "Locations", icon: CalendarRange },
   { href: "/dashboard/users", label: "Utilisateurs", icon: Users },
   { href: "/dashboard/settings", label: "Paramètres", icon: Settings },
 ];

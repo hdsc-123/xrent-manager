@@ -1,26 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAgencyById } from "@/lib/db";
-import { getSessionUser, type SessionUser } from "@/lib/authz";
+import { getSessionUser, canAccessAgency } from "@/lib/authz";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
-}
-
-/**
- * Un ADMIN a un accès transverse à toutes les agences de son tenant (SECURITY.md
- * section 2) ; un MEMBER doit être explicitement rattaché à l'agence via UserAgency.
- */
-async function canAccessAgency(user: SessionUser, agencyId: string): Promise<boolean> {
-  if (user.role === "ADMIN") {
-    return true;
-  }
-
-  const link = await prisma.userAgency.findUnique({
-    where: { userId_agencyId: { userId: user.id, agencyId } },
-  });
-
-  return link !== null;
 }
 
 export async function GET(_request: Request, { params }: RouteParams) {

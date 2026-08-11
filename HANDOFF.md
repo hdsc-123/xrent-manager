@@ -2,11 +2,21 @@
 
 Document destiné à toute personne (ou assistant IA) reprenant le projet, pour comprendre rapidement où en est XRent Manager sans avoir à relire tout l'historique.
 
-Dernière mise à jour : 2026-08-11 — Sprint 4 (dashboard admin + UI de base) validé : shadcn/ui, pages `/login`/`/register`/`/dashboard/*` (tenants, agences, utilisateurs en lecture seule, paramètres), table TanStack, tests HTTP sur le rendu des pages. Toujours aucun module métier (véhicules, réservations, contrats…).
+Dernière mise à jour : 2026-08-11 — Sprint 5 (premier module métier : véhicules + locations) validé : modèles `Vehicle`/`Location`/`Client`, CRUD API + dashboard complets, disponibilité/conflits de réservation, machine à états, calcul de prix, isolation multi-tenant/multi-agence testée (76/76 tests). Correctif post-Sprint 5 (même date) : devise par défaut changée de `"EUR"` à `"MAD"` (migration `20260811203931_change_default_currency_to_mad`).
 
 ## 1. État actuel
 
-Le projet est au stade **Sprint 4 — dashboard admin et UI de base**. Le dépôt contient désormais, en plus des sprints précédents :
+Le projet est au stade **Sprint 5 — premier module métier (véhicules + locations)**. Le dépôt contient désormais, en plus des sprints précédents :
+
+- `prisma/schema.prisma` : modèles `Client`, `Vehicle`, `Location` + enums `VehicleStatus`/`LocationStatus`, migration `20260811201341_add_vehicle_and_location_models` appliquée sur `xrent_dev` et `xrent_test` ;
+- `src/lib/{vehicles,locations,clients}.ts` : couche métier (CRUD, `checkAvailability`, `calculateTotalPrice`, machine à états `canTransition`), toujours scopée `tenantId` (+ `agencyId` pour véhicules/locations) ;
+- `src/lib/authz.ts` étendu : `canAccessAgency()` et `getAccessibleAgencyIds()`, centralisant une vérification auparavant dupliquée (agencies) et désormais réutilisée par vehicles/locations — **corrige au passage une lacune de sécurité découverte pendant ce sprint, voir section 6** ;
+- routes API `/api/vehicles*` (CRUD + `/[id]/availability`), `/api/locations*` (CRUD), `/api/clients` (liste/création minimale) — toutes vérifient tenant + appartenance à l'agence côté serveur ;
+- pages `/dashboard/vehicles*` et `/dashboard/locations*` (liste avec filtres, création, détail/édition, actions de changement de statut/annulation) branchées sur ces routes ; pas de page `/dashboard/clients` dédiée (sélection/création inline uniquement) ;
+- `src/__tests__/{vehicles,locations}.test.ts` : 30 nouveaux tests (CRUD, disponibilité/conflits, pricing, machine à états, isolation multi-tenant/multi-agence) — 76/76 tests passés au total ;
+- `npm run lint` / `npm run test` / `npm run build` validés ; parcours complet vérifié manuellement contre un serveur `next dev` réel (inscription → agence → véhicule → client → location → pages dashboard), données de test nettoyées après vérification.
+
+### Sprint 4 (rappel)
 
 - shadcn/ui (style `base-nova`, composants `@base-ui/react`) initialisé, composants ajoutés : `button`, `input`, `label`, `card`, `table`, `dialog`, `dropdown-menu`, `avatar`, `badge`, `skeleton`, `sonner` ; ré-exportés depuis `src/components/ui/index.ts` ;
 - `@tanstack/react-table` en version **9** (réécriture majeure vs. v8, voir `node_modules/@tanstack/react-table/skills/migrate-v8-to-v9/SKILL.md`) — `useTable` + `tableFeatures()` (pas `useReactTable`), encapsulé dans `src/components/layout/DataTable.tsx` (tri, pagination) ;
@@ -77,9 +87,35 @@ Le projet est au stade **Sprint 4 — dashboard admin et UI de base**. Le dépô
   - Fuseau horaire d'agence dans `/dashboard/settings` : champ absent du schéma (`Agency.timezone` n'existe pas), donc non affiché — pas de champ fictif ajouté à l'UI.
   - Invitation effective d'un utilisateur dans un tenant existant (bouton présent mais désactivé).
 
+### Sprint 5 — Véhicules et locations (premier module métier)
+
+- **Fait** :
+  - `prisma/schema.prisma` : modèles `Client` (`name`, `email?`, `phone?`, tenant-scopé, sans login), `Vehicle` (`agencyId` requis, `licensePlate` unique par tenant, `category` en texte libre, `status` enum `VehicleStatus`, `pricePerDay`/`currency`), `Location` (fusion réservation+contrat, `status` enum `LocationStatus`, `pricePerDay`/`totalPrice`/`currency`, `notes`) ; migration `20260811201341_add_vehicle_and_location_models` appliquée sur `xrent_dev` et `xrent_test`.
+  - `src/lib/vehicles.ts` : `getVehicles`/`getVehicleById`/`createVehicle`/`updateVehicle`/`deleteVehicle` (bloqué si des locations existent, `VehicleHasLocationsError`), `checkAvailability` (chevauchement strict de périodes, seules `PENDING`/`CONFIRMED`/`ACTIVE` bloquent).
+  - `src/lib/locations.ts` : CRUD, `calculateTotalPrice` (jours arrondis au jour supérieur × `pricePerDay`, snapshot du tarif véhicule à la création), machine à états `canTransition` (`PENDING→CONFIRMED|CANCELLED`, `CONFIRMED→ACTIVE|CANCELLED`, `ACTIVE→COMPLETED|CANCELLED`, `COMPLETED`/`CANCELLED` terminaux), suppression restreinte à `PENDING`/`CANCELLED`.
+  - `src/lib/clients.ts` : `getClients`/`getClientById`/`createClient`, minimal (pas de `update`/`delete` — non nécessaires pour ce sprint).
+  - `src/lib/authz.ts` étendu : `canAccessAgency(user, agencyId)` et `getAccessibleAgencyIds(user)`, centralisant et **renforçant** une vérification déjà présente mais dupliquée pour `agencies` (voir « Déviations » ci-dessous pour la faille corrigée).
+  - Routes API : `GET|POST /api/vehicles`, `GET|PATCH|DELETE /api/vehicles/[id]`, `GET /api/vehicles/[id]/availability`, `GET|POST /api/locations`, `GET|PATCH|DELETE /api/locations/[id]`, `GET|POST /api/clients` — toutes vérifient tenant + appartenance à l'agence côté serveur ; `agencyId` d'une location toujours dérivé du véhicule côté serveur, jamais accepté depuis le client.
+  - Pages dashboard : `/dashboard/vehicles` (liste + filtres statut/catégorie/agence + `VehiclesTable`), `/new`, `/[id]` (édition + tableau des locations associées) ; `/dashboard/locations` (liste + filtres statut/véhicule/client/dates + `LocationsTable` avec action « Annuler »), `/new` (sélection véhicule disponible, vérification de disponibilité en direct, calcul du prix estimé, sélection/création de client inline), `/[id]` (détail + `LocationActions` : transitions de statut affichées selon `canTransition`, édition des notes). Navigation ajoutée dans `Sidebar.tsx`.
+  - `src/lib/format.ts` (`formatMoney`) : utilitaire partagé d'affichage des montants (entiers + devise).
+  - `src/__tests__/vehicles.test.ts` et `locations.test.ts` (30 tests) : CRUD, immatriculation unique, disponibilité/conflits, calcul de prix, machine à états, isolation multi-tenant **et** multi-agence — 76/76 tests passés au total (voir [TESTREPORT.md](./TESTREPORT.md)).
+  - `npm run lint` / `npm run test` / `npm run build` validés ; parcours complet vérifié manuellement contre un serveur `next dev` réel (inscription → agence → véhicule → client → location → 6 pages dashboard, toutes en 200), données de test nettoyées après vérification.
+- **Décisions prises pendant ce sprint** (validées explicitement par le propriétaire du projet avant implémentation, voir section 6) :
+  - `Location` fusionne réservation et contrat en une seule entité (au lieu de deux modèles séparés envisagés dans DOMAINRULES.md section 7/8).
+  - Modèle `Client` distinct de `User` (le locataire externe n'est pas un compte staff avec identifiants de connexion).
+  - `Vehicle.agencyId` obligatoire (pas de véhicule multi-agence ni sans agence).
+  - Colonne `currency` (défaut `"MAD"`, changé depuis `"EUR"` peu après le Sprint 5 — voir section 6) ajoutée à côté de chaque montant, en cohérence avec la règle déjà validée en Sprint 1 (ARCHITECTURE.md), malgré l'absence de décision multi-devises définitive.
+- **Faille de sécurité détectée et corrigée pendant ce sprint** (avant tout déploiement, révélée par un test d'isolation) : `canAccessAgency` ne vérifiait initialement que le rôle (`ADMIN` → accès accordé) sans jamais vérifier que l'agence ciblée appartenait bien au tenant de l'utilisateur. Un `ADMIN` du tenant A aurait pu, en fournissant un `agencyId` du tenant B, créer un véhicule ou une location rattachés à l'agence d'un autre tenant. Corrigé en ajoutant une vérification `agency.tenantId === user.tenantId` en tête de la fonction (`src/lib/authz.ts`) avant toute logique de rôle. Les routes `agencies/[id]` existantes n'étaient pas exploitables (elles vérifiaient déjà le tenant via `getAgencyById` avant d'appeler `canAccessAgency`), mais en bénéficient désormais aussi de façon défensive. Voir [TESTREPORT.md](./TESTREPORT.md) pour le test qui a révélé le problème.
+- **Décision de granularité de rôle (provisoire, à confirmer explicitement)** : un `MEMBER` rattaché à une agence via `UserAgency` peut créer/modifier/supprimer les véhicules et locations de cette agence (pas seulement les consulter) — contrairement à `Tenant`/`Agency` où l'écriture reste réservée à `ADMIN`. Voir [DOMAINRULES.md](./DOMAINRULES.md) section 4 et section 8 point 21 ci-dessous.
+- **Non traité, hors périmètre explicite du sprint** :
+  - Page `/dashboard/clients` dédiée (recherche, historique, modification, fusion de doublons) — uniquement sélection/création inline depuis le formulaire de location.
+  - Modèle `Category` dédié pour les véhicules — `category` reste un champ texte libre sur `Vehicle`.
+  - Paiements, cautions, incidents de location, contenu détaillé de contrat (conditions générales, franchise) — toujours hors périmètre.
+  - Gestion de la maintenance et de l'historique kilométrique des véhicules.
+
 Le dépôt est un dépôt git (branche `main`) avec un commit initial : `e673184` — "chore: initialize XRent Manager project". Le remote `origin` est configuré vers le dépôt GitHub privé `https://github.com/hdsc-123/xrent-manager.git`, et `main` est synchronisée avec `origin/main`. Le tag `v0.1.0` a été créé et envoyé, correspondant au socle initial.
 
-Les principes d'architecture validés lors du Sprint 1 (voir section 6) sont désormais **largement implémentés** : socle de données, authentification, autorisation serveur (tenant/agence/rôle) en place ; audit et tout module métier restent non implémentés (voir section 3).
+Les principes d'architecture validés lors du Sprint 1 (voir section 6) sont désormais **largement implémentés** : socle de données, authentification, autorisation serveur (tenant/agence/rôle), montants financiers en entiers + devise, et un premier module métier (véhicules, locations) en place ; l'audit et les modules paiements/cautions/incidents restent non implémentés (voir section 3).
 
 ## 2. Ce qui est terminé
 
@@ -99,10 +135,13 @@ Les principes d'architecture validés lors du Sprint 1 (voir section 6) sont dé
 - Validation de `npm run lint`, `npm run test` et `npm run build` après ces ajouts.
 - **Sprint 3** : authentification NextAuth.js v5 (sessions JWT), champs `passwordHash`/`role` sur `User`, migration `add_nextauth_models_and_user_auth_fields` appliquée sur `xrent_dev` et `xrent_test`, routes `/api/auth/*`, CRUD `/api/tenants*` et `/api/agencies*` scopés serveur, `src/proxy.ts`, tests d'intégration HTTP (37/37 passés) — voir la section Sprint 3 ci-dessus et [TESTREPORT.md](./TESTREPORT.md).
 - **Sprint 4** : shadcn/ui + TanStack Table v9 + lucide-react, pages `/login`/`/register`/`/dashboard` (+ `tenants`, `agencies`, `users` en lecture seule, `settings`), coquille dashboard (Sidebar/Header/DashboardLayout), `GET /api/users`, `src/lib/api.ts`, `src/hooks/{useUser,useTenant}.ts`, tests d'intégration HTTP sur le rendu des pages (46/46 passés au total) — voir la section Sprint 4 ci-dessus et [TESTREPORT.md](./TESTREPORT.md).
+- **Sprint 5** : modèles `Client`/`Vehicle`/`Location`, CRUD API + dashboard complets (véhicules, locations), disponibilité/conflits de réservation, machine à états, calcul de prix (`totalPrice`), `src/lib/{vehicles,locations,clients,format}.ts`, extension de `src/lib/authz.ts` (`canAccessAgency`/`getAccessibleAgencyIds`, avec correction d'une faille de vérification tenant), 76/76 tests passés au total — voir la section Sprint 5 ci-dessus et [TESTREPORT.md](./TESTREPORT.md).
 
 ## 3. Ce qui n'est pas commencé
 
-- Tout module métier (véhicules, catégories, réservations, contrats, clients, paiements, cautions, incidents de location).
+- Paiements, cautions, incidents de location, contenu détaillé de contrat (conditions générales, franchise, kilométrage inclus).
+- Modèle `Category` dédié pour les véhicules (reste un champ texte libre sur `Vehicle`) ; page `/dashboard/clients` dédiée (recherche, historique, fusion de doublons).
+- Gestion de la maintenance et de l'historique kilométrique des véhicules.
 - Modification de rôle et suppression d'utilisateurs, invitation effective dans un tenant existant (voir section 8, points 2 et 17) — `/dashboard/users` est volontairement en lecture seule (Sprint 4).
 - Édition du profil utilisateur (nom, email, mot de passe) — aucune route de mutation du profil n'existe encore.
 - Limitation du nombre de tentatives de connexion, réinitialisation de mot de passe, MFA (voir [SECURITY.md](./SECURITY.md) section 3).
@@ -114,17 +153,17 @@ Les principes d'architecture validés lors du Sprint 1 (voir section 6) sont dé
 
 ## 4. Prochaine action recommandée
 
-L'authentification, l'autorisation serveur (tenant/agence/rôle), le CRUD `Tenant`/`Agency` et une UI dashboard de base étant en place (Sprints 3–4), la prochaine étape reste conditionnée par les décisions encore ouvertes (section 8) — en particulier le périmètre exact du MVP et le premier module métier à construire (véhicules ? réservations ?), ainsi que le flux d'invitation/gestion d'utilisateurs dans un tenant existant (nécessaire pour sortir `/dashboard/users` de son mode lecture seule). Conformément à [CLAUDE.md](./CLAUDE.md), aucun code métier ou dépendance supplémentaire ne doit être ajouté sans validation explicite distincte de celle de ce sprint.
+Le premier module métier (véhicules + locations) étant en place (Sprint 5), avec authentification, autorisation serveur (tenant/agence/rôle) et CRUD `Tenant`/`Agency`/`Vehicle`/`Location` (Sprints 3–5), la prochaine étape reste conditionnée par les décisions encore ouvertes (section 8) — en particulier : confirmer ou ajuster la granularité de rôle provisoire (MEMBER peut gérer véhicules/locations de son agence, point 21), le prochain module métier à construire (clients à part entière ? paiements ? cautions ?), et le flux d'invitation/gestion d'utilisateurs dans un tenant existant. Conformément à [CLAUDE.md](./CLAUDE.md), aucun code métier ou dépendance supplémentaire ne doit être ajouté sans validation explicite distincte de celle de ce sprint.
 
 ## 5. Commandes déjà validées
 
 | Commande | Statut | Résultat observé |
 |---|---|---|
 | `npm run lint` | ✅ Validé | Aucune erreur ESLint |
-| `npm run test` | ✅ Validé | 46/46 tests passés (Vitest) — isolation multi-tenant/multi-agence, authentification, CRUD, rendu des pages UI, aucune donnée résiduelle après nettoyage |
-| `npm run build` | ✅ Validé | Build de production réussi (Turbopack, Next.js 16.3.0), TypeScript strict sans erreur, 11 routes API + 9 pages `/dashboard/*` + `/login`/`/register` + Proxy |
+| `npm run test` | ✅ Validé | 76/76 tests passés (Vitest) — isolation multi-tenant/multi-agence, authentification, CRUD (tenants/agencies/vehicles/locations), disponibilité/conflits, pricing, machine à états, rendu des pages UI, aucune donnée résiduelle après nettoyage |
+| `npm run build` | ✅ Validé | Build de production réussi (Turbopack, Next.js 16.3.0), TypeScript strict sans erreur, 17 routes API + 15 pages `/dashboard/*` + `/login`/`/register` + Proxy |
 
-Aucune commande de migration de production, de seed ou de déploiement n'a été exécutée à ce jour.
+Migrations de développement appliquées via `npx prisma migrate dev` (sur `xrent_dev`) puis répercutées sur `xrent_test` via `npx prisma migrate deploy` — jamais l'inverse, et jamais de commande interactive/destructive en production (aucun environnement de production n'existe à ce jour). Aucune commande de seed n'a été exécutée à ce jour.
 
 ## 6. Décisions prises
 
@@ -141,8 +180,8 @@ Principes d'architecture validés (Sprint 1, 2026-08-11) — détail complet dan
 - Isolation multi-tenant par `tenant_id` dans des tables partagées ; rattachement aux agences par `agency_id` — **implémenté au niveau schéma et couche d'accès aux données (Sprint 2)**, pas encore au niveau d'actions/routes serveur (aucune n'existe).
 - Couche d'accès aux données centralisée, avec garde tenant/agence obligatoire — **implémentée (Sprint 2–3)** : `src/lib/db.ts` (`getTenantById`, `getAgencyById`, `getUserById`) réutilisée par les routes `/api/agencies*` ; les routes `/api/tenants*` interrogent Prisma directement avec un filtrage `tenantId`/`id` explicite (pas encore consolidé dans `src/lib/db.ts` — écarts mineurs à corriger si `db.ts` devient le point d'entrée unique imposé pour l'écriture aussi).
 - Validation côté serveur systématique de l'identité, du rôle, du tenant, de l'agence et de l'appartenance de la ressource — **implémenté (Sprint 3)** : `src/lib/authz.ts` (`getSessionUser`) + vérifications explicites dans chaque route (`src/app/api/tenants/**`, `src/app/api/agencies/**`), testées par `tenants.test.ts`/`agencies.test.ts`.
-- Montants financiers en entiers, exprimés dans la plus petite unité monétaire, avec devise stockée explicitement à côté de chaque montant — non implémenté (aucun modèle financier à ce jour).
-- Dates stockées en UTC, affichées selon le fuseau horaire de l'agence — non implémenté (aucun champ de fuseau horaire sur `Agency` à ce jour, voir section 8).
+- Montants financiers en entiers, exprimés dans la plus petite unité monétaire, avec devise stockée explicitement à côté de chaque montant — **implémenté (Sprint 5)** : `Vehicle.pricePerDay`/`Location.pricePerDay`/`Location.totalPrice` (entiers, centimes) + `currency` (défaut `"MAD"`, provisoire — voir section 8 point 3).
+- Dates stockées en UTC, affichées selon le fuseau horaire de l'agence — **partiellement implémenté (Sprint 5)** : `Location.startDate`/`endDate` stockées en UTC (type `DateTime` Prisma/Postgres) ; toujours pas de conversion à l'affichage selon un fuseau d'agence (`Agency.timezone` n'existe toujours pas, voir section 8).
 - Environnements développement, test, staging et production strictement séparés — partiellement respecté : développement (`xrent_dev`) et test (`xrent_test`) sont désormais deux bases distinctes ; staging et production restent non définis (voir section 8).
 - Table d'audit dédiée comme mécanisme technique de traçabilité — non implémentée, toujours hors périmètre.
 - Exports et imports validés côté serveur et scopés par tenant — non implémenté (aucun export/import n'existe).
@@ -162,6 +201,15 @@ Décisions techniques Sprint 4 (2026-08-11), validées par le propriétaire du p
 - **`/dashboard/users` en lecture seule pour ce sprint** : demandé lors du cadrage initial avec actions modifier/supprimer/changer le rôle, mais aucune route API `PATCH`/`DELETE /api/users/[id]` n'existait et la granularité des permissions reste explicitement À DÉCIDER (section 8, point 2) ; le propriétaire du projet a tranché en faveur d'une liste en lecture seule (nouvelle route `GET /api/users`, ADMIN uniquement) plutôt que de construire une logique de gestion des rôles/suppression sans validation dédiée — voir aussi point 17 ci-dessous.
 - Édition du profil utilisateur (nom/email/mot de passe) dans `/dashboard/settings` : non construite, pour la même raison (aucune route de mutation existante, changement de mot de passe = sujet de sécurité nécessitant sa propre validation) — affichage en lecture seule avec message explicite plutôt qu'un formulaire non fonctionnel.
 
+Décisions techniques Sprint 5 (2026-08-11), validées par le propriétaire du projet **avant** implémentation (via questions explicites, conformément à CLAUDE.md section 8) :
+
+- `Location` fusionne réservation et contrat en un seul modèle avec cycle de statuts, plutôt que deux entités séparées.
+- Locataire modélisé par un nouveau modèle `Client` (nom/email/téléphone, sans login), distinct de `User` (comptes staff).
+- `Vehicle.agencyId` obligatoire (un véhicule appartient à exactement une agence).
+- Colonne `currency` ajoutée à côté de chaque montant (`Vehicle.pricePerDay`, `Location.pricePerDay`/`totalPrice`), valeur par défaut `"EUR"` initialement pour ce sprint, **puis changée en `"MAD"` (Dirham marocain)** peu après sur demande explicite du propriétaire du projet — migration `20260811203931_change_default_currency_to_mad` (`ALTER COLUMN ... SET DEFAULT`, sans effet rétroactif sur les enregistrements déjà créés), appliquée sur `xrent_dev` et `xrent_test` ; labels UI « Prix / jour (€) » corrigés en « Prix / jour (MAD) » (`/dashboard/vehicles/new`, `EditVehicleForm.tsx`) et assertions de test mises à jour (`vehicles.test.ts`, `locations.test.ts`). Devise réellement supportée en production (multi-devises) toujours À DÉCIDER (section 8, point 3/22).
+- **Décision non soumise à validation préalable, prise en cours d'implémentation et documentée a posteriori** : granularité de rôle pour véhicules/locations — un `MEMBER` rattaché à une agence peut créer/modifier/supprimer (pas seulement lire) les véhicules et locations de cette agence, contrairement au modèle `Tenant`/`Agency` où l'écriture reste ADMIN uniquement. Choix pragmatique cohérent avec le modèle `UserAgency` déjà validé, mais **à confirmer explicitement** — voir section 8, point 21.
+- **Correction de sécurité, pas une décision produit** : `canAccessAgency` vérifie désormais que l'agence appartient au tenant de l'utilisateur avant toute logique de rôle (voir section « Sprint 5 » ci-dessus pour le détail de la faille corrigée).
+
 Décisions techniques encore ouvertes : voir section 8.
 
 ## 7. Risques identifiés
@@ -170,6 +218,8 @@ Décisions techniques encore ouvertes : voir section 8.
 - **Sessions JWT non révocables côté serveur** : la déconnexion efface le cookie mais un jeton déjà émis reste valide jusqu'à expiration (pas de table de sessions consultée à chaque requête). Acceptable pour ce sprint, mais à réévaluer si un besoin de révocation immédiate apparaît (ex. compromission de compte) — voir [SECURITY.md](./SECURITY.md) section 5.
 - **Aucune limitation des tentatives de connexion** : `/api/auth/login` n'implémente aucun rate-limiting — risque de brute force, à traiter avant mise en production (voir [SECURITY.md](./SECURITY.md) section 3).
 - **Aucune stratégie de gestion des paiements/cautions définie** : à trancher avant tout développement du module paiement, en particulier le choix d'un prestataire évitant le stockage de données de carte bancaire en clair.
+- **Devise `"MAD"` codée en dur par défaut (Sprint 5, changée depuis `"EUR"`)** : `Vehicle`/`Location` ont un champ `currency` mais toute création actuelle utilise `"MAD"` par défaut faute de décision multi-devises tranchée (voir section 8, point 3) — à revoir avant d'onboarder un tenant hors zone MAD (le champ existe justement pour permettre EUR, USD, etc. sans nouvelle migration).
+- **Granularité de rôle véhicules/locations non validée formellement** : un `MEMBER` rattaché à une agence peut aujourd'hui créer/modifier/supprimer les véhicules et locations de cette agence (voir section 6, décisions Sprint 5) — décision pragmatique prise en cours d'implémentation, pas explicitement validée au préalable comme l'exige CLAUDE.md section 8 pour la logique métier ; à confirmer ou ajuster avec le propriétaire du projet (section 8, point 21).
 
 ## 8. Points à valider avec le propriétaire du projet
 
@@ -195,5 +245,8 @@ Les points suivants restent explicitement **À DÉCIDER**. Détail dans [DOMAINR
 18. **Nouveau (Sprint 3)** : durée d'expiration de session souhaitée (actuellement la valeur par défaut de NextAuth, 30 jours) et politique de complexité de mot de passe au-delà de la longueur minimale (8 caractères).
 19. **Nouveau (Sprint 4)** : conception des routes `PATCH`/`DELETE /api/users/[id]` (changement de rôle, suppression) nécessaires pour sortir `/dashboard/users` de son mode lecture seule — dépend du point 2 (granularité des rôles) et doit inclure la prévention d'auto-rétrogradation/auto-suppression du dernier ADMIN d'un tenant.
 20. **Nouveau (Sprint 4)** : route(s) de mutation du profil utilisateur courant (nom, email, changement de mot de passe) — actuellement absentes ; le changement de mot de passe en particulier nécessite une décision explicite sur la vérification du mot de passe actuel et l'éventuelle invalidation des sessions JWT existantes (voir section 7, sessions non révocables).
+21. **Nouveau (Sprint 5)** : confirmer (ou ajuster) la décision provisoire selon laquelle un `MEMBER` rattaché à une agence peut créer/modifier/supprimer les véhicules et locations de cette agence (pas seulement les consulter) — voir section 6 et section 7. À trancher avant d'étendre ce pattern à d'autres modules métier.
+22. **Nouveau (Sprint 5, mis à jour)** : devise(s) réellement supportée(s) en production (le champ `currency` existe, mais `"MAD"` est actuellement codé en dur comme valeur par défaut à la création, changé depuis `"EUR"`) — précise le point 3 ci-dessus.
+23. **Nouveau (Sprint 5)** : un module `Client` à part entière (page dédiée, recherche, historique de locations, fusion de doublons, documents d'identité/permis) est-il nécessaire, ou le modèle minimal actuel (sélection/création inline) suffit-il pour la suite du MVP ?
 
 Framework de test : **tranché** (Vitest, voir section 2) — les outils e2e et de test de charge restent À DÉCIDER.

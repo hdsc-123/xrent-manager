@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Un framework de test (Vitest) est installé depuis le Sprint 2 et couvre l'isolation multi-tenant de la couche d'accès aux données ; ce document ne doit toutefois pas être lu comme la preuve d'une couverture de test métier, qui reste actuellement **nulle** (aucun module métier n'existe).
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Un framework de test (Vitest) est installé depuis le Sprint 2 et couvre l'isolation multi-tenant de la couche d'accès aux données ; depuis le Sprint 5, il couvre également le premier module métier (véhicules, locations) — voir section 3.
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -17,15 +17,19 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 | 2026-08-11 | `npm run lint` (Sprint 4, dashboard admin + UI) | ✅ Validé | Aucune erreur ESLint |
 | 2026-08-11 | `npm run build` (Sprint 4) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; nouvelle route API `/api/users` (GET) + 9 pages `/dashboard/*` + `/login` + `/register` compilées |
 | 2026-08-11 | `npm run test` (Vitest, Sprint 4) | ✅ Validé | 46/46 tests passés sur 5 fichiers (ajout de `ui.test.tsx`), voir section 3 « Tests UI (Sprint 4) » |
+| 2026-08-11 | `npm run lint` (Sprint 5, véhicules + locations) | ✅ Validé | Aucune erreur ESLint (dont une correction du pattern de fetch/chargement dans `dashboard/locations/new/page.tsx` pour respecter la règle `react-hooks/set-state-in-effect` du React Compiler) |
+| 2026-08-11 | `npm run build` (Sprint 5) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; nouvelles routes API `/api/vehicles*`, `/api/locations*`, `/api/clients` + 6 nouvelles pages `/dashboard/vehicles*`/`/dashboard/locations*` compilées |
+| 2026-08-11 | `npm run test` (Vitest, Sprint 5) | ✅ Validé | 76/76 tests passés sur 7 fichiers (ajout de `vehicles.test.ts` et `locations.test.ts`), voir section 3 « Tests métier véhicules et locations (Sprint 5) » |
+| 2026-08-11 | `npm run lint` / `npm run test` / `npm run build` (changement de devise par défaut EUR → MAD) | ✅ Validé | Aucune régression : 76/76 tests toujours passés après migration `20260811203931_change_default_currency_to_mad` et mise à jour des assertions `currency` dans `vehicles.test.ts`/`locations.test.ts` |
 
-**Aucun test métier n'est disponible à ce jour**, pour la raison simple qu'aucun module métier n'existe encore dans le code (voir [HANDOFF.md](./HANDOFF.md) et [PROJECT_MAP.md](./PROJECT_MAP.md)). En revanche, la couche d'accès aux données technique (`src/lib/db.ts`), l'authentification et le CRUD tenants/agences disposent désormais de tests d'isolation multi-tenant et multi-agence.
+**Premier test métier disponible depuis le Sprint 5** (véhicules, locations) — jusqu'ici, aucun module métier n'existait dans le code (voir [HANDOFF.md](./HANDOFF.md) et [PROJECT_MAP.md](./PROJECT_MAP.md)). La couche d'accès aux données technique (`src/lib/db.ts`), l'authentification, le CRUD tenants/agences et désormais véhicules/locations disposent de tests d'isolation multi-tenant et multi-agence.
 
 ## 2. Tests disponibles et non encore disponibles
 
 - Framework installé : **Vitest** (`npm run test`), choisi en Sprint 2 pour sa compatibilité native avec TypeScript/ESM et Next.js 16.
 - Base de test dédiée : **`xrent_test`**, distincte de `xrent_dev`. `vitest.config.mts` charge `DATABASE_URL` depuis `.env.test` via `loadEnv` de Vite (mode `test`) ; la migration `init_tenant_agency_user` y est appliquée via `prisma migrate deploy`.
-- Test disponible : isolation multi-tenant de la couche d'accès aux données (`src/__tests__/db.test.ts`), voir section 3 « Tests multi-tenant ».
-- Non encore disponible : tests métier, de permission, de concurrence, de charge, de sécurité (OWASP WSTG) ou de régression — aucun module métier ni authentification n'existe encore pour les motiver.
+- Tests disponibles : isolation multi-tenant de la couche d'accès aux données (`src/__tests__/db.test.ts`, section 3 « Tests multi-tenant ») ; tests métier véhicules/locations depuis le Sprint 5 (section 3 « Tests métier véhicules et locations (Sprint 5) »).
+- Non encore disponible : tests de concurrence, de charge, de sécurité (OWASP WSTG) ou de régression.
 
 ## 3. Stratégie future de tests
 
@@ -45,7 +49,7 @@ Cibleront les interactions entre la logique serveur et la future couche d'accès
 Cibleront les parcours utilisateurs complets (ex. création d'une réservation jusqu'à la signature d'un contrat), notamment en mobile-first. Aucun test end-to-end n'existe à ce jour.
 
 ### Tests métier
-Vérifieront le respect des règles définies dans [DOMAINRULES.md](./DOMAINRULES.md) au fur et à mesure qu'elles seront tranchées et implémentées — en particulier les règles déjà validées de représentation des montants (section 14) et des dates (section 15), premières candidates pour des tests unitaires dès leur implémentation. Aucun test métier n'existe à ce jour.
+Vérifient le respect des règles définies dans [DOMAINRULES.md](./DOMAINRULES.md) au fur et à mesure qu'elles sont tranchées et implémentées — en particulier les règles de représentation des montants (section 14) et des dates (section 15). Premier module couvert au Sprint 5 (véhicules, locations) — voir « Tests métier véhicules et locations (Sprint 5) » ci-dessous.
 
 ### Tests de permissions
 Vérifieront qu'un utilisateur ne peut jamais accéder à une action ou une ressource hors de son rôle. Aucun test de permission n'existe à ce jour.
@@ -83,6 +87,27 @@ Couverture :
 - `GET /api/users` : 401 sans session, 403 pour un MEMBER, 200 avec la liste du tenant pour un ADMIN — et vérifie explicitement que `passwordHash` n'est jamais présent dans la réponse.
 
 **Point technique découvert pendant ce sprint** (breaking change vs. connaissances par défaut sur Next.js, cf. AGENTS.md) : `redirect()` appelé depuis un Server Component (pas depuis `src/proxy.ts`) ne renvoie **pas** un vrai 307 HTTP lorsque la route est en contexte de streaming (ex. présence d'un `loading.tsx` sur le segment) — il renvoie un 200 contenant une balise `<meta http-equiv="refresh">`, conformément à `node_modules/next/dist/docs/01-app/03-api-reference/04-functions/redirect.md`. Vérifié empiriquement : le code situé après l'appel à `redirect()` ne s'exécute bien jamais (pas de fuite de données), seul le mécanisme de transport du redirect change. Les tests de ce fichier vérifient donc le contenu de la balise meta plutôt qu'un code de statut 307/308 pour les redirections émises depuis une page, et distinguent ce cas de celui de `src/proxy.ts` (vrai 307, avant tout rendu).
+
+### Tests métier véhicules et locations (Sprint 5)
+
+`src/__tests__/vehicles.test.ts` et `src/__tests__/locations.test.ts` prolongent l'approche « intégration HTTP réelle contre un vrai serveur `next dev` de test » des fichiers précédents.
+
+Couverture `vehicles.test.ts` :
+- CRUD complet (`POST`/`GET`/`PATCH`/`DELETE /api/vehicles*`), immatriculation unique par tenant (409 en cas de doublon).
+- Isolation multi-tenant (404 sur un véhicule d'un autre tenant) **et** multi-agence (403 pour un MEMBER non rattaché à l'agence du véhicule, 200/201 une fois rattaché via `UserAgency`).
+- **Régression de sécurité détectée et corrigée pendant ce sprint** : `canAccessAgency` (`src/lib/authz.ts`) autorisait initialement un ADMIN à agir sur une agence de *n'importe quel* tenant (elle ne vérifiait que le rôle, jamais que l'agence appartenait au tenant de l'utilisateur) — un test (« refuse une agence appartenant à un autre tenant ») a révélé le problème avant tout déploiement ; corrigé en ajoutant une vérification `agency.tenantId === user.tenantId` en tête de la fonction, ce qui renforce au passage `agencies/[id]/route.ts` de façon strictement défensive (comportement inchangé, car ces routes vérifiaient déjà le tenant en amont via `getAgencyById`).
+- Suppression bloquée (409) pour un véhicule ayant au moins une location, quel qu'en soit le statut (règle explicite de l'énoncé du sprint).
+- Disponibilité (`GET /api/vehicles/[id]/availability`) : disponible en l'absence de location, conflit détecté sur chevauchement, pas de conflit sur des périodes adjacentes (chevauchement strict, voir DOMAINRULES.md section 7).
+
+Couverture `locations.test.ts` :
+- Création : validation `endDate > startDate` (400), isolation multi-tenant sur `vehicleId`/`clientId` (404), calcul `totalPrice = pricePerDay × jours` avec arrondi au jour supérieur, statut `PENDING` par défaut, devise reprise du véhicule (`EUR`).
+- Conflits de réservation : 409 avec `conflictingLocations` sur chevauchement, 201 sur période strictement adjacente.
+- Contrôle de rôle : 403 pour un MEMBER non rattaché à l'agence du véhicule.
+- Machine à états (`PATCH /api/locations/[id]`) : transition valide acceptée (`PENDING → CONFIRMED`), transition invalide refusée (409, ex. `PENDING → COMPLETED`), recalcul de `totalPrice` lors d'un changement de dates.
+- Suppression : autorisée pour `PENDING`/`CANCELLED`, refusée (409) pour tout autre statut — un test vérifie explicitement le parcours « refus sur CONFIRMED → annulation via PATCH → suppression acceptée après annulation ».
+- Isolation multi-tenant sur `GET`/`PATCH /api/locations/[id]` (404 sur une ressource d'un autre tenant).
+
+Limite connue, partagée avec les autres suites HTTP : dépendance à un serveur `next dev` démarré pour la durée de la suite (port 3811).
 
 ### Tests de concurrence
 Vérifieront le comportement du système en cas d'accès concurrent à une même ressource (ex. deux réservations simultanées sur le même véhicule). Aucun test de concurrence n'existe à ce jour.

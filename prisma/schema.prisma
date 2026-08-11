@@ -14,8 +14,11 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  agencies Agency[]
-  users    User[]
+  agencies  Agency[]
+  users     User[]
+  vehicles  Vehicle[]
+  locations Location[]
+  clients   Client[]
 }
 
 model Agency {
@@ -28,6 +31,8 @@ model Agency {
 
   tenant       Tenant       @relation(fields: [tenantId], references: [id])
   userAgencies UserAgency[]
+  vehicles     Vehicle[]
+  locations    Location[]
 
   @@unique([tenantId, slug])
   @@index([tenantId])
@@ -63,6 +68,94 @@ model UserAgency {
 
   @@unique([userId, agencyId])
   @@index([agencyId])
+}
+
+// Client représente un locataire externe (personne qui loue un véhicule),
+// distinct de User (compte staff du tenant, avec identifiants de connexion) —
+// décision explicite Sprint 5, voir HANDOFF.md.
+model Client {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  email     String?
+  phone     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id])
+  locations Location[]
+
+  @@index([tenantId])
+}
+
+enum VehicleStatus {
+  AVAILABLE
+  RENTED
+  MAINTENANCE
+  INACTIVE
+}
+
+model Vehicle {
+  id           String        @id @default(cuid())
+  tenantId     String
+  agencyId     String
+  name         String
+  licensePlate String
+  make         String
+  model        String
+  year         Int
+  category     String
+  status       VehicleStatus @default(AVAILABLE)
+  pricePerDay  Int
+  currency     String        @default("MAD")
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id])
+  agency    Agency     @relation(fields: [agencyId], references: [id])
+  locations Location[]
+
+  @@unique([tenantId, licensePlate])
+  @@index([tenantId])
+  @@index([agencyId])
+  @@index([status])
+}
+
+enum LocationStatus {
+  PENDING
+  CONFIRMED
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+model Location {
+  id          String         @id @default(cuid())
+  tenantId    String
+  agencyId    String
+  vehicleId   String
+  clientId    String
+  startDate   DateTime
+  endDate     DateTime
+  status      LocationStatus @default(PENDING)
+  pricePerDay Int
+  totalPrice  Int
+  currency    String         @default("MAD")
+  notes       String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  agency  Agency  @relation(fields: [agencyId], references: [id])
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id])
+  client  Client  @relation(fields: [clientId], references: [id])
+
+  @@index([tenantId])
+  @@index([agencyId])
+  @@index([vehicleId])
+  @@index([clientId])
+  @@index([status])
+  @@index([startDate, endDate])
 }
 
 // Modèles NextAuth (Auth.js) requis par @auth/prisma-adapter.
