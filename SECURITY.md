@@ -16,8 +16,11 @@ Ce document définit les règles de sécurité de XRent Manager. Aucun mécanism
 
 ## 3. Authentification
 
-- Aucune authentification n'existe à ce jour.
-- Quel que soit le mécanisme retenu (voir [ARCHITECTURE.md](./ARCHITECTURE.md) — À DÉCIDER), il devra à minima : résister au brute force (limitation du nombre de tentatives), ne jamais exposer d'information permettant de distinguer un compte existant d'un compte inexistant lors d'un échec de connexion, et proposer un mécanisme de récupération de compte qui ne compromette pas la sécurité (pas de question secrète faible, pas de lien de réinitialisation non expirant).
+**Implémenté (Sprint 3)** : NextAuth.js (Auth.js) v5, avec un unique fournisseur `CredentialsProvider` (email/password, pas d'OAuth à ce stade — décision explicite du propriétaire du projet). Les mots de passe sont hashés avec `bcryptjs` (`src/app/api/auth/register/route.ts`), jamais stockés ni retournés en clair (voir section 10).
+
+- `src/app/api/auth/login/route.ts` renvoie systématiquement le même message d'erreur (« Identifiants invalides. », HTTP 401) pour un mot de passe incorrect et pour un email inexistant — vérifié par test (`src/__tests__/auth.test.ts`), conformément à l'exigence de ne pas distinguer un compte existant d'un compte inexistant.
+- **Non implémenté** : limitation du nombre de tentatives (protection brute force), mécanisme de récupération de compte (mot de passe oublié), MFA — tous **À DÉCIDER**, à traiter avant mise en production.
+- **Limite structurelle connue** : `User.email` n'est unique que par tenant (`@@unique([tenantId, email])`, pas globalement). La connexion (`/api/auth/login`) résout l'utilisateur par email seul (`findFirst`) : en cas d'email identique dans deux tenants différents, ce lookup est ambigu (retourne arbitrairement l'un des deux). Aucun mécanisme de résolution du tenant à la connexion (sous-domaine, sélection explicite, etc.) n'existe — **À DÉCIDER**, voir aussi [HANDOFF.md](./HANDOFF.md) section 8.
 
 ## 4. Autorisation côté serveur
 
@@ -26,8 +29,12 @@ Ce document définit les règles de sécurité de XRent Manager. Aucun mécanism
 
 ## 5. Gestion des sessions
 
-- Aucun mécanisme de session n'existe à ce jour.
-- Exigences à respecter lors de l'implémentation (À DÉCIDER dans le détail) : expiration de session raisonnable, invalidation de session à la déconnexion et au changement de mot de passe, protection des cookies de session (`HttpOnly`, `Secure`, `SameSite` approprié).
+**Implémenté (Sprint 3)** : sessions **JWT** (cookie chiffré, signé avec `AUTH_SECRET`), pas de sessions "database". Ce choix n'est pas arbitraire : NextAuth v5 lève une erreur au runtime (`UnsupportedStrategy`, vérifié dans `node_modules/@auth/core/lib/utils/assert.js`) si `CredentialsProvider` est combiné avec `session.strategy: "database"` — les deux décisions initiales du Sprint 3 (sessions database + login email/password) étaient techniquement incompatibles ; la stratégie JWT a été retenue après validation explicite du propriétaire du projet.
+
+- Cookie posé par NextAuth (`authjs.session-token`, `HttpOnly`, `SameSite=lax`, `Secure` en HTTPS) — configuration par défaut de la librairie, non personnalisée.
+- Déconnexion (`POST /api/auth/logout`) : efface le cookie côté serveur (`Max-Age=0`), vérifié par test. **Limite connue des sessions JWT (stateless)** : un jeton déjà émis reste cryptographiquement valide jusqu'à son expiration même après "déconnexion" ou changement de mot de passe, puisqu'il n'existe pas de table de sessions consultée à chaque requête pour le révoquer — seule la suppression du cookie côté client est garantie. Une éventuelle révocation serveur (ex. liste de blocage, passage à des sessions database avec un flux de connexion custom) reste **À DÉCIDER** si ce risque devient inacceptable.
+- Les modèles `Account`/`Session`/`VerificationToken` de l'adaptateur Prisma (`@auth/prisma-adapter`) sont présents dans le schéma pour permettre l'ajout futur de fournisseurs OAuth sans nouvelle migration, mais la table `Session` n'est pas utilisée pour les connexions par mot de passe actuelles.
+- Expiration de session par défaut de NextAuth (30 jours) — non personnalisée à ce stade, **À DÉCIDER** si une durée plus courte est nécessaire.
 
 ## 6. Validation des entrées
 
@@ -55,7 +62,8 @@ Ce document définit les règles de sécurité de XRent Manager. Aucun mécanism
 ## 10. Mots de passe
 
 - Aucun mot de passe ne doit jamais être stocké en clair ni dans un format réversible.
-- Lorsqu'une authentification par mot de passe sera implémentée, un algorithme de hachage adapté aux mots de passe (avec sel, résistant au brute force matériel) devra être utilisé. Le choix précis de l'algorithme et de la bibliothèque est **À DÉCIDER**.
+- **Implémenté (Sprint 3)** : hachage avec `bcryptjs` (facteur de coût 12), champ `User.passwordHash` (nullable — un `User` créé sans mot de passe, par exemple via un futur fournisseur OAuth, n'en a pas). Longueur minimale imposée à l'inscription : 8 caractères (`src/app/api/auth/register/route.ts`) — aucune autre règle de complexité, expiration ou historique n'est appliquée à ce stade, **À DÉCIDER**.
+- `passwordHash` n'est jamais inclus dans une réponse API (vérifié par test sur `/register`, `/login`, `/me`) ni dans le payload de session NextAuth (le callback `session` ne recopie que `id`, `tenantId`, `role`).
 
 ## 11. Données personnelles
 

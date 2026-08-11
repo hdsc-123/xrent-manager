@@ -12,12 +12,46 @@ xrent-manager/
 │   ├── next.svg
 │   ├── vercel.svg
 │   └── window.svg
+├── prisma/
+│   ├── schema.prisma        # Tenant, Agency, User (passwordHash, role), UserAgency, Account, Session, VerificationToken
+│   └── migrations/
+│       ├── migration_lock.toml
+│       ├── 20260811133155_init_tenant_agency_user/
+│       │   └── migration.sql
+│       └── 20260811141912_add_nextauth_models_and_user_auth_fields/
+│           └── migration.sql
 ├── src/
-│   └── app/                 # App Router Next.js
-│       ├── favicon.ico
-│       ├── globals.css      # Styles globaux Tailwind
-│       ├── layout.tsx       # Layout racine par défaut
-│       └── page.tsx         # Page d'accueil par défaut (démo create-next-app)
+│   ├── app/                 # App Router Next.js
+│   │   ├── favicon.ico
+│   │   ├── globals.css      # Styles globaux Tailwind
+│   │   ├── layout.tsx       # Layout racine par défaut
+│   │   ├── page.tsx         # Page d'accueil par défaut (démo create-next-app)
+│   │   └── api/
+│   │       ├── auth/
+│   │       │   ├── [...nextauth]/route.ts  # Handler NextAuth (GET/POST)
+│   │       │   ├── register/route.ts       # POST — crée un tenant + son premier user (ADMIN)
+│   │       │   ├── login/route.ts          # POST — connexion email/password
+│   │       │   ├── logout/route.ts         # POST — déconnexion
+│   │       │   └── me/route.ts             # GET — user connecté (401 sinon)
+│   │       ├── tenants/
+│   │       │   ├── route.ts                # GET (liste, ADMIN, son propre tenant uniquement)/POST (ADMIN)
+│   │       │   └── [id]/route.ts           # GET/PATCH/DELETE — scopé au tenant de l'ADMIN connecté
+│   │       └── agencies/
+│   │           ├── route.ts                # GET (liste du tenant connecté)/POST (ADMIN)
+│   │           └── [id]/route.ts           # GET/PATCH/DELETE — scopé tenant + agence (UserAgency)
+│   ├── proxy.ts              # Redirige vers /login sur /dashboard*, /settings* si non authentifié (middleware.ts est déprécié dans cette version de Next.js)
+│   ├── lib/
+│   │   ├── prisma.ts        # Singleton PrismaClient (gère le hot reload Next.js)
+│   │   ├── db.ts            # getTenantById, getAgencyById, getUserById — scopés tenantId
+│   │   ├── auth.ts          # Config NextAuth (CredentialsProvider, sessions JWT, callbacks jwt/session/signIn)
+│   │   └── authz.ts         # getSessionUser() — point d'entrée session pour les route handlers
+│   └── __tests__/
+│       ├── db.test.ts        # Tests d'isolation multi-tenant (Vitest) sur src/lib/db.ts
+│       ├── auth.test.ts      # Tests d'intégration HTTP : register/login/logout/me
+│       ├── tenants.test.ts   # Tests CRUD tenants + isolation multi-tenant
+│       ├── agencies.test.ts  # Tests CRUD agencies + isolation multi-tenant/multi-agence
+│       └── helpers/          # testServer.ts (port/URL), http.ts (fetch + cookies), fixtures.ts (register/login de test)
+├── vitest.global-setup.ts    # Démarre/arrête un vrai serveur `next dev` de test (requis par NextAuth, voir TESTREPORT.md)
 ├── AGENTS.md                # Règles agent Next.js, régénéré automatiquement par `next dev`
 ├── CLAUDE.md                # Règles pour assistants IA / développeurs (importe AGENTS.md)
 ├── README.md                # Point d'entrée du projet
@@ -32,11 +66,15 @@ xrent-manager/
 ├── next.config.ts             # Configuration Next.js (par défaut, non personnalisée)
 ├── postcss.config.mjs         # Configuration PostCSS pour Tailwind
 ├── tsconfig.json               # Configuration TypeScript (alias @/* -> ./src/*)
+├── vitest.config.mts           # Configuration Vitest (alias @/*, setup dotenv, globalSetup)
+├── vitest.setup.ts             # Charge .env avant les tests (dotenv/config)
 ├── package.json                 # Dépendances et scripts npm
 └── package-lock.json
 ```
 
-Aucun autre dossier (`components/`, `lib/`, `server/`, `prisma/`, `tests/`, etc.) n'existe à ce jour.
+`.env` et `.env.test` (non versionnés, exclus par `.gitignore`) contiennent `DATABASE_URL` (`xrent_dev`/`xrent_test`) et `AUTH_SECRET` (secret de signature/chiffrement des sessions JWT NextAuth, généré localement).
+
+Aucun autre dossier (`components/`, `server/`, `data/`, `tests/`, etc.) n'existe à ce jour. `src/lib` accueille la couche d'accès aux données technique et la configuration d'authentification — l'emplacement exact de la future logique **métier** (véhicules, réservations…) reste **À DÉCIDER** (voir section 3). Il n'existe encore aucune page d'interface (`/login`, `/dashboard`, etc.) : seules les routes API existent.
 
 ## 2. Rôle des principaux fichiers existants
 
@@ -50,6 +88,18 @@ Aucun autre dossier (`components/`, `lib/`, `server/`, `prisma/`, `tests/`, etc.
 | `eslint.config.mjs` | Configuration ESLint basée sur `eslint-config-next` (core-web-vitals + typescript). |
 | `AGENTS.md` | Fichier régénéré automatiquement par `next dev` ; contient les règles spécifiques à cette version de Next.js pour les agents IA. Ne pas éditer manuellement son contenu généré. |
 | `CLAUDE.md` | Règles impératives pour les assistants IA et développeurs sur ce projet ; importe `AGENTS.md`. |
+| `prisma/schema.prisma` | Schéma de données : `Tenant`, `Agency`, `User` (`passwordHash`, `role`), `UserAgency`, isolation par `tenantId`/`agencyId` ; `Account`/`Session`/`VerificationToken` pour l'adaptateur NextAuth (OAuth futur, non utilisés pour les sessions actuelles). |
+| `src/lib/prisma.ts` | Singleton `PrismaClient`, réutilisé en développement pour éviter l'épuisement de connexions au hot reload Next.js. |
+| `src/lib/db.ts` | Couche d'accès aux données minimale : `getTenantById`, `getAgencyById`, `getUserById`, chacune filtrée par `tenantId` côté serveur. |
+| `src/lib/auth.ts` | Configuration NextAuth v5 : `CredentialsProvider` (email/password, `bcryptjs`), sessions JWT, callbacks `jwt`/`session` (portent `id`/`tenantId`/`role`), exporte `handlers`/`auth`/`signIn`/`signOut`. |
+| `src/lib/authz.ts` | `getSessionUser()` — récupère l'utilisateur de la session courante pour les route handlers ; ne fait aucune vérification de rôle/tenant (à la charge de chaque route). |
+| `src/proxy.ts` | Redirection optimiste vers `/login` pour `/dashboard*`/`/settings*` si non authentifié (lecture du JWT côté cookie uniquement, pas de requête base de données). |
+| `src/app/api/auth/register/route.ts` | Crée un `Tenant` et son premier `User` (`role: "ADMIN"`), mot de passe haché avec `bcryptjs`. |
+| `src/app/api/auth/login/route.ts` | Authentifie via `signIn("credentials", …)`, retourne le même message d'erreur pour mot de passe incorrect et compte inexistant. |
+| `src/app/api/tenants/route.ts`, `[id]/route.ts` | CRUD `Tenant`, réservé aux `ADMIN`, strictement scopé au tenant de l'utilisateur connecté (jamais de liste globale). |
+| `src/app/api/agencies/route.ts`, `[id]/route.ts` | CRUD `Agency`, scopé tenant ; lecture ouverte aux `MEMBER` explicitement rattachés via `UserAgency`, écriture réservée aux `ADMIN`. |
+| `src/__tests__/db.test.ts` | Tests Vitest vérifiant qu'`getAgencyById`/`getUserById` ne retournent jamais une ressource d'un autre tenant ; crée puis nettoie ses propres données dans `xrent_test`. |
+| `src/__tests__/auth.test.ts`, `tenants.test.ts`, `agencies.test.ts` | Tests d'intégration HTTP contre un vrai serveur `next dev` de test (voir `vitest.global-setup.ts`) : authentification, CRUD, isolation multi-tenant/multi-agence. |
 
 ## 3. Structure cible indicative (non existante à ce jour)
 
@@ -76,9 +126,9 @@ Cette arborescence est une hypothèse de travail, pas une décision figée.
 
 D'après les principes produit de démarrage :
 
-- Tenants
-- Agences
-- Utilisateurs et rôles
+- Tenants (CRUD implémenté, Sprint 3)
+- Agences (CRUD implémenté, Sprint 3)
+- Utilisateurs et rôles (inscription + rôles `ADMIN`/`MEMBER` implémentés, Sprint 3 ; invitation d'utilisateurs et granularité fine des permissions restent À DÉCIDER)
 - Véhicules et catégories de véhicules
 - Réservations
 - Contrats
@@ -98,10 +148,10 @@ Principe cible (non encore implémenté, détaillé dans [ARCHITECTURE.md](./ARC
 
 - **Interface** (`src/app`, `src/components`) : présentation, ne doit contenir aucune logique d'autorisation ni aucun secret.
 - **Logique serveur** (server actions / routes serveur) : validation des entrées, application des règles métier, vérification systématique de l'identité, du rôle, du tenant, de l'agence et de l'appartenance de la ressource.
-- **Accès aux données** (future couche dédiée, nom exact À DÉCIDER) : **décision validée (Sprint 1)** — seule couche autorisée à dialoguer avec la base de données ; applique une garde tenant/agence obligatoire à chaque requête.
-- **Sécurité** (transverse) : authentification, autorisation, audit — ne doit jamais être contournable depuis la couche interface.
+- **Accès aux données** (`src/lib`, nom définitif toujours **À DÉCIDER**) : `src/lib/db.ts` centralise les lectures scopées `tenantId` réutilisées par `/api/agencies*` ; les routes `/api/tenants*` interrogent Prisma directement avec filtrage explicite (pas encore consolidé dans `db.ts`).
+- **Sécurité** (transverse) : authentification, autorisation, audit — ne doit jamais être contournable depuis la couche interface. **Authentification et autorisation implémentées (Sprint 3)** : `src/lib/auth.ts`, `src/lib/authz.ts`, vérifications explicites dans chaque route API. **Audit toujours non implémenté** (voir [HANDOFF.md](./HANDOFF.md) section 3).
 
-Cette séparation n'existe pas encore en code ; c'est un principe directeur pour les prochains sprints.
+Cette séparation existe désormais en grande partie en code (accès aux données, authentification, autorisation serveur) ; l'interface et la logique **métier** restent à construire — aucune page (`login`, `dashboard`, etc.) n'existe encore, seules les routes API.
 
 ## 6. Fichiers qui ne doivent jamais contenir de secrets
 
