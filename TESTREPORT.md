@@ -14,6 +14,9 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 | 2026-08-11 | `npm run lint` (Sprint 3, après authentification + CRUD tenants/agences) | ✅ Validé | Aucune erreur ESLint |
 | 2026-08-11 | `npm run build` (Sprint 3) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; 10 routes API compilées (`/api/auth/*`, `/api/tenants*`, `/api/agencies*`) + Proxy (`src/proxy.ts`) enregistré |
 | 2026-08-11 | `npm run test` (Vitest, Sprint 3) | ✅ Validé | 37/37 tests passés sur 4 fichiers (`db.test.ts`, `auth.test.ts`, `tenants.test.ts`, `agencies.test.ts`), voir section 3 « Tests d'intégration authentification et CRUD » |
+| 2026-08-11 | `npm run lint` (Sprint 4, dashboard admin + UI) | ✅ Validé | Aucune erreur ESLint |
+| 2026-08-11 | `npm run build` (Sprint 4) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; nouvelle route API `/api/users` (GET) + 9 pages `/dashboard/*` + `/login` + `/register` compilées |
+| 2026-08-11 | `npm run test` (Vitest, Sprint 4) | ✅ Validé | 46/46 tests passés sur 5 fichiers (ajout de `ui.test.tsx`), voir section 3 « Tests UI (Sprint 4) » |
 
 **Aucun test métier n'est disponible à ce jour**, pour la raison simple qu'aucun module métier n'existe encore dans le code (voir [HANDOFF.md](./HANDOFF.md) et [PROJECT_MAP.md](./PROJECT_MAP.md)). En revanche, la couche d'accès aux données technique (`src/lib/db.ts`), l'authentification et le CRUD tenants/agences disposent désormais de tests d'isolation multi-tenant et multi-agence.
 
@@ -68,6 +71,18 @@ Couverture :
 - **`agencies.test.ts`** : CRUD complet avec isolation multi-tenant (404 sur une agence d'un autre tenant) **et** multi-agence (404 pour un MEMBER non explicitement rattaché via `UserAgency`, 200 une fois rattaché), contrôle de rôle (403 pour un MEMBER sur la création/modification, même rattaché), et refus de suppression d'une agence ayant des utilisateurs rattachés (409).
 
 Limite connue : ces tests valident le comportement HTTP réel (le plus proche des conditions de production), mais ajoutent une dépendance à un serveur `next dev` démarré pour la durée de la suite — plus lent qu'un test unitaire pur, et sensible à la disponibilité du port 3811 en local.
+
+### Tests UI (Sprint 4)
+
+`src/__tests__/ui.test.tsx` prolonge l'approche « intégration HTTP réelle » des fichiers ci-dessus plutôt que d'introduire un second paradigme de test (jsdom/@testing-library) : les pages sont interrogées via `fetch` contre le même serveur `next dev` de test, et les assertions portent sur le code HTTP et le contenu HTML rendu (SSR).
+
+Couverture :
+- `/login` et `/register` accessibles sans authentification, formulaires présents (`name="email"`, `name="password"`, `name="tenantName"`).
+- `/dashboard*` redirige vers `/login` si non authentifié (307, via `src/proxy.ts`) et rend le contenu attendu une fois authentifié.
+- `/dashboard/users` (lecture seule, voir HANDOFF.md) : rend la liste pour un ADMIN, redirige un MEMBER vers `/dashboard`.
+- `GET /api/users` : 401 sans session, 403 pour un MEMBER, 200 avec la liste du tenant pour un ADMIN — et vérifie explicitement que `passwordHash` n'est jamais présent dans la réponse.
+
+**Point technique découvert pendant ce sprint** (breaking change vs. connaissances par défaut sur Next.js, cf. AGENTS.md) : `redirect()` appelé depuis un Server Component (pas depuis `src/proxy.ts`) ne renvoie **pas** un vrai 307 HTTP lorsque la route est en contexte de streaming (ex. présence d'un `loading.tsx` sur le segment) — il renvoie un 200 contenant une balise `<meta http-equiv="refresh">`, conformément à `node_modules/next/dist/docs/01-app/03-api-reference/04-functions/redirect.md`. Vérifié empiriquement : le code situé après l'appel à `redirect()` ne s'exécute bien jamais (pas de fuite de données), seul le mécanisme de transport du redirect change. Les tests de ce fichier vérifient donc le contenu de la balise meta plutôt qu'un code de statut 307/308 pour les redirections émises depuis une page, et distinguent ce cas de celui de `src/proxy.ts` (vrai 307, avant tout rendu).
 
 ### Tests de concurrence
 Vérifieront le comportement du système en cas d'accès concurrent à une même ressource (ex. deux réservations simultanées sur le même véhicule). Aucun test de concurrence n'existe à ce jour.
