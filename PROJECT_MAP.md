@@ -70,6 +70,8 @@ src/
 
 Cette arborescence est une hypothèse de travail, pas une décision figée.
 
+**Décision validée (Sprint 1)**, indépendante du nom exact des dossiers ci-dessus : la future couche d'accès aux données (`data/`, `db/`, ou autre nom — À DÉCIDER) devra centraliser tous les accès à la base de données et y appliquer une garde tenant/agence obligatoire, conformément à [ARCHITECTURE.md](./ARCHITECTURE.md) section 7.
+
 ## 4. Futurs domaines métier (envisagés, non implémentés)
 
 D'après les principes produit de démarrage :
@@ -95,8 +97,8 @@ Le détail des règles associées à chaque domaine est en cours de définition 
 Principe cible (non encore implémenté, détaillé dans [ARCHITECTURE.md](./ARCHITECTURE.md)) :
 
 - **Interface** (`src/app`, `src/components`) : présentation, ne doit contenir aucune logique d'autorisation ni aucun secret.
-- **Logique serveur** (server actions / routes serveur) : validation des entrées, application des règles métier, vérification systématique de l'appartenance tenant/agence.
-- **Accès aux données** (future couche dédiée) : seule couche autorisée à dialoguer avec la base de données ; centralise les filtres obligatoires par tenant/agence.
+- **Logique serveur** (server actions / routes serveur) : validation des entrées, application des règles métier, vérification systématique de l'identité, du rôle, du tenant, de l'agence et de l'appartenance de la ressource.
+- **Accès aux données** (future couche dédiée, nom exact À DÉCIDER) : **décision validée (Sprint 1)** — seule couche autorisée à dialoguer avec la base de données ; applique une garde tenant/agence obligatoire à chaque requête.
 - **Sécurité** (transverse) : authentification, autorisation, audit — ne doit jamais être contournable depuis la couche interface.
 
 Cette séparation n'existe pas encore en code ; c'est un principe directeur pour les prochains sprints.

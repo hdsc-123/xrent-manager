@@ -1,12 +1,13 @@
 # SECURITY.md — Sécurité
 
-Ce document définit les règles de sécurité de XRent Manager. Aucun mécanisme décrit ici n'est implémenté à ce jour (le projet est au stade Sprint 0, socle Next.js par défaut uniquement) : il s'agit d'exigences à respecter dès la conception des premiers modules, pas d'un état des lieux d'une implémentation existante.
+Ce document définit les règles de sécurité de XRent Manager. Aucun mécanisme décrit ici n'est implémenté à ce jour (le projet est au stade Sprint 1 — cadrage architectural validé, aucune implémentation technique démarrée) : il s'agit d'exigences à respecter dès la conception des premiers modules, pas d'un état des lieux d'une implémentation existante.
 
 ## 1. Séparation stricte entre tenants
 
 - Aucune donnée d'un tenant ne doit jamais être accessible, visible ou modifiable par un autre tenant, à quelque niveau que ce soit (interface, action serveur, base de données, logs, exports).
 - Toute requête d'accès à une ressource doit vérifier que la ressource appartient bien au tenant de l'utilisateur authentifié, côté serveur, systématiquement — jamais en se fiant à un identifiant fourni par le client sans revérification.
-- Le modèle technique d'isolation (colonne partagée vs schémas séparés vs bases séparées) est **À DÉCIDER** (voir [ARCHITECTURE.md](./ARCHITECTURE.md)), mais quel que soit le choix, cette règle de vérification systématique s'applique.
+- **Décision validée (Sprint 1)** : le modèle technique d'isolation retenu est une colonne `tenant_id` partagée entre tenants dans les mêmes tables (voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 8).
+- **Risque** : ce modèle offre une isolation logique, non physique. Le risque principal est l'omission d'un filtre `tenant_id` dans une requête, qui exposerait des données d'un tenant à un autre. Ce risque doit être traité par : (1) l'usage exclusif de la couche d'accès aux données centralisée avec garde tenant/agence obligatoire (voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 7), qui doit rester le seul point d'accès à la base de données ; (2) des tests multi-tenant automatisés systématiques dès le premier module concerné (voir [TESTREPORT.md](./TESTREPORT.md)) ; (3), le cas échéant, l'ajout ultérieur de Row-Level Security PostgreSQL en renfort défensif — **À DÉCIDER**.
 
 ## 2. Séparation entre agences
 
@@ -21,7 +22,7 @@ Ce document définit les règles de sécurité de XRent Manager. Aucun mécanism
 ## 4. Autorisation côté serveur
 
 - Toute action sensible doit être validée côté serveur, indépendamment des contrôles côté client (masquage de bouton, désactivation de champ, etc.), qui ne sont que des aides d'expérience utilisateur et non des mesures de sécurité.
-- Chaque action serveur doit vérifier : l'identité de l'utilisateur, son rôle, son tenant, son agence, et l'appartenance de la ressource ciblée à ce même tenant/agence.
+- **Décision validée (Sprint 1)** : chaque action serveur doit vérifier l'identité de l'utilisateur, son rôle, son tenant, son agence, et l'appartenance de la ressource ciblée à ce même tenant/agence. Cette vérification doit s'appuyer sur la couche d'accès aux données centralisée avec garde tenant/agence obligatoire (voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 7).
 
 ## 5. Gestion des sessions
 
@@ -69,18 +70,21 @@ Ce document définit les règles de sécurité de XRent Manager. Aucun mécanism
 ## 13. Audit
 
 - Toute action sensible doit être tracée de façon non falsifiable (ou au minimum difficilement falsifiable) : qui, quoi, quand, sur quelle ressource, dans quel tenant/agence.
+- **Décision validée (Sprint 1)** : le mécanisme technique retenu est une table d'audit dédiée. Durée de conservation et droits d'accès restent **À DÉCIDER**.
 - Voir [DOMAINRULES.md](./DOMAINRULES.md) section 16 et [ARCHITECTURE.md](./ARCHITECTURE.md) section 12.
 
 ## 14. Exports
 
+- **Décision validée (Sprint 1)** : tout export doit être validé côté serveur et scopé par tenant, sans exception.
 - Un export ne doit jamais contenir de données d'un autre tenant que celui de l'utilisateur qui le demande.
 - Un export ne doit jamais contenir de données de carte bancaire en clair, ni de mots de passe/hashs de mots de passe.
-- Tout export doit être soumis aux mêmes règles d'autorisation que les données sous-jacentes, et devrait être audité (voir section 13).
+- Tout export doit être soumis aux mêmes règles d'autorisation que les données sous-jacentes, et doit être audité (voir section 13). Format et périmètre précis restent **À DÉCIDER**.
 
 ## 15. Imports
 
+- **Décision validée (Sprint 1)** : tout import doit être validé côté serveur et scopé par tenant, sans exception.
 - Toute donnée importée doit être validée côté serveur avant écriture (structure, types, cohérence métier), au même niveau d'exigence qu'une saisie manuelle.
-- Un import ne doit jamais permettre de contourner l'isolation tenant/agence (ex. en injectant un `tenant_id` arbitraire dans un fichier importé).
+- Un import ne doit jamais permettre de contourner l'isolation tenant/agence (ex. en injectant un `tenant_id` arbitraire dans un fichier importé). Contrôles de validation détaillés : **À DÉCIDER**.
 
 ## 16. Sauvegardes
 
@@ -89,9 +93,9 @@ Ce document définit les règles de sécurité de XRent Manager. Aucun mécanism
 
 ## 17. Reset sécurisé
 
-- Toute fonctionnalité de réinitialisation (reset de mot de passe, reset de données de démonstration/test) doit être conçue pour ne jamais être exécutable accidentellement en production, ni par un utilisateur non autorisé.
-- Un reset de données ne doit jamais être possible sans confirmation explicite et validation côté serveur du rôle de l'utilisateur qui le déclenche.
-- Détail technique du mécanisme : **À DÉCIDER**, aucun mécanisme de reset n'existe à ce jour.
+- **Décision validée (Sprint 1)** : tout reset de données doit être **techniquement impossible en environnement de production** — la vérification du contexte d'environnement doit être effectuée côté serveur, de façon non contournable depuis le client.
+- Un reset de données (hors production) ne doit jamais être possible sans confirmation explicite et validation côté serveur du rôle de l'utilisateur qui le déclenche.
+- Détail technique du mécanisme (comment le contexte d'environnement est vérifié, quels rôles peuvent déclencher un reset hors production) : **À DÉCIDER**, aucun mécanisme de reset n'existe à ce jour.
 
 ## 18. Erreurs
 

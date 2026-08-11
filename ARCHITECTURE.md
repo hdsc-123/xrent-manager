@@ -37,20 +37,21 @@ Le projet utilise l'App Router de Next.js (dossier `src/app`), déjà en place p
 
 ## 7. Future couche d'accès aux données
 
-- Une couche dédiée d'accès aux données est prévue pour centraliser toutes les requêtes vers la base de données et y appliquer systématiquement les filtres d'isolation tenant/agence.
-- Aucune base de données, ORM ou schéma n'est installé à ce jour.
-- Prisma est **pressenti** comme ORM (mentionné dans les principes de préparation à la production ci-dessous), mais **non installé et non confirmé** — le choix définitif de la base de données et de l'ORM est **À DÉCIDER**.
+- Une couche dédiée d'accès aux données est prévue pour centraliser toutes les requêtes vers la base de données et y appliquer systématiquement les filtres d'isolation tenant/agence. Cette couche constitue la garde tenant/agence obligatoire : aucune requête vers la base ne doit la contourner.
+- **Décision validée (Sprint 1)** : PostgreSQL est retenu comme base de données cible et Prisma comme ORM cible. **Aucun des deux n'est installé à ce jour** — cette décision porte sur le choix technique, pas sur son implémentation.
+- Le nom et l'emplacement exacts des dossiers accueillant cette couche (`server/`, `data/`, `db/`, etc.) restent **À DÉCIDER**.
 
 ## 8. Multi-tenant
 
 - Chaque tenant représente une organisation cliente isolée : aucune donnée d'un tenant ne doit être visible ou modifiable par un autre tenant, à aucun niveau (interface, serveur, base de données).
-- Le modèle d'isolation technique (colonne `tenant_id` partagée entre tenants dans les mêmes tables, schémas de base de données séparés, ou bases de données séparées) est **À DÉCIDER**.
-- Quel que soit le modèle retenu, la vérification d'appartenance au tenant devra être appliquée côté serveur, de façon systématique et non contournable.
+- **Décision validée (Sprint 1)** : l'isolation technique repose sur une colonne `tenant_id` partagée entre tenants dans les mêmes tables (pas de schémas ni de bases séparées). Cette isolation est logique, pas physique — voir [SECURITY.md](./SECURITY.md) section 1 pour le détail du risque associé et les mesures compensatoires attendues.
+- La vérification d'appartenance au tenant devra être appliquée côté serveur, de façon systématique et non contournable, via la couche d'accès aux données centralisée (section 7).
 
 ## 9. Multi-agence
 
 - Un tenant peut opérer plusieurs agences. Une agence est un sous-périmètre à l'intérieur d'un tenant (ex. plusieurs points de location d'une même société).
-- Le modèle précis de droits par agence (un utilisateur peut-il appartenir à plusieurs agences d'un même tenant, un véhicule peut-il être rattaché à plusieurs agences, etc.) est **À DÉCIDER** — voir [DOMAINRULES.md](./DOMAINRULES.md).
+- **Décision validée (Sprint 1)** : le rattachement technique aux agences se fait par un `agency_id`, soumis aux mêmes exigences de vérification côté serveur que le `tenant_id` (section 8).
+- Le modèle précis de droits par agence (un utilisateur peut-il appartenir à plusieurs agences d'un même tenant, un véhicule peut-il être rattaché à plusieurs agences, etc.) reste **À DÉCIDER** — voir [DOMAINRULES.md](./DOMAINRULES.md).
 
 ## 10. Authentification
 
@@ -60,29 +61,31 @@ Le projet utilise l'App Router de Next.js (dossier `src/app`), déjà en place p
 
 ## 11. Autorisation
 
-- Le modèle de rôles (ex. administrateur tenant, gestionnaire d'agence, agent, etc.) est **À DÉCIDER** — voir [DOMAINRULES.md](./DOMAINRULES.md).
-- L'autorisation devra systématiquement être vérifiée côté serveur, pour chaque action sensible, indépendamment de ce que l'interface autorise ou masque.
+- Le modèle de rôles (ex. administrateur tenant, gestionnaire d'agence, agent, etc.) et les permissions détaillées associées restent **À DÉCIDER** — voir [DOMAINRULES.md](./DOMAINRULES.md).
+- **Décision validée (Sprint 1)** : l'autorisation devra systématiquement être vérifiée côté serveur, pour chaque action sensible, en contrôlant l'identité de l'utilisateur, son rôle, son tenant, son agence, et l'appartenance de la ressource ciblée — indépendamment de ce que l'interface autorise ou masque.
 
 ## 12. Audit
 
 - Toute action sensible (création, modification, suppression, changement d'état, export, import, reset) devra être tracée : qui, quoi, quand, sur quelle ressource, dans quel tenant/agence.
-- Le mécanisme technique précis (table d'audit dédiée, journal applicatif, service tiers) est **À DÉCIDER**.
+- **Décision validée (Sprint 1)** : le mécanisme technique retenu est une table d'audit dédiée. La durée de conservation et les droits d'accès aux journaux d'audit restent **À DÉCIDER** — voir [DOMAINRULES.md](./DOMAINRULES.md) section 16.
 
 ## 13. Exports et imports
 
 - Le produit devra permettre l'export et l'import de données métier.
-- Le format, le périmètre (par tenant, par agence), les contrôles de validation à l'import, et la traçabilité associée sont **À DÉCIDER**.
-- Par principe, tout export/import devra respecter la séparation tenant/agence et être soumis aux mêmes règles d'autorisation que les données concernées.
+- **Décision validée (Sprint 1)** : tout export et tout import devra être validé côté serveur et scopé par tenant, sans exception.
+- Le format, le périmètre précis (par tenant, par agence), les contrôles de validation détaillés à l'import, et la traçabilité associée restent **À DÉCIDER**.
+- Tout export/import devra respecter la séparation tenant/agence et être soumis aux mêmes règles d'autorisation que les données concernées.
 
 ## 14. Environnements : développement, test, staging et production
 
+- **Décision validée (Sprint 1)** : les environnements développement, test, staging et production devront être strictement séparés.
 - **Développement** : environnement actuel, exécuté localement via `npm run dev`.
 - **Test** : aucun environnement de test dédié n'existe à ce jour ; aucune stratégie de test automatisé n'est encore en place (voir [TESTREPORT.md](./TESTREPORT.md)).
-- **Staging** : non défini à ce jour. **À DÉCIDER** (hébergeur, configuration, données de test).
-- **Production** : non défini à ce jour. **À DÉCIDER** (hébergeur, domaine, gestion des secrets, sauvegardes).
+- **Staging** : non défini à ce jour. Hébergeur et configuration restent **À DÉCIDER**.
+- **Production** : non défini à ce jour. Hébergeur, domaine, gestionnaire de secrets et stratégie de sauvegarde restent **À DÉCIDER**.
 
-Aucun de ces environnements n'est actuellement configuré ou déployé.
+Aucun de ces environnements (hormis le développement local) n'est actuellement configuré ou déployé.
 
 ## 15. Migrations de production
 
-Lorsque Prisma (ou un autre ORM avec système de migration) sera introduit dans le projet — décision qui n'a pas encore été prise — les migrations de production devront être appliquées de façon contrôlée et non interactive, par exemple via `npx prisma migrate deploy` si Prisma est retenu, jamais via une commande de migration interactive ou destructive en environnement de production. Cette section sera précisée dès que le choix de l'ORM sera validé.
+Prisma étant désormais retenu comme ORM cible (section 7, **non installé à ce jour**), les migrations de production devront, lors de son introduction effective, être appliquées de façon contrôlée et non interactive, via `npx prisma migrate deploy`, jamais via une commande de migration interactive ou destructive en environnement de production.

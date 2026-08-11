@@ -19,9 +19,10 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 
 ## 3. Stratégie future de tests
 
-Le choix précis des outils (framework de test unitaire, outil e2e, outil de test de charge) est **À DÉCIDER**. Les principes suivants sont cependant actés dès à présent :
+Le choix précis des outils (framework de test unitaire, outil e2e, outil de test de charge) est **À DÉCIDER**. Les principes suivants sont actés (dont certains confirmés lors de la validation du Sprint 1, voir [HANDOFF.md](./HANDOFF.md)) :
 
-- Chaque module métier devra être accompagné de tests dès sa création (voir [CLAUDE.md](./CLAUDE.md)), pas ajoutés a posteriori.
+- **Décision validée (Sprint 1)** : chaque module métier devra être accompagné de tests dès sa création (voir [CLAUDE.md](./CLAUDE.md)), pas ajoutés a posteriori.
+- **Décision validée (Sprint 1)** : priorité aux tests d'isolation multi-tenant, le modèle d'isolation par `tenant_id` partagé étant désormais retenu (voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 8 et [SECURITY.md](./SECURITY.md) section 1).
 - Les règles de sécurité critiques (isolation tenant/agence, autorisation, montants financiers) devront être couvertes par des tests avant toute mise en production.
 
 ### Tests unitaires
@@ -34,13 +35,13 @@ Cibleront les interactions entre la logique serveur et la future couche d'accès
 Cibleront les parcours utilisateurs complets (ex. création d'une réservation jusqu'à la signature d'un contrat), notamment en mobile-first. Aucun test end-to-end n'existe à ce jour.
 
 ### Tests métier
-Vérifieront le respect des règles définies dans [DOMAINRULES.md](./DOMAINRULES.md) au fur et à mesure qu'elles seront tranchées et implémentées. Aucun test métier n'existe à ce jour.
+Vérifieront le respect des règles définies dans [DOMAINRULES.md](./DOMAINRULES.md) au fur et à mesure qu'elles seront tranchées et implémentées — en particulier les règles déjà validées de représentation des montants (section 14) et des dates (section 15), premières candidates pour des tests unitaires dès leur implémentation. Aucun test métier n'existe à ce jour.
 
 ### Tests de permissions
 Vérifieront qu'un utilisateur ne peut jamais accéder à une action ou une ressource hors de son rôle. Aucun test de permission n'existe à ce jour.
 
 ### Tests multi-tenant
-Vérifieront explicitement qu'aucune donnée d'un tenant n'est accessible depuis un autre tenant, y compris par accès direct par identifiant (voir [SECURITY.md](./SECURITY.md) section 7). Aucun test multi-tenant n'existe à ce jour.
+Priorité de test la plus élevée du projet (décision Sprint 1) : le modèle d'isolation retenu (`tenant_id` partagé, voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 8) rend l'omission d'un filtre tenant le risque de sécurité le plus critique (voir [SECURITY.md](./SECURITY.md) section 1). Ces tests vérifieront explicitement qu'aucune donnée d'un tenant n'est accessible depuis un autre tenant, y compris par accès direct par identifiant (IDOR, voir [SECURITY.md](./SECURITY.md) section 7). Aucun test multi-tenant n'existe à ce jour.
 
 ### Tests de concurrence
 Vérifieront le comportement du système en cas d'accès concurrent à une même ressource (ex. deux réservations simultanées sur le même véhicule). Aucun test de concurrence n'existe à ce jour.

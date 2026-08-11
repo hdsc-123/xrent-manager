@@ -68,7 +68,7 @@ Ce document définit les règles métier initiales de XRent Manager. Aucun de ce
 - **Aucune carte bancaire ne doit être stockée en clair** dans le système, en base de données ou dans les logs, en aucune circonstance (voir [SECURITY.md](./SECURITY.md)). La tokenisation via un prestataire de paiement tiers conforme PCI-DSS est la seule approche envisagée à ce stade.
 - Choix du/des prestataires de paiement : **À DÉCIDER**.
 - Gestion des paiements partiels, échelonnés, et des remboursements : **À DÉCIDER**.
-- Tout montant financier doit être représenté sans perte de précision, jamais en `float`/`double` (voir section 13).
+- Tout montant financier doit être représenté sans perte de précision, jamais en `float`/`double` (voir section 14).
 
 ## 11. Cautions
 
@@ -92,18 +92,19 @@ Deux natures d'incidents doivent être distinguées :
 ## 14. Montants financiers
 
 - **Décision actée** : aucun montant financier ne sera représenté ou calculé en `float`/`double`, afin d'éviter toute perte de précision.
-- Représentation technique exacte à retenir (entier exprimé dans la plus petite unité monétaire, ex. centimes ; ou type décimal exact) : **À DÉCIDER**.
-- Devise(s) supportée(s) et gestion du multi-devises entre tenants : **À DÉCIDER**.
+- **Décision validée (Sprint 1)** : tout montant financier sera représenté par un entier exprimé dans la plus petite unité monétaire (ex. centimes), avec la devise stockée explicitement à côté de chaque montant.
+- Devise initiale et gestion du multi-devises entre tenants : **À DÉCIDER**.
 - Règles d'arrondi (le cas échéant) : **À DÉCIDER**.
 
 ## 15. Dates et fuseaux horaires
 
-- Hypothèse de travail : stockage de toutes les dates/heures en UTC, avec conversion à l'affichage selon le fuseau de l'agence ou de l'utilisateur — **non confirmée, À DÉCIDER**.
-- Gestion du fuseau horaire propre à chaque agence (utile pour les horaires de retrait/retour de véhicule) : **À DÉCIDER**.
+- **Décision validée (Sprint 1)** : toutes les dates/heures seront stockées en UTC, avec conversion à l'affichage selon le fuseau horaire de l'agence.
+- Modélisation précise du fuseau horaire propre à chaque agence (utile pour les horaires de retrait/retour de véhicule) : **À DÉCIDER**.
 - Format de dates utilisé dans les exports/imports : **À DÉCIDER**.
 
 ## 16. Règles d'audit
 
 - Toute action sensible (création, modification, suppression, changement d'état, export, import, reset) devra être auditée avec : qui, quoi, quand, sur quelle ressource, dans quel tenant/quelle agence.
+- **Décision validée (Sprint 1)** : le mécanisme technique retenu est une table d'audit dédiée (voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 12).
 - Durée de conservation des journaux d'audit : **À DÉCIDER**.
 - Accès aux journaux d'audit (qui peut les consulter) : **À DÉCIDER**, mais par principe restreint (probablement réservé aux administrateurs du tenant concerné, sans accès inter-tenant).
