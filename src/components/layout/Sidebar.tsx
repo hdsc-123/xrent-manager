@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
+  Bell,
   Building2,
   Car,
   CalendarRange,
@@ -13,6 +14,7 @@ import {
   Settings,
   Store,
   Users,
+  Wrench,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -30,6 +32,8 @@ const navItems: NavItem[] = [
   { href: "/dashboard/agencies", label: "Agences", icon: Store },
   { href: "/dashboard/vehicles", label: "Véhicules", icon: Car },
   { href: "/dashboard/locations", label: "Locations", icon: CalendarRange },
+  { href: "/dashboard/maintenances", label: "Maintenances", icon: Wrench },
+  { href: "/dashboard/alerts", label: "Alertes", icon: Bell },
   { href: "/dashboard/invoices", label: "Factures", icon: FileText },
   { href: "/dashboard/payments", label: "Paiements", icon: CreditCard },
   { href: "/dashboard/reports", label: "Rapports", icon: BarChart3 },

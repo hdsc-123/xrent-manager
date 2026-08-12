@@ -14,13 +14,15 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  agencies  Agency[]
-  users     User[]
-  vehicles  Vehicle[]
-  locations Location[]
-  clients   Client[]
-  invoices  Invoice[]
-  payments  Payment[]
+  agencies     Agency[]
+  users        User[]
+  vehicles     Vehicle[]
+  locations    Location[]
+  clients      Client[]
+  invoices     Invoice[]
+  payments     Payment[]
+  maintenances Maintenance[]
+  alerts       Alert[]
 }
 
 model Agency {
@@ -36,6 +38,8 @@ model Agency {
   vehicles     Vehicle[]
   locations    Location[]
   invoices     Invoice[]
+  maintenances Maintenance[]
+  alerts       Alert[]
 
   @@unique([tenantId, slug])
   @@index([tenantId])
@@ -55,6 +59,7 @@ model User {
   userAgencies UserAgency[]
   accounts     Account[]
   sessions     Session[]
+  alerts       Alert[]
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -115,9 +120,10 @@ model Vehicle {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
-  tenant    Tenant     @relation(fields: [tenantId], references: [id])
-  agency    Agency     @relation(fields: [agencyId], references: [id])
-  locations Location[]
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
+  agency       Agency        @relation(fields: [agencyId], references: [id])
+  locations    Location[]
+  maintenances Maintenance[]
 
   @@unique([tenantId, licensePlate])
   @@index([tenantId])
@@ -241,6 +247,107 @@ model Payment {
 
   @@index([tenantId])
   @@index([invoiceId])
+}
+
+enum MaintenanceType {
+  OIL_CHANGE
+  TIRE_CHANGE
+  INSPECTION
+  REPAIR
+  OTHER
+}
+
+enum MaintenanceStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// Suivi d'entretien d'un véhicule. agencyId est toujours dérivé du Vehicle côté
+// serveur (même principe que Location.agencyId dérivé du Vehicle, voir DOMAINRULES.md
+// section 7). Historique conservé : suppression bloquée dès que le statut est passé par
+// IN_PROGRESS/COMPLETED (voir MaintenanceNotDeletableError, src/lib/maintenances.ts).
+model Maintenance {
+  id            String             @id @default(cuid())
+  tenantId      String
+  agencyId      String
+  vehicleId     String
+  type          MaintenanceType
+  status        MaintenanceStatus  @default(SCHEDULED)
+  scheduledDate DateTime
+  completedDate DateTime?
+  cost          Int?
+  currency      String             @default("MAD")
+  notes         String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  agency  Agency  @relation(fields: [agencyId], references: [id])
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id])
+
+  @@index([tenantId])
+  @@index([agencyId])
+  @@index([vehicleId])
+  @@index([status])
+  @@index([scheduledDate])
+}
+
+enum AlertType {
+  MAINTENANCE_DUE
+  RETURN_TODAY
+  INVOICE_OVERDUE
+  OTHER
+}
+
+enum AlertPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum AlertStatus {
+  PENDING
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+// Alerte in-app (pas d'email pour ce sprint, voir HANDOFF.md). agencyId/userId sont
+// optionnels : une alerte peut être diffusée à tout le tenant (agencyId/userId null),
+// scopée à une agence, ou assignée à un user précis. entityType/entityId pointent en
+// texte libre vers la ressource à l'origine de l'alerte (ex. "Maintenance"/id), sans
+// contrainte de clé étrangère — cohérent avec Vehicle.category (DOMAINRULES.md section 6),
+// pour rester simple sans figer un modèle polymorphe non validé. Jamais supprimable
+// (seulement acknowledge/resolve) : pas de fonction deleteAlert.
+model Alert {
+  id                   String        @id @default(cuid())
+  tenantId             String
+  agencyId             String?
+  userId               String?
+  type                 AlertType
+  priority             AlertPriority @default(MEDIUM)
+  status               AlertStatus   @default(PENDING)
+  message              String
+  entityType           String?
+  entityId             String?
+  acknowledgedAt       DateTime?
+  acknowledgedByUserId String?
+  resolvedAt           DateTime?
+  resolvedByUserId     String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  tenant Tenant  @relation(fields: [tenantId], references: [id])
+  agency Agency? @relation(fields: [agencyId], references: [id])
+  user   User?   @relation(fields: [userId], references: [id])
+
+  @@index([tenantId])
+  @@index([agencyId])
+  @@index([userId])
+  @@index([status])
+  @@index([priority])
 }
 
 // Modèles NextAuth (Auth.js) requis par @auth/prisma-adapter.

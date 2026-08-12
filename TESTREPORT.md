@@ -24,6 +24,10 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 | 2026-08-11 | `npm run lint` (Sprint 6, facturation + paiements + rapports) | ✅ Validé | Aucune erreur ESLint |
 | 2026-08-11 | `npm run build` (Sprint 6) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; nouvelles routes API `/api/invoices*`, `/api/payments*`, `/api/reports/*` + 4 nouvelles pages `/dashboard/invoices*`/`/dashboard/payments`/`/dashboard/reports` compilées |
 | 2026-08-11 | `npm run test` (Vitest, Sprint 6) | ✅ Validé | 106/106 tests passés sur 10 fichiers (ajout de `invoices.test.ts`, `payments.test.ts`, `reports.test.ts`), voir section 3 « Tests facturation, paiements et rapports (Sprint 6) » |
+| 2026-08-12 | `npm run lint` (Sprint 7, maintenance + alertes + notifications) | ✅ Validé | Aucune erreur ESLint |
+| 2026-08-12 | `npm run build` (Sprint 7) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; nouvelles routes API `/api/maintenances*`, `/api/alerts*`, `/api/tasks/check-alerts` + 3 nouvelles pages `/dashboard/maintenances*`/`/dashboard/alerts` compilées |
+| 2026-08-12 | `npm run test` (Vitest, Sprint 7) | ✅ Validé | 133/133 tests passés sur 12 fichiers (ajout de `maintenances.test.ts` et `alerts.test.ts`), voir section 3 « Tests maintenance et alertes (Sprint 7) » |
+| 2026-08-12 | Vérification manuelle (Sprint 7) | ✅ Validé | Serveur `next dev` réel : inscription → agence → véhicule → maintenance planifiée aujourd'hui → `POST /api/tasks/check-alerts` → alerte visible dans le badge du header, le widget « À faire aujourd'hui » et `/dashboard/alerts` → acquittement → résolution → badge revenu à zéro ; second appel à `check-alerts` sans doublon d'alerte ; données de test nettoyées après vérification |
 
 **Premier test métier disponible depuis le Sprint 5** (véhicules, locations) — jusqu'ici, aucun module métier n'existait dans le code (voir [HANDOFF.md](./HANDOFF.md) et [PROJECT_MAP.md](./PROJECT_MAP.md)). La couche d'accès aux données technique (`src/lib/db.ts`), l'authentification, le CRUD tenants/agences et désormais véhicules/locations disposent de tests d'isolation multi-tenant et multi-agence.
 
@@ -137,6 +141,26 @@ Couverture `reports.test.ts` :
 - `getTopVehicles` : classement par revenu facturé (`Location.totalPrice`, statuts `ACTIVE`/`COMPLETED` uniquement), limite respectée.
 
 Limite connue : `getRevenueReport` suppose une devise unique par tenant (voir DOMAINRULES.md section 14) ; pas de test multi-devises (aucun tenant multi-devises n'existe à ce jour).
+
+### Tests maintenance et alertes (Sprint 7)
+
+`src/__tests__/maintenances.test.ts` prolonge l'approche « intégration HTTP réelle » ; `src/__tests__/alerts.test.ts` combine appels directs à `src/lib/alerts.ts` (aucune route `POST /api/alerts` n'existe : une alerte n'est jamais créée directement par un client, seulement par le système — voir DOMAINRULES.md) et intégration HTTP pour `acknowledge`/`resolve`/filtrage.
+
+Couverture `maintenances.test.ts` :
+- Création : `agencyId`/`currency` toujours dérivés du véhicule (jamais du client), isolation multi-tenant sur `vehicleId` (404), contrôle d'agence (403 pour un MEMBER non rattaché), refus (400) d'un coût négatif.
+- Isolation multi-tenant sur `GET /api/maintenances`.
+- Machine à états (`PATCH /api/maintenances/[id]`) : `SCHEDULED → COMPLETED` accepté avec `completedDate` fixée automatiquement, transition invalide `COMPLETED → SCHEDULED` refusée (409).
+- Historique conservé : modification (`notes`) et suppression refusées (409) une fois `COMPLETED` ; suppression autorisée pour `SCHEDULED`.
+- Génération d'alertes : `POST /api/tasks/check-alerts` (réservé ADMIN, 403 pour un MEMBER) crée une alerte `MAINTENANCE_DUE` pour une maintenance planifiée aujourd'hui, et un second appel ne la duplique pas tant qu'elle n'est pas résolue (`hasUnresolvedAlert`, `src/lib/scheduled-tasks.ts`).
+
+Couverture `alerts.test.ts` :
+- `createAlert`/`getAlerts` : statut `PENDING` et priorité `MEDIUM` par défaut, isolation multi-tenant, tri par priorité (`URGENT` en premier).
+- Machine à états (`acknowledgeAlert`/`resolveAlert`) : `PENDING → ACKNOWLEDGED → RESOLVED`, résolution directe depuis `PENDING` sans passer par `ACKNOWLEDGED`, refus de rouvrir une alerte `RESOLVED` (état terminal).
+- `getPendingAlerts` exclut les alertes résolues.
+- `PATCH /api/alerts/[id]/acknowledge`/`resolve` : 401 non authentifié, 404 sur une alerte d'un autre tenant **et** sur une alerte rattachée à une agence à laquelle un MEMBER n'est pas rattaché (agencyId non nul), cycle complet acquittement → résolution via HTTP, refus (409) de résoudre une alerte déjà résolue.
+- `GET /api/alerts` : filtrage par `priority`/`status`, rejet (400) d'un `status` invalide.
+
+Limite connue, partagée avec les autres suites HTTP : dépendance à un serveur `next dev` démarré pour la durée de la suite (port 3811).
 
 ### Tests de concurrence
 Vérifieront le comportement du système en cas d'accès concurrent à une même ressource (ex. deux réservations simultanées sur le même véhicule). Aucun test de concurrence n'existe à ce jour.

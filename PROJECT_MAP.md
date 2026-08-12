@@ -13,7 +13,7 @@ xrent-manager/
 │   ├── vercel.svg
 │   └── window.svg
 ├── prisma/
-│   ├── schema.prisma        # Tenant, Agency, User (passwordHash, role), UserAgency, Client, Vehicle, Location, Invoice, Payment, Account, Session, VerificationToken
+│   ├── schema.prisma        # Tenant, Agency, User (passwordHash, role), UserAgency, Client, Vehicle, Location, Invoice, Payment, Maintenance, Alert, Account, Session, VerificationToken
 │   └── migrations/
 │       ├── migration_lock.toml
 │       ├── 20260811133155_init_tenant_agency_user/
@@ -24,7 +24,9 @@ xrent-manager/
 │       │   └── migration.sql
 │       ├── 20260811203931_change_default_currency_to_mad/
 │       │   └── migration.sql
-│       └── 20260811205048_add_invoice_and_payment_models/
+│       ├── 20260811205048_add_invoice_and_payment_models/
+│       │   └── migration.sql
+│       └── 20260812090456_add_maintenance_and_alert_models/
 │           └── migration.sql
 ├── components.json          # Config shadcn/ui (style base-nova, alias @/components, @/lib, @/hooks)
 ├── src/
@@ -61,6 +63,11 @@ xrent-manager/
 │   │   │   │   ├── page.tsx, LocationsTable.tsx, loading.tsx
 │   │   │   │   ├── new/page.tsx
 │   │   │   │   └── [id]/page.tsx, LocationActions.tsx
+│   │   │   ├── maintenances/       # (Sprint 7) CRUD, machine à états, historique conservé
+│   │   │   │   ├── page.tsx, MaintenancesTable.tsx, loading.tsx
+│   │   │   │   └── new/page.tsx
+│   │   │   ├── alerts/             # (Sprint 7) Liste triée priorité+date, acknowledge/resolve
+│   │   │   │   ├── page.tsx, AlertsList.tsx, loading.tsx
 │   │   │   ├── invoices/           # (Sprint 6) CRUD, machine à états, PDF, paiements
 │   │   │   │   ├── page.tsx, InvoicesTable.tsx, loading.tsx
 │   │   │   │   ├── new/page.tsx
@@ -93,6 +100,16 @@ xrent-manager/
 │   │       │   ├── route.ts                # GET (liste, filtres)/POST — vérifie disponibilité, calcule totalPrice
 │   │       │   └── [id]/route.ts           # GET/PATCH (statut/dates/notes)/DELETE (si PENDING/CANCELLED)
 │   │       ├── clients/route.ts            # (Sprint 5) GET (liste)/POST — tenant-scopé, pas de page dédiée
+│   │       ├── maintenances/               # (Sprint 7)
+│   │       │   ├── route.ts                # GET (liste, filtres)/POST — agencyId/currency dérivés du véhicule
+│   │       │   └── [id]/route.ts           # GET/PATCH (statut/dates/coût/notes)/DELETE (si SCHEDULED)
+│   │       ├── alerts/                     # (Sprint 7)
+│   │       │   ├── route.ts                # GET (liste, filtres type/priority/status)
+│   │       │   └── [id]/
+│   │       │       ├── acknowledge/route.ts   # PATCH — PENDING → ACKNOWLEDGED
+│   │       │       └── resolve/route.ts       # PATCH — PENDING|ACKNOWLEDGED → RESOLVED
+│   │       ├── tasks/
+│   │       │   └── check-alerts/route.ts   # (Sprint 7) POST — déclenche les 3 vérifications, réservé ADMIN, scopé au tenant connecté
 │   │       ├── invoices/                   # (Sprint 6)
 │   │       │   ├── route.ts                # GET (liste, filtres)/POST — dérive agencyId/clientId/currency de la Location
 │   │       │   └── [id]/
@@ -125,6 +142,9 @@ xrent-manager/
 │   │   ├── invoices.ts      # (Sprint 6) CRUD + génération numéro (INV-{année}-{5 chiffres}) + calcul TVA/remise/total + machine à états
 │   │   ├── payments.ts      # (Sprint 6) CRUD + recomputeInvoiceStatus (recalcule toujours amountPaid/status de la facture depuis les paiements réels)
 │   │   ├── reports.ts       # (Sprint 6) getRevenueReport, getVehicleUtilizationReport, getTopVehicles — tenant-scopé
+│   │   ├── maintenances.ts  # (Sprint 7) CRUD + machine à états + getDueMaintenances + createMaintenanceFromSchedule
+│   │   ├── alerts.ts        # (Sprint 7) CRUD (sans delete) + machine à états (acknowledge/resolve) + getPendingAlerts
+│   │   ├── scheduled-tasks.ts # (Sprint 7) checkDueMaintenances/checkReturnsToday/checkOverdueInvoices — génération idempotente d'alertes
 │   │   └── utils.ts         # cn() — généré par shadcn init
 │   └── __tests__/
 │       ├── db.test.ts        # Tests d'isolation multi-tenant (Vitest) sur src/lib/db.ts
@@ -137,6 +157,8 @@ xrent-manager/
 │       ├── invoices.test.ts   # (Sprint 6) CRUD, numérotation, calcul TVA/remise, machine à états, isolation multi-tenant/multi-agence
 │       ├── payments.test.ts   # (Sprint 6) CRUD, validation solde restant, recalcul automatique du statut de la facture
 │       ├── reports.test.ts    # (Sprint 6) getRevenueReport/getVehicleUtilizationReport/getTopVehicles, isolation tenant
+│       ├── maintenances.test.ts # (Sprint 7) CRUD, machine à états, historique conservé, génération d'alertes (check-alerts)
+│       ├── alerts.test.ts     # (Sprint 7) CRUD (lib direct), acknowledge/resolve, filtrage priorité/status
 │       └── helpers/          # testServer.ts (port/URL), http.ts (fetch + cookies), fixtures.ts (register/login de test)
 ├── vitest.global-setup.ts    # Démarre/arrête un vrai serveur `next dev` de test (requis par NextAuth, voir TESTREPORT.md)
 ├── AGENTS.md                # Règles agent Next.js, régénéré automatiquement par `next dev`
@@ -192,6 +214,9 @@ xrent-manager/
 | `src/app/api/invoices/route.ts`, `[id]/route.ts`, `[id]/pdf/route.tsx` | (Sprint 6) CRUD `Invoice`, `agencyId`/`clientId`/`currency`/`subtotal` toujours dérivés de la `Location` côté serveur, numérotation par tenant, machine à états sur `PATCH` (transitions manuelles uniquement, `PARTIALLY_PAID`/`PAID` réservés à `recomputeInvoiceStatus`), suppression restreinte à `DRAFT` sans paiement, PDF via `@react-pdf/renderer`. |
 | `src/app/api/payments/route.ts`, `[id]/route.ts` | (Sprint 6) CRUD `Payment`, `currency` toujours dérivée de l'`Invoice`, montant validé contre le solde restant dû, chaque mutation recalcule `Invoice.amountPaid`/`status` depuis la somme réelle des paiements. |
 | `src/app/api/reports/revenue/route.ts`, `vehicles/route.ts` | (Sprint 6) `GET`, réservées `ADMIN` — revenu encaissé par mois (`Payment`), utilisation véhicule et classement par revenu facturé (`Location`). |
+| `src/app/api/maintenances/route.ts`, `[id]/route.ts` | (Sprint 7) CRUD `Maintenance`, `agencyId`/`currency` toujours dérivés du `Vehicle` côté serveur, machine à états sur `PATCH`, suppression restreinte à `SCHEDULED`. |
+| `src/app/api/alerts/route.ts`, `[id]/acknowledge/route.ts`, `[id]/resolve/route.ts` | (Sprint 7) `GET` (liste filtrable) + `PATCH` acknowledge/resolve — aucune route `POST`/`DELETE` (alertes créées par le système uniquement, jamais supprimables). |
+| `src/app/api/tasks/check-alerts/route.ts` | (Sprint 7) `POST`, réservé `ADMIN` — déclenche `checkDueMaintenances`/`checkReturnsToday`/`checkOverdueInvoices` pour le tenant connecté. |
 | `src/app/dashboard/layout.tsx` | (Sprint 4) Server Component : résout la session et le tenant courant, redirige vers `/login` si non authentifié, fournit `DashboardLayout`. |
 | `src/components/layout/DataTable.tsx` | (Sprint 4) Table générique (TanStack Table **v9** — API `useTable`/`tableFeatures`, pas `useReactTable` — voir `node_modules/@tanstack/react-table/skills/migrate-v8-to-v9/`), tri par colonne et pagination, réutilisée par les pages tenants/agencies/users. |
 | `src/lib/api.ts` | (Sprint 4) Wrapper `fetch` pour les appels `/api/*` côté client ; lève `ApiError` avec le message `{ error }` renvoyé par la route. |
@@ -236,11 +261,13 @@ D'après les principes produit de démarrage :
 - Facturation (modèle `Invoice` implémenté Sprint 6 — liée à une `Location`, numérotation par tenant, TVA/remise/total, machine à états, export PDF)
 - Paiements (modèle `Payment` implémenté Sprint 6 — enregistrement manuel uniquement, pas d'intégration Stripe/PayPal ; voir HANDOFF.md section 8 pour les points encore ouverts)
 - Rapports (implémentés Sprint 6 — revenu par mois, utilisation véhicule, classement véhicules, export CSV ; réservés ADMIN)
+- Maintenance véhicules (modèle `Maintenance` implémenté Sprint 7 — CRUD, machine à états, historique conservé, `/dashboard/maintenances`)
+- Alertes / notifications (modèle `Alert` implémenté Sprint 7 — in-app uniquement, pas d'email ; badge header, `/dashboard/alerts`, génération automatique via `src/lib/scheduled-tasks.ts`/`POST /api/tasks/check-alerts`)
 - Cautions
 - Incidents (véhicule/location)
 - Audit
 - Export / Import (CSV disponible pour les rapports depuis le Sprint 6 ; pas d'import, pas d'export pour les autres modules)
-- Dashboard-admin (coquille + pages de base implémentées, Sprint 4 ; module métier véhicules/locations depuis Sprint 5 ; facturation/paiements/rapports depuis Sprint 6)
+- Dashboard-admin (coquille + pages de base implémentées, Sprint 4 ; module métier véhicules/locations depuis Sprint 5 ; facturation/paiements/rapports depuis Sprint 6 ; maintenance/alertes depuis Sprint 7)
 
 Le détail des règles associées à chaque domaine est en cours de définition dans [DOMAINRULES.md](./DOMAINRULES.md) ; beaucoup de points y sont marqués **À DÉCIDER**.
 

@@ -3,10 +3,11 @@
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { signOut } from "next-auth/react";
-import { LogOut, Menu, Settings } from "lucide-react";
+import { Bell, LogOut, Menu, Settings } from "lucide-react";
 import {
   Avatar,
   AvatarFallback,
+  Badge,
   Button,
   DropdownMenu,
   DropdownMenuContent,
@@ -26,6 +27,7 @@ interface HeaderProps {
   tenantName: string;
   user: HeaderUser;
   onMenuClick: () => void;
+  pendingAlertCount?: number;
 }
 
 function initials(name?: string | null, email?: string | null): string {
@@ -37,7 +39,7 @@ function initials(name?: string | null, email?: string | null): string {
   return source.slice(0, 2).toUpperCase();
 }
 
-export function Header({ tenantName, user, onMenuClick }: HeaderProps) {
+export function Header({ tenantName, user, onMenuClick, pendingAlertCount = 0 }: HeaderProps) {
   const router = useRouter();
 
   async function handleSignOut() {
@@ -60,6 +62,24 @@ export function Header({ tenantName, user, onMenuClick }: HeaderProps) {
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted-foreground">
         {tenantName}
       </span>
+
+      <Button
+        variant="ghost"
+        size="icon"
+        className="relative"
+        render={<Link href="/dashboard/alerts" />}
+        aria-label={`Alertes${pendingAlertCount > 0 ? ` (${pendingAlertCount} en attente)` : ""}`}
+      >
+        <Bell className="size-4" />
+        {pendingAlertCount > 0 && (
+          <Badge
+            variant="destructive"
+            className="absolute -right-1 -top-1 h-4 min-w-4 justify-center rounded-full px-1 text-[10px] leading-none"
+          >
+            {pendingAlertCount > 99 ? "99+" : pendingAlertCount}
+          </Badge>
+        )}
+      </Button>
 
       <DropdownMenu>
         <DropdownMenuTrigger

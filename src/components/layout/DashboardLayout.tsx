@@ -13,10 +13,11 @@ interface DashboardLayoutUser {
 interface DashboardLayoutProps {
   tenantName: string;
   user: DashboardLayoutUser;
+  pendingAlertCount?: number;
   children: React.ReactNode;
 }
 
-export function DashboardLayout({ tenantName, user, children }: DashboardLayoutProps) {
+export function DashboardLayout({ tenantName, user, pendingAlertCount, children }: DashboardLayoutProps) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   return (
@@ -27,6 +28,7 @@ export function DashboardLayout({ tenantName, user, children }: DashboardLayoutP
           tenantName={tenantName}
           user={user}
           onMenuClick={() => setIsSidebarOpen(true)}
+          pendingAlertCount={pendingAlertCount}
         />
         <main className="flex-1 overflow-x-hidden p-4 sm:p-6">{children}</main>
       </div>
