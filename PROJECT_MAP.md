@@ -13,7 +13,7 @@ xrent-manager/
 │   ├── vercel.svg
 │   └── window.svg
 ├── prisma/
-│   ├── schema.prisma        # Tenant, Agency, User (passwordHash, role), UserAgency, Client, Vehicle, Location, Invoice, Payment, Maintenance, Alert, Account, Session, VerificationToken
+│   ├── schema.prisma        # Tenant, Agency, User (passwordHash, role), UserAgency, Client, Vehicle, Location, Invoice, Payment, Maintenance, Alert, Invitation, AuditLog, Account, Session, VerificationToken
 │   └── migrations/
 │       ├── migration_lock.toml
 │       ├── 20260811133155_init_tenant_agency_user/
@@ -26,7 +26,9 @@ xrent-manager/
 │       │   └── migration.sql
 │       ├── 20260811205048_add_invoice_and_payment_models/
 │       │   └── migration.sql
-│       └── 20260812090456_add_maintenance_and_alert_models/
+│       ├── 20260812090456_add_maintenance_and_alert_models/
+│       │   └── migration.sql
+│       └── 20260812101414_add_invitation_and_audit_log_models/
 │           └── migration.sql
 ├── components.json          # Config shadcn/ui (style base-nova, alias @/components, @/lib, @/hooks)
 ├── src/
@@ -41,6 +43,11 @@ xrent-manager/
 │   │   │   │   ├── page.tsx        # Server wrapper + <Suspense> (callbackUrl via useSearchParams)
 │   │   │   │   └── LoginForm.tsx   # Client Component : signIn("credentials", …) de next-auth/react
 │   │   │   └── register/page.tsx   # Client Component : POST /api/auth/register
+│   │   ├── invitations/            # (Sprint 9) Route publique, hors (auth)/dashboard — pas de session requise
+│   │   │   ├── layout.tsx          # Layout centré minimal (même style que (auth)/layout.tsx)
+│   │   │   └── [id]/
+│   │   │       ├── page.tsx        # Server Component : lit l'invitation, affiche AcceptInvitationForm ou un statut terminal
+│   │   │       └── AcceptInvitationForm.tsx  # Client Component : POST accept/decline
 │   │   ├── dashboard/
 │   │   │   ├── layout.tsx          # Server Component : session+tenant, redirige /login si non authentifié
 │   │   │   ├── page.tsx            # Stats (agences/users), actions rapides
@@ -53,8 +60,13 @@ xrent-manager/
 │   │   │   │   ├── page.tsx, AgenciesTable.tsx, loading.tsx
 │   │   │   │   ├── new/page.tsx
 │   │   │   │   └── [id]/page.tsx, EditAgencyForm.tsx
-│   │   │   ├── users/              # Lecture seule (voir HANDOFF.md) : pas d'actions modifier/supprimer/rôle
+│   │   │   ├── users/              # (Sprint 9) CRUD rôle/suppression, garde "dernier ADMIN"
 │   │   │   │   ├── page.tsx, UsersTable.tsx, loading.tsx
+│   │   │   │   └── [id]/page.tsx, EditUserForm.tsx
+│   │   │   ├── invitations/        # (Sprint 9) Liste ADMIN + création + lien partageable + révocation
+│   │   │   │   └── page.tsx, InvitationsPanel.tsx
+│   │   │   ├── audit/              # (Sprint 9) Journal d'audit en lecture seule — ADMIN uniquement
+│   │   │   │   └── page.tsx
 │   │   │   ├── vehicles/           # (Sprint 5) CRUD complet, scopé agence
 │   │   │   │   ├── page.tsx, VehiclesTable.tsx, loading.tsx
 │   │   │   │   ├── new/page.tsx
@@ -94,7 +106,16 @@ xrent-manager/
 │   │       ├── agencies/
 │   │       │   ├── route.ts                # GET (liste du tenant connecté)/POST (ADMIN)
 │   │       │   └── [id]/route.ts           # GET/PATCH/DELETE — scopé tenant + agence (UserAgency)
-│   │       ├── users/route.ts              # GET — liste du tenant, ADMIN uniquement (Sprint 4, lecture seule)
+│   │       ├── users/
+│   │       │   ├── route.ts                # GET — liste du tenant, ADMIN uniquement (Sprint 4)
+│   │       │   └── [id]/route.ts           # (Sprint 9) GET/PATCH (rôle, réinitialisation mot de passe)/DELETE — ADMIN uniquement, garde "dernier ADMIN"
+│   │       ├── invitations/                # (Sprint 9)
+│   │       │   ├── route.ts                # GET (liste, ADMIN)/POST (création, ADMIN)
+│   │       │   └── [id]/
+│   │       │       ├── route.ts            # GET (public, champs non sensibles)/DELETE (révocation, ADMIN)
+│   │       │       ├── accept/route.ts     # POST — public, crée le user (email/rôle toujours dérivés de l'invitation)
+│   │       │       └── decline/route.ts    # POST — public
+│   │       ├── audit/route.ts              # (Sprint 9) GET — journal d'audit du tenant, ADMIN uniquement
 │   │       ├── vehicles/                   # (Sprint 5)
 │   │       │   ├── route.ts                # GET (liste, filtres)/POST — scopé tenant + agence
 │   │       │   └── [id]/
@@ -151,10 +172,14 @@ xrent-manager/
 │   │   ├── maintenances.ts  # (Sprint 7) CRUD + machine à états + getDueMaintenances + createMaintenanceFromSchedule
 │   │   ├── alerts.ts        # (Sprint 7) CRUD (sans delete) + machine à états (acknowledge/resolve) + getPendingAlerts
 │   │   ├── scheduled-tasks.ts # (Sprint 7) checkDueMaintenances/checkReturnsToday/checkOverdueInvoices — génération idempotente d'alertes
+│   │   ├── users.ts         # (Sprint 9) updateUserRole/resetUserPassword/deleteUser — garde "dernier ADMIN", nettoyage UserAgency/Alert
+│   │   ├── invitations.ts   # (Sprint 9) createInvitation/acceptInvitation/declineInvitation/revokeInvitation — email/rôle toujours dérivés de l'invitation
+│   │   ├── audit.ts         # (Sprint 9) logAction/getAuditLogs — n'échoue jamais l'action métier appelante
+│   │   ├── password-policy.ts # (Sprint 9) validatePassword() — min 8 caractères + majuscule + chiffre + spécial
 │   │   └── utils.ts         # cn() — généré par shadcn init
 │   └── __tests__/
 │       ├── db.test.ts        # Tests d'isolation multi-tenant (Vitest) sur src/lib/db.ts
-│       ├── auth.test.ts      # Tests d'intégration HTTP : register/login/logout/me
+│       ├── auth.test.ts      # Tests d'intégration HTTP : register/login/logout/me, résolution du tenant à la connexion (Sprint 9)
 │       ├── tenants.test.ts   # Tests CRUD tenants + isolation multi-tenant
 │       ├── agencies.test.ts  # Tests CRUD agencies + isolation multi-tenant/multi-agence
 │       ├── ui.test.tsx       # Tests d'intégration HTTP sur le rendu des pages (login/register/dashboard/users)
@@ -166,6 +191,11 @@ xrent-manager/
 │       ├── maintenances.test.ts # (Sprint 7) CRUD, machine à états, historique conservé, génération d'alertes (check-alerts)
 │       ├── alerts.test.ts     # (Sprint 7) CRUD (lib direct), acknowledge/resolve, filtrage priorité/status
 │       ├── clients.test.ts    # (Sprint 8) CRUD, isolation multi-tenant, recherche, suppression bloquée si location associée
+│       ├── password-policy.test.ts # (Sprint 9) Tests unitaires de validatePassword
+│       ├── users.test.ts      # (Sprint 9) Changement de rôle, garde "dernier ADMIN", suppression, réinitialisation mot de passe
+│       ├── invitations.test.ts # (Sprint 9) Création, acceptation, déclin, expiration, révocation
+│       ├── audit.test.ts      # (Sprint 9) logAction, GET /api/audit ADMIN-only et tenant-scopé
+│       ├── e2e.test.ts        # (Sprint 9) Scénario complet inscription→facturation→rapport + sécurité ciblée sur les nouvelles surfaces
 │       └── helpers/          # testServer.ts (port/URL), http.ts (fetch + cookies), fixtures.ts (register/login de test)
 ├── vitest.global-setup.ts    # Démarre/arrête un vrai serveur `next dev` de test (requis par NextAuth, voir TESTREPORT.md)
 ├── AGENTS.md                # Règles agent Next.js, régénéré automatiquement par `next dev`
@@ -190,7 +220,7 @@ xrent-manager/
 
 `.env` et `.env.test` (non versionnés, exclus par `.gitignore`) contiennent `DATABASE_URL` (`xrent_dev`/`xrent_test`) et `AUTH_SECRET` (secret de signature/chiffrement des sessions JWT NextAuth, généré localement).
 
-`src/components` (Sprint 4) accueille l'UI : `ui/` (shadcn/ui), `layout/` (coquille dashboard) et désormais `invoices/` (Sprint 6, template PDF). Aucun dossier `server/`, `data/`, `tests/`, etc. n'existe à ce jour. `src/lib` accueille la couche d'accès aux données technique, la configuration d'authentification, le wrapper `fetch` pour l'UI (`api.ts`) et désormais la logique **métier** (`vehicles.ts`, `locations.ts`, `clients.ts` depuis le Sprint 5, complété Sprint 8 ; `invoices.ts`, `payments.ts`, `reports.ts` depuis le Sprint 6) — ce choix (rester dans `src/lib` plutôt que créer un dossier `server/`/`data/` dédié) prolonge le pattern déjà en place pour `db.ts`/`authz.ts`, mais reste révisable si le volume de logique métier croît (voir section 3). Les pages d'interface `/login`, `/register`, `/dashboard/*` (dont `/dashboard/vehicles*` et `/dashboard/locations*` depuis le Sprint 5, `/dashboard/invoices*`/`/dashboard/payments`/`/dashboard/reports` depuis le Sprint 6, `/dashboard/clients*` depuis le Sprint 8) existent désormais ; les domaines contrats, cautions, incidents et audit restent entièrement à construire.
+`src/components` (Sprint 4) accueille l'UI : `ui/` (shadcn/ui), `layout/` (coquille dashboard) et désormais `invoices/` (Sprint 6, template PDF). Aucun dossier `server/`, `data/`, `tests/`, etc. n'existe à ce jour. `src/lib` accueille la couche d'accès aux données technique, la configuration d'authentification, le wrapper `fetch` pour l'UI (`api.ts`) et désormais la logique **métier** (`vehicles.ts`, `locations.ts`, `clients.ts` depuis le Sprint 5, complété Sprint 8 ; `invoices.ts`, `payments.ts`, `reports.ts` depuis le Sprint 6 ; `users.ts`, `invitations.ts`, `audit.ts`, `password-policy.ts` depuis le Sprint 9) — ce choix (rester dans `src/lib` plutôt que créer un dossier `server/`/`data/` dédié) prolonge le pattern déjà en place pour `db.ts`/`authz.ts`, mais reste révisable si le volume de logique métier croît (voir section 3). Les pages d'interface `/login`, `/register`, `/dashboard/*` (dont `/dashboard/vehicles*` et `/dashboard/locations*` depuis le Sprint 5, `/dashboard/invoices*`/`/dashboard/payments`/`/dashboard/reports` depuis le Sprint 6, `/dashboard/clients*` depuis le Sprint 8, `/dashboard/users/[id]`/`/dashboard/invitations`/`/dashboard/audit` et la page publique `/invitations/[id]` depuis le Sprint 9) existent désormais ; les domaines contrats et cautions restent entièrement à construire, l'audit reste volontairement limité aux actions Sprint 9 (voir section 4).
 
 ## 2. Rôle des principaux fichiers existants
 
@@ -204,17 +234,23 @@ xrent-manager/
 | `eslint.config.mjs` | Configuration ESLint basée sur `eslint-config-next` (core-web-vitals + typescript). |
 | `AGENTS.md` | Fichier régénéré automatiquement par `next dev` ; contient les règles spécifiques à cette version de Next.js pour les agents IA. Ne pas éditer manuellement son contenu généré. |
 | `CLAUDE.md` | Règles impératives pour les assistants IA et développeurs sur ce projet ; importe `AGENTS.md`. |
-| `prisma/schema.prisma` | Schéma de données : `Tenant`, `Agency`, `User` (`passwordHash`, `role`), `UserAgency`, `Client`, `Vehicle`, `Location` (Sprint 5), `Invoice`, `Payment` (Sprint 6), isolation par `tenantId`/`agencyId` ; `Account`/`Session`/`VerificationToken` pour l'adaptateur NextAuth (OAuth futur, non utilisés pour les sessions actuelles). |
+| `prisma/schema.prisma` | Schéma de données : `Tenant`, `Agency`, `User` (`passwordHash`, `role`), `UserAgency`, `Client`, `Vehicle`, `Location` (Sprint 5), `Invoice`, `Payment` (Sprint 6), `Invitation`, `AuditLog` (Sprint 9), isolation par `tenantId`/`agencyId` ; `Account`/`Session`/`VerificationToken` pour l'adaptateur NextAuth (OAuth futur, non utilisés pour les sessions actuelles). |
 | `src/lib/prisma.ts` | Singleton `PrismaClient`, réutilisé en développement pour éviter l'épuisement de connexions au hot reload Next.js. |
 | `src/lib/db.ts` | Couche d'accès aux données minimale : `getTenantById`, `getAgencyById`, `getUserById`, chacune filtrée par `tenantId` côté serveur. |
-| `src/lib/auth.ts` | Configuration NextAuth v5 : `CredentialsProvider` (email/password, `bcryptjs`), sessions JWT, callbacks `jwt`/`session` (portent `id`/`tenantId`/`role`), exporte `handlers`/`auth`/`signIn`/`signOut`. |
+| `src/lib/auth.ts` | Configuration NextAuth v5 : `CredentialsProvider` (email/password, `bcryptjs`, `tenantId`/`rememberMe` optionnels — Sprint 9), sessions JWT (`maxAge` 30 jours, ajusté par `rememberMe` dans le callback `jwt`), exporte `handlers`/`auth`/`signIn`/`signOut`/`resolveLoginTenants` (Sprint 9 — résolution du tenant à la connexion, vérifie le mot de passe avant de révéler la liste des tenants). |
 | `src/lib/authz.ts` | `getSessionUser()` — récupère l'utilisateur de la session courante. `canAccessAgency()` (Sprint 5) — vérifie qu'une agence appartient au tenant de l'utilisateur *et* (ADMIN, ou MEMBER rattaché via `UserAgency`) ; centralise une vérification auparavant dupliquée dans les routes/pages agencies. `getAccessibleAgencyIds()` (Sprint 5) — liste des agences accessibles (`null` = toutes, pour un ADMIN). |
-| `src/proxy.ts` | Redirection optimiste vers `/login` pour `/dashboard*`/`/settings*` si non authentifié (lecture du JWT côté cookie uniquement, pas de requête base de données). |
-| `src/app/api/auth/register/route.ts` | Crée un `Tenant` et son premier `User` (`role: "ADMIN"`), mot de passe haché avec `bcryptjs`. |
-| `src/app/api/auth/login/route.ts` | Authentifie via `signIn("credentials", …)`, retourne le même message d'erreur pour mot de passe incorrect et compte inexistant. |
+| `src/lib/users.ts` | (Sprint 9) `updateUserRole`/`resetUserPassword`/`deleteUser`, garde `LastAdminError` (409) empêchant de retirer le dernier `ADMIN` d'un tenant (self ou non-self) ; `deleteUser` nettoie `UserAgency`/`Alert.userId` avant suppression (pas de cascade DB sur ces relations). |
+| `src/lib/invitations.ts` | (Sprint 9) `createInvitation`/`acceptInvitation`/`declineInvitation`/`revokeInvitation` ; `id` (cuid) sert d'identifiant non-devinable dans le lien partageable, pas de colonne `token` séparée ; `acceptInvitation` dérive toujours `email`/`role` de l'invitation, jamais du client. |
+| `src/lib/audit.ts` | (Sprint 9) `logAction`/`getAuditLogs`, scopés tenant ; `logAction` n'échoue jamais l'action métier appelante (catch + log console). Câblé uniquement sur les actions Sprint 9 (rôle/suppression user, invitations) — voir section 4. |
+| `src/lib/password-policy.ts` | (Sprint 9) `validatePassword()` — 8 caractères minimum, majuscule, chiffre, caractère spécial ; utilisée par `/api/auth/register`, l'acceptation d'invitation et la réinitialisation de mot de passe par un ADMIN. |
+| `src/proxy.ts` | Redirection optimiste vers `/login` pour `/dashboard*`/`/settings*` si non authentifié (lecture du JWT côté cookie uniquement, pas de requête base de données). N'intercepte pas `/invitations/*` (route publique, Sprint 9). |
+| `src/app/api/auth/register/route.ts` | Crée un `Tenant` et son premier `User` (`role: "ADMIN"`), mot de passe haché avec `bcryptjs`, validé par `validatePassword` (Sprint 9). |
+| `src/app/api/auth/login/route.ts` | Authentifie via `signIn("credentials", …)`, retourne le même message d'erreur pour mot de passe incorrect et compte inexistant. Depuis le Sprint 9 : résout d'abord les tenants candidats (`resolveLoginTenants`) — 0 résultat → 401, >1 → `{ requiresTenantSelection: true, tenants }` sans créer de session, 1 seul → connexion directe. |
 | `src/app/api/tenants/route.ts`, `[id]/route.ts` | CRUD `Tenant`, réservé aux `ADMIN`, strictement scopé au tenant de l'utilisateur connecté (jamais de liste globale). |
 | `src/app/api/agencies/route.ts`, `[id]/route.ts` | CRUD `Agency`, scopé tenant ; lecture ouverte aux `MEMBER` explicitement rattachés via `UserAgency`, écriture réservée aux `ADMIN`. |
-| `src/app/api/users/route.ts` | (Sprint 4) `GET` — liste les users du tenant, réservé ADMIN, ne sélectionne jamais `passwordHash`. Lecture seule : pas de `PATCH`/`DELETE` (voir [HANDOFF.md](./HANDOFF.md)). |
+| `src/app/api/users/route.ts`, `[id]/route.ts` | `GET` liste (Sprint 4, réservé ADMIN, ne sélectionne jamais `passwordHash`) ; `[id]/route.ts` (Sprint 9) `GET`/`PATCH` (`role`, `password`)/`DELETE`, réservés ADMIN, garde "dernier ADMIN", chaque mutation de rôle/suppression journalisée (`logAction`). |
+| `src/app/api/invitations/route.ts`, `[id]/route.ts`, `[id]/accept/route.ts`, `[id]/decline/route.ts` | (Sprint 9) `GET`/`POST /api/invitations` réservés ADMIN ; `GET /[id]` public (champs non sensibles) ; `DELETE /[id]` révocation, ADMIN ; `accept`/`decline` publics (l'invité n'a pas encore de session dans ce tenant), `email`/`role` toujours dérivés de l'invitation. |
+| `src/app/api/audit/route.ts` | (Sprint 9) `GET`, réservé ADMIN, tenant-scopé, filtrable par `resource`/`userId`. |
 | `src/app/api/vehicles/route.ts`, `[id]/route.ts`, `[id]/availability/route.ts` | (Sprint 5) CRUD `Vehicle` + disponibilité, scopé tenant + agence (`canAccessAgency`), immatriculation unique par tenant, suppression bloquée si des locations existent. |
 | `src/app/api/locations/route.ts`, `[id]/route.ts` | (Sprint 5) CRUD `Location`, `agencyId` toujours dérivé du véhicule côté serveur (jamais du client), vérification de disponibilité et calcul de `totalPrice` à la création, machine à états sur `PATCH`, suppression restreinte aux statuts `PENDING`/`CANCELLED`. |
 | `src/app/api/clients/route.ts`, `[id]/route.ts` | `GET`/`POST` (Sprint 5) + `GET`/`PATCH`/`DELETE /[id]` (Sprint 8) — CRUD `Client`, tenant-scopé sans `agencyId`, suppression bloquée si des locations existent (voir DOMAINRULES.md section 9). |
@@ -235,6 +271,7 @@ xrent-manager/
 | `src/__tests__/maintenances.test.ts`, `alerts.test.ts` | (Sprint 7) Tests CRUD/machine à états/historique conservé, génération idempotente d'alertes, acknowledge/resolve. |
 | `src/__tests__/clients.test.ts` | (Sprint 8) Tests CRUD `Client`, isolation multi-tenant, recherche, suppression bloquée si location associée. |
 | `src/__tests__/ui.test.tsx` | (Sprint 4) Tests d'intégration HTTP sur le rendu des pages `/login`, `/register`, `/dashboard*` ; voir [TESTREPORT.md](./TESTREPORT.md) pour la note sur `redirect()` en contexte de streaming. |
+| `src/__tests__/{password-policy,users,invitations,audit,e2e}.test.ts` | (Sprint 9) Politique de mot de passe (unitaire), rôle/suppression/garde "dernier ADMIN", invitations (création/acceptation/déclin/expiration/révocation), journal d'audit, scénario complet + sécurité ciblée sur les nouvelles surfaces. Voir [TESTREPORT.md](./TESTREPORT.md). |
 
 ## 3. Structure cible indicative (non existante à ce jour)
 
@@ -263,7 +300,7 @@ D'après les principes produit de démarrage :
 
 - Tenants (CRUD + UI implémentés, Sprint 3–4)
 - Agences (CRUD + UI implémentés, Sprint 3–4)
-- Utilisateurs et rôles (inscription + rôles `ADMIN`/`MEMBER` implémentés Sprint 3 ; liste en lecture seule Sprint 4 ; modification de rôle, suppression, invitation et granularité fine des permissions restent À DÉCIDER)
+- Utilisateurs et rôles (inscription + rôles `ADMIN`/`MEMBER` implémentés Sprint 3 ; liste en lecture seule Sprint 4 ; modification de rôle, suppression, invitation implémentées Sprint 9, avec garde "dernier ADMIN" ; granularité fine des permissions au-delà de `ADMIN`/`MEMBER` reste À DÉCIDER)
 - Véhicules (CRUD + UI + disponibilité implémentés, Sprint 5 ; catégorie = champ texte libre sur `Vehicle`, pas de modèle `Category` dédié — voir DOMAINRULES.md section 6)
 - Réservations et contrats (fusionnés en un seul modèle `Location` avec machine à états, Sprint 5 — décision explicite, voir HANDOFF.md et DOMAINRULES.md section 7/8)
 - Clients (modèle `Client` minimal implémenté Sprint 5 — nom/email/téléphone ; module dédié complet implémenté Sprint 8 — CRUD, page `/dashboard/clients*`, en plus de la sélection/création inline déjà disponible depuis le formulaire de location)
@@ -274,9 +311,9 @@ D'après les principes produit de démarrage :
 - Alertes / notifications (modèle `Alert` implémenté Sprint 7 — in-app uniquement, pas d'email ; badge header, `/dashboard/alerts`, génération automatique via `src/lib/scheduled-tasks.ts`/`POST /api/tasks/check-alerts`)
 - Cautions
 - Incidents (véhicule/location)
-- Audit
+- Audit (modèle `AuditLog` implémenté Sprint 9 — `/dashboard/audit`, réservé ADMIN ; périmètre volontairement limité aux actions Sprint 9 — rôle/suppression user, invitations — pas de rétrofit sur le reste du CRUD, voir HANDOFF.md)
 - Export / Import (CSV disponible pour les rapports depuis le Sprint 6 ; pas d'import, pas d'export pour les autres modules)
-- Dashboard-admin (coquille + pages de base implémentées, Sprint 4 ; module métier véhicules/locations depuis Sprint 5 ; facturation/paiements/rapports depuis Sprint 6 ; maintenance/alertes depuis Sprint 7)
+- Dashboard-admin (coquille + pages de base implémentées, Sprint 4 ; module métier véhicules/locations depuis Sprint 5 ; facturation/paiements/rapports depuis Sprint 6 ; maintenance/alertes depuis Sprint 7 ; gestion utilisateurs/invitations/audit depuis Sprint 9)
 
 Le détail des règles associées à chaque domaine est en cours de définition dans [DOMAINRULES.md](./DOMAINRULES.md) ; beaucoup de points y sont marqués **À DÉCIDER**.
 
@@ -287,7 +324,7 @@ Principe cible (non encore implémenté, détaillé dans [ARCHITECTURE.md](./ARC
 - **Interface** (`src/app`, `src/components`) : présentation, ne doit contenir aucune logique d'autorisation ni aucun secret.
 - **Logique serveur** (server actions / routes serveur) : validation des entrées, application des règles métier, vérification systématique de l'identité, du rôle, du tenant, de l'agence et de l'appartenance de la ressource.
 - **Accès aux données** (`src/lib`, nom définitif toujours **À DÉCIDER**) : `src/lib/db.ts` centralise les lectures scopées `tenantId` réutilisées par `/api/agencies*` ; les routes `/api/tenants*` interrogent Prisma directement avec filtrage explicite (pas encore consolidé dans `db.ts`).
-- **Sécurité** (transverse) : authentification, autorisation, audit — ne doit jamais être contournable depuis la couche interface. **Authentification et autorisation implémentées (Sprint 3)** : `src/lib/auth.ts`, `src/lib/authz.ts`, vérifications explicites dans chaque route API. Les pages `/dashboard/*` (Sprint 4) revérifient elles-mêmes la session/le rôle côté serveur (`getSessionUser()`) plutôt que de faire confiance à `src/proxy.ts` seul. **Audit toujours non implémenté** (voir [HANDOFF.md](./HANDOFF.md) section 3).
+- **Sécurité** (transverse) : authentification, autorisation, audit — ne doit jamais être contournable depuis la couche interface. **Authentification et autorisation implémentées (Sprint 3)** : `src/lib/auth.ts`, `src/lib/authz.ts`, vérifications explicites dans chaque route API. Les pages `/dashboard/*` (Sprint 4) revérifient elles-mêmes la session/le rôle côté serveur (`getSessionUser()`) plutôt que de faire confiance à `src/proxy.ts` seul. **Audit implémenté depuis le Sprint 9** (`src/lib/audit.ts`, `/dashboard/audit`), mais volontairement limité aux actions sensibles introduites ce sprint — voir [HANDOFF.md](./HANDOFF.md) section 3.
 
 Cette séparation existe désormais en grande partie en code (accès aux données, authentification, autorisation serveur, UI dashboard de base) ; la logique **métier** (véhicules, réservations…) reste entièrement à construire.
 

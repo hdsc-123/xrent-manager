@@ -26,7 +26,7 @@ beforeAll(async () => {
     tenantSlug: `invoices-test-a-${runId}`,
     name: "Admin A",
     email: `admin-a-${runId}@test.local`,
-    password: "correct-horse-battery-staple",
+    password: "Correct-Horse-Battery-Staple9!",
   });
   createdTenantIds.push(adminA.tenantId);
 
@@ -35,7 +35,7 @@ beforeAll(async () => {
     tenantSlug: `invoices-test-b-${runId}`,
     name: "Admin B",
     email: `admin-b-${runId}@test.local`,
-    password: "correct-horse-battery-staple",
+    password: "Correct-Horse-Battery-Staple9!",
   });
   createdTenantIds.push(adminB.tenantId);
 
@@ -43,7 +43,7 @@ beforeAll(async () => {
     tenantId: adminA.tenantId,
     name: "Member A",
     email: `member-a-${runId}@test.local`,
-    password: "correct-horse-battery-staple",
+    password: "Correct-Horse-Battery-Staple9!",
   });
 
   const agencyAResponse = await apiFetch("/api/agencies", {

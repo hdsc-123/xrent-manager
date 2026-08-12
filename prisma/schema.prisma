@@ -23,6 +23,8 @@ model Tenant {
   payments     Payment[]
   maintenances Maintenance[]
   alerts       Alert[]
+  invitations  Invitation[]
+  auditLogs    AuditLog[]
 }
 
 model Agency {
@@ -60,6 +62,7 @@ model User {
   accounts     Account[]
   sessions     Session[]
   alerts       Alert[]
+  sentInvitations Invitation[]
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -348,6 +351,58 @@ model Alert {
   @@index([userId])
   @@index([status])
   @@index([priority])
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+// Invitation d'un nouvel utilisateur dans un tenant existant (Sprint 9). Pas de colonne
+// `token` séparée : `id` (cuid, haute entropie) sert directement d'identifiant non-devinable
+// dans le lien partageable — cohérent avec le reste du schéma qui utilise déjà cuid() comme
+// identifiant opaque partout (véhicules, locations...). Aucun envoi d'email (décision Sprint 7
+// reconduite) : le lien est partagé manuellement par l'ADMIN depuis /dashboard/invitations.
+model Invitation {
+  id               String           @id @default(cuid())
+  tenantId         String
+  email            String
+  role             String           @default("MEMBER")
+  status           InvitationStatus @default(PENDING)
+  invitedByUserId  String
+  expiresAt        DateTime
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
+  invitedBy  User   @relation(fields: [invitedByUserId], references: [id])
+
+  @@index([tenantId])
+  @@index([email])
+  @@index([status])
+}
+
+// Journal d'audit (Sprint 9), scopé tenant. userId nullable : l'acteur peut avoir été
+// supprimé depuis (deleteUser ne doit jamais échouer à cause de l'audit). Portée volontairement
+// limitée aux actions sensibles introduites par ce sprint (rôle/suppression user, invitations) —
+// pas de rétrofit sur le reste du CRUD existant, voir HANDOFF.md.
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String?
+  action     String
+  resource   String
+  resourceId String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([resource])
+  @@index([createdAt])
 }
 
 // Modèles NextAuth (Auth.js) requis par @auth/prisma-adapter.

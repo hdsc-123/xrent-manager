@@ -1,7 +1,9 @@
 "use client";
 
 import { useMemo } from "react";
-import { Badge } from "@/components/ui";
+import Link from "next/link";
+import { Eye } from "lucide-react";
+import { Badge, Button } from "@/components/ui";
 import { DataTable, type DataTableColumn } from "@/components/layout/DataTable";
 
 export interface UserRow {
@@ -30,6 +32,22 @@ export function UsersTable({ users }: { users: UserRow[] }) {
         accessorKey: "createdAt",
         header: "Depuis",
         cell: ({ getValue }) => new Date(getValue<string>()).toLocaleDateString("fr-FR"),
+      },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => (
+          <div className="flex justify-end">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Détails"
+              render={<Link href={`/dashboard/users/${row.original.id}`} />}
+            >
+              <Eye className="size-4" />
+            </Button>
+          </div>
+        ),
       },
     ],
     []

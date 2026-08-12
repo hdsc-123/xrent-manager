@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { validatePassword } from "@/lib/password-policy";
 
 interface RegisterBody {
   tenantName?: string;
@@ -54,11 +55,9 @@ export async function POST(request: Request) {
     );
   }
 
-  if (password.length < 8) {
-    return NextResponse.json(
-      { error: "Le mot de passe doit contenir au moins 8 caractères." },
-      { status: 400 }
-    );
+  const passwordErrors = validatePassword(password);
+  if (passwordErrors.length > 0) {
+    return NextResponse.json({ error: passwordErrors[0], errors: passwordErrors }, { status: 400 });
   }
 
   const passwordHash = await bcrypt.hash(password, 12);

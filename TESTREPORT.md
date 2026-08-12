@@ -31,6 +31,10 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 | 2026-08-12 | `npm run lint` (Sprint 8, module clients dédié) | ✅ Validé | Aucune erreur ESLint |
 | 2026-08-12 | `npm run build` (Sprint 8) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; nouvelle route API `/api/clients/[id]` + 3 nouvelles pages `/dashboard/clients*` compilées (31 routes API + 25 pages `/dashboard/*` au total) |
 | 2026-08-12 | `npm run test` (Vitest, Sprint 8) | ✅ Validé | 146/146 tests passés sur 13 fichiers (ajout de `clients.test.ts`), voir section 3 « Tests module clients (Sprint 8) » |
+| 2026-08-12 | `npm run lint` (Sprint 9, gestion des utilisateurs, invitations, audit, résolution de tenant) | ✅ Validé | Aucune erreur ESLint |
+| 2026-08-12 | `npm run build` (Sprint 9) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; nouvelles routes API `/api/users/[id]`, `/api/invitations*`, `/api/audit` + nouvelles pages `/dashboard/users/[id]`, `/dashboard/invitations`, `/dashboard/audit`, `/invitations/[id]` (publique) compilées |
+| 2026-08-12 | `npm run test` (Vitest, Sprint 9) | ✅ Validé | 187/187 tests passés sur 18 fichiers (ajout de `password-policy.test.ts`, `users.test.ts`, `invitations.test.ts`, `audit.test.ts`, `e2e.test.ts`, extension de `auth.test.ts`), voir section 3 « Tests utilisateurs, invitations, audit et résolution de tenant (Sprint 9) » |
+| 2026-08-12 | Vérification manuelle (Sprint 9) | ✅ Validé | Serveur `next dev` réel : inscription → connexion → invitation créée depuis `/dashboard/invitations` → page publique `/invitations/[id]` → acceptation → user créé avec le rôle invité → entrée visible dans `/dashboard/audit` → tentative de rétrogradation du dernier ADMIN refusée (409) ; données de test nettoyées après vérification |
 
 **Premier test métier disponible depuis le Sprint 5** (véhicules, locations) — jusqu'ici, aucun module métier n'existait dans le code (voir [HANDOFF.md](./HANDOFF.md) et [PROJECT_MAP.md](./PROJECT_MAP.md)). La couche d'accès aux données technique (`src/lib/db.ts`), l'authentification, le CRUD tenants/agences et désormais véhicules/locations disposent de tests d'isolation multi-tenant et multi-agence.
 
@@ -38,7 +42,7 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 
 - Framework installé : **Vitest** (`npm run test`), choisi en Sprint 2 pour sa compatibilité native avec TypeScript/ESM et Next.js 16.
 - Base de test dédiée : **`xrent_test`**, distincte de `xrent_dev`. `vitest.config.mts` charge `DATABASE_URL` depuis `.env.test` via `loadEnv` de Vite (mode `test`) ; la migration `init_tenant_agency_user` y est appliquée via `prisma migrate deploy`.
-- Tests disponibles : isolation multi-tenant de la couche d'accès aux données (`src/__tests__/db.test.ts`, section 3 « Tests multi-tenant ») ; tests métier véhicules/locations depuis le Sprint 5 (section 3 « Tests métier véhicules et locations (Sprint 5) ») ; tests métier facturation/paiements/rapports depuis le Sprint 6 (section 3 « Tests facturation, paiements et rapports (Sprint 6) ») ; tests maintenance/alertes depuis le Sprint 7 (section 3 « Tests maintenance et alertes (Sprint 7) ») ; tests module clients depuis le Sprint 8 (section 3 « Tests module clients (Sprint 8) »).
+- Tests disponibles : isolation multi-tenant de la couche d'accès aux données (`src/__tests__/db.test.ts`, section 3 « Tests multi-tenant ») ; tests métier véhicules/locations depuis le Sprint 5 (section 3 « Tests métier véhicules et locations (Sprint 5) ») ; tests métier facturation/paiements/rapports depuis le Sprint 6 (section 3 « Tests facturation, paiements et rapports (Sprint 6) ») ; tests maintenance/alertes depuis le Sprint 7 (section 3 « Tests maintenance et alertes (Sprint 7) ») ; tests module clients depuis le Sprint 8 (section 3 « Tests module clients (Sprint 8) ») ; tests gestion des utilisateurs/invitations/audit/résolution de tenant à la connexion depuis le Sprint 9 (section 3 « Tests utilisateurs, invitations, audit et résolution de tenant (Sprint 9) »).
 - Non encore disponible : tests de concurrence, de charge, de sécurité (OWASP WSTG) ou de régression.
 
 ## 3. Stratégie future de tests
@@ -177,6 +181,39 @@ Couverture :
 - Suppression : autorisée pour un client sans location ; refusée (409, `ClientHasLocationsError`) pour un client ayant au moins une location associée — même principe testé que `DELETE /api/vehicles/[id]` (Sprint 5).
 
 Limite connue, partagée avec les autres suites HTTP : dépendance à un serveur `next dev` démarré pour la durée de la suite (port 3811).
+
+### Tests utilisateurs, invitations, audit et résolution de tenant (Sprint 9)
+
+`src/__tests__/{password-policy,users,invitations,audit,e2e}.test.ts` et l'extension de `src/__tests__/auth.test.ts` prolongent l'approche « intégration HTTP réelle » des suites précédentes (sauf `password-policy.test.ts`, unitaire pur, aucun serveur requis).
+
+Couverture `users.test.ts` :
+- `PATCH`/`DELETE /api/users/[id]` réservés ADMIN (403 pour un MEMBER), isolation multi-tenant (404 sur un user d'un autre tenant).
+- **Garde « dernier ADMIN »** : rétrogradation et suppression du dernier `ADMIN` d'un tenant refusées (409, `LastAdminError`), y compris quand l'action porte sur soi-même.
+- Réinitialisation de mot de passe par un ADMIN : validée par `validatePassword` (400 si non conforme), connexion possible avec le nouveau mot de passe après réinitialisation.
+- Suppression : nettoyage effectif des `UserAgency` associées (vérifié directement via Prisma après suppression).
+
+Couverture `invitations.test.ts` :
+- `POST /api/invitations` réservé ADMIN, refuse un email déjà utilisateur du tenant (409).
+- `GET /api/invitations/[id]` public (pas de session requise), n'expose que des champs non sensibles.
+- `POST /api/invitations/[id]/accept` : crée le user avec l'email et le rôle de l'invitation, **ignore tout email fourni par le client** (vérifié explicitement) ; refuse une invitation déjà acceptée (409), expirée (410, avec passage automatique au statut `EXPIRED`), ou un mot de passe non conforme (400).
+- `POST /api/invitations/[id]/decline` marque l'invitation `DECLINED`.
+- `DELETE /api/invitations/[id]` (révocation) réservé ADMIN et tenant-scopé (404 sur une invitation d'un autre tenant, voir `e2e.test.ts`).
+
+Couverture `audit.test.ts` :
+- `logAction` insère une entrée lors d'un changement de rôle et lors de la création d'une invitation.
+- `GET /api/audit` : 401 non authentifié, 403 pour un MEMBER, isolation multi-tenant (jamais de log d'un autre tenant).
+
+Couverture de l'extension de `auth.test.ts` (résolution du tenant à la connexion, Option B) :
+- Deux tenants enregistrés avec le même email + mot de passe → `POST /api/auth/login` sans `tenantId` renvoie `{ requiresTenantSelection: true, tenants: [...] }`, **aucun cookie de session posé**.
+- Fourniture explicite de `tenantId` → connexion réussie au tenant précis.
+- Mot de passe invalide sur un email partagé → 401 générique, sans jamais révéler la liste des tenants (vérifié explicitement, cohérent avec SECURITY.md section 3).
+- **Piège découvert pendant ce sprint** : `signIn()` de NextAuth (appelé côté serveur) sérialise ses options via `URLSearchParams`, qui coerce une valeur `undefined` en la chaîne littérale `"undefined"` — passer `tenantId: undefined` directement cassait silencieusement le lookup tenant-scopé (l'`authorize()` cherchait un tenant `"undefined"` inexistant). Corrigé en n'incluant la clé `tenantId` dans les options que lorsqu'elle est réellement définie (`src/app/api/auth/login/route.ts`).
+
+Couverture `e2e.test.ts` :
+- Scénario complet : inscription → agence → véhicule → client → location → facture → paiement (facture `PAID`) → rapport de revenu (`/api/reports/revenue`) → invitation d'un second utilisateur → acceptation → connexion du nouvel utilisateur.
+- Sécurité ciblée sur les nouvelles surfaces Sprint 9 : un ADMIN ne peut ni lire ni modifier un user d'un autre tenant (404), ni révoquer l'invitation d'un autre tenant (404) ; un MEMBER reçoit 403 sur `/api/audit`, `/api/invitations` (GET) et `PATCH /api/users/[id]`.
+
+Limite connue, partagée avec les autres suites HTTP : dépendance à un serveur `next dev` démarré pour la durée de la suite (port 3811). Limite propre à ce sprint : le journal d'audit n'est testé que sur les actions instrumentées (rôle/suppression user, invitations) — pas de test généralisé sur le reste du CRUD (voir HANDOFF.md, périmètre volontairement limité).
 
 ### Tests de concurrence
 Vérifieront le comportement du système en cas d'accès concurrent à une même ressource (ex. deux réservations simultanées sur le même véhicule). Aucun test de concurrence n'existe à ce jour.

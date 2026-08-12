@@ -20,6 +20,37 @@ interface ExtendedToken {
   role?: string;
 }
 
+const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 jours ("se souvenir de moi" coché)
+const SESSION_SHORT_MAX_AGE_SECONDS = 24 * 60 * 60; // 1 jour ("se souvenir de moi" décoché)
+
+/**
+ * Vérifie le mot de passe pour tous les users partageant cet email, tous tenants
+ * confondus (Sprint 9, résolution du tenant à la connexion — Option B, HANDOFF.md point
+ * 16). Le mot de passe est vérifié *avant* de révéler la liste des tenants, pour ne
+ * jamais exposer l'appartenance multi-tenant d'un email sans preuve d'identité
+ * (SECURITY.md section 3 : ne jamais distinguer compte inexistant / mot de passe invalide).
+ */
+export async function resolveLoginTenants(
+  email: string,
+  password: string
+): Promise<{ id: string; name: string }[]> {
+  const candidates = await prisma.user.findMany({
+    where: { email },
+    select: { tenantId: true, passwordHash: true, tenant: { select: { id: true, name: true } } },
+  });
+
+  const matches: { id: string; name: string }[] = [];
+  for (const candidate of candidates) {
+    if (!candidate.passwordHash) continue;
+    const isValid = await bcrypt.compare(password, candidate.passwordHash);
+    if (isValid) {
+      matches.push({ id: candidate.tenant.id, name: candidate.tenant.name });
+    }
+  }
+
+  return matches;
+}
+
 /**
  * Session strategy is JWT, not "database": NextAuth's CredentialsProvider
  * refuses to run under the "database" session strategy (throws
@@ -29,7 +60,7 @@ interface ExtendedToken {
  */
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(prisma),
-  session: { strategy: "jwt" },
+  session: { strategy: "jwt", maxAge: SESSION_MAX_AGE_SECONDS },
   pages: {
     signIn: "/login",
   },
@@ -38,21 +69,30 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       credentials: {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
+        tenantId: { label: "Tenant", type: "text" },
+        rememberMe: { label: "Remember me", type: "text" },
       },
       async authorize(credentials) {
         const email =
           typeof credentials?.email === "string" ? credentials.email : undefined;
         const password =
           typeof credentials?.password === "string" ? credentials.password : undefined;
+        const tenantId =
+          typeof credentials?.tenantId === "string" && credentials.tenantId
+            ? credentials.tenantId
+            : undefined;
+        const rememberMe = credentials?.rememberMe === "true";
 
         if (!email || !password) {
           return null;
         }
 
-        // Un email n'est unique que par tenant (@@unique([tenantId, email])) : en cas
-        // d'email dupliqué entre tenants, ce lookup est ambigu — voir HANDOFF.md, point
-        // À DÉCIDER sur la résolution du tenant à la connexion.
-        const user = await prisma.user.findFirst({ where: { email } });
+        // Un email n'est unique que par tenant (@@unique([tenantId, email])). Si tenantId
+        // est fourni (résolution explicite, Sprint 9), lookup non ambigu ; sinon findFirst
+        // (cas non ambigu où l'email n'existe que dans un seul tenant).
+        const user = tenantId
+          ? await prisma.user.findUnique({ where: { tenantId_email: { tenantId, email } } })
+          : await prisma.user.findFirst({ where: { email } });
 
         if (!user?.passwordHash) {
           return null;
@@ -70,6 +110,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           name: user.name,
           tenantId: user.tenantId,
           role: user.role,
+          rememberMe,
         };
       },
     }),
@@ -84,6 +125,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         extendedToken.id = user.id;
         extendedToken.tenantId = (user as { tenantId: string }).tenantId;
         extendedToken.role = (user as { role: string }).role;
+        const rememberMe = (user as { rememberMe?: boolean }).rememberMe;
+        const maxAge = rememberMe === false ? SESSION_SHORT_MAX_AGE_SECONDS : SESSION_MAX_AGE_SECONDS;
+        extendedToken.exp = Math.floor(Date.now() / 1000) + maxAge;
       }
       return extendedToken;
     },

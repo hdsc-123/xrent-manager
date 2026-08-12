@@ -26,7 +26,7 @@ beforeAll(async () => {
     tenantSlug: `reports-test-${runId}`,
     name: "Admin",
     email: `admin-${runId}@test.local`,
-    password: "correct-horse-battery-staple",
+    password: "Correct-Horse-Battery-Staple9!",
   });
   createdTenantIds.push(admin.tenantId);
 

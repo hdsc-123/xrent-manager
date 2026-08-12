@@ -23,7 +23,7 @@ beforeAll(async () => {
     tenantSlug: `ui-test-tenant-${runId}`,
     name: "UI Admin",
     email: `ui-admin-${runId}@test.local`,
-    password: "correct-horse-battery-staple",
+    password: "Correct-Horse-Battery-Staple9!",
   });
   createdTenantIds.push(admin.tenantId);
 
@@ -31,7 +31,7 @@ beforeAll(async () => {
     tenantId: admin.tenantId,
     name: "UI Member",
     email: `ui-member-${runId}@test.local`,
-    password: "correct-horse-battery-staple",
+    password: "Correct-Horse-Battery-Staple9!",
   });
 });
 

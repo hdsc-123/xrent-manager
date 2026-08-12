@@ -1,6 +1,6 @@
 # SECURITY.md — Sécurité
 
-Ce document définit les règles de sécurité de XRent Manager. Aucun mécanisme décrit ici n'est implémenté à ce jour (le projet est au stade Sprint 1 — cadrage architectural validé, aucune implémentation technique démarrée) : il s'agit d'exigences à respecter dès la conception des premiers modules, pas d'un état des lieux d'une implémentation existante.
+Ce document définit les règles de sécurité de XRent Manager. Il mélange des exigences à respecter (marquées **À DÉCIDER** quand le détail n'est pas encore tranché) et l'état réel de ce qui est **implémenté**, section par section — chaque section indique explicitement son statut ; ne pas déduire l'état d'une section à partir d'une autre.
 
 ## 1. Séparation stricte entre tenants
 
@@ -20,7 +20,8 @@ Ce document définit les règles de sécurité de XRent Manager. Aucun mécanism
 
 - `src/app/api/auth/login/route.ts` renvoie systématiquement le même message d'erreur (« Identifiants invalides. », HTTP 401) pour un mot de passe incorrect et pour un email inexistant — vérifié par test (`src/__tests__/auth.test.ts`), conformément à l'exigence de ne pas distinguer un compte existant d'un compte inexistant.
 - **Non implémenté** : limitation du nombre de tentatives (protection brute force), mécanisme de récupération de compte (mot de passe oublié), MFA — tous **À DÉCIDER**, à traiter avant mise en production.
-- **Limite structurelle connue** : `User.email` n'est unique que par tenant (`@@unique([tenantId, email])`, pas globalement). La connexion (`/api/auth/login`) résout l'utilisateur par email seul (`findFirst`) : en cas d'email identique dans deux tenants différents, ce lookup est ambigu (retourne arbitrairement l'un des deux). Aucun mécanisme de résolution du tenant à la connexion (sous-domaine, sélection explicite, etc.) n'existe — **À DÉCIDER**, voir aussi [HANDOFF.md](./HANDOFF.md) section 8.
+- **Résolu (Sprint 9, Option B)** : `User.email` reste unique par tenant seulement (`@@unique([tenantId, email])`, pas globalement), mais l'ambiguïté à la connexion est désormais gérée explicitement. `resolveLoginTenants(email, password)` (`src/lib/auth.ts`) vérifie le mot de passe contre **tous** les users partageant cet email, tous tenants confondus, **avant** de révéler quoi que ce soit — principe crucial pour ne pas fuiter l'appartenance multi-tenant d'un email sans preuve d'identité (cohérent avec le paragraphe ci-dessus). `POST /api/auth/login` : 0 correspondance → 401 générique (inchangé) ; exactement 1 → connexion directe (comportement historique, inchangé) ; plusieurs → `200 { requiresTenantSelection: true, tenants: [...] }` **sans poser de cookie de session**, le client (`LoginForm.tsx`) affiche alors une sélection explicite du tenant puis resoumet avec `tenantId`. `authorize()` (NextAuth) accepte ce `tenantId` optionnel pour un lookup non ambigu (`findUnique` sur `tenantId_email`).
+- **Piège technique découvert pendant ce sprint** : `signIn()` de NextAuth appelé côté serveur sérialise ses options via `URLSearchParams`, qui coerce une valeur JavaScript `undefined` en la chaîne littérale `"undefined"` — passer `tenantId: undefined` directement cassait silencieusement le lookup tenant-scopé. Corrigé en n'incluant la clé `tenantId` dans les options que lorsqu'elle est réellement définie.
 
 ## 4. Autorisation côté serveur
 
@@ -34,7 +35,7 @@ Ce document définit les règles de sécurité de XRent Manager. Aucun mécanism
 - Cookie posé par NextAuth (`authjs.session-token`, `HttpOnly`, `SameSite=lax`, `Secure` en HTTPS) — configuration par défaut de la librairie, non personnalisée.
 - Déconnexion (`POST /api/auth/logout`) : efface le cookie côté serveur (`Max-Age=0`), vérifié par test. **Limite connue des sessions JWT (stateless)** : un jeton déjà émis reste cryptographiquement valide jusqu'à son expiration même après "déconnexion" ou changement de mot de passe, puisqu'il n'existe pas de table de sessions consultée à chaque requête pour le révoquer — seule la suppression du cookie côté client est garantie. Une éventuelle révocation serveur (ex. liste de blocage, passage à des sessions database avec un flux de connexion custom) reste **À DÉCIDER** si ce risque devient inacceptable.
 - Les modèles `Account`/`Session`/`VerificationToken` de l'adaptateur Prisma (`@auth/prisma-adapter`) sont présents dans le schéma pour permettre l'ajout futur de fournisseurs OAuth sans nouvelle migration, mais la table `Session` n'est pas utilisée pour les connexions par mot de passe actuelles.
-- Expiration de session par défaut de NextAuth (30 jours) — non personnalisée à ce stade, **À DÉCIDER** si une durée plus courte est nécessaire.
+- **Implémenté (Sprint 9)** : `session.maxAge` configuré explicitement à 30 jours (au lieu de reposer sur la valeur par défaut implicite de NextAuth). Case « Se souvenir de moi » sur `/login` : décochée, le callback `jwt()` fixe l'expiration réelle du JWT (`token.exp`) à 1 jour au lieu de 30 — ajuste l'expiration effectivement vérifiée par NextAuth à chaque requête, pas seulement l'attribut `Max-Age` du cookie côté navigateur.
 
 ## 6. Validation des entrées
 
@@ -62,7 +63,8 @@ Ce document définit les règles de sécurité de XRent Manager. Aucun mécanism
 ## 10. Mots de passe
 
 - Aucun mot de passe ne doit jamais être stocké en clair ni dans un format réversible.
-- **Implémenté (Sprint 3)** : hachage avec `bcryptjs` (facteur de coût 12), champ `User.passwordHash` (nullable — un `User` créé sans mot de passe, par exemple via un futur fournisseur OAuth, n'en a pas). Longueur minimale imposée à l'inscription : 8 caractères (`src/app/api/auth/register/route.ts`) — aucune autre règle de complexité, expiration ou historique n'est appliquée à ce stade, **À DÉCIDER**.
+- **Implémenté (Sprint 3)** : hachage avec `bcryptjs` (facteur de coût 12), champ `User.passwordHash` (nullable — un `User` créé sans mot de passe, par exemple via un futur fournisseur OAuth, n'en a pas).
+- **Implémenté (Sprint 9)** : politique de complexité (`src/lib/password-policy.ts`, `validatePassword`) — 8 caractères minimum, au moins une majuscule, un chiffre, un caractère spécial. Appliquée à `POST /api/auth/register`, à l'acceptation d'une invitation (`POST /api/invitations/[id]/accept`) et à la réinitialisation de mot de passe par un ADMIN (`PATCH /api/users/[id]`). Expiration et historique de mots de passe restent **À DÉCIDER**.
 - `passwordHash` n'est jamais inclus dans une réponse API (vérifié par test sur `/register`, `/login`, `/me`) ni dans le payload de session NextAuth (le callback `session` ne recopie que `id`, `tenantId`, `role`).
 
 ## 11. Données personnelles
@@ -78,7 +80,8 @@ Ce document définit les règles de sécurité de XRent Manager. Aucun mécanism
 ## 13. Audit
 
 - Toute action sensible doit être tracée de façon non falsifiable (ou au minimum difficilement falsifiable) : qui, quoi, quand, sur quelle ressource, dans quel tenant/agence.
-- **Décision validée (Sprint 1)** : le mécanisme technique retenu est une table d'audit dédiée. Durée de conservation et droits d'accès restent **À DÉCIDER**.
+- **Décision validée (Sprint 1)** : le mécanisme technique retenu est une table d'audit dédiée. Durée de conservation et droits d'accès fins au-delà de « réservé ADMIN » restent **À DÉCIDER**.
+- **Implémenté (Sprint 9)**, périmètre limité : modèle `AuditLog`, `src/lib/audit.ts`, `GET /api/audit` + `/dashboard/audit` (réservés ADMIN, tenant-scopé). Câblé uniquement sur le changement de rôle utilisateur, la suppression d'utilisateur et le cycle de vie des invitations (création/acceptation/déclin/révocation) — **pas** encore sur le reste du CRUD métier (véhicules, locations, factures, paiements, maintenances, alertes), qui reste non tracé. Un audit exhaustif reste **À DÉCIDER**.
 - Voir [DOMAINRULES.md](./DOMAINRULES.md) section 16 et [ARCHITECTURE.md](./ARCHITECTURE.md) section 12.
 
 ## 14. Exports
@@ -127,6 +130,6 @@ Ce document définit les règles de sécurité de XRent Manager. Aucun mécanism
 
 ## 22. Tests de sécurité inspirés de l'OWASP WSTG
 
-- Aucun test de sécurité n'est réalisé à ce jour (aucun module métier n'existe encore).
-- Lorsque des modules métier seront développés, une revue inspirée de l'OWASP Web Security Testing Guide (WSTG) devra couvrir a minima : gestion de l'authentification et des sessions, contrôle d'accès (y compris tests d'isolation multi-tenant/multi-agence), validation des entrées, gestion des erreurs, protection des données sensibles au repos et en transit.
-- Intégration de ces tests dans le cycle de développement : **À DÉCIDER**, voir [TESTREPORT.md](./TESTREPORT.md).
+- Aucune revue de sécurité formelle inspirée de l'OWASP WSTG n'a été réalisée à ce jour, mais chaque suite de tests d'intégration (Sprints 3 à 9) couvre déjà, module par module, l'isolation multi-tenant/multi-agence, le contrôle d'accès par rôle (403/404 attendus) et la non-distinction compte inexistant/mot de passe invalide — voir [TESTREPORT.md](./TESTREPORT.md) pour le détail par sprint.
+- Une revue WSTG complète devra couvrir a minima : gestion de l'authentification et des sessions, contrôle d'accès, validation des entrées, gestion des erreurs, protection des données sensibles au repos et en transit.
+- Intégration systématique de ces tests dans le cycle de développement : **À DÉCIDER**, voir [TESTREPORT.md](./TESTREPORT.md).

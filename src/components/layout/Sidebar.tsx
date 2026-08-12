@@ -8,9 +8,11 @@ import {
   Building2,
   Car,
   CalendarRange,
+  ClipboardList,
   CreditCard,
   FileText,
   LayoutDashboard,
+  Mail,
   Settings,
   Store,
   UserRound,
@@ -40,6 +42,8 @@ const navItems: NavItem[] = [
   { href: "/dashboard/payments", label: "Paiements", icon: CreditCard },
   { href: "/dashboard/reports", label: "Rapports", icon: BarChart3 },
   { href: "/dashboard/users", label: "Utilisateurs", icon: Users },
+  { href: "/dashboard/invitations", label: "Invitations", icon: Mail },
+  { href: "/dashboard/audit", label: "Audit", icon: ClipboardList },
   { href: "/dashboard/settings", label: "Paramètres", icon: Settings },
 ];
 

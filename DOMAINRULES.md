@@ -20,7 +20,8 @@ Ce document définit les règles métier initiales de XRent Manager. Aucun de ce
 
 - Un utilisateur appartient à un tenant.
 - Un utilisateur peut-il appartenir à plusieurs agences du même tenant, et avec quels droits : **À DÉCIDER**.
-- Modalités de création de compte (invitation par un administrateur, auto-inscription) : **À DÉCIDER**.
+- **Décision validée (Sprint 9)** : deux modalités de création de compte coexistent — auto-inscription via `/api/auth/register` (crée un nouveau tenant + son premier `User`, `ADMIN`, inchangé depuis le Sprint 3) et invitation par un `ADMIN` dans un tenant existant (voir section 20). Pas de flux d'auto-inscription dans un tenant existant (un email non invité ne peut pas rejoindre un tenant existant de lui-même).
+- **Décision validée (Sprint 9)** : suppression d'un utilisateur — `deleteUser` (`src/lib/users.ts`) nettoie ses `UserAgency` (retrait des rattachements d'agence) et ses `Alert.userId` assignées (repassées à `null`, l'alerte reste diffusée au tenant/agence) avant suppression ; bloquée si l'utilisateur est le dernier `ADMIN` du tenant (voir section 4).
 - Politique de mots de passe et de sécurité de compte : voir [SECURITY.md](./SECURITY.md).
 
 ## 4. Rôles
@@ -28,6 +29,9 @@ Ce document définit les règles métier initiales de XRent Manager. Aucun de ce
 - Existence a minima envisagée : un rôle administrateur au niveau tenant (accès au dashboard-admin) et un ou plusieurs rôles opérationnels au niveau agence.
 - Liste précise des rôles, permissions associées à chaque rôle, et granularité (par action, par module) : **À DÉCIDER**.
 - **Décision Sprint 5 (provisoire, à confirmer)** : pour véhicules et locations, un `MEMBER` explicitement rattaché à une agence via `UserAgency` peut créer/modifier/supprimer les véhicules et locations **de cette agence** (lecture et écriture), pas seulement les consulter — contrairement à `Tenant`/`Agency` où l'écriture reste réservée à `ADMIN`. Choix pragmatique (le personnel d'agence a besoin de gérer le quotidien de sa flotte et de ses locations), pas une décision produit définitive — à confirmer explicitement avec le propriétaire du projet, notamment si un rôle plus restreint (lecture seule agence, ex. « agent junior ») s'avère nécessaire.
+- **Décision validée (Sprint 9)** : modification de rôle (`PATCH /api/users/[id]`) et suppression (`DELETE /api/users/[id]`) réservées `ADMIN`, jamais un `MEMBER` (même sur son propre compte). **Garde « dernier ADMIN »** : toute action (rétrogradation vers `MEMBER` ou suppression) qui laisserait un tenant sans aucun `ADMIN` est refusée (409, `LastAdminError`) — appliquée que la cible soit l'auteur de l'action ou un autre utilisateur, extension délibérée au-delà de la seule auto-rétrogradation/auto-suppression demandée initialement (HANDOFF.md point 19), pour ne jamais laisser un tenant sans administrateur même par l'action d'un tiers.
+- **Décision validée (Sprint 9)** : un `ADMIN` peut réinitialiser le mot de passe d'un autre utilisateur de son tenant (`PATCH /api/users/[id]` avec `password`), validé par la politique de mot de passe (voir [SECURITY.md](./SECURITY.md)) — sans vérification de l'ancien mot de passe (action administrative, pas un changement par l'utilisateur lui-même, qui reste **À DÉCIDER**, voir HANDOFF.md point 20).
+- Aucun rôle SUPERADMIN transverse à plusieurs tenants n'existe (décision explicite, reconduite au Sprint 9 — voir HANDOFF.md point 16).
 - Toute vérification de rôle devra être appliquée côté serveur (voir [ARCHITECTURE.md](./ARCHITECTURE.md) et [SECURITY.md](./SECURITY.md)).
 
 ## 5. Véhicules
@@ -115,8 +119,10 @@ Deux natures d'incidents doivent être distinguées :
 
 - Toute action sensible (création, modification, suppression, changement d'état, export, import, reset) devra être auditée avec : qui, quoi, quand, sur quelle ressource, dans quel tenant/quelle agence.
 - **Décision validée (Sprint 1)** : le mécanisme technique retenu est une table d'audit dédiée (voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 12).
-- Durée de conservation des journaux d'audit : **À DÉCIDER**.
-- Accès aux journaux d'audit (qui peut les consulter) : **À DÉCIDER**, mais par principe restreint (probablement réservé aux administrateurs du tenant concerné, sans accès inter-tenant).
+- **Décision validée (Sprint 9)** : modèle `AuditLog` implémenté (`tenantId`, `userId?`, `action`, `resource`, `resourceId?`, `metadata?`, `createdAt`), `src/lib/audit.ts` (`logAction`/`getAuditLogs`), `GET /api/audit` et `/dashboard/audit`, réservés `ADMIN`, tenant-scopé (jamais d'accès inter-tenant). `logAction` n'échoue jamais l'action métier appelante (erreur d'écriture capturée et journalisée en console, jamais propagée).
+- **Périmètre volontairement limité (Sprint 9)** : `logAction` n'est câblé que sur les actions sensibles introduites ce sprint (changement de rôle, suppression d'utilisateur, création/acceptation/déclin/révocation d'invitation) — pas de rétrofit sur le reste du CRUD existant (véhicules, locations, factures, paiements, maintenances, alertes). Un audit exhaustif de toutes les mutations reste **À DÉCIDER** pour un futur sprint.
+- Durée de conservation des journaux d'audit : **À DÉCIDER** (aucune purge automatique n'existe à ce jour).
+- Accès aux journaux d'audit : **tranché (Sprint 9)** pour les actions instrumentées — réservé aux `ADMIN` du tenant concerné, sans accès inter-tenant. Droits d'accès plus fins (ex. lecture seule pour un rôle dédié) restent **À DÉCIDER**.
 
 ## 17. Facturation (`Invoice`)
 
@@ -152,3 +158,12 @@ Deux natures d'incidents doivent être distinguées :
 - **Décision validée (Sprint 7)** : idempotence — `checkDueMaintenances`/`checkReturnsToday`/`checkOverdueInvoices` ne recréent pas d'alerte pour une même ressource (`entityType`+`entityId`) tant qu'une alerte `PENDING`/`ACKNOWLEDGED` existe déjà pour elle ; une nouvelle alerte n'est recréée qu'après résolution de la précédente.
 - **Décision non soumise à validation préalable, prise en cours d'implémentation (Sprint 7)** : le scan `checkDueMaintenances`/`checkReturnsToday`/`checkOverdueInvoices` reste **par tenant** (scopé à `user.tenantId` de l'ADMIN déclencheur), pas un cron global multi-tenant — aucun rôle « superadmin » transverse n'existe (voir HANDOFF.md section 8 point 16). Un vrai cron périodique nécessiterait un mécanisme d'authentification dédié (clé de service ?), **hors périmètre de ce sprint** — voir section 8 point 29.
 - Fenêtre d'anticipation des maintenances à venir (`checkDueMaintenances`) : 7 jours par défaut, codée en dur (`DEFAULT_MAINTENANCE_LOOKAHEAD_DAYS`, `src/lib/scheduled-tasks.ts`), pas encore configurable par tenant — **À DÉCIDER**.
+
+## 20. Invitations (`Invitation`)
+
+- **Décision validée (Sprint 9)** : une `Invitation` est toujours liée à un tenant existant, créée par un `ADMIN` (`POST /api/invitations`, réservé ADMIN) avec un email et un rôle cible (`ADMIN` ou `MEMBER`) ; expire 7 jours après création (`expiresAt`, non configurable à ce stade — **À DÉCIDER**).
+- **Décision validée (Sprint 9)** : pas de colonne `token` séparée — l'`id` (cuid, haute entropie) sert directement d'identifiant non-devinable dans le lien partageable (`/invitations/[id]`), cohérent avec le reste du schéma qui utilise déjà `cuid()` comme identifiant opaque partout.
+- **Décision validée (Sprint 9)** : acceptation (`POST /api/invitations/[id]/accept`, publique — l'invité n'a pas encore de compte dans ce tenant) crée le `User` avec l'`email` et le `role` **toujours dérivés de l'invitation**, jamais du corps de la requête envoyé par le client (même principe de dérivation serveur que `Location.agencyId`/`Invoice.clientId`, sections 7/17) ; refusée si l'invitation n'est plus `PENDING` (409) ou a expiré (410, passage automatique au statut `EXPIRED`), ou si un `User` existe déjà pour cet email dans ce tenant (409).
+- **Décision validée (Sprint 9)** : déclin (`POST /api/invitations/[id]/decline`, publique) marque l'invitation `DECLINED`, état terminal comme `ACCEPTED`/`EXPIRED`. Révocation par un `ADMIN` (`DELETE /api/invitations/[id]`, tenant-scopé) possible uniquement tant que l'invitation est `PENDING`.
+- **Décision explicite (Sprint 9, reconduit du Sprint 7)** : **aucun envoi d'email** — le lien `/invitations/[id]` est affiché à l'ADMIN sur `/dashboard/invitations` pour partage manuel hors-bande (aucun prestataire SMTP configuré, voir HANDOFF.md section 8 point 30). Limite du MVP explicitement documentée : sans email, une invitation ne peut être communiquée que par un canal externe géré manuellement par l'ADMIN.
+- Un utilisateur invité peut-il rejoindre plusieurs tenants avec le même email (ex. consultant multi-clients) : possible techniquement (`User.email` unique par tenant seulement), géré à la connexion par la résolution de tenant (voir [SECURITY.md](./SECURITY.md) section 3) — aucune restriction métier n'interdit cet usage.

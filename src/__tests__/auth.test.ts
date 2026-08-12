@@ -6,7 +6,7 @@ import { apiFetch, extractSessionCookie, findSetCookie } from "./helpers/http";
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const tenantSlug = `auth-test-tenant-${runId}`;
 const adminEmail = `admin-${runId}@test.local`;
-const password = "correct-horse-battery-staple";
+const password = "Correct-Horse-Battery-Staple9!";
 
 const createdTenantIds: string[] = [];
 
@@ -113,6 +113,81 @@ describe("POST /api/auth/login", () => {
 
     const sessionCookie = extractSessionCookie(response);
     expect(sessionCookie).toBeDefined();
+  });
+});
+
+describe("Résolution du tenant à la connexion (Sprint 9, Option B)", () => {
+  const sharedEmail = `shared-${runId}@test.local`;
+  let sharedTenant1Id: string;
+  let sharedTenant2Id: string;
+
+  it("prépare deux tenants avec le même email+mot de passe (registerTenantAdmin non utilisable : sa propre étape de login serait déjà ambiguë pour le 2e tenant)", async () => {
+    const register1 = await apiFetch("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({
+        tenantName: "Shared Email Tenant 1",
+        tenantSlug: `shared-1-${runId}`,
+        name: "User One",
+        email: sharedEmail,
+        password,
+      }),
+    });
+    expect(register1.status).toBe(201);
+    sharedTenant1Id = (await register1.json()).tenant.id;
+    createdTenantIds.push(sharedTenant1Id);
+
+    const register2 = await apiFetch("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({
+        tenantName: "Shared Email Tenant 2",
+        tenantSlug: `shared-2-${runId}`,
+        name: "User Two",
+        email: sharedEmail,
+        password,
+      }),
+    });
+    expect(register2.status).toBe(201);
+    sharedTenant2Id = (await register2.json()).tenant.id;
+    createdTenantIds.push(sharedTenant2Id);
+  });
+
+  it("propose une sélection de tenant si le même email+mot de passe existe dans plusieurs tenants", async () => {
+    const response = await apiFetch("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email: sharedEmail, password }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.requiresTenantSelection).toBe(true);
+    const tenantIds = body.tenants.map((t: { id: string }) => t.id);
+    expect(tenantIds).toContain(sharedTenant1Id);
+    expect(tenantIds).toContain(sharedTenant2Id);
+    expect(extractSessionCookie(response)).toBeUndefined();
+  });
+
+  it("se connecte au tenant précis une fois tenantId fourni", async () => {
+    const response = await apiFetch("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email: sharedEmail, password, tenantId: sharedTenant1Id }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.user.tenantId).toBe(sharedTenant1Id);
+    expect(extractSessionCookie(response)).toBeDefined();
+  });
+
+  it("ne révèle jamais la liste de tenants avec un mot de passe invalide", async () => {
+    const response = await apiFetch("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email: sharedEmail, password: "wrong-password-entirely9!" }),
+    });
+
+    expect(response.status).toBe(401);
+    const body = await response.json();
+    expect(body.requiresTenantSelection).toBeUndefined();
+    expect(body.tenants).toBeUndefined();
   });
 });
 

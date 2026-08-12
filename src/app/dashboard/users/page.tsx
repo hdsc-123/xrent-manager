@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { UserPlus } from "lucide-react";
 import { getSessionUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
@@ -33,11 +34,10 @@ export default async function UsersPage() {
         <div>
           <h1 className="font-heading text-2xl font-semibold">Utilisateurs</h1>
           <p className="text-sm text-muted-foreground">
-            Liste en lecture seule pour ce sprint — modification de rôle et suppression à
-            venir (voir HANDOFF.md).
+            Cliquez sur un utilisateur pour modifier son rôle ou le supprimer.
           </p>
         </div>
-        <Button disabled title="Bientôt disponible">
+        <Button render={<Link href="/dashboard/invitations" />}>
           <UserPlus className="size-4" />
           Inviter un utilisateur
         </Button>
