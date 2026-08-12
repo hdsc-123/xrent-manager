@@ -1,0 +1,242 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { prisma } from "@/lib/prisma";
+import { apiFetch } from "./helpers/http";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+
+const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
+const createdTenantIds: string[] = [];
+
+let adminA: AuthenticatedTestUser;
+let adminB: AuthenticatedTestUser;
+let memberA: AuthenticatedTestUser;
+let agencyA1Id: string;
+
+async function createClient(
+  admin: AuthenticatedTestUser,
+  overrides: Record<string, unknown> = {}
+) {
+  return apiFetch("/api/clients", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ name: "Client Test", ...overrides }),
+  });
+}
+
+beforeAll(async () => {
+  adminA = await registerTenantAdmin({
+    tenantName: "Clients Test A",
+    tenantSlug: `clients-test-a-${runId}`,
+    name: "Admin A",
+    email: `admin-a-${runId}@test.local`,
+    password: "correct-horse-battery-staple",
+  });
+  createdTenantIds.push(adminA.tenantId);
+
+  adminB = await registerTenantAdmin({
+    tenantName: "Clients Test B",
+    tenantSlug: `clients-test-b-${runId}`,
+    name: "Admin B",
+    email: `admin-b-${runId}@test.local`,
+    password: "correct-horse-battery-staple",
+  });
+  createdTenantIds.push(adminB.tenantId);
+
+  memberA = await createAndLoginMember({
+    tenantId: adminA.tenantId,
+    name: "Member A",
+    email: `member-a-${runId}@test.local`,
+    password: "correct-horse-battery-staple",
+  });
+
+  const agencyA1Response = await apiFetch("/api/agencies", {
+    method: "POST",
+    headers: { Cookie: adminA.sessionCookie },
+    body: JSON.stringify({ name: "Agence A1", slug: `agence-a1-${runId}` }),
+  });
+  agencyA1Id = (await agencyA1Response.json()).agency.id;
+});
+
+afterAll(async () => {
+  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
+  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await prisma.$disconnect();
+});
+
+describe("POST /api/clients", () => {
+  it("refuse une requête non authentifiée", async () => {
+    const response = await apiFetch("/api/clients", {
+      method: "POST",
+      body: JSON.stringify({ name: "X" }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it("refuse un name manquant", async () => {
+    const response = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ email: "no-name@test.local" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("crée le client rattaché au tenant de l'utilisateur connecté", async () => {
+    const response = await createClient(adminA, { name: "Jean Dupont", email: "jean@test.local", phone: "0600000000" });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.client.tenantId).toBe(adminA.tenantId);
+    expect(body.client.name).toBe("Jean Dupont");
+  });
+
+  it("autorise un MEMBER (pas de notion d'agence pour un client, DOMAINRULES.md section 9)", async () => {
+    const response = await createClient(memberA, { name: "Client par membre" });
+    expect(response.status).toBe(201);
+  });
+});
+
+describe("GET /api/clients", () => {
+  it("liste uniquement les clients du tenant connecté (isolation multi-tenant)", async () => {
+    const clientAResponse = await createClient(adminA, { name: `Isolation A ${runId}` });
+    const clientAId = (await clientAResponse.json()).client.id;
+
+    const clientBResponse = await createClient(adminB, { name: `Isolation B ${runId}` });
+    const clientBId = (await clientBResponse.json()).client.id;
+
+    const response = await apiFetch("/api/clients", { headers: { Cookie: adminA.sessionCookie } });
+    const body = await response.json();
+    const ids: string[] = body.clients.map((c: { id: string }) => c.id);
+    expect(ids).toContain(clientAId);
+    expect(ids).not.toContain(clientBId);
+  });
+
+  it("filtre par recherche (nom ou email)", async () => {
+    const uniqueName = `SearchTarget-${runId}`;
+    const createResponse = await createClient(adminA, { name: uniqueName, email: `${uniqueName}@test.local` });
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients?search=${uniqueName}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const body = await response.json();
+    const ids: string[] = body.clients.map((c: { id: string }) => c.id);
+    expect(ids).toContain(clientId);
+    expect(body.clients.length).toBe(1);
+  });
+});
+
+describe("GET /api/clients/[id]", () => {
+  it("retourne 404 pour un client d'un autre tenant (isolation multi-tenant)", async () => {
+    const clientBResponse = await createClient(adminB, { name: `Cross tenant ${runId}` });
+    const clientBId = (await clientBResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientBId}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("retourne 401 pour une requête non authentifiée", async () => {
+    const createResponse = await createClient(adminA);
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientId}`);
+    expect(response.status).toBe(401);
+  });
+});
+
+describe("PATCH /api/clients/[id]", () => {
+  it("permet de modifier le nom, l'email et le téléphone", async () => {
+    const createResponse = await createClient(adminA, { name: "Avant modif" });
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Après modif", email: "apres@test.local", phone: "0611111111" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.client.name).toBe("Après modif");
+    expect(body.client.email).toBe("apres@test.local");
+  });
+
+  it("refuse un name vide", async () => {
+    const createResponse = await createClient(adminA);
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("retourne 404 pour un client d'un autre tenant", async () => {
+    const clientBResponse = await createClient(adminB, { name: `PATCH cross tenant ${runId}` });
+    const clientBId = (await clientBResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientBId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Hacked" }),
+    });
+    expect(response.status).toBe(404);
+  });
+});
+
+describe("DELETE /api/clients/[id]", () => {
+  it("supprime un client sans location", async () => {
+    const createResponse = await createClient(adminA, { name: "Suppression OK" });
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it("refuse la suppression d'un client ayant une location", async () => {
+    const createResponse = await createClient(adminA, { name: "Suppression bloquée" });
+    const clientId = (await createResponse.json()).client.id;
+
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: agencyA1Id,
+        name: "Clio",
+        licensePlate: `CL-${Math.floor(Math.random() * 1_000_000)}-CL`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 4500,
+      }),
+    });
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId,
+        clientId,
+        startDate: "2027-04-01",
+        endDate: "2027-04-03",
+      }),
+    });
+
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(409);
+  });
+});

@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Un framework de test (Vitest) est installé depuis le Sprint 2 et couvre l'isolation multi-tenant de la couche d'accès aux données ; depuis le Sprint 5, il couvre également le premier module métier (véhicules, locations) ; depuis le Sprint 6, la facturation, les paiements et les rapports — voir section 3.
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Un framework de test (Vitest) est installé depuis le Sprint 2 et couvre l'isolation multi-tenant de la couche d'accès aux données ; depuis le Sprint 5, il couvre également le premier module métier (véhicules, locations) ; depuis le Sprint 6, la facturation, les paiements et les rapports ; depuis le Sprint 7, la maintenance et les alertes ; depuis le Sprint 8, le module clients dédié — voir section 3.
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -28,6 +28,9 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 | 2026-08-12 | `npm run build` (Sprint 7) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; nouvelles routes API `/api/maintenances*`, `/api/alerts*`, `/api/tasks/check-alerts` + 3 nouvelles pages `/dashboard/maintenances*`/`/dashboard/alerts` compilées |
 | 2026-08-12 | `npm run test` (Vitest, Sprint 7) | ✅ Validé | 133/133 tests passés sur 12 fichiers (ajout de `maintenances.test.ts` et `alerts.test.ts`), voir section 3 « Tests maintenance et alertes (Sprint 7) » |
 | 2026-08-12 | Vérification manuelle (Sprint 7) | ✅ Validé | Serveur `next dev` réel : inscription → agence → véhicule → maintenance planifiée aujourd'hui → `POST /api/tasks/check-alerts` → alerte visible dans le badge du header, le widget « À faire aujourd'hui » et `/dashboard/alerts` → acquittement → résolution → badge revenu à zéro ; second appel à `check-alerts` sans doublon d'alerte ; données de test nettoyées après vérification |
+| 2026-08-12 | `npm run lint` (Sprint 8, module clients dédié) | ✅ Validé | Aucune erreur ESLint |
+| 2026-08-12 | `npm run build` (Sprint 8) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; nouvelle route API `/api/clients/[id]` + 3 nouvelles pages `/dashboard/clients*` compilées (31 routes API + 25 pages `/dashboard/*` au total) |
+| 2026-08-12 | `npm run test` (Vitest, Sprint 8) | ✅ Validé | 146/146 tests passés sur 13 fichiers (ajout de `clients.test.ts`), voir section 3 « Tests module clients (Sprint 8) » |
 
 **Premier test métier disponible depuis le Sprint 5** (véhicules, locations) — jusqu'ici, aucun module métier n'existait dans le code (voir [HANDOFF.md](./HANDOFF.md) et [PROJECT_MAP.md](./PROJECT_MAP.md)). La couche d'accès aux données technique (`src/lib/db.ts`), l'authentification, le CRUD tenants/agences et désormais véhicules/locations disposent de tests d'isolation multi-tenant et multi-agence.
 
@@ -35,7 +38,7 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 
 - Framework installé : **Vitest** (`npm run test`), choisi en Sprint 2 pour sa compatibilité native avec TypeScript/ESM et Next.js 16.
 - Base de test dédiée : **`xrent_test`**, distincte de `xrent_dev`. `vitest.config.mts` charge `DATABASE_URL` depuis `.env.test` via `loadEnv` de Vite (mode `test`) ; la migration `init_tenant_agency_user` y est appliquée via `prisma migrate deploy`.
-- Tests disponibles : isolation multi-tenant de la couche d'accès aux données (`src/__tests__/db.test.ts`, section 3 « Tests multi-tenant ») ; tests métier véhicules/locations depuis le Sprint 5 (section 3 « Tests métier véhicules et locations (Sprint 5) ») ; tests métier facturation/paiements/rapports depuis le Sprint 6 (section 3 « Tests facturation, paiements et rapports (Sprint 6) »).
+- Tests disponibles : isolation multi-tenant de la couche d'accès aux données (`src/__tests__/db.test.ts`, section 3 « Tests multi-tenant ») ; tests métier véhicules/locations depuis le Sprint 5 (section 3 « Tests métier véhicules et locations (Sprint 5) ») ; tests métier facturation/paiements/rapports depuis le Sprint 6 (section 3 « Tests facturation, paiements et rapports (Sprint 6) ») ; tests maintenance/alertes depuis le Sprint 7 (section 3 « Tests maintenance et alertes (Sprint 7) ») ; tests module clients depuis le Sprint 8 (section 3 « Tests module clients (Sprint 8) »).
 - Non encore disponible : tests de concurrence, de charge, de sécurité (OWASP WSTG) ou de régression.
 
 ## 3. Stratégie future de tests
@@ -159,6 +162,19 @@ Couverture `alerts.test.ts` :
 - `getPendingAlerts` exclut les alertes résolues.
 - `PATCH /api/alerts/[id]/acknowledge`/`resolve` : 401 non authentifié, 404 sur une alerte d'un autre tenant **et** sur une alerte rattachée à une agence à laquelle un MEMBER n'est pas rattaché (agencyId non nul), cycle complet acquittement → résolution via HTTP, refus (409) de résoudre une alerte déjà résolue.
 - `GET /api/alerts` : filtrage par `priority`/`status`, rejet (400) d'un `status` invalide.
+
+Limite connue, partagée avec les autres suites HTTP : dépendance à un serveur `next dev` démarré pour la durée de la suite (port 3811).
+
+### Tests module clients (Sprint 8)
+
+`src/__tests__/clients.test.ts` prolonge l'approche « intégration HTTP réelle » des suites précédentes.
+
+Couverture :
+- Création : refus (401) non authentifié, refus (400) `name` manquant, création réussie rattachée au tenant de l'utilisateur connecté ; **contrairement à `Vehicle`/`Location`, un `MEMBER` peut créer un client sans rattachement à une agence** (pas de champ `agencyId` sur `Client`, DOMAINRULES.md section 9), vérifié explicitement.
+- Isolation multi-tenant : `GET /api/clients` ne retourne jamais les clients d'un autre tenant ; `GET`/`PATCH /api/clients/[id]` retournent 404 sur un client d'un autre tenant.
+- Recherche : `GET /api/clients?search=...` filtre par nom/email (insensible à la casse).
+- Modification : `PATCH /api/clients/[id]` met à jour nom/email/téléphone ; refus (400) d'un `name` vide.
+- Suppression : autorisée pour un client sans location ; refusée (409, `ClientHasLocationsError`) pour un client ayant au moins une location associée — même principe testé que `DELETE /api/vehicles/[id]` (Sprint 5).
 
 Limite connue, partagée avec les autres suites HTTP : dépendance à un serveur `next dev` démarré pour la durée de la suite (port 3811).
 
