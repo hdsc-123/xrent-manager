@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Un framework de test (Vitest) est installé depuis le Sprint 2 et couvre l'isolation multi-tenant de la couche d'accès aux données ; depuis le Sprint 5, il couvre également le premier module métier (véhicules, locations) ; depuis le Sprint 6, la facturation, les paiements et les rapports ; depuis le Sprint 7, la maintenance et les alertes ; depuis le Sprint 8, le module clients dédié ; depuis le Sprint 9, la gestion des utilisateurs/invitations/audit et la résolution de tenant ; depuis le Sprint 10, le journal d'audit exhaustif sur tout le CRUD métier, l'édition de profil et un scénario end-to-end complet — voir section 3.
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Un framework de test (Vitest) est installé depuis le Sprint 2 et couvre l'isolation multi-tenant de la couche d'accès aux données ; depuis le Sprint 5, il couvre également le premier module métier (véhicules, locations) ; depuis le Sprint 6, la facturation, les paiements et les rapports ; depuis le Sprint 7, la maintenance et les alertes ; depuis le Sprint 8, le module clients dédié ; depuis le Sprint 9, la gestion des utilisateurs/invitations/audit et la résolution de tenant ; depuis le Sprint 10, le journal d'audit exhaustif sur tout le CRUD métier, l'édition de profil et un scénario end-to-end complet ; depuis le Sprint 11, le rafraîchissement de la session JWT après édition de profil et une garde de non-régression sur `POST /api/tenants` (retiré) — voir section 3.
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -38,6 +38,10 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 | 2026-08-12 | `npm run lint` (Sprint 10, MVP production-ready) | ✅ Validé | Aucune erreur ESLint |
 | 2026-08-12 | `npm run build` (Sprint 10) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; nouvelle route API `/api/users/me` (37 routes API au total) + `/dashboard/settings` restructurée (formulaire d'édition de profil) |
 | 2026-08-12 | `npm run test` (Vitest, Sprint 10) | ✅ Validé | 206/206 tests passés sur 19 fichiers (extension de `audit.test.ts`, `users.test.ts`, `reports.test.ts` ; ajout de `e2e-full.test.ts`), voir section 3 « Tests Sprint 10 » |
+| 2026-08-12 | `npm run lint` (Sprint 11, consolidation post-MVP) | ✅ Validé | Aucune erreur ESLint |
+| 2026-08-12 | `npm run build` (Sprint 11) | ✅ Validé | Build de production réussi, TypeScript strict sans erreur ; `POST /api/tenants` retiré (37 routes API inchangées en nombre de chemins, une méthode en moins), `/dashboard/tenants/new` retirée (28 pages `/dashboard/*`) |
+| 2026-08-12 | `npm run test` (Vitest, Sprint 11) | ✅ Validé | 206/206 tests passés sur 19 fichiers (extension de `users.test.ts` : +1 test de rafraîchissement de session ; `tenants.test.ts` : describe `POST /api/tenants` remplacé par 1 test de garde 405, net −1), voir section 3 « Tests Sprint 11 » |
+| 2026-08-12 | Vérification manuelle (Sprint 11) | ✅ Validé | Serveur `next dev` réel, via requêtes HTTP directes (`curl`) reproduisant le flux `useSession().update()` : inscription → connexion → `GET /dashboard` (nom affiché dans le `Header`) → `PATCH /api/users/me` (nouveau nom) → `GET /dashboard` sans update (nom **toujours** l'ancien, confirme la régression documentée avant correctif) → `GET /api/auth/csrf` + `POST /api/auth/session` (trigger update) → `GET /dashboard` (nouveau nom affiché, sans reconnexion) ; données de test nettoyées après vérification |
 
 **Premier test métier disponible depuis le Sprint 5** (véhicules, locations) — jusqu'ici, aucun module métier n'existait dans le code (voir [HANDOFF.md](./HANDOFF.md) et [PROJECT_MAP.md](./PROJECT_MAP.md)). La couche d'accès aux données technique (`src/lib/db.ts`), l'authentification, le CRUD tenants/agences et désormais véhicules/locations disposent de tests d'isolation multi-tenant et multi-agence.
 
@@ -45,7 +49,7 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 
 - Framework installé : **Vitest** (`npm run test`), choisi en Sprint 2 pour sa compatibilité native avec TypeScript/ESM et Next.js 16.
 - Base de test dédiée : **`xrent_test`**, distincte de `xrent_dev`. `vitest.config.mts` charge `DATABASE_URL` depuis `.env.test` via `loadEnv` de Vite (mode `test`) ; la migration `init_tenant_agency_user` y est appliquée via `prisma migrate deploy`.
-- Tests disponibles : isolation multi-tenant de la couche d'accès aux données (`src/__tests__/db.test.ts`, section 3 « Tests multi-tenant ») ; tests métier véhicules/locations depuis le Sprint 5 (section 3 « Tests métier véhicules et locations (Sprint 5) ») ; tests métier facturation/paiements/rapports depuis le Sprint 6 (section 3 « Tests facturation, paiements et rapports (Sprint 6) ») ; tests maintenance/alertes depuis le Sprint 7 (section 3 « Tests maintenance et alertes (Sprint 7) ») ; tests module clients depuis le Sprint 8 (section 3 « Tests module clients (Sprint 8) ») ; tests gestion des utilisateurs/invitations/audit/résolution de tenant à la connexion depuis le Sprint 9 (section 3 « Tests utilisateurs, invitations, audit et résolution de tenant (Sprint 9) ») ; tests audit exhaustif/profil/sécurité consolidée/E2E complet depuis le Sprint 10 (section 3 « Tests Sprint 10 »).
+- Tests disponibles : isolation multi-tenant de la couche d'accès aux données (`src/__tests__/db.test.ts`, section 3 « Tests multi-tenant ») ; tests métier véhicules/locations depuis le Sprint 5 (section 3 « Tests métier véhicules et locations (Sprint 5) ») ; tests métier facturation/paiements/rapports depuis le Sprint 6 (section 3 « Tests facturation, paiements et rapports (Sprint 6) ») ; tests maintenance/alertes depuis le Sprint 7 (section 3 « Tests maintenance et alertes (Sprint 7) ») ; tests module clients depuis le Sprint 8 (section 3 « Tests module clients (Sprint 8) ») ; tests gestion des utilisateurs/invitations/audit/résolution de tenant à la connexion depuis le Sprint 9 (section 3 « Tests utilisateurs, invitations, audit et résolution de tenant (Sprint 9) ») ; tests audit exhaustif/profil/sécurité consolidée/E2E complet depuis le Sprint 10 (section 3 « Tests Sprint 10 ») ; test de rafraîchissement de session et garde de non-régression `POST /api/tenants` depuis le Sprint 11 (section 3 « Tests Sprint 11 »).
 - Non encore disponible : tests de concurrence, de charge, de sécurité (OWASP WSTG) ou de régression.
 
 ## 3. Stratégie future de tests
@@ -238,6 +242,18 @@ Couverture `e2e-full.test.ts` :
 - Distinct de `e2e.test.ts` (Sprint 9, toujours en place) : ce dernier reste plus court (pas de sélection de tenant, pas de maintenances/alertes/profil/vérification d'audit) et conserve son propre bloc de sécurité ciblé sur les surfaces Sprint 9 — les deux fichiers sont complémentaires, pas redondants.
 
 Limite connue, partagée avec les autres suites HTTP : dépendance à un serveur `next dev` démarré pour la durée de la suite (port 3811).
+
+### Tests Sprint 11 (rafraîchissement de session, sprint de consolidation)
+
+Extension de `src/__tests__/users.test.ts` et `tenants.test.ts`, même approche « intégration HTTP réelle contre un vrai serveur `next dev` de test ».
+
+Couverture de l'extension de `users.test.ts` :
+- Nouveau test (« GET/PATCH /api/users/me (Sprint 10) ») : reproduit exactement ce que fait `useSession().update()` côté client, sans passer par React — `GET /api/auth/session` (état initial) → `PATCH /api/users/me` (changement de nom) → `GET /api/auth/session` **sans** update explicite (vérifie que le nom reste l'ancien : garde de non-régression contre un retour silencieux au comportement pré-Sprint 11) → `GET /api/auth/csrf` (jeton + cookie CSRF) → `POST /api/auth/session` avec ce jeton (déclenche `trigger: "update"` dans le callback `jwt()`) → vérifie que la réponse contient déjà le nouveau nom, puis qu'un `GET /api/auth/session` avec le cookie de session rafraîchi (renvoyé par le `POST`) le confirme.
+
+Couverture de l'extension de `tenants.test.ts` :
+- Le describe `POST /api/tenants` (2 tests : refus MEMBER, création par ADMIN) est remplacé par un unique test vérifiant que `POST /api/tenants` renvoie désormais `405 Method Not Allowed` — garde de non-régression contre la réintroduction accidentelle de cette route (voir HANDOFF.md point 36 : elle créait des tenants orphelins, jamais rattachés à aucun user).
+
+Vérification manuelle complémentaire (hors suite Vitest, contre un serveur `next dev` réel via `curl`) : le scénario complet SSR (inscription → `GET /dashboard`, nom affiché dans le `Header` → `PATCH /api/users/me` → `GET /dashboard` toujours avec l'ancien nom, sans update → échange CSRF + `POST /api/auth/session` → `GET /dashboard` avec le nouveau nom, sans reconnexion) a été rejoué pour confirmer que le comportement observable dans l'application réelle correspond bien à ce que teste `users.test.ts` au niveau HTTP.
 
 ### Tests de concurrence
 Vérifieront le comportement du système en cas d'accès concurrent à une même ressource (ex. deux réservations simultanées sur le même véhicule). Aucun test de concurrence n'existe à ce jour.

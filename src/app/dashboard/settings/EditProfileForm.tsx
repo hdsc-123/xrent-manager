@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { apiPatch, ApiError } from "@/lib/api";
 import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, Label } from "@/components/ui";
@@ -13,6 +14,7 @@ interface EditProfileFormProps {
 
 export function EditProfileForm({ initialName, initialEmail }: EditProfileFormProps) {
   const router = useRouter();
+  const { update: updateSession } = useSession();
   const [name, setName] = useState(initialName);
   const [email, setEmail] = useState(initialEmail);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -39,6 +41,13 @@ export function EditProfileForm({ initialName, initialEmail }: EditProfileFormPr
       toast.success("Profil mis à jour.");
       setCurrentPassword("");
       setNewPassword("");
+
+      // Rafraîchit le token JWT (nom/email) sans exiger de reconnexion (Sprint 11,
+      // HANDOFF.md point 35) : déclenche le callback jwt() avec trigger "update", qui
+      // relit la valeur à jour en base — voir src/lib/auth.ts.
+      if (name !== initialName || email !== initialEmail) {
+        await updateSession();
+      }
       router.refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Une erreur est survenue.");

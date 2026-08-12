@@ -119,7 +119,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async signIn({ user }) {
       return Boolean(user);
     },
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger }) {
       const extendedToken = token as typeof token & ExtendedToken;
       if (user) {
         extendedToken.id = user.id;
@@ -129,6 +129,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const maxAge = rememberMe === false ? SESSION_SHORT_MAX_AGE_SECONDS : SESSION_MAX_AGE_SECONDS;
         extendedToken.exp = Math.floor(Date.now() / 1000) + maxAge;
       }
+
+      // Rafraîchissement de session (Sprint 11, HANDOFF.md point 35) : déclenché par
+      // useSession().update() côté client après édition du profil (voir EditProfileForm.tsx).
+      // Le nom/email est relu directement en base par id de token, jamais accepté depuis le
+      // payload client de l'update, pour ne jamais faire confiance à des données non validées
+      // côté serveur (seul le PATCH /api/users/me authentifié est source de vérité).
+      if (trigger === "update" && extendedToken.id) {
+        const current = await prisma.user.findUnique({
+          where: { id: extendedToken.id },
+          select: { name: true, email: true },
+        });
+        if (current) {
+          extendedToken.name = current.name;
+          extendedToken.email = current.email;
+        }
+      }
+
       return extendedToken;
     },
     async session({ session, token }) {

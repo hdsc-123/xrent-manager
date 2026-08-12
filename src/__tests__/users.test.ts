@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
-import { apiFetch } from "./helpers/http";
+import { apiFetch, extractSessionCookie, findSetCookie } from "./helpers/http";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
@@ -289,6 +289,57 @@ describe("GET/PATCH /api/users/me (Sprint 10)", () => {
       body: JSON.stringify({ email: member.email, password: newPassword, tenantId: adminA.tenantId }),
     });
     expect(loginResponse.status).toBe(200);
+  });
+
+  it("rafraîchit le nom dans la session JWT via trigger update après édition de profil (Sprint 11, HANDOFF.md point 35)", async () => {
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Session Refresh Before",
+      email: `session-refresh-${runId}@test.local`,
+      password,
+    });
+
+    const beforeSession = await apiFetch("/api/auth/session", {
+      headers: { Cookie: member.sessionCookie },
+    });
+    expect((await beforeSession.json()).user.name).toBe("Session Refresh Before");
+
+    const patchResponse = await apiFetch("/api/users/me", {
+      method: "PATCH",
+      headers: { Cookie: member.sessionCookie },
+      body: JSON.stringify({ name: "Session Refresh After" }),
+    });
+    expect(patchResponse.status).toBe(200);
+
+    // Sans rafraîchissement explicite, le token JWT reste périmé jusqu'à reconnexion
+    // (comportement documenté avant ce sprint, HANDOFF.md section 3) : ce test évite une
+    // régression silencieuse vers "toujours à jour sans update() côté client".
+    const staleSession = await apiFetch("/api/auth/session", {
+      headers: { Cookie: member.sessionCookie },
+    });
+    expect((await staleSession.json()).user.name).toBe("Session Refresh Before");
+
+    // Reproduit ce que fait useSession().update() côté client (EditProfileForm.tsx) :
+    // POST /api/auth/session avec un jeton CSRF valide déclenche trigger "update", qui
+    // relit le nom/email à jour en base (src/lib/auth.ts).
+    const csrfResponse = await apiFetch("/api/auth/csrf", { headers: { Cookie: member.sessionCookie } });
+    const { csrfToken } = await csrfResponse.json();
+    const csrfCookie = findSetCookie(csrfResponse, "csrf-token")?.split(";")[0];
+    expect(csrfCookie).toBeTruthy();
+
+    const updateResponse = await apiFetch("/api/auth/session", {
+      method: "POST",
+      headers: { Cookie: `${member.sessionCookie}; ${csrfCookie}` },
+      body: JSON.stringify({ csrfToken }),
+    });
+    expect(updateResponse.status).toBe(200);
+    expect((await updateResponse.json()).user.name).toBe("Session Refresh After");
+
+    const refreshedSessionCookie = extractSessionCookie(updateResponse) ?? member.sessionCookie;
+    const afterSession = await apiFetch("/api/auth/session", {
+      headers: { Cookie: refreshedSessionCookie },
+    });
+    expect((await afterSession.json()).user.name).toBe("Session Refresh After");
   });
 });
 

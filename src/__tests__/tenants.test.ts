@@ -117,26 +117,13 @@ describe("PATCH /api/tenants/[id]", () => {
   });
 });
 
-describe("POST /api/tenants", () => {
-  it("refuse un MEMBER", async () => {
-    const response = await apiFetch("/api/tenants", {
-      method: "POST",
-      headers: { Cookie: memberA.sessionCookie },
-      body: JSON.stringify({ name: "Should Not Exist" }),
-    });
-    expect(response.status).toBe(403);
+it("POST /api/tenants n'existe pas : la création de tenant est exclusive à /api/auth/register (Sprint 11, écart orphelin corrigé — voir HANDOFF.md)", async () => {
+  const response = await apiFetch("/api/tenants", {
+    method: "POST",
+    headers: { Cookie: adminA.sessionCookie },
+    body: JSON.stringify({ name: "Should Not Exist" }),
   });
-
-  it("permet à un ADMIN de créer un tenant", async () => {
-    const response = await apiFetch("/api/tenants", {
-      method: "POST",
-      headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ name: "Nouveau Tenant", slug: `nouveau-tenant-${runId}` }),
-    });
-    expect(response.status).toBe(201);
-    const body = await response.json();
-    createdTenantIds.push(body.tenant.id);
-  });
+  expect(response.status).toBe(405);
 });
 
 describe("DELETE /api/tenants/[id]", () => {

@@ -49,12 +49,11 @@ xrent-manager/
 │   │   │       ├── page.tsx        # Server Component : lit l'invitation, affiche AcceptInvitationForm ou un statut terminal
 │   │   │       └── AcceptInvitationForm.tsx  # Client Component : POST accept/decline
 │   │   ├── dashboard/
-│   │   │   ├── layout.tsx          # Server Component : session+tenant, redirige /login si non authentifié
+│   │   │   ├── layout.tsx          # Server Component : session+tenant, redirige /login si non authentifié ; (Sprint 11) enveloppe dans <SessionProvider>
 │   │   │   ├── page.tsx            # Stats (agences/users), actions rapides
 │   │   │   ├── loading.tsx         # Skeleton
-│   │   │   ├── tenants/
+│   │   │   ├── tenants/            # (Sprint 11) plus de new/ — création de tenant exclusive à /api/auth/register, voir HANDOFF.md point 36
 │   │   │   │   ├── page.tsx, TenantsTable.tsx, loading.tsx
-│   │   │   │   ├── new/page.tsx
 │   │   │   │   └── [id]/page.tsx, EditTenantForm.tsx
 │   │   │   ├── agencies/
 │   │   │   │   ├── page.tsx, AgenciesTable.tsx, loading.tsx
@@ -93,7 +92,7 @@ xrent-manager/
 │   │   │   ├── reports/            # (Sprint 6) KPIs, graphiques (recharts), export CSV — ADMIN uniquement
 │   │   │   │   ├── page.tsx, ReportsCharts.tsx, ExportCsvButton.tsx, loading.tsx
 │   │   │   └── settings/            # Nom du tenant (éditable, ADMIN) ; (Sprint 10) profil user éditable
-│   │   │       └── page.tsx, EditProfileForm.tsx
+│   │   │       └── page.tsx, EditProfileForm.tsx  # (Sprint 11) EditProfileForm appelle useSession().update() après un PATCH réussi (nom/email)
 │   │   └── api/
 │   │       ├── auth/
 │   │       │   ├── [...nextauth]/route.ts  # Handler NextAuth (GET/POST)
@@ -182,7 +181,7 @@ xrent-manager/
 │   └── __tests__/
 │       ├── db.test.ts        # Tests d'isolation multi-tenant (Vitest) sur src/lib/db.ts
 │       ├── auth.test.ts      # Tests d'intégration HTTP : register/login/logout/me, résolution du tenant à la connexion (Sprint 9)
-│       ├── tenants.test.ts   # Tests CRUD tenants + isolation multi-tenant
+│       ├── tenants.test.ts   # Tests GET/PATCH/DELETE tenants + isolation multi-tenant ; (Sprint 11) garde 405 sur POST /api/tenants (retiré)
 │       ├── agencies.test.ts  # Tests CRUD agencies + isolation multi-tenant/multi-agence
 │       ├── ui.test.tsx       # Tests d'intégration HTTP sur le rendu des pages (login/register/dashboard/users)
 │       ├── vehicles.test.ts   # (Sprint 5) CRUD, disponibilité/conflits, isolation multi-tenant/multi-agence
@@ -194,7 +193,7 @@ xrent-manager/
 │       ├── alerts.test.ts     # (Sprint 7) CRUD (lib direct), acknowledge/resolve, filtrage priorité/status
 │       ├── clients.test.ts    # (Sprint 8) CRUD, isolation multi-tenant, recherche, suppression bloquée si location associée
 │       ├── password-policy.test.ts # (Sprint 9) Tests unitaires de validatePassword
-│       ├── users.test.ts      # (Sprint 9) Changement de rôle, garde "dernier ADMIN", suppression, réinitialisation mot de passe ; (Sprint 10) GET/PATCH /api/users/me
+│       ├── users.test.ts      # (Sprint 9) Changement de rôle, garde "dernier ADMIN", suppression, réinitialisation mot de passe ; (Sprint 10) GET/PATCH /api/users/me ; (Sprint 11) rafraîchissement de session JWT via trigger update (GET/POST /api/auth/session)
 │       ├── invitations.test.ts # (Sprint 9) Création, acceptation, déclin, expiration, révocation
 │       ├── audit.test.ts      # (Sprint 9) logAction, GET /api/audit ADMIN-only et tenant-scopé ; (Sprint 10) traçabilité de chaque ressource métier instrumentée (vehicles/locations/clients/invoices/payments/maintenances/alerts)
 │       ├── e2e.test.ts        # (Sprint 9) Scénario complet inscription→facturation→rapport + sécurité ciblée sur les nouvelles surfaces
@@ -240,7 +239,7 @@ xrent-manager/
 | `prisma/schema.prisma` | Schéma de données : `Tenant`, `Agency`, `User` (`passwordHash`, `role`), `UserAgency`, `Client`, `Vehicle`, `Location` (Sprint 5), `Invoice`, `Payment` (Sprint 6), `Invitation`, `AuditLog` (Sprint 9), isolation par `tenantId`/`agencyId` ; `Account`/`Session`/`VerificationToken` pour l'adaptateur NextAuth (OAuth futur, non utilisés pour les sessions actuelles). |
 | `src/lib/prisma.ts` | Singleton `PrismaClient`, réutilisé en développement pour éviter l'épuisement de connexions au hot reload Next.js. |
 | `src/lib/db.ts` | Couche d'accès aux données minimale : `getTenantById`, `getAgencyById`, `getUserById`, chacune filtrée par `tenantId` côté serveur. |
-| `src/lib/auth.ts` | Configuration NextAuth v5 : `CredentialsProvider` (email/password, `bcryptjs`, `tenantId`/`rememberMe` optionnels — Sprint 9), sessions JWT (`maxAge` 30 jours, ajusté par `rememberMe` dans le callback `jwt`), exporte `handlers`/`auth`/`signIn`/`signOut`/`resolveLoginTenants` (Sprint 9 — résolution du tenant à la connexion, vérifie le mot de passe avant de révéler la liste des tenants). |
+| `src/lib/auth.ts` | Configuration NextAuth v5 : `CredentialsProvider` (email/password, `bcryptjs`, `tenantId`/`rememberMe` optionnels — Sprint 9), sessions JWT (`maxAge` 30 jours, ajusté par `rememberMe` dans le callback `jwt`), exporte `handlers`/`auth`/`signIn`/`signOut`/`resolveLoginTenants` (Sprint 9 — résolution du tenant à la connexion, vérifie le mot de passe avant de révéler la liste des tenants). (Sprint 11) Callback `jwt()` gère `trigger === "update"` : relit `name`/`email` en base par `token.id` (jamais depuis le payload client), pour le rafraîchissement de session après édition de profil. |
 | `src/lib/authz.ts` | `getSessionUser()` — récupère l'utilisateur de la session courante. `canAccessAgency()` (Sprint 5) — vérifie qu'une agence appartient au tenant de l'utilisateur *et* (ADMIN, ou MEMBER rattaché via `UserAgency`) ; centralise une vérification auparavant dupliquée dans les routes/pages agencies. `getAccessibleAgencyIds()` (Sprint 5) — liste des agences accessibles (`null` = toutes, pour un ADMIN). |
 | `src/lib/users.ts` | (Sprint 9) `updateUserRole`/`resetUserPassword`/`deleteUser`, garde `LastAdminError` (409) empêchant de retirer le dernier `ADMIN` d'un tenant (self ou non-self) ; `deleteUser` nettoie `UserAgency`/`Alert.userId` avant suppression (pas de cascade DB sur ces relations). |
 | `src/lib/invitations.ts` | (Sprint 9) `createInvitation`/`acceptInvitation`/`declineInvitation`/`revokeInvitation` ; `id` (cuid) sert d'identifiant non-devinable dans le lien partageable, pas de colonne `token` séparée ; `acceptInvitation` dérive toujours `email`/`role` de l'invitation, jamais du client. |
@@ -249,7 +248,7 @@ xrent-manager/
 | `src/proxy.ts` | Redirection optimiste vers `/login` pour `/dashboard*`/`/settings*` si non authentifié (lecture du JWT côté cookie uniquement, pas de requête base de données). N'intercepte pas `/invitations/*` (route publique, Sprint 9). |
 | `src/app/api/auth/register/route.ts` | Crée un `Tenant` et son premier `User` (`role: "ADMIN"`), mot de passe haché avec `bcryptjs`, validé par `validatePassword` (Sprint 9). |
 | `src/app/api/auth/login/route.ts` | Authentifie via `signIn("credentials", …)`, retourne le même message d'erreur pour mot de passe incorrect et compte inexistant. Depuis le Sprint 9 : résout d'abord les tenants candidats (`resolveLoginTenants`) — 0 résultat → 401, >1 → `{ requiresTenantSelection: true, tenants }` sans créer de session, 1 seul → connexion directe. |
-| `src/app/api/tenants/route.ts`, `[id]/route.ts` | CRUD `Tenant`, réservé aux `ADMIN`, strictement scopé au tenant de l'utilisateur connecté (jamais de liste globale). |
+| `src/app/api/tenants/route.ts`, `[id]/route.ts` | `GET`/`PATCH`/`DELETE`, réservés `ADMIN`, strictement scopés au tenant de l'utilisateur connecté (jamais de liste globale). **Pas de `POST`** (Sprint 11) : créait des tenants orphelins, jamais rattachés à un `User` — retiré, voir HANDOFF.md point 36 ; création de tenant exclusive à `/api/auth/register`. |
 | `src/app/api/agencies/route.ts`, `[id]/route.ts` | CRUD `Agency`, scopé tenant ; lecture ouverte aux `MEMBER` explicitement rattachés via `UserAgency`, écriture réservée aux `ADMIN`. |
 | `src/app/api/users/route.ts`, `[id]/route.ts` | `GET` liste (Sprint 4, réservé ADMIN, ne sélectionne jamais `passwordHash`) ; `[id]/route.ts` (Sprint 9) `GET`/`PATCH` (`role`, `password`)/`DELETE`, réservés ADMIN, garde "dernier ADMIN", chaque mutation de rôle/suppression journalisée (`logAction`). |
 | `src/app/api/invitations/route.ts`, `[id]/route.ts`, `[id]/accept/route.ts`, `[id]/decline/route.ts` | (Sprint 9) `GET`/`POST /api/invitations` réservés ADMIN ; `GET /[id]` public (champs non sensibles) ; `DELETE /[id]` révocation, ADMIN ; `accept`/`decline` publics (l'invité n'a pas encore de session dans ce tenant), `email`/`role` toujours dérivés de l'invitation. |
@@ -263,7 +262,7 @@ xrent-manager/
 | `src/app/api/maintenances/route.ts`, `[id]/route.ts` | (Sprint 7) CRUD `Maintenance`, `agencyId`/`currency` toujours dérivés du `Vehicle` côté serveur, machine à états sur `PATCH`, suppression restreinte à `SCHEDULED`. |
 | `src/app/api/alerts/route.ts`, `[id]/acknowledge/route.ts`, `[id]/resolve/route.ts` | (Sprint 7) `GET` (liste filtrable) + `PATCH` acknowledge/resolve — aucune route `POST`/`DELETE` (alertes créées par le système uniquement, jamais supprimables). |
 | `src/app/api/tasks/check-alerts/route.ts` | (Sprint 7) `POST`, réservé `ADMIN` — déclenche `checkDueMaintenances`/`checkReturnsToday`/`checkOverdueInvoices` pour le tenant connecté. |
-| `src/app/dashboard/layout.tsx` | (Sprint 4) Server Component : résout la session et le tenant courant, redirige vers `/login` si non authentifié, fournit `DashboardLayout`. |
+| `src/app/dashboard/layout.tsx` | (Sprint 4) Server Component : résout la session et le tenant courant, redirige vers `/login` si non authentifié, fournit `DashboardLayout`. (Sprint 11) Enveloppe la sortie dans `<SessionProvider>` (`next-auth/react`), nécessaire pour `useSession().update()` (voir `EditProfileForm.tsx`) — première introduction de ce provider, scopée à `/dashboard`. |
 | `src/components/layout/DataTable.tsx` | (Sprint 4) Table générique (TanStack Table **v9** — API `useTable`/`tableFeatures`, pas `useReactTable` — voir `node_modules/@tanstack/react-table/skills/migrate-v8-to-v9/`), tri par colonne et pagination, réutilisée par les pages tenants/agencies/users. |
 | `src/lib/api.ts` | (Sprint 4) Wrapper `fetch` pour les appels `/api/*` côté client ; lève `ApiError` avec le message `{ error }` renvoyé par la route. |
 | `src/__tests__/db.test.ts` | Tests Vitest vérifiant qu'`getAgencyById`/`getUserById` ne retournent jamais une ressource d'un autre tenant ; crée puis nettoie ses propres données dans `xrent_test`. |

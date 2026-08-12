@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { SessionProvider } from "next-auth/react";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { getTenantById } from "@/lib/db";
 import { getPendingAlerts } from "@/lib/alerts";
@@ -29,8 +30,10 @@ export default async function DashboardRootLayout({
       : pendingAlerts.filter((alert) => alert.agencyId === null || accessibleAgencyIds.includes(alert.agencyId));
 
   return (
-    <DashboardLayout tenantName={tenant?.name ?? ""} user={user} pendingAlertCount={visiblePendingAlerts.length}>
-      {children}
-    </DashboardLayout>
+    <SessionProvider>
+      <DashboardLayout tenantName={tenant?.name ?? ""} user={user} pendingAlertCount={visiblePendingAlerts.length}>
+        {children}
+      </DashboardLayout>
+    </SessionProvider>
   );
 }
