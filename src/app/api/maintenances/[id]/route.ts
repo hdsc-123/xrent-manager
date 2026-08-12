@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { MaintenanceStatus } from "@prisma/client";
+import type { MaintenanceStatus, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import {
   getMaintenanceById,
@@ -10,6 +10,7 @@ import {
   MaintenanceNotEditableError,
   MaintenanceNotDeletableError,
 } from "@/lib/maintenances";
+import { logAction } from "@/lib/audit";
 
 const MAINTENANCE_STATUSES: MaintenanceStatus[] = ["SCHEDULED", "IN_PROGRESS", "COMPLETED", "CANCELLED"];
 
@@ -87,6 +88,14 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       cost: body.cost,
       notes: body.notes,
     });
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: body.status && body.status !== maintenance.status ? "maintenance.status_changed" : "maintenance.updated",
+      resource: "Maintenance",
+      resourceId: maintenance.id,
+      metadata: { from: maintenance.status, changes: body } as unknown as Prisma.InputJsonValue,
+    });
     return NextResponse.json({ maintenance: updated });
   } catch (error) {
     if (error instanceof InvalidMaintenanceCostError) {
@@ -126,6 +135,15 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
     }
     throw error;
   }
+
+  await logAction({
+    tenantId: user.tenantId,
+    userId: user.id,
+    action: "maintenance.deleted",
+    resource: "Maintenance",
+    resourceId: maintenance.id,
+    metadata: { vehicleId: maintenance.vehicleId, type: maintenance.type },
+  });
 
   return NextResponse.json({ success: true });
 }

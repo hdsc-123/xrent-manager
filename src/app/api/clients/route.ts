@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/authz";
 import { getClients, createClient } from "@/lib/clients";
+import { logAction } from "@/lib/audit";
 
 /**
  * Client = locataire externe, tenant-scopé mais pas agence-scopé (hypothèse de travail
@@ -52,6 +53,15 @@ export async function POST(request: Request) {
     name: body.name,
     email: body.email,
     phone: body.phone,
+  });
+
+  await logAction({
+    tenantId: user.tenantId,
+    userId: user.id,
+    action: "client.created",
+    resource: "Client",
+    resourceId: client.id,
+    metadata: { name: client.name },
   });
 
   return NextResponse.json({ client }, { status: 201 });

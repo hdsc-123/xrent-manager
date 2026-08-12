@@ -19,9 +19,10 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const resource = searchParams.get("resource") ?? undefined;
+  const action = searchParams.get("action") ?? undefined;
   const userId = searchParams.get("userId") ?? undefined;
 
-  const logs = await getAuditLogs(user.tenantId, { resource, userId });
+  const logs = await getAuditLogs(user.tenantId, { resource, action, userId });
 
   return NextResponse.json({ logs });
 }

@@ -36,6 +36,7 @@ Ce document définit les règles de sécurité de XRent Manager. Il mélange des
 - Déconnexion (`POST /api/auth/logout`) : efface le cookie côté serveur (`Max-Age=0`), vérifié par test. **Limite connue des sessions JWT (stateless)** : un jeton déjà émis reste cryptographiquement valide jusqu'à son expiration même après "déconnexion" ou changement de mot de passe, puisqu'il n'existe pas de table de sessions consultée à chaque requête pour le révoquer — seule la suppression du cookie côté client est garantie. Une éventuelle révocation serveur (ex. liste de blocage, passage à des sessions database avec un flux de connexion custom) reste **À DÉCIDER** si ce risque devient inacceptable.
 - Les modèles `Account`/`Session`/`VerificationToken` de l'adaptateur Prisma (`@auth/prisma-adapter`) sont présents dans le schéma pour permettre l'ajout futur de fournisseurs OAuth sans nouvelle migration, mais la table `Session` n'est pas utilisée pour les connexions par mot de passe actuelles.
 - **Implémenté (Sprint 9)** : `session.maxAge` configuré explicitement à 30 jours (au lieu de reposer sur la valeur par défaut implicite de NextAuth). Case « Se souvenir de moi » sur `/login` : décochée, le callback `jwt()` fixe l'expiration réelle du JWT (`token.exp`) à 1 jour au lieu de 30 — ajuste l'expiration effectivement vérifiée par NextAuth à chaque requête, pas seulement l'attribut `Max-Age` du cookie côté navigateur.
+- **Limite documentée (Sprint 10)** : un changement de nom/email/mot de passe via `PATCH /api/users/me` **ne rafraîchit pas** le JWT existant — `session.user.name`/`email` restent figés à la valeur de connexion jusqu'à la prochaine authentification. Les autorisations serveur ne sont pas affectées (`tenantId`/`role`, seuls champs réellement utilisés pour les décisions d'accès, sont inchangés par une édition de profil) : c'est une limite d'affichage (UX), pas une faille de sécurité. Un `SessionProvider` + `update()` (`next-auth/react`) réglerait ce point mais n'a pas été ajouté (dépendance architecturale non demandée explicitement ce sprint) — voir HANDOFF.md.
 
 ## 6. Validation des entrées
 
@@ -64,7 +65,8 @@ Ce document définit les règles de sécurité de XRent Manager. Il mélange des
 
 - Aucun mot de passe ne doit jamais être stocké en clair ni dans un format réversible.
 - **Implémenté (Sprint 3)** : hachage avec `bcryptjs` (facteur de coût 12), champ `User.passwordHash` (nullable — un `User` créé sans mot de passe, par exemple via un futur fournisseur OAuth, n'en a pas).
-- **Implémenté (Sprint 9)** : politique de complexité (`src/lib/password-policy.ts`, `validatePassword`) — 8 caractères minimum, au moins une majuscule, un chiffre, un caractère spécial. Appliquée à `POST /api/auth/register`, à l'acceptation d'une invitation (`POST /api/invitations/[id]/accept`) et à la réinitialisation de mot de passe par un ADMIN (`PATCH /api/users/[id]`). Expiration et historique de mots de passe restent **À DÉCIDER**.
+- **Implémenté (Sprint 9)** : politique de complexité (`src/lib/password-policy.ts`, `validatePassword`) — 8 caractères minimum, au moins une majuscule, un chiffre, un caractère spécial. Appliquée à `POST /api/auth/register`, à l'acceptation d'une invitation (`POST /api/invitations/[id]/accept`) et à la réinitialisation de mot de passe par un ADMIN (`PATCH /api/users/[id]`) — et, depuis le Sprint 10, à l'auto-édition du mot de passe (`PATCH /api/users/me`). Expiration et historique de mots de passe restent **À DÉCIDER**.
+- **Implémenté (Sprint 10)** : `PATCH /api/users/me` exige la vérification du mot de passe **actuel** (`currentPassword`, comparé via `bcrypt.compare`) avant tout changement de mot de passe par l'utilisateur lui-même — distinct de la réinitialisation *par un ADMIN sur un autre user* (Sprint 9), qui reste une action administrative sans cette vérification. Aucune invalidation des sessions JWT déjà émises sur d'autres appareils n'est déclenchée par ce changement (limite connue, cohérente avec la section 5 ci-dessous) — **À DÉCIDER** si jugé nécessaire.
 - `passwordHash` n'est jamais inclus dans une réponse API (vérifié par test sur `/register`, `/login`, `/me`) ni dans le payload de session NextAuth (le callback `session` ne recopie que `id`, `tenantId`, `role`).
 
 ## 11. Données personnelles
@@ -81,7 +83,7 @@ Ce document définit les règles de sécurité de XRent Manager. Il mélange des
 
 - Toute action sensible doit être tracée de façon non falsifiable (ou au minimum difficilement falsifiable) : qui, quoi, quand, sur quelle ressource, dans quel tenant/agence.
 - **Décision validée (Sprint 1)** : le mécanisme technique retenu est une table d'audit dédiée. Durée de conservation et droits d'accès fins au-delà de « réservé ADMIN » restent **À DÉCIDER**.
-- **Implémenté (Sprint 9)**, périmètre limité : modèle `AuditLog`, `src/lib/audit.ts`, `GET /api/audit` + `/dashboard/audit` (réservés ADMIN, tenant-scopé). Câblé uniquement sur le changement de rôle utilisateur, la suppression d'utilisateur et le cycle de vie des invitations (création/acceptation/déclin/révocation) — **pas** encore sur le reste du CRUD métier (véhicules, locations, factures, paiements, maintenances, alertes), qui reste non tracé. Un audit exhaustif reste **À DÉCIDER**.
+- **Implémenté (Sprint 9, étendu Sprint 10)** : modèle `AuditLog`, `src/lib/audit.ts`, `GET /api/audit` + `/dashboard/audit` (réservés ADMIN, tenant-scopé, filtrable par ressource/action/utilisateur depuis Sprint 10). Câblé sur le changement de rôle utilisateur, la suppression d'utilisateur, le cycle de vie des invitations (Sprint 9), l'édition de profil (Sprint 10), et désormais **tout** le CRUD métier (véhicules, locations, clients, factures, paiements, maintenances, acquittement/résolution d'alertes — Sprint 10). `logAction` n'échoue jamais l'action métier appelante (erreur d'écriture capturée et journalisée en console). Durée de conservation et purge automatique restent **À DÉCIDER**.
 - Voir [DOMAINRULES.md](./DOMAINRULES.md) section 16 et [ARCHITECTURE.md](./ARCHITECTURE.md) section 12.
 
 ## 14. Exports
@@ -133,3 +135,30 @@ Ce document définit les règles de sécurité de XRent Manager. Il mélange des
 - Aucune revue de sécurité formelle inspirée de l'OWASP WSTG n'a été réalisée à ce jour, mais chaque suite de tests d'intégration (Sprints 3 à 9) couvre déjà, module par module, l'isolation multi-tenant/multi-agence, le contrôle d'accès par rôle (403/404 attendus) et la non-distinction compte inexistant/mot de passe invalide — voir [TESTREPORT.md](./TESTREPORT.md) pour le détail par sprint.
 - Une revue WSTG complète devra couvrir a minima : gestion de l'authentification et des sessions, contrôle d'accès, validation des entrées, gestion des erreurs, protection des données sensibles au repos et en transit.
 - Intégration systématique de ces tests dans le cycle de développement : **À DÉCIDER**, voir [TESTREPORT.md](./TESTREPORT.md).
+
+## 23. Revue de sécurité consolidée et checklist MVP (Sprint 10)
+
+Revue manuelle de **toutes** les routes `src/app/api/**/route.ts` (37 routes) menée pendant ce sprint, en complément (pas en remplacement) d'une future revue WSTG formelle (section 22, toujours À DÉCIDER). Méthode : vérifier pour chaque route (1) la présence d'un appel à `getSessionUser()` sauf exception documentée, (2) le scoping `tenantId` de toute lecture/écriture, (3) la cohérence du contrôle de rôle avec les décisions de DOMAINRULES.md.
+
+**Résultat : aucune faille trouvée.** Un seul écart identifié, et c'était un **gap de couverture de test**, pas une faille de sécurité réelle : `GET /api/reports/revenue` et `GET /api/reports/vehicles` appliquaient bien le contrôle ADMIN-only en code, mais aucun test HTTP ne le vérifiait (`src/__tests__/reports.test.ts` ne testait que les fonctions `src/lib/reports.ts` directement) — six tests ajoutés (401/403/200 pour les deux routes).
+
+Checklist de conformité MVP, vérifiée section par section de ce document :
+
+| # | Point | Statut |
+|---|---|---|
+| 1 | Isolation stricte par tenant sur toutes les routes de lecture/écriture (section 1) | ✅ Vérifié (revue manuelle complète, aucune exception trouvée) |
+| 2 | Séparation par agence pour véhicules/locations/maintenances/alertes (section 2) | ✅ Vérifié (`canAccessAgency`/`getAccessibleAgencyIds`, `src/lib/authz.ts`) |
+| 3 | Authentification par mot de passe hashé, message d'erreur non distinctif | ✅ Implémenté (section 3) |
+| 4 | Autorisation serveur systématique (jamais côté client seul) | ✅ Vérifié sur toutes les routes de mutation |
+| 5 | Routes réservées ADMIN correctement gardées : `tenants`, `agencies` (écriture), `users`, `invitations` (écriture), `audit`, `reports/*`, `tasks/check-alerts` | ✅ Vérifié (revue manuelle + tests HTTP 403 pour un MEMBER sur chacune, section 22) |
+| 6 | Mots de passe jamais exposés en clair ni dans les réponses API | ✅ Vérifié (section 10) |
+| 7 | Aucune donnée de carte bancaire stockée | ✅ Respecté (aucune fonctionnalité de paiement en ligne n'existe, section 9) |
+| 8 | Audit exhaustif sur le CRUD métier | ✅ Implémenté ce sprint (section 13) |
+| 9 | Garde « dernier ADMIN » (self et tiers) | ✅ Confirmé (HANDOFF.md section 6) |
+| 10 | Rate limiting / protection brute force sur l'authentification | ❌ **Non implémenté** — à traiter avant mise en production (section 3) |
+| 11 | MFA | ❌ **Non implémenté**, **À DÉCIDER** (section 3) |
+| 12 | Headers de sécurité (CSP, HSTS, etc.) | ❌ **Non implémenté**, **À DÉCIDER** (section 19) |
+| 13 | Environnement de production / stratégie de sauvegarde | ❌ **Non défini**, **À DÉCIDER** (section 16, HANDOFF.md section 8) |
+| 14 | Revue OWASP WSTG formelle | ❌ **Non réalisée**, **À DÉCIDER** (section 22) |
+
+Les points 10 à 14 restent des prérequis explicites avant tout déploiement en production réelle (voir HANDOFF.md section 4) — le MVP est fonctionnellement complet et sans faille connue, mais n'est pas encore *déployé* en production au sens de ce document.

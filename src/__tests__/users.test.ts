@@ -155,6 +155,143 @@ describe("PATCH /api/users/[id]", () => {
   });
 });
 
+describe("GET/PATCH /api/users/me (Sprint 10)", () => {
+  it("GET refuse une requête non authentifiée", async () => {
+    const response = await apiFetch("/api/users/me");
+    expect(response.status).toBe(401);
+  });
+
+  it("GET retourne le profil de l'user connecté", async () => {
+    const response = await apiFetch("/api/users/me", { headers: { Cookie: adminA.sessionCookie } });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.user.id).toBe(adminA.userId);
+    expect(body.user.email).toBe(adminA.email);
+  });
+
+  it("PATCH refuse une requête non authentifiée", async () => {
+    const response = await apiFetch("/api/users/me", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "Nouveau nom" }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it("permet à un user de modifier son propre nom", async () => {
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Self Edit",
+      email: `self-edit-${runId}@test.local`,
+      password,
+    });
+
+    const response = await apiFetch("/api/users/me", {
+      method: "PATCH",
+      headers: { Cookie: member.sessionCookie },
+      body: JSON.stringify({ name: "Nom modifié" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.user.name).toBe("Nom modifié");
+  });
+
+  it("empêche un user de modifier le profil d'un autre user (aucun id cible acceptable)", async () => {
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Isolated Self Edit",
+      email: `isolated-self-edit-${runId}@test.local`,
+      password,
+    });
+
+    const response = await apiFetch("/api/users/me", {
+      method: "PATCH",
+      headers: { Cookie: member.sessionCookie },
+      body: JSON.stringify({ name: "Ne devrait toucher que moi-même" }),
+    });
+    expect(response.status).toBe(200);
+
+    const untouchedAdmin = await prisma.user.findUnique({ where: { id: adminA.userId } });
+    expect(untouchedAdmin?.name).toBe("Admin A");
+  });
+
+  it("rejette un email déjà utilisé dans le même tenant", async () => {
+    const existing = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Email Taken",
+      email: `email-taken-${runId}@test.local`,
+      password,
+    });
+    const other = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Email Wanter",
+      email: `email-wanter-${runId}@test.local`,
+      password,
+    });
+
+    const response = await apiFetch("/api/users/me", {
+      method: "PATCH",
+      headers: { Cookie: other.sessionCookie },
+      body: JSON.stringify({ email: existing.email }),
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it("rejette un changement de mot de passe sans currentPassword", async () => {
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "No Current Password",
+      email: `no-current-pw-${runId}@test.local`,
+      password,
+    });
+
+    const response = await apiFetch("/api/users/me", {
+      method: "PATCH",
+      headers: { Cookie: member.sessionCookie },
+      body: JSON.stringify({ newPassword: "New-Correct-Horse9!" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("rejette un changement de mot de passe avec un currentPassword incorrect", async () => {
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Wrong Current Password",
+      email: `wrong-current-pw-${runId}@test.local`,
+      password,
+    });
+
+    const response = await apiFetch("/api/users/me", {
+      method: "PATCH",
+      headers: { Cookie: member.sessionCookie },
+      body: JSON.stringify({ currentPassword: "not-the-password", newPassword: "New-Correct-Horse9!" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("permet à un user de changer son mot de passe avec le bon currentPassword", async () => {
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Password Changer",
+      email: `password-changer-${runId}@test.local`,
+      password,
+    });
+
+    const newPassword = "New-Correct-Horse9!";
+    const response = await apiFetch("/api/users/me", {
+      method: "PATCH",
+      headers: { Cookie: member.sessionCookie },
+      body: JSON.stringify({ currentPassword: password, newPassword }),
+    });
+    expect(response.status).toBe(200);
+
+    const loginResponse = await apiFetch("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email: member.email, password: newPassword, tenantId: adminA.tenantId }),
+    });
+    expect(loginResponse.status).toBe(200);
+  });
+});
+
 describe("DELETE /api/users/[id]", () => {
   it("refuse un MEMBER (réservé ADMIN)", async () => {
     const member = await createAndLoginMember({

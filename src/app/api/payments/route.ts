@@ -12,6 +12,7 @@ import {
   InvalidPaymentAmountError,
   PaymentExceedsRemainingBalanceError,
 } from "@/lib/payments";
+import { logAction } from "@/lib/audit";
 
 const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "CARD", "BANK_TRANSFER", "CHECK", "OTHER"];
 
@@ -127,6 +128,14 @@ export async function POST(request: Request) {
       paidAt,
       reference: body.reference,
       notes: body.notes,
+    });
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: "payment.created",
+      resource: "Payment",
+      resourceId: payment.id,
+      metadata: { invoiceId: payment.invoiceId, amount: payment.amount, method: payment.method },
     });
     return NextResponse.json({ payment }, { status: 201 });
   } catch (error) {

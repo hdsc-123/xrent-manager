@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { InvoiceStatus } from "@prisma/client";
+import type { InvoiceStatus, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import {
   getInvoiceById,
@@ -10,6 +10,7 @@ import {
   InvalidInvoiceStatusTransitionError,
   InvoiceNotDeletableError,
 } from "@/lib/invoices";
+import { logAction } from "@/lib/audit";
 
 const INVOICE_STATUSES: InvoiceStatus[] = ["DRAFT", "SENT", "PARTIALLY_PAID", "PAID", "CANCELLED"];
 
@@ -85,6 +86,14 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       dueDate,
       notes: body.notes,
     });
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: body.status && body.status !== invoice.status ? "invoice.status_changed" : "invoice.updated",
+      resource: "Invoice",
+      resourceId: invoice.id,
+      metadata: { from: invoice.status, changes: body } as unknown as Prisma.InputJsonValue,
+    });
     return NextResponse.json({ invoice: updated });
   } catch (error) {
     if (error instanceof InvalidInvoiceAmountError) {
@@ -121,6 +130,15 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
     }
     throw error;
   }
+
+  await logAction({
+    tenantId: user.tenantId,
+    userId: user.id,
+    action: "invoice.deleted",
+    resource: "Invoice",
+    resourceId: invoice.id,
+    metadata: { number: invoice.number },
+  });
 
   return NextResponse.json({ success: true });
 }

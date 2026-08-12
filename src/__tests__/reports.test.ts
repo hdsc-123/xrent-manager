@@ -2,12 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { getRevenueReport, getVehicleUtilizationReport, getTopVehicles } from "@/lib/reports";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
 
 let admin: AuthenticatedTestUser;
+let member: AuthenticatedTestUser;
 let vehicleId: string;
 let clientId: string;
 
@@ -59,9 +60,17 @@ beforeAll(async () => {
     body: JSON.stringify({ name: "Client", email: `client-${runId}@test.local` }),
   });
   clientId = (await clientResponse.json()).client.id;
+
+  member = await createAndLoginMember({
+    tenantId: admin.tenantId,
+    name: "Member",
+    email: `member-${runId}@test.local`,
+    password: "Correct-Horse-Battery-Staple9!",
+  });
 });
 
 afterAll(async () => {
+  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -72,6 +81,46 @@ afterAll(async () => {
   await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
   await prisma.$disconnect();
+});
+
+describe("GET /api/reports/* — réservé ADMIN (Sprint 10, consolidation sécurité)", () => {
+  it("GET /api/reports/revenue refuse une requête non authentifiée", async () => {
+    const response = await apiFetch("/api/reports/revenue?from=2030-01-01&to=2030-12-31");
+    expect(response.status).toBe(401);
+  });
+
+  it("GET /api/reports/revenue refuse un MEMBER", async () => {
+    const response = await apiFetch("/api/reports/revenue?from=2030-01-01&to=2030-12-31", {
+      headers: { Cookie: member.sessionCookie },
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it("GET /api/reports/revenue autorise un ADMIN", async () => {
+    const response = await apiFetch("/api/reports/revenue?from=2030-01-01&to=2030-12-31", {
+      headers: { Cookie: admin.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it("GET /api/reports/vehicles refuse une requête non authentifiée", async () => {
+    const response = await apiFetch("/api/reports/vehicles?from=2030-01-01&to=2030-12-31");
+    expect(response.status).toBe(401);
+  });
+
+  it("GET /api/reports/vehicles refuse un MEMBER", async () => {
+    const response = await apiFetch("/api/reports/vehicles?from=2030-01-01&to=2030-12-31", {
+      headers: { Cookie: member.sessionCookie },
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it("GET /api/reports/vehicles autorise un ADMIN", async () => {
+    const response = await apiFetch("/api/reports/vehicles?from=2030-01-01&to=2030-12-31", {
+      headers: { Cookie: admin.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+  });
 });
 
 describe("getRevenueReport", () => {

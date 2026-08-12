@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { VehicleStatus } from "@prisma/client";
 import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/authz";
 import { getVehicles, createVehicle, type VehicleFilters } from "@/lib/vehicles";
+import { logAction } from "@/lib/audit";
 
 const VEHICLE_STATUSES: VehicleStatus[] = ["AVAILABLE", "RENTED", "MAINTENANCE", "INACTIVE"];
 
@@ -127,6 +128,14 @@ export async function POST(request: Request) {
       status: body.status,
       pricePerDay,
       currency: body.currency,
+    });
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: "vehicle.created",
+      resource: "Vehicle",
+      resourceId: vehicle.id,
+      metadata: { licensePlate: vehicle.licensePlate, agencyId: vehicle.agencyId },
     });
     return NextResponse.json({ vehicle }, { status: 201 });
   } catch (error) {

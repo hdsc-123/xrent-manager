@@ -35,6 +35,7 @@ export async function logAction(data: LogActionInput): Promise<void> {
 
 export interface GetAuditLogsFilters {
   resource?: string;
+  action?: string;
   userId?: string;
   take?: number;
   skip?: number;
@@ -45,6 +46,7 @@ export async function getAuditLogs(tenantId: string, filters: GetAuditLogsFilter
     where: {
       tenantId,
       ...(filters.resource ? { resource: filters.resource } : {}),
+      ...(filters.action ? { action: filters.action } : {}),
       ...(filters.userId ? { userId: filters.userId } : {}),
     },
     orderBy: { createdAt: "desc" },

@@ -65,7 +65,7 @@ xrent-manager/
 │   │   │   │   └── [id]/page.tsx, EditUserForm.tsx
 │   │   │   ├── invitations/        # (Sprint 9) Liste ADMIN + création + lien partageable + révocation
 │   │   │   │   └── page.tsx, InvitationsPanel.tsx
-│   │   │   ├── audit/              # (Sprint 9) Journal d'audit en lecture seule — ADMIN uniquement
+│   │   │   ├── audit/              # (Sprint 9) Journal d'audit — ADMIN uniquement ; (Sprint 10) exhaustif + filtres
 │   │   │   │   └── page.tsx
 │   │   │   ├── vehicles/           # (Sprint 5) CRUD complet, scopé agence
 │   │   │   │   ├── page.tsx, VehiclesTable.tsx, loading.tsx
@@ -92,7 +92,8 @@ xrent-manager/
 │   │   │   │   ├── page.tsx, PaymentsTable.tsx, loading.tsx
 │   │   │   ├── reports/            # (Sprint 6) KPIs, graphiques (recharts), export CSV — ADMIN uniquement
 │   │   │   │   ├── page.tsx, ReportsCharts.tsx, ExportCsvButton.tsx, loading.tsx
-│   │   │   └── settings/page.tsx   # Nom du tenant (éditable) ; profil user en lecture seule
+│   │   │   └── settings/            # Nom du tenant (éditable, ADMIN) ; (Sprint 10) profil user éditable
+│   │   │       └── page.tsx, EditProfileForm.tsx
 │   │   └── api/
 │   │       ├── auth/
 │   │       │   ├── [...nextauth]/route.ts  # Handler NextAuth (GET/POST)
@@ -108,14 +109,15 @@ xrent-manager/
 │   │       │   └── [id]/route.ts           # GET/PATCH/DELETE — scopé tenant + agence (UserAgency)
 │   │       ├── users/
 │   │       │   ├── route.ts                # GET — liste du tenant, ADMIN uniquement (Sprint 4)
-│   │       │   └── [id]/route.ts           # (Sprint 9) GET/PATCH (rôle, réinitialisation mot de passe)/DELETE — ADMIN uniquement, garde "dernier ADMIN"
+│   │       │   ├── [id]/route.ts           # (Sprint 9) GET/PATCH (rôle, réinitialisation mot de passe)/DELETE — ADMIN uniquement, garde "dernier ADMIN"
+│   │       │   └── me/route.ts             # (Sprint 10) GET/PATCH — profil de l'user connecté (nom/email/mot de passe, vérifie l'ancien), jamais un autre user
 │   │       ├── invitations/                # (Sprint 9)
 │   │       │   ├── route.ts                # GET (liste, ADMIN)/POST (création, ADMIN)
 │   │       │   └── [id]/
 │   │       │       ├── route.ts            # GET (public, champs non sensibles)/DELETE (révocation, ADMIN)
 │   │       │       ├── accept/route.ts     # POST — public, crée le user (email/rôle toujours dérivés de l'invitation)
 │   │       │       └── decline/route.ts    # POST — public
-│   │       ├── audit/route.ts              # (Sprint 9) GET — journal d'audit du tenant, ADMIN uniquement
+│   │       ├── audit/route.ts              # (Sprint 9) GET — journal d'audit du tenant, ADMIN uniquement ; (Sprint 10) filtre action ajouté
 │   │       ├── vehicles/                   # (Sprint 5)
 │   │       │   ├── route.ts                # GET (liste, filtres)/POST — scopé tenant + agence
 │   │       │   └── [id]/
@@ -172,9 +174,9 @@ xrent-manager/
 │   │   ├── maintenances.ts  # (Sprint 7) CRUD + machine à états + getDueMaintenances + createMaintenanceFromSchedule
 │   │   ├── alerts.ts        # (Sprint 7) CRUD (sans delete) + machine à états (acknowledge/resolve) + getPendingAlerts
 │   │   ├── scheduled-tasks.ts # (Sprint 7) checkDueMaintenances/checkReturnsToday/checkOverdueInvoices — génération idempotente d'alertes
-│   │   ├── users.ts         # (Sprint 9) updateUserRole/resetUserPassword/deleteUser — garde "dernier ADMIN", nettoyage UserAgency/Alert
+│   │   ├── users.ts         # (Sprint 9) updateUserRole/resetUserPassword/deleteUser — garde "dernier ADMIN", nettoyage UserAgency/Alert ; (Sprint 10) updateUserProfile (nom/email/mot de passe, vérifie l'ancien)
 │   │   ├── invitations.ts   # (Sprint 9) createInvitation/acceptInvitation/declineInvitation/revokeInvitation — email/rôle toujours dérivés de l'invitation
-│   │   ├── audit.ts         # (Sprint 9) logAction/getAuditLogs — n'échoue jamais l'action métier appelante
+│   │   ├── audit.ts         # (Sprint 9) logAction/getAuditLogs — n'échoue jamais l'action métier appelante ; (Sprint 10) filtre action, câblé sur tout le CRUD métier (vehicles/locations/clients/invoices/payments/maintenances/alerts, voir routes API correspondantes)
 │   │   ├── password-policy.ts # (Sprint 9) validatePassword() — min 8 caractères + majuscule + chiffre + spécial
 │   │   └── utils.ts         # cn() — généré par shadcn init
 │   └── __tests__/
@@ -192,10 +194,11 @@ xrent-manager/
 │       ├── alerts.test.ts     # (Sprint 7) CRUD (lib direct), acknowledge/resolve, filtrage priorité/status
 │       ├── clients.test.ts    # (Sprint 8) CRUD, isolation multi-tenant, recherche, suppression bloquée si location associée
 │       ├── password-policy.test.ts # (Sprint 9) Tests unitaires de validatePassword
-│       ├── users.test.ts      # (Sprint 9) Changement de rôle, garde "dernier ADMIN", suppression, réinitialisation mot de passe
+│       ├── users.test.ts      # (Sprint 9) Changement de rôle, garde "dernier ADMIN", suppression, réinitialisation mot de passe ; (Sprint 10) GET/PATCH /api/users/me
 │       ├── invitations.test.ts # (Sprint 9) Création, acceptation, déclin, expiration, révocation
-│       ├── audit.test.ts      # (Sprint 9) logAction, GET /api/audit ADMIN-only et tenant-scopé
+│       ├── audit.test.ts      # (Sprint 9) logAction, GET /api/audit ADMIN-only et tenant-scopé ; (Sprint 10) traçabilité de chaque ressource métier instrumentée (vehicles/locations/clients/invoices/payments/maintenances/alerts)
 │       ├── e2e.test.ts        # (Sprint 9) Scénario complet inscription→facturation→rapport + sécurité ciblée sur les nouvelles surfaces
+│       ├── e2e-full.test.ts   # (Sprint 10) Scénario complet inscription→sélection de tenant (Option B)→CRUD complet (dont maintenances/alertes)→facturation→rapports→édition profil→vérification finale du journal d'audit
 │       └── helpers/          # testServer.ts (port/URL), http.ts (fetch + cookies), fixtures.ts (register/login de test)
 ├── vitest.global-setup.ts    # Démarre/arrête un vrai serveur `next dev` de test (requis par NextAuth, voir TESTREPORT.md)
 ├── AGENTS.md                # Règles agent Next.js, régénéré automatiquement par `next dev`
@@ -300,7 +303,7 @@ D'après les principes produit de démarrage :
 
 - Tenants (CRUD + UI implémentés, Sprint 3–4)
 - Agences (CRUD + UI implémentés, Sprint 3–4)
-- Utilisateurs et rôles (inscription + rôles `ADMIN`/`MEMBER` implémentés Sprint 3 ; liste en lecture seule Sprint 4 ; modification de rôle, suppression, invitation implémentées Sprint 9, avec garde "dernier ADMIN" ; granularité fine des permissions au-delà de `ADMIN`/`MEMBER` reste À DÉCIDER)
+- Utilisateurs et rôles (inscription + rôles `ADMIN`/`MEMBER` implémentés Sprint 3 ; liste en lecture seule Sprint 4 ; modification de rôle, suppression, invitation implémentées Sprint 9, avec garde "dernier ADMIN" ; édition du profil par l'user lui-même implémentée Sprint 10 (`/api/users/me`) ; granularité fine des permissions au-delà de `ADMIN`/`MEMBER` reste À DÉCIDER)
 - Véhicules (CRUD + UI + disponibilité implémentés, Sprint 5 ; catégorie = champ texte libre sur `Vehicle`, pas de modèle `Category` dédié — voir DOMAINRULES.md section 6)
 - Réservations et contrats (fusionnés en un seul modèle `Location` avec machine à états, Sprint 5 — décision explicite, voir HANDOFF.md et DOMAINRULES.md section 7/8)
 - Clients (modèle `Client` minimal implémenté Sprint 5 — nom/email/téléphone ; module dédié complet implémenté Sprint 8 — CRUD, page `/dashboard/clients*`, en plus de la sélection/création inline déjà disponible depuis le formulaire de location)
@@ -311,7 +314,7 @@ D'après les principes produit de démarrage :
 - Alertes / notifications (modèle `Alert` implémenté Sprint 7 — in-app uniquement, pas d'email ; badge header, `/dashboard/alerts`, génération automatique via `src/lib/scheduled-tasks.ts`/`POST /api/tasks/check-alerts`)
 - Cautions
 - Incidents (véhicule/location)
-- Audit (modèle `AuditLog` implémenté Sprint 9 — `/dashboard/audit`, réservé ADMIN ; périmètre volontairement limité aux actions Sprint 9 — rôle/suppression user, invitations — pas de rétrofit sur le reste du CRUD, voir HANDOFF.md)
+- Audit (modèle `AuditLog` implémenté Sprint 9 — `/dashboard/audit`, réservé ADMIN ; étendu Sprint 10 à tout le CRUD métier — véhicules, locations, clients, factures, paiements, maintenances, alertes — en plus des actions Sprint 9, avec filtres ressource/action/utilisateur)
 - Export / Import (CSV disponible pour les rapports depuis le Sprint 6 ; pas d'import, pas d'export pour les autres modules)
 - Dashboard-admin (coquille + pages de base implémentées, Sprint 4 ; module métier véhicules/locations depuis Sprint 5 ; facturation/paiements/rapports depuis Sprint 6 ; maintenance/alertes depuis Sprint 7 ; gestion utilisateurs/invitations/audit depuis Sprint 9)
 

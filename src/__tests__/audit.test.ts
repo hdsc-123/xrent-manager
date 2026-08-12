@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
+import { createAlert } from "@/lib/alerts";
 import { apiFetch } from "./helpers/http";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
 
@@ -33,7 +34,15 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.invitation.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.payment.deleteMany({ where: { invoice: { tenantId: { in: createdTenantIds } } } });
+  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.maintenance.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
+  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
   await prisma.$disconnect();
@@ -101,5 +110,193 @@ describe("Journal d'audit (Sprint 9)", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.logs.every((log: { tenantId: string }) => log.tenantId === adminA.tenantId)).toBe(true);
+  });
+});
+
+describe("Journal d'audit exhaustif sur le CRUD métier (Sprint 10)", () => {
+  async function findLog(resource: string, resourceId: string) {
+    return prisma.auditLog.findMany({
+      where: { tenantId: adminA.tenantId, resource, resourceId },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  it("trace la création/modification/suppression d'un véhicule", async () => {
+    const agencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence Audit", slug: `agence-audit-${runId}` }),
+    });
+    const agencyId = (await agencyResponse.json()).agency.id;
+
+    const createResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId,
+        name: "Clio Audit",
+        licensePlate: `AU-${Math.floor(Math.random() * 1_000_000)}-AU`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 4500,
+      }),
+    });
+    const vehicleId = (await createResponse.json()).vehicle.id;
+    expect((await findLog("Vehicle", vehicleId)).some((log) => log.action === "vehicle.created")).toBe(true);
+
+    await apiFetch(`/api/vehicles/${vehicleId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ pricePerDay: 5000 }),
+    });
+    expect((await findLog("Vehicle", vehicleId)).some((log) => log.action === "vehicle.updated")).toBe(true);
+
+    await apiFetch(`/api/vehicles/${vehicleId}`, { method: "DELETE", headers: { Cookie: adminA.sessionCookie } });
+    expect((await findLog("Vehicle", vehicleId)).some((log) => log.action === "vehicle.deleted")).toBe(true);
+  });
+
+  it("trace la création/modification/suppression d'un client", async () => {
+    const createResponse = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Client Audit" }),
+    });
+    const clientId = (await createResponse.json()).client.id;
+    expect((await findLog("Client", clientId)).some((log) => log.action === "client.created")).toBe(true);
+
+    await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ phone: "0600000000" }),
+    });
+    expect((await findLog("Client", clientId)).some((log) => log.action === "client.updated")).toBe(true);
+
+    await apiFetch(`/api/clients/${clientId}`, { method: "DELETE", headers: { Cookie: adminA.sessionCookie } });
+    expect((await findLog("Client", clientId)).some((log) => log.action === "client.deleted")).toBe(true);
+  });
+
+  it("trace le cycle complet location → facture → paiement → maintenance → alerte", async () => {
+    const agencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence Audit Cycle", slug: `agence-audit-cycle-${runId}` }),
+    });
+    const agencyId = (await agencyResponse.json()).agency.id;
+
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId,
+        name: "Clio Cycle",
+        licensePlate: `CY-${Math.floor(Math.random() * 1_000_000)}-CY`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 5000,
+      }),
+    });
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const clientResponse = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Client Cycle" }),
+    });
+    const clientId = (await clientResponse.json()).client.id;
+
+    const locationResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId,
+        clientId,
+        startDate: "2029-01-10",
+        endDate: "2029-01-13",
+      }),
+    });
+    const locationId = (await locationResponse.json()).location.id;
+    expect((await findLog("Location", locationId)).some((log) => log.action === "location.created")).toBe(true);
+
+    await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    expect(
+      (await findLog("Location", locationId)).some((log) => log.action === "location.status_changed")
+    ).toBe(true);
+
+    const invoiceResponse = await apiFetch("/api/invoices", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ locationId }),
+    });
+    const invoiceId = (await invoiceResponse.json()).invoice.id;
+    expect((await findLog("Invoice", invoiceId)).some((log) => log.action === "invoice.created")).toBe(true);
+
+    const paymentResponse = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ invoiceId, amount: 5000, method: "CASH" }),
+    });
+    const paymentId = (await paymentResponse.json()).payment.id;
+    expect((await findLog("Payment", paymentId)).some((log) => log.action === "payment.created")).toBe(true);
+
+    await apiFetch(`/api/payments/${paymentId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reference: "REF-AUDIT" }),
+    });
+    expect((await findLog("Payment", paymentId)).some((log) => log.action === "payment.updated")).toBe(true);
+
+    await apiFetch(`/api/payments/${paymentId}`, { method: "DELETE", headers: { Cookie: adminA.sessionCookie } });
+    expect((await findLog("Payment", paymentId)).some((log) => log.action === "payment.deleted")).toBe(true);
+
+    const maintenanceResponse = await apiFetch("/api/maintenances", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ vehicleId, type: "OIL_CHANGE", scheduledDate: "2030-06-01" }),
+    });
+    const maintenanceId = (await maintenanceResponse.json()).maintenance.id;
+    expect(
+      (await findLog("Maintenance", maintenanceId)).some((log) => log.action === "maintenance.created")
+    ).toBe(true);
+
+    await apiFetch(`/api/maintenances/${maintenanceId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED" }),
+    });
+    expect(
+      (await findLog("Maintenance", maintenanceId)).some((log) => log.action === "maintenance.status_changed")
+    ).toBe(true);
+
+    await apiFetch(`/api/maintenances/${maintenanceId}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    // COMPLETED n'est pas supprimable (historique conservé) : aucune entrée deleted attendue ici.
+
+    const alert = await createAlert({
+      tenantId: adminA.tenantId,
+      type: "OTHER",
+      message: "Alerte de test audit",
+    });
+
+    await apiFetch(`/api/alerts/${alert.id}/acknowledge`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect((await findLog("Alert", alert.id)).some((log) => log.action === "alert.acknowledged")).toBe(true);
+
+    await apiFetch(`/api/alerts/${alert.id}/resolve`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect((await findLog("Alert", alert.id)).some((log) => log.action === "alert.resolved")).toBe(true);
   });
 });

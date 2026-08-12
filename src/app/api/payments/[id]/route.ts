@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { PaymentMethod } from "@prisma/client";
+import type { PaymentMethod, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { getInvoiceById } from "@/lib/invoices";
 import {
@@ -10,6 +10,7 @@ import {
   PaymentExceedsRemainingBalanceError,
   PaymentInvoiceNotFoundError,
 } from "@/lib/payments";
+import { logAction } from "@/lib/audit";
 
 const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "CARD", "BANK_TRANSFER", "CHECK", "OTHER"];
 
@@ -97,6 +98,14 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       reference: body.reference,
       notes: body.notes,
     });
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: "payment.updated",
+      resource: "Payment",
+      resourceId: payment.id,
+      metadata: { changes: body } as unknown as Prisma.InputJsonValue,
+    });
     return NextResponse.json({ payment: updated });
   } catch (error) {
     if (error instanceof InvalidPaymentAmountError) {
@@ -126,5 +135,15 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
   }
 
   await deletePayment(user.tenantId, payment.id);
+
+  await logAction({
+    tenantId: user.tenantId,
+    userId: user.id,
+    action: "payment.deleted",
+    resource: "Payment",
+    resourceId: payment.id,
+    metadata: { invoiceId: payment.invoiceId, amount: payment.amount },
+  });
+
   return NextResponse.json({ success: true });
 }

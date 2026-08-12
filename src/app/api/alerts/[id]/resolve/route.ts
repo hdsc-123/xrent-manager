@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { getAlertById, resolveAlert, InvalidAlertStatusTransitionError } from "@/lib/alerts";
+import { logAction } from "@/lib/audit";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -22,6 +23,14 @@ export async function PATCH(_request: Request, { params }: RouteParams) {
 
   try {
     const updated = await resolveAlert(user.tenantId, alert.id, user.id);
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: "alert.resolved",
+      resource: "Alert",
+      resourceId: alert.id,
+      metadata: { type: alert.type },
+    });
     return NextResponse.json({ alert: updated });
   } catch (error) {
     if (error instanceof InvalidAlertStatusTransitionError) {

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
 import { getClientById, updateClient, deleteClient, ClientHasLocationsError } from "@/lib/clients";
+import { logAction } from "@/lib/audit";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -55,6 +57,14 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   }
 
   const updated = await updateClient(user.tenantId, client.id, body);
+  await logAction({
+    tenantId: user.tenantId,
+    userId: user.id,
+    action: "client.updated",
+    resource: "Client",
+    resourceId: client.id,
+    metadata: { changes: body } as unknown as Prisma.InputJsonValue,
+  });
   return NextResponse.json({ client: updated });
 }
 
@@ -80,6 +90,15 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
     }
     throw error;
   }
+
+  await logAction({
+    tenantId: user.tenantId,
+    userId: user.id,
+    action: "client.deleted",
+    resource: "Client",
+    resourceId: client.id,
+    metadata: { name: client.name },
+  });
 
   return NextResponse.json({ success: true });
 }

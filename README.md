@@ -10,38 +10,81 @@ Fournir une plateforme permettant à des sociétés de location de véhicules de
 
 ## Statut actuel
 
-**Sprint 0 — fondation documentaire.** Le projet contient uniquement le socle Next.js par défaut et sa documentation fondatrice. **Aucun module métier n'est encore développé** : pas de gestion de véhicules, réservations, contrats, clients, paiements, cautions, ni d'authentification, ni de base de données. Voir [HANDOFF.md](./HANDOFF.md) pour l'état détaillé.
+**Sprint 10 — MVP production-ready (au sens fonctionnel).** Le projet dispose désormais de l'authentification multi-tenant, de l'autorisation serveur (tenant/agence/rôle), et des modules métier véhicules, locations, clients, facturation, paiements, rapports, maintenance, alertes, gestion des utilisateurs/invitations et journal d'audit exhaustif — voir [HANDOFF.md](./HANDOFF.md) pour l'état détaillé sprint par sprint et les points encore **À DÉCIDER** avant un déploiement en production réelle (aucun environnement de staging/production, aucune stratégie de sauvegarde ou de rate-limiting définie à ce jour).
 
 ## Stack technique
 
-- [Next.js](https://nextjs.org) 16.3.0 (App Router)
-- React 19
-- TypeScript
-- Tailwind CSS v4
-- ESLint (`eslint-config-next`)
-
-Aucune base de données, ORM, système d'authentification ou framework de test n'est installé à ce jour.
+- [Next.js](https://nextjs.org) 16.3.0 (App Router, Turbopack)
+- React 19, TypeScript strict
+- Tailwind CSS v4, shadcn/ui (style `base-nova` sur `@base-ui/react`), lucide-react
+- PostgreSQL 17 + [Prisma](https://www.prisma.io) 6.19.3 (ORM)
+- [NextAuth.js (Auth.js) v5](https://authjs.dev) — sessions JWT, `CredentialsProvider` (email/mot de passe)
+- [Vitest](https://vitest.dev) — tests d'intégration HTTP contre un vrai serveur `next dev` de test
+- `@tanstack/react-table` v9, `@react-pdf/renderer` (PDF factures), `papaparse` (export CSV), `recharts` (graphiques rapports)
 
 ## Prérequis
 
 - Node.js (version compatible avec Next.js 16 / React 19)
 - npm
+- PostgreSQL 17 en local (ou accessible en réseau)
 
-## Commandes de démarrage
+## Getting Started — installation locale
+
+1. **Installer les dépendances**
+
+   ```bash
+   npm install
+   ```
+
+2. **Créer les bases de données PostgreSQL** (une pour le développement, une dédiée aux tests — toujours distinctes, voir [ARCHITECTURE.md](./ARCHITECTURE.md)) :
+
+   ```bash
+   createdb xrent_dev
+   createdb xrent_test
+   ```
+
+3. **Configurer les variables d'environnement.** Copier `.env.example` vers `.env` (développement) et `.env.test` (tests), puis renseigner chaque fichier :
+
+   ```bash
+   cp .env.example .env
+   cp .env.example .env.test
+   ```
+
+   | Variable | Rôle |
+   |---|---|
+   | `DATABASE_URL` | Chaîne de connexion PostgreSQL — pointer `.env` vers `xrent_dev` et `.env.test` vers `xrent_test` (bases distinctes, voir [SECURITY.md](./SECURITY.md)) |
+   | `AUTH_SECRET` | Secret de signature/chiffrement des sessions JWT NextAuth — générer une valeur locale avec `openssl rand -base64 32`, ne jamais réutiliser la même valeur entre environnements, ne jamais commiter |
+
+   `.env*` est exclu du suivi git (`.gitignore`) : ces fichiers ne doivent jamais être commités.
+
+4. **Appliquer les migrations Prisma** sur chacune des deux bases (Prisma CLI charge `.env` automatiquement ; pour cibler `.env.test`, exporter temporairement ses variables dans la commande) :
+
+   ```bash
+   npx prisma migrate deploy                                    # applique les migrations existantes sur xrent_dev (lit .env)
+   env $(grep -v '^#' .env.test | xargs) npx prisma migrate deploy   # puis sur xrent_test
+   ```
+
+   Aucun script de seed n'existe à ce jour (voir [CLAUDE.md](./CLAUDE.md) — pas de données fictives).
+
+5. **Lancer le serveur de développement**
+
+   ```bash
+   npm run dev
+   ```
+
+   Ouvrir [http://localhost:3000](http://localhost:3000). Créer un compte via `/register` (crée un nouveau tenant + son premier utilisateur, `ADMIN`).
+
+## Commandes disponibles
 
 ```bash
-npm install
-npm run dev
+npm run dev     # Serveur de développement Next.js
+npm run build   # Build de production (Turbopack) — validé ✅
+npm run start   # Démarre le serveur en mode production (build requis au préalable)
+npm run lint    # Lint ESLint — validé ✅
+npm run test    # Suite de tests Vitest (206 tests, contre xrent_test) — validé ✅
 ```
 
-Ouvrir [http://localhost:3000](http://localhost:3000).
-
-## Commandes lint et build
-
-```bash
-npm run lint   # Validé ✅ — aucune erreur
-npm run build  # Validé ✅ — build de production réussi
-```
+`npm run test` démarre automatiquement un vrai serveur `next dev` de test (voir `vitest.global-setup.ts`) sur un port dédié, exécute la suite contre `xrent_test`, puis l'arrête — aucune donnée résiduelle n'est laissée après l'exécution (chaque suite nettoie les données qu'elle crée). Voir [TESTREPORT.md](./TESTREPORT.md) pour le détail de la couverture.
 
 ## Règles importantes
 
@@ -66,4 +109,8 @@ npm run build  # Validé ✅ — build de production réussi
 
 ## Modules métier
 
-**Aucun module métier n'est développé à ce stade du projet.** La page d'accueil actuelle (`src/app/page.tsx`) est la page de démonstration par défaut générée par `create-next-app`, sans lien avec le domaine métier de XRent Manager.
+Implémentés (voir [HANDOFF.md](./HANDOFF.md) et [PROJECT_MAP.md](./PROJECT_MAP.md) pour le détail par sprint) : tenants, agences, utilisateurs/rôles/invitations, véhicules, locations (réservation + contrat fusionnés), clients, facturation (avec export PDF), paiements manuels, rapports (revenu, utilisation véhicule, export CSV), maintenance véhicules, alertes (in-app uniquement), journal d'audit exhaustif sur le CRUD métier.
+
+Non implémentés à ce jour : cautions, incidents de location, notifications par email, tout environnement de staging/production réel. Voir [HANDOFF.md](./HANDOFF.md) section 3 pour la liste complète et section 8 pour les points encore **À DÉCIDER**.
+
+La page d'accueil actuelle (`src/app/page.tsx`) reste la page de démonstration par défaut générée par `create-next-app`, sans lien avec le domaine métier de XRent Manager — le point d'entrée applicatif réel est `/login`/`/register` puis `/dashboard/*`.

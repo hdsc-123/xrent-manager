@@ -14,6 +14,20 @@ export class LastAdminError extends Error {
   }
 }
 
+export class EmailAlreadyInUseError extends Error {
+  constructor() {
+    super("Cet email est déjà utilisé.");
+    this.name = "EmailAlreadyInUseError";
+  }
+}
+
+export class InvalidCurrentPasswordError extends Error {
+  constructor() {
+    super("Mot de passe actuel incorrect.");
+    this.name = "InvalidCurrentPasswordError";
+  }
+}
+
 export async function getUserById(tenantId: string, userId: string): Promise<User | null> {
   return prisma.user.findFirst({ where: { id: userId, tenantId } });
 }
@@ -62,6 +76,60 @@ export async function resetUserPassword(
 
   const passwordHash = await bcrypt.hash(password, 12);
   return prisma.user.update({ where: { id: targetUserId }, data: { passwordHash } });
+}
+
+export interface UpdateUserProfileInput {
+  name?: string;
+  email?: string;
+  currentPassword?: string;
+  newPassword?: string;
+}
+
+/**
+ * Édition du profil par l'user lui-même (Sprint 10) — distinct de resetUserPassword
+ * (réinitialisation par un ADMIN sur un autre user, sans vérification de l'ancien mot
+ * de passe). Ici, tout changement de mot de passe exige la vérification du mot de passe
+ * actuel. Le tenantId reste requis en signature pour rester cohérent avec le reste de ce
+ * module, même si un userId est déjà non-ambigu à lui seul.
+ */
+export async function updateUserProfile(
+  tenantId: string,
+  userId: string,
+  data: UpdateUserProfileInput
+): Promise<User | null> {
+  const existing = await getUserById(tenantId, userId);
+  if (!existing) {
+    return null;
+  }
+
+  const updateData: { name?: string; email?: string; passwordHash?: string } = {};
+
+  if (data.name !== undefined) {
+    updateData.name = data.name;
+  }
+
+  if (data.email !== undefined && data.email !== existing.email) {
+    const conflict = await prisma.user.findUnique({
+      where: { tenantId_email: { tenantId, email: data.email } },
+    });
+    if (conflict) {
+      throw new EmailAlreadyInUseError();
+    }
+    updateData.email = data.email;
+  }
+
+  if (data.newPassword !== undefined) {
+    const currentIsValid =
+      existing.passwordHash && data.currentPassword
+        ? await bcrypt.compare(data.currentPassword, existing.passwordHash)
+        : false;
+    if (!currentIsValid) {
+      throw new InvalidCurrentPasswordError();
+    }
+    updateData.passwordHash = await bcrypt.hash(data.newPassword, 12);
+  }
+
+  return prisma.user.update({ where: { id: userId }, data: updateData });
 }
 
 /**

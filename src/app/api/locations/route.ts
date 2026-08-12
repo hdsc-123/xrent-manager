@@ -11,6 +11,7 @@ import {
   ClientNotFoundError,
   VehicleNotAvailableError,
 } from "@/lib/locations";
+import { logAction } from "@/lib/audit";
 
 const LOCATION_STATUSES: LocationStatus[] = ["PENDING", "CONFIRMED", "ACTIVE", "COMPLETED", "CANCELLED"];
 
@@ -126,6 +127,14 @@ export async function POST(request: Request) {
       endDate: end,
       status: body.status,
       notes: body.notes,
+    });
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: "location.created",
+      resource: "Location",
+      resourceId: location.id,
+      metadata: { vehicleId: location.vehicleId, clientId: location.clientId, status: location.status },
     });
     return NextResponse.json({ location }, { status: 201 });
   } catch (error) {

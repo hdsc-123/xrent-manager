@@ -9,6 +9,7 @@ import {
   InvoiceLocationNotFoundError,
   InvalidInvoiceAmountError,
 } from "@/lib/invoices";
+import { logAction } from "@/lib/audit";
 
 const INVOICE_STATUSES: InvoiceStatus[] = ["DRAFT", "SENT", "PARTIALLY_PAID", "PAID", "CANCELLED"];
 
@@ -109,6 +110,14 @@ export async function POST(request: Request) {
       discountAmount: body.discountAmount,
       dueDate,
       notes: body.notes,
+    });
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: "invoice.created",
+      resource: "Invoice",
+      resourceId: invoice.id,
+      metadata: { number: invoice.number, locationId: invoice.locationId },
     });
     return NextResponse.json({ invoice }, { status: 201 });
   } catch (error) {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { LocationStatus } from "@prisma/client";
+import type { LocationStatus, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import {
   getLocationById,
@@ -10,6 +10,7 @@ import {
   InvalidStatusTransitionError,
   LocationNotDeletableError,
 } from "@/lib/locations";
+import { logAction } from "@/lib/audit";
 
 const LOCATION_STATUSES: LocationStatus[] = ["PENDING", "CONFIRMED", "ACTIVE", "COMPLETED", "CANCELLED"];
 
@@ -80,6 +81,14 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       endDate,
       notes: body.notes,
     });
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: body.status && body.status !== location.status ? "location.status_changed" : "location.updated",
+      resource: "Location",
+      resourceId: location.id,
+      metadata: { from: location.status, changes: body } as unknown as Prisma.InputJsonValue,
+    });
     return NextResponse.json({ location: updated });
   } catch (error) {
     if (error instanceof InvalidDateRangeError) {
@@ -122,6 +131,15 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
     }
     throw error;
   }
+
+  await logAction({
+    tenantId: user.tenantId,
+    userId: user.id,
+    action: "location.deleted",
+    resource: "Location",
+    resourceId: location.id,
+    metadata: { status: location.status },
+  });
 
   return NextResponse.json({ success: true });
 }

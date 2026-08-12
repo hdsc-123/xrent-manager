@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { VehicleStatus } from "@prisma/client";
+import type { VehicleStatus, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import {
   getVehicleById,
@@ -7,6 +7,7 @@ import {
   deleteVehicle,
   VehicleHasLocationsError,
 } from "@/lib/vehicles";
+import { logAction } from "@/lib/audit";
 
 const VEHICLE_STATUSES: VehicleStatus[] = ["AVAILABLE", "RENTED", "MAINTENANCE", "INACTIVE"];
 
@@ -95,6 +96,14 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
   try {
     const updated = await updateVehicle(user.tenantId, vehicle.id, body);
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: "vehicle.updated",
+      resource: "Vehicle",
+      resourceId: vehicle.id,
+      metadata: { changes: body } as unknown as Prisma.InputJsonValue,
+    });
     return NextResponse.json({ vehicle: updated });
   } catch (error) {
     if (isUniqueConstraintError(error)) {
@@ -131,6 +140,15 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
     }
     throw error;
   }
+
+  await logAction({
+    tenantId: user.tenantId,
+    userId: user.id,
+    action: "vehicle.deleted",
+    resource: "Vehicle",
+    resourceId: vehicle.id,
+    metadata: { licensePlate: vehicle.licensePlate },
+  });
 
   return NextResponse.json({ success: true });
 }

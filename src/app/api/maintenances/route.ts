@@ -9,6 +9,7 @@ import {
   InvalidMaintenanceCostError,
 } from "@/lib/maintenances";
 import { getVehicleById } from "@/lib/vehicles";
+import { logAction } from "@/lib/audit";
 
 const MAINTENANCE_STATUSES: MaintenanceStatus[] = ["SCHEDULED", "IN_PROGRESS", "COMPLETED", "CANCELLED"];
 const MAINTENANCE_TYPES: MaintenanceType[] = ["OIL_CHANGE", "TIRE_CHANGE", "INSPECTION", "REPAIR", "OTHER"];
@@ -117,6 +118,14 @@ export async function POST(request: Request) {
       scheduledDate: parsedDate,
       cost: body.cost,
       notes: body.notes,
+    });
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: "maintenance.created",
+      resource: "Maintenance",
+      resourceId: maintenance.id,
+      metadata: { vehicleId: maintenance.vehicleId, type: maintenance.type },
     });
     return NextResponse.json({ maintenance }, { status: 201 });
   } catch (error) {

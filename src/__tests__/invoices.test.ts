@@ -132,6 +132,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
