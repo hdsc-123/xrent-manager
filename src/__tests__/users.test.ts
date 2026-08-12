@@ -35,6 +35,7 @@ afterAll(async () => {
   await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
   await prisma.$disconnect();
 });
@@ -167,6 +168,31 @@ describe("GET/PATCH /api/users/me (Sprint 10)", () => {
     const body = await response.json();
     expect(body.user.id).toBe(adminA.userId);
     expect(body.user.email).toBe(adminA.email);
+  });
+
+  it("permet de modifier phone et avatar (Sprint 12C)", async () => {
+    const response = await apiFetch("/api/users/me", {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ phone: "+212600000000", avatar: "https://example.test/avatar.png" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.user.phone).toBe("+212600000000");
+    expect(body.user.avatar).toBe("https://example.test/avatar.png");
+
+    const getResponse = await apiFetch("/api/users/me", { headers: { Cookie: adminA.sessionCookie } });
+    const getBody = await getResponse.json();
+    expect(getBody.user.phone).toBe("+212600000000");
+  });
+
+  it("refuse un avatar qui n'est pas une URL http(s)", async () => {
+    const response = await apiFetch("/api/users/me", {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ avatar: "not-a-url" }),
+    });
+    expect(response.status).toBe(400);
   });
 
   it("PATCH refuse une requête non authentifiée", async () => {

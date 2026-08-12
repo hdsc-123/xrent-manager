@@ -1,10 +1,24 @@
 import Link from "next/link";
 import { getSessionUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
-import { getRevenueReport, getTopVehicles } from "@/lib/reports";
+import {
+  getRevenueReport,
+  getTopVehicles,
+  getLocationsByMonth,
+  getRevenueByAgency,
+  getOverallOccupancyRate,
+  getReservationsByStatus,
+} from "@/lib/reports";
 import { formatMoney } from "@/lib/format";
 import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui";
-import { RevenueByMonthChart, LocationsByStatusChart } from "./ReportsCharts";
+import {
+  RevenueByMonthChart,
+  LocationsByStatusChart,
+  LocationsByMonthChart,
+  RevenueByAgencyChart,
+  OccupancyGauge,
+  ReservationsByStatusChart,
+} from "./ReportsCharts";
 import { ExportCsvButton } from "./ExportCsvButton";
 
 const LOCATION_STATUSES = ["PENDING", "CONFIRMED", "ACTIVE", "COMPLETED", "CANCELLED"] as const;
@@ -45,7 +59,16 @@ export default async function ReportsPage({ searchParams }: PageProps) {
   const monthStart = startOfMonth(now);
   const nextMonthStart = startOfNextMonth(now);
 
-  const [revenue, topVehicles, locationsThisMonth, locationsByStatusRaw] = await Promise.all([
+  const [
+    revenue,
+    topVehicles,
+    locationsThisMonth,
+    locationsByStatusRaw,
+    locationsByMonth,
+    revenueByAgency,
+    occupancyRate,
+    reservationsByStatus,
+  ] = await Promise.all([
     getRevenueReport(user.tenantId, from, to),
     getTopVehicles(user.tenantId, 5),
     prisma.location.count({
@@ -56,6 +79,10 @@ export default async function ReportsPage({ searchParams }: PageProps) {
       where: { tenantId: user.tenantId, startDate: { gte: from, lte: to } },
       _count: { _all: true },
     }),
+    getLocationsByMonth(user.tenantId, from, to),
+    getRevenueByAgency(user.tenantId, from, to),
+    getOverallOccupancyRate(user.tenantId, from, to),
+    getReservationsByStatus(user.tenantId, from, to),
   ]);
 
   const countByStatus = new Map(locationsByStatusRaw.map((entry) => [entry.status, entry._count._all]));
@@ -141,6 +168,48 @@ export default async function ReportsPage({ searchParams }: PageProps) {
           <LocationsByStatusChart data={locationsByStatus} />
         </CardContent>
       </Card>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Locations par mois</CardTitle>
+            <CardDescription>Locations créées, par mois, sur la période sélectionnée.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <LocationsByMonthChart data={locationsByMonth} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Répartition par agence</CardTitle>
+            <CardDescription>Revenu facturé (locations en cours ou terminées), par agence.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <RevenueByAgencyChart data={revenueByAgency} currency={revenue.currency} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Taux d&apos;occupation</CardTitle>
+            <CardDescription>Jours loués / jours disponibles, tous véhicules confondus.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <OccupancyGauge rate={occupancyRate} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Réservations par statut</CardTitle>
+            <CardDescription>Réservations créées sur la période, par statut et par source.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ReservationsByStatusChart data={reservationsByStatus} />
+          </CardContent>
+        </Card>
+      </div>
 
       <Card>
         <CardHeader>

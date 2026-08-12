@@ -62,6 +62,7 @@ afterAll(async () => {
   await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
   await prisma.$disconnect();
 });

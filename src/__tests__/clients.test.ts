@@ -66,6 +66,7 @@ afterAll(async () => {
   await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
   await prisma.$disconnect();
 });
@@ -308,5 +309,84 @@ describe("DELETE /api/clients/[id]", () => {
       headers: { Cookie: adminA.sessionCookie },
     });
     expect(response.status).toBe(409);
+  });
+});
+
+describe("POST /api/clients — détection de doublons (Sprint 12C)", () => {
+  it("détecte un doublon exact par email (409, matchType exact)", async () => {
+    const email = `doublon-email-${runId}@test.local`;
+    const first = await createClient(adminA, { name: "Original Email", email });
+    expect(first.status).toBe(201);
+
+    const response = await createClient(adminA, { name: "Autre nom", email });
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.duplicate.matchType).toBe("exact");
+    expect(body.duplicate.field).toBe("email");
+  });
+
+  it("détecte un doublon exact par téléphone, après normalisation", async () => {
+    const phone = `+212 6-11 22-${runId.slice(-4)}`;
+    const first = await createClient(adminA, { name: "Original Phone", phone });
+    expect(first.status).toBe(201);
+
+    const response = await createClient(adminA, { name: "Autre", phone: phone.replace(/[\s-]/g, "") });
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.duplicate.field).toBe("phone");
+  });
+
+  it("détecte un doublon exact par idNumber", async () => {
+    const idNumber = `DUP-${runId}`;
+    const first = await createClient(adminA, { name: "Original CIN", idNumber, idType: "CIN" });
+    expect(first.status).toBe(201);
+
+    const response = await createClient(adminA, { name: "Autre", idNumber, idType: "CIN" });
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.duplicate.field).toBe("idNumber");
+  });
+
+  it("détecte un doublon probable par similarité de nom (Levenshtein < 3, matchType fuzzy)", async () => {
+    const first = await createClient(adminA, {
+      name: "Ahmed Benali",
+      firstName: "Ahmed",
+      lastName: `Benali${runId}`,
+    });
+    expect(first.status).toBe(201);
+
+    const response = await createClient(adminA, { firstName: "Ahmed", lastName: `Benaly${runId}` });
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.duplicate.matchType).toBe("fuzzy");
+  });
+
+  it("useExistingClientId réutilise le client existant et met à jour son téléphone", async () => {
+    const email = `reuse-${runId}@test.local`;
+    const created = await createClient(adminA, { name: "À réutiliser", email, phone: "0600000001" });
+    const existingClient = (await created.json()).client;
+
+    const response = await createClient(adminA, {
+      name: "Peu importe",
+      email,
+      phone: "0600000002",
+      useExistingClientId: existingClient.id,
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.client.id).toBe(existingClient.id);
+    expect(body.client.phone).toBe("0600000002");
+  });
+
+  it("forceCreate crée un nouveau client malgré un doublon détecté", async () => {
+    const email = `force-${runId}@test.local`;
+    const first = await createClient(adminA, { name: "Premier", email });
+    expect(first.status).toBe(201);
+
+    const response = await createClient(adminA, { name: "Deuxième quand même", email, forceCreate: true });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.client.email).toBe(email);
+    expect(body.client.notes).toContain("Créé malgré une correspondance possible");
   });
 });

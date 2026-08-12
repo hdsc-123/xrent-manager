@@ -1,0 +1,91 @@
+import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
+import { getSessionUser } from "@/lib/authz";
+import { getUserById } from "@/lib/users";
+import { logAction } from "@/lib/audit";
+import {
+  ensureDefaultGroups,
+  getUserPermissionsView,
+  setUserPermissions,
+  InvalidPermissionGroupError,
+} from "@/lib/permissions";
+
+interface RouteParams {
+  params: Promise<{ id: string }>;
+}
+
+export async function GET(_request: Request, { params }: RouteParams) {
+  const user = await getSessionUser();
+  if (!user) {
+    return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (user.role !== "ADMIN") {
+    return NextResponse.json({ error: "Accès réservé aux administrateurs." }, { status: 403 });
+  }
+
+  const { id } = await params;
+  const target = await getUserById(user.tenantId, id);
+  if (!target) {
+    return NextResponse.json({ error: "Utilisateur introuvable." }, { status: 404 });
+  }
+
+  await ensureDefaultGroups(user.tenantId);
+  const permissions = await getUserPermissionsView(user.tenantId, id);
+  return NextResponse.json({ permissions });
+}
+
+interface PatchPermissionsBody {
+  permissionGroupId?: string | null;
+  individualPermissions?: string[];
+}
+
+export async function PATCH(request: Request, { params }: RouteParams) {
+  const user = await getSessionUser();
+  if (!user) {
+    return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (user.role !== "ADMIN") {
+    return NextResponse.json({ error: "Accès réservé aux administrateurs." }, { status: 403 });
+  }
+
+  const { id } = await params;
+  const target = await getUserById(user.tenantId, id);
+  if (!target) {
+    return NextResponse.json({ error: "Utilisateur introuvable." }, { status: 404 });
+  }
+
+  let body: PatchPermissionsBody;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
+  }
+
+  if (body.individualPermissions !== undefined && !Array.isArray(body.individualPermissions)) {
+    return NextResponse.json({ error: "individualPermissions doit être un tableau." }, { status: 400 });
+  }
+
+  try {
+    const permissions = await setUserPermissions(user.tenantId, id, {
+      permissionGroupId: body.permissionGroupId,
+      individualPermissions: body.individualPermissions,
+    });
+
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: "user.permissions_changed",
+      resource: "User",
+      resourceId: id,
+      metadata: { changes: body } as unknown as Prisma.InputJsonValue,
+    });
+
+    return NextResponse.json({ permissions });
+  } catch (error) {
+    if (error instanceof InvalidPermissionGroupError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    console.error("Erreur lors de la modification des permissions de l'utilisateur :", error);
+    return NextResponse.json({ error: "Erreur interne." }, { status: 500 });
+  }
+}

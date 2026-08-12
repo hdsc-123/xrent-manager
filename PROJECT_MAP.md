@@ -13,7 +13,7 @@ xrent-manager/
 │   ├── vercel.svg
 │   └── window.svg
 ├── prisma/
-│   ├── schema.prisma        # Tenant, Agency (Sprint 12A : coordonnées pro), User (passwordHash, role), UserAgency, Client (Sprint 12A : identité/permis), Vehicle (Sprint 12A : fiche technique), Location (Sprint 12A : kilométrage/caution), Invoice, Payment, Maintenance, Alert, Invitation, AuditLog, Account, Session, VerificationToken
+│   ├── schema.prisma        # Tenant, Agency (Sprint 12A : coordonnées pro), User (passwordHash, role ; Sprint 12C : phone/avatar/permissionGroupId), UserAgency, Client (Sprint 12A : identité/permis), Vehicle (Sprint 12A : fiche technique), Location (Sprint 12A : kilométrage/caution), Invoice, Payment, Maintenance, Alert, Invitation, AuditLog, Reservation (Sprint 12C), PermissionGroup/GroupPermission/UserPermission (Sprint 12C), Account, Session, VerificationToken
 │   └── migrations/
 │       ├── migration_lock.toml
 │       ├── 20260811133155_init_tenant_agency_user/
@@ -30,7 +30,9 @@ xrent-manager/
 │       │   └── migration.sql
 │       ├── 20260812101414_add_invitation_and_audit_log_models/
 │       │   └── migration.sql
-│       └── 20260812170214_add_sprint12a_professional_fields/
+│       ├── 20260812170214_add_sprint12a_professional_fields/
+│       │   └── migration.sql
+│       └── 20260812181105_add_sprint12c_reservations_and_permissions/
 │           └── migration.sql
 ├── components.json          # Config shadcn/ui (style base-nova, alias @/components, @/lib, @/hooks)
 ├── src/
@@ -64,9 +66,15 @@ xrent-manager/
 │   │   │   ├── users/              # (Sprint 9) CRUD rôle/suppression, garde "dernier ADMIN"
 │   │   │   │   ├── page.tsx, UsersTable.tsx, loading.tsx
 │   │   │   │   └── [id]/page.tsx, EditUserForm.tsx
+│   │   │   │       └── permissions/page.tsx, UserPermissionsForm.tsx  # (Sprint 12C) groupe + permissions individuelles
 │   │   │   ├── invitations/        # (Sprint 9) Liste ADMIN + création + lien partageable + révocation
 │   │   │   │   └── page.tsx, InvitationsPanel.tsx
-│   │   │   ├── audit/              # (Sprint 9) Journal d'audit — ADMIN uniquement ; (Sprint 10) exhaustif + filtres
+│   │   │   ├── permissions/        # (Sprint 12C) Catalogue des permissions en lecture seule — ADMIN uniquement
+│   │   │   │   └── page.tsx
+│   │   │   ├── permission-groups/  # (Sprint 12C) CRUD des groupes de permissions — ADMIN uniquement
+│   │   │   │   ├── page.tsx, PermissionGroupsPanel.tsx, PermissionCheckboxGrid.tsx
+│   │   │   │   └── [id]/page.tsx, EditPermissionGroupForm.tsx
+│   │   │   ├── audit/              # (Sprint 9) Journal d'audit — ADMIN uniquement ; (Sprint 10) exhaustif + filtres ; (Sprint 12C) icônes/couleurs par action, filtre par date, export CSV
 │   │   │   │   └── page.tsx
 │   │   │   ├── vehicles/           # (Sprint 5) CRUD complet, scopé agence
 │   │   │   │   ├── page.tsx, VehiclesTable.tsx, loading.tsx
@@ -76,8 +84,13 @@ xrent-manager/
 │   │   │   │   ├── page.tsx, LocationsTable.tsx, loading.tsx
 │   │   │   │   ├── new/page.tsx
 │   │   │   │   └── [id]/page.tsx, LocationActions.tsx
-│   │   │   ├── clients/            # (Sprint 8) CRUD complet, tenant-scopé sans notion d'agence
-│   │   │   │   ├── page.tsx, ClientsTable.tsx, loading.tsx
+│   │   │   ├── reservations/       # (Sprint 12C) CRUD, machine à états, import Excel, conversion en contrat — permissions.view/create/edit/delete/import/convert
+│   │   │   │   ├── page.tsx, ReservationsTable.tsx
+│   │   │   │   ├── new/page.tsx
+│   │   │   │   ├── import/page.tsx, columns.ts
+│   │   │   │   └── [id]/page.tsx, ReservationActions.tsx, ConvertReservationCard.tsx
+│   │   │   ├── clients/            # (Sprint 8) CRUD complet, tenant-scopé sans notion d'agence ; (Sprint 12C) détection de doublons
+│   │   │   │   ├── page.tsx, ClientsTable.tsx, loading.tsx, DuplicateCheck.tsx
 │   │   │   │   ├── new/page.tsx
 │   │   │   │   └── [id]/page.tsx, EditClientForm.tsx
 │   │   │   ├── maintenances/       # (Sprint 7) CRUD, machine à états, historique conservé
@@ -110,15 +123,20 @@ xrent-manager/
 │   │       │   └── [id]/route.ts           # GET/PATCH/DELETE — scopé tenant + agence (UserAgency)
 │   │       ├── users/
 │   │       │   ├── route.ts                # GET — liste du tenant, ADMIN uniquement (Sprint 4)
-│   │       │   ├── [id]/route.ts           # (Sprint 9) GET/PATCH (rôle, réinitialisation mot de passe)/DELETE — ADMIN uniquement, garde "dernier ADMIN"
-│   │       │   └── me/route.ts             # (Sprint 10) GET/PATCH — profil de l'user connecté (nom/email/mot de passe, vérifie l'ancien), jamais un autre user
+│   │       │   ├── [id]/
+│   │       │   │   ├── route.ts            # (Sprint 9) GET/PATCH (rôle, réinitialisation mot de passe)/DELETE — ADMIN uniquement, garde "dernier ADMIN"
+│   │       │   │   └── permissions/route.ts # (Sprint 12C) GET/PATCH — groupe + permissions individuelles, ADMIN uniquement
+│   │       │   └── me/route.ts             # (Sprint 10) GET/PATCH — profil de l'user connecté (nom/email/mot de passe, vérifie l'ancien) ; (Sprint 12C) phone/avatar, jamais un autre user
 │   │       ├── invitations/                # (Sprint 9)
 │   │       │   ├── route.ts                # GET (liste, ADMIN)/POST (création, ADMIN)
 │   │       │   └── [id]/
 │   │       │       ├── route.ts            # GET (public, champs non sensibles)/DELETE (révocation, ADMIN)
 │   │       │       ├── accept/route.ts     # POST — public, crée le user (email/rôle toujours dérivés de l'invitation)
 │   │       │       └── decline/route.ts    # POST — public
-│   │       ├── audit/route.ts              # (Sprint 9) GET — journal d'audit du tenant, ADMIN uniquement ; (Sprint 10) filtre action ajouté
+│   │       ├── permission-groups/          # (Sprint 12C)
+│   │       │   ├── route.ts                # GET (liste, backfill ensureDefaultGroups)/POST — ADMIN uniquement
+│   │       │   └── [id]/route.ts           # GET/PATCH/DELETE — bloqué si des users sont encore rattachés
+│   │       ├── audit/route.ts              # (Sprint 9) GET — journal d'audit du tenant, ADMIN uniquement ; (Sprint 10) filtre action ajouté ; (Sprint 12C) filtres from/to
 │   │       ├── vehicles/                   # (Sprint 5)
 │   │       │   ├── route.ts                # GET (liste, filtres)/POST — scopé tenant + agence
 │   │       │   └── [id]/
@@ -148,12 +166,18 @@ xrent-manager/
 │   │       ├── payments/                   # (Sprint 6)
 │   │       │   ├── route.ts                # GET (liste, filtres)/POST — valide amount ≤ solde restant, recalcule la facture
 │   │       │   └── [id]/route.ts           # GET/PATCH/DELETE — recalcule systématiquement amountPaid/status de la facture
-│   │       └── reports/                    # (Sprint 6) GET, réservées ADMIN
-│   │           ├── revenue/route.ts        # Revenu encaissé (Payment), par mois, sur une période
-│   │           └── vehicles/route.ts       # Utilisation véhicule + classement par revenu facturé
+│   │       ├── reports/                    # (Sprint 6) GET, réservées ADMIN
+│   │       │   ├── revenue/route.ts        # Revenu encaissé (Payment), par mois, sur une période
+│   │       │   └── vehicles/route.ts       # Utilisation véhicule + classement par revenu facturé
+│   │       └── reservations/               # (Sprint 12C)
+│   │           ├── route.ts                # GET (liste, filtres)/POST — permissions.view/create
+│   │           ├── [id]/
+│   │           │   ├── route.ts            # GET/PATCH/DELETE — permissions.view/edit/delete
+│   │           │   └── convert/route.ts    # POST — crée Location+Invoice, permissions.convert
+│   │           └── import/route.ts         # POST — .xlsx (exceljs), mode preview/commit, permissions.import
 │   ├── proxy.ts              # Redirige vers /login sur /dashboard*, /settings* si non authentifié (middleware.ts est déprécié dans cette version de Next.js)
 │   ├── components/
-│   │   ├── ui/               # Composants shadcn/ui (générés) + index.ts (ré-export) ; (Sprint 12A) phone-input.tsx — composant interne (pas de dépendance npm), indicatif pays + numéro
+│   │   ├── ui/               # Composants shadcn/ui (générés) + index.ts (ré-export) ; (Sprint 12A) phone-input.tsx — composant interne (pas de dépendance npm), indicatif pays + numéro ; (Sprint 12C) checkbox.tsx (grille de permissions)
 │   │   ├── layout/            # Sidebar.tsx, Header.tsx (Sprint 12B : DropdownMenuLabel enveloppé dans DropdownMenuGroup, correctif bug déconnexion Base UI), DashboardLayout.tsx, DataTable.tsx (TanStack Table v9)
 │   │   └── invoices/          # (Sprint 6) InvoicePdf.tsx — template @react-pdf/renderer (pas de logo, aucun asset de marque)
 │   ├── hooks/
@@ -166,19 +190,21 @@ xrent-manager/
 │   │   ├── authz.ts         # getSessionUser(), canAccessAgency(), getAccessibleAgencyIds() — session + autorisation agence
 │   │   ├── api.ts           # Wrapper fetch pour /api/* (normalise les erreurs { error })
 │   │   ├── format.ts        # (Sprint 5) formatMoney() — formatage des montants entiers + devise
-│   │   ├── clients.ts       # (Sprint 5 : getClients/getClientById/createClient ; Sprint 8 : updateClient/deleteClient) — tenant-scopé
+│   │   ├── clients.ts       # (Sprint 5 : getClients/getClientById/createClient ; Sprint 8 : updateClient/deleteClient ; Sprint 12C : findDuplicateClient — exact email/téléphone/CIN/permis + fuzzy nom Levenshtein) — tenant-scopé
 │   │   ├── vehicles.ts      # (Sprint 5) CRUD + checkAvailability — tenant/agence-scopé
 │   │   ├── locations.ts     # (Sprint 5) CRUD + calculateTotalPrice + machine à états (canTransition)
 │   │   ├── invoices.ts      # (Sprint 6) CRUD + génération numéro (INV-{année}-{5 chiffres}) + calcul TVA/remise/total + machine à états
 │   │   ├── payments.ts      # (Sprint 6) CRUD + recomputeInvoiceStatus (recalcule toujours amountPaid/status de la facture depuis les paiements réels)
-│   │   ├── reports.ts       # (Sprint 6) getRevenueReport, getVehicleUtilizationReport, getTopVehicles — tenant-scopé
+│   │   ├── reports.ts       # (Sprint 6) getRevenueReport, getVehicleUtilizationReport, getTopVehicles ; (Sprint 12C) getLocationsByMonth, getRevenueByAgency, getOverallOccupancyRate, getReservationsByStatus — tenant-scopé
 │   │   ├── maintenances.ts  # (Sprint 7) CRUD + machine à états + getDueMaintenances + createMaintenanceFromSchedule
 │   │   ├── alerts.ts        # (Sprint 7) CRUD (sans delete) + machine à états (acknowledge/resolve) + getPendingAlerts
 │   │   ├── scheduled-tasks.ts # (Sprint 7) checkDueMaintenances/checkReturnsToday/checkOverdueInvoices — génération idempotente d'alertes
-│   │   ├── users.ts         # (Sprint 9) updateUserRole/resetUserPassword/deleteUser — garde "dernier ADMIN", nettoyage UserAgency/Alert ; (Sprint 10) updateUserProfile (nom/email/mot de passe, vérifie l'ancien)
+│   │   ├── users.ts         # (Sprint 9) updateUserRole/resetUserPassword/deleteUser — garde "dernier ADMIN", nettoyage UserAgency/Alert ; (Sprint 10) updateUserProfile (nom/email/mot de passe, vérifie l'ancien) ; (Sprint 12C) + phone/avatar
 │   │   ├── invitations.ts   # (Sprint 9) createInvitation/acceptInvitation/declineInvitation/revokeInvitation — email/rôle toujours dérivés de l'invitation
-│   │   ├── audit.ts         # (Sprint 9) logAction/getAuditLogs — n'échoue jamais l'action métier appelante ; (Sprint 10) filtre action, câblé sur tout le CRUD métier (vehicles/locations/clients/invoices/payments/maintenances/alerts, voir routes API correspondantes)
+│   │   ├── audit.ts         # (Sprint 9) logAction/getAuditLogs — n'échoue jamais l'action métier appelante ; (Sprint 10) filtre action, câblé sur tout le CRUD métier (vehicles/locations/clients/invoices/payments/maintenances/alerts, voir routes API correspondantes) ; (Sprint 12C) filtres from/to
 │   │   ├── password-policy.ts # (Sprint 9) validatePassword() — min 8 caractères + majuscule + chiffre + spécial
+│   │   ├── reservations.ts  # (Sprint 12C) CRUD + machine à états + parsing d'import Excel (parseReservationImportRow) + combineDateAndTime
+│   │   ├── permissions.ts   # (Sprint 12C) catalogue PERMISSIONS (code, pas de table) + groupes par défaut + can()/getEffectivePermissions() + CRUD PermissionGroup + assignation par user
 │   │   └── utils.ts         # cn() — généré par shadcn init
 │   └── __tests__/
 │       ├── db.test.ts        # Tests d'isolation multi-tenant (Vitest) sur src/lib/db.ts
@@ -200,6 +226,8 @@ xrent-manager/
 │       ├── audit.test.ts      # (Sprint 9) logAction, GET /api/audit ADMIN-only et tenant-scopé ; (Sprint 10) traçabilité de chaque ressource métier instrumentée (vehicles/locations/clients/invoices/payments/maintenances/alerts)
 │       ├── e2e.test.ts        # (Sprint 9) Scénario complet inscription→facturation→rapport + sécurité ciblée sur les nouvelles surfaces
 │       ├── e2e-full.test.ts   # (Sprint 10) Scénario complet inscription→sélection de tenant (Option B)→CRUD complet (dont maintenances/alertes)→facturation→rapports→édition profil→vérification finale du journal d'audit
+│       ├── reservations.test.ts # (Sprint 12C) CRUD, machine à états, import Excel (fichier généré via exceljs), conversion en contrat + détection de doublon client à la conversion
+│       ├── permissions.test.ts  # (Sprint 12C) CRUD groupes de permissions, assignation par user, application réelle sur une route gated (reservations.*)
 │       └── helpers/          # testServer.ts (port/URL), http.ts (fetch + cookies), fixtures.ts (register/login de test)
 ├── vitest.global-setup.ts    # Démarre/arrête un vrai serveur `next dev` de test (requis par NextAuth, voir TESTREPORT.md)
 ├── AGENTS.md                # Règles agent Next.js, régénéré automatiquement par `next dev`
@@ -306,7 +334,8 @@ D'après les principes produit de démarrage :
 - Agences (CRUD + UI implémentés, Sprint 3–4 ; coordonnées professionnelles — ville/adresse/téléphone/email/responsable — ajoutées Sprint 12A)
 - Utilisateurs et rôles (inscription + rôles `ADMIN`/`MEMBER` implémentés Sprint 3 ; liste en lecture seule Sprint 4 ; modification de rôle, suppression, invitation implémentées Sprint 9, avec garde "dernier ADMIN" ; édition du profil par l'user lui-même implémentée Sprint 10 (`/api/users/me`) ; granularité fine des permissions au-delà de `ADMIN`/`MEMBER` reste À DÉCIDER)
 - Véhicules (CRUD + UI + disponibilité implémentés, Sprint 5 ; catégorie = champ texte libre sur `Vehicle`, pas de modèle `Category` dédié — voir DOMAINRULES.md section 6 ; fiche technique professionnelle — châssis/couleur/portes/places/boîte/carburant/puissance/cylindrée/climatisation/GPS/photo — ajoutée Sprint 12A)
-- Réservations et contrats (fusionnés en un seul modèle `Location` avec machine à états, Sprint 5 — décision explicite, voir HANDOFF.md et DOMAINRULES.md section 7/8 ; kilométrage départ/retour et caution ajoutés Sprint 12A, machine à états inchangée)
+- Réservations et contrats (`Location` fusionne toujours réservation confirmée et contrat, Sprint 5, inchangé ; kilométrage départ/retour et caution ajoutés Sprint 12A ; **Sprint 12C** ajoute un modèle `Reservation` distinct et amont — réservation brute reçue par broker/direct, avant attribution d'un véhicule réel — avec import Excel et conversion explicite vers `Location`, voir DOMAINRULES.md section 21)
+- Permissions granulaires (modèle `PermissionGroup`/`GroupPermission`/`UserPermission` implémenté Sprint 12C, catalogue de clés en code — voir DOMAINRULES.md section 22 ; appliqué au module Réservations et à la sidebar uniquement, modules existants toujours sur rôle `ADMIN`/`MEMBER` + `canAccessAgency()`)
 - Clients (modèle `Client` minimal implémenté Sprint 5 — nom/email/téléphone ; module dédié complet implémenté Sprint 8 — CRUD, page `/dashboard/clients*`, en plus de la sélection/création inline déjà disponible depuis le formulaire de location ; prénom/nom séparés, téléphone secondaire, adresse, pièce d'identité et permis de conduire ajoutés Sprint 12A)
 - Facturation (modèle `Invoice` implémenté Sprint 6 — liée à une `Location`, numérotation par tenant, TVA/remise/total, machine à états, export PDF)
 - Paiements (modèle `Payment` implémenté Sprint 6 — enregistrement manuel uniquement, pas d'intégration Stripe/PayPal ; voir HANDOFF.md section 8 pour les points encore ouverts)

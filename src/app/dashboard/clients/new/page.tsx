@@ -15,6 +15,7 @@ import {
   Label,
   PhoneInput,
 } from "@/components/ui";
+import { DuplicateCheck, type DuplicateClientInfo } from "../DuplicateCheck";
 
 const ID_TYPE_OPTIONS = [
   { value: "CIN", label: "CIN" },
@@ -40,6 +41,45 @@ export default function NewClientPage() {
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [duplicate, setDuplicate] = useState<DuplicateClientInfo | null>(null);
+
+  function buildPayload(overrides?: { useExistingClientId?: string; forceCreate?: boolean }) {
+    return {
+      firstName,
+      lastName,
+      email: email || undefined,
+      phone: phone || undefined,
+      altPhone: altPhone || undefined,
+      address: address || undefined,
+      city: city || undefined,
+      country: country || undefined,
+      idNumber: idNumber || undefined,
+      idType,
+      licenseNumber: licenseNumber || undefined,
+      licenseIssueDate: licenseIssueDate || undefined,
+      licenseExpiryDate: licenseExpiryDate || undefined,
+      notes: notes || undefined,
+      ...overrides,
+    };
+  }
+
+  async function submit(overrides?: { useExistingClientId?: string; forceCreate?: boolean }) {
+    setIsSubmitting(true);
+    try {
+      await apiPost("/api/clients", buildPayload(overrides));
+      toast.success("Client créé.");
+      router.push("/dashboard/clients");
+      router.refresh();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409 && err.body && typeof err.body === "object" && "duplicate" in err.body) {
+        setDuplicate((err.body as { duplicate: DuplicateClientInfo }).duplicate);
+        return;
+      }
+      setError(err instanceof ApiError ? err.message : "Une erreur est survenue.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -50,32 +90,7 @@ export default function NewClientPage() {
       return;
     }
 
-    setIsSubmitting(true);
-    try {
-      await apiPost("/api/clients", {
-        firstName,
-        lastName,
-        email: email || undefined,
-        phone: phone || undefined,
-        altPhone: altPhone || undefined,
-        address: address || undefined,
-        city: city || undefined,
-        country: country || undefined,
-        idNumber: idNumber || undefined,
-        idType,
-        licenseNumber: licenseNumber || undefined,
-        licenseIssueDate: licenseIssueDate || undefined,
-        licenseExpiryDate: licenseExpiryDate || undefined,
-        notes: notes || undefined,
-      });
-      toast.success("Client créé.");
-      router.push("/dashboard/clients");
-      router.refresh();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Une erreur est survenue.");
-    } finally {
-      setIsSubmitting(false);
-    }
+    await submit();
   }
 
   return (
@@ -226,6 +241,23 @@ export default function NewClientPage() {
           </form>
         </CardContent>
       </Card>
+
+      <DuplicateCheck
+        duplicate={duplicate}
+        isSubmitting={isSubmitting}
+        onUseExisting={() => {
+          const useExistingClientId = duplicate?.client.id;
+          setDuplicate(null);
+          if (useExistingClientId) {
+            void submit({ useExistingClientId });
+          }
+        }}
+        onCreateAnyway={() => {
+          setDuplicate(null);
+          void submit({ forceCreate: true });
+        }}
+        onCancel={() => setDuplicate(null)}
+      />
     </div>
   );
 }

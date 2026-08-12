@@ -27,6 +27,7 @@ Ce document définit les règles de sécurité de XRent Manager. Il mélange des
 
 - Toute action sensible doit être validée côté serveur, indépendamment des contrôles côté client (masquage de bouton, désactivation de champ, etc.), qui ne sont que des aides d'expérience utilisateur et non des mesures de sécurité.
 - **Décision validée (Sprint 1)** : chaque action serveur doit vérifier l'identité de l'utilisateur, son rôle, son tenant, son agence, et l'appartenance de la ressource ciblée à ce même tenant/agence. Cette vérification doit s'appuyer sur la couche d'accès aux données centralisée avec garde tenant/agence obligatoire (voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 7).
+- **Implémenté (Sprint 12C)** : système de permissions granulaires (`can(user, key)`, `src/lib/permissions.ts`) en **complément** de l'autorisation par rôle/agence ci-dessus, pas en remplacement. Vérifié côté serveur sur chaque route du module `Reservation` (`GET`/`POST /api/reservations*`, `POST /api/reservations/[id]/convert`, `POST /api/reservations/import`) — jamais uniquement côté UI (le filtrage de la sidebar, `Sidebar.tsx`, n'est qu'une aide d'affichage, sans valeur de sécurité à lui seul). Un `ADMIN` (`role === "ADMIN"`) a toujours accès à tout, sans jamais consulter les tables `PermissionGroup`/`GroupPermission`/`UserPermission` — même principe de bypass déjà en vigueur pour `canAccessAgency()`. **Portée limitée, décision explicite** : les modules existants (agences, véhicules, clients, locations, factures, paiements, rapports, utilisateurs, invitations, audit) ne consultent **pas** ce nouveau système — ils gardent leurs vérifications `role !== "ADMIN"`/`canAccessAgency()` déjà en place, inchangées, pour ne prendre aucun risque de régression sur des comportements déjà validés et testés (voir DOMAINRULES.md section 22 et HANDOFF.md). Une extension de la portée à ces modules reste **À DÉCIDER**.
 
 ## 5. Gestion des sessions
 
@@ -92,12 +93,15 @@ Ce document définit les règles de sécurité de XRent Manager. Il mélange des
 - Un export ne doit jamais contenir de données d'un autre tenant que celui de l'utilisateur qui le demande.
 - Un export ne doit jamais contenir de données de carte bancaire en clair, ni de mots de passe/hashs de mots de passe.
 - Tout export doit être soumis aux mêmes règles d'autorisation que les données sous-jacentes, et doit être audité (voir section 13). Format et périmètre précis restent **À DÉCIDER**.
+- **Implémenté (Sprint 12C)** : export CSV du journal d'audit (`/dashboard/audit`, réservé ADMIN comme la page elle-même) — génération côté client (`papaparse`, déjà utilisé pour l'export des rapports depuis le Sprint 6) à partir des lignes déjà chargées côté serveur pour l'utilisateur courant (tenant-scopées) ; aucune requête réseau supplémentaire ne fuit de données non déjà autorisées.
 
 ## 15. Imports
 
 - **Décision validée (Sprint 1)** : tout import doit être validé côté serveur et scopé par tenant, sans exception.
 - Toute donnée importée doit être validée côté serveur avant écriture (structure, types, cohérence métier), au même niveau d'exigence qu'une saisie manuelle.
 - Un import ne doit jamais permettre de contourner l'isolation tenant/agence (ex. en injectant un `tenant_id` arbitraire dans un fichier importé). Contrôles de validation détaillés : **À DÉCIDER**.
+- **Implémenté (Sprint 12C)** : import Excel des réservations (`POST /api/reservations/import`) — `tenantId` toujours dérivé de la session serveur, jamais du fichier ; chaque ligne validée indépendamment côté serveur (`parseReservationImportRow`, `src/lib/reservations.ts`) avant toute écriture ; réservé par permission (`reservations.import`, voir section 4) ; extension `.xlsx` vérifiée avant traitement, fichier illisible/corrompu refusé (400) sans détail d'erreur interne exposé au client.
+- **Choix de dépendance motivé par la sécurité** : la librairie `xlsx` (SheetJS), pourtant explicitement suggérée par l'énoncé du sprint, a une vulnérabilité haute sévérité sans correctif disponible sur le registre npm au moment de ce sprint (prototype pollution `GHSA-4r6h-8v6p-xvw6` + ReDoS `GHSA-5pgg-2g8v-p4x9`, confirmé par `npm audit`) — pertinent ici puisque cette librairie traite directement un fichier fourni par l'utilisateur. `exceljs` a été retenu à la place (aucune vulnérabilité haute/critique au moment du sprint).
 
 ## 16. Sauvegardes
 

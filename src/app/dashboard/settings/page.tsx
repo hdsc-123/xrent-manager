@@ -23,7 +23,12 @@ export default async function SettingsPage() {
         <EditTenantForm id={tenant.id} initialName={tenant.name} slug={tenant.slug} />
       )}
 
-      <EditProfileForm initialName={currentUser.name ?? ""} initialEmail={currentUser.email} />
+      <EditProfileForm
+        initialName={currentUser.name ?? ""}
+        initialEmail={currentUser.email}
+        initialPhone={currentUser.phone ?? ""}
+        initialAvatar={currentUser.avatar ?? ""}
+      />
     </div>
   );
 }

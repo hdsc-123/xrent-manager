@@ -1,6 +1,8 @@
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import { getSessionUser } from "@/lib/authz";
 import { getUserById } from "@/lib/users";
+import { Button } from "@/components/ui";
 import { EditUserForm } from "./EditUserForm";
 
 interface PageProps {
@@ -23,9 +25,14 @@ export default async function UserDetailPage({ params }: PageProps) {
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-4">
-      <div>
-        <h1 className="font-heading text-2xl font-semibold">{target.name}</h1>
-        <p className="text-sm text-muted-foreground">{target.email}</p>
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h1 className="font-heading text-2xl font-semibold">{target.name}</h1>
+          <p className="text-sm text-muted-foreground">{target.email}</p>
+        </div>
+        <Button variant="outline" render={<Link href={`/dashboard/users/${target.id}/permissions`} />}>
+          Permissions
+        </Button>
       </div>
 
       <EditUserForm

@@ -33,6 +33,8 @@ export async function GET() {
       id: current.id,
       name: current.name,
       email: current.email,
+      phone: current.phone,
+      avatar: current.avatar,
       role: current.role,
       createdAt: current.createdAt,
     },
@@ -42,6 +44,8 @@ export async function GET() {
 interface PatchProfileBody {
   name?: string;
   email?: string;
+  phone?: string | null;
+  avatar?: string | null;
   currentPassword?: string;
   newPassword?: string;
 }
@@ -67,6 +71,10 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "email ne peut pas être vide." }, { status: 400 });
   }
 
+  if (body.avatar !== undefined && body.avatar !== null && body.avatar !== "" && !/^https?:\/\//.test(body.avatar)) {
+    return NextResponse.json({ error: "avatar doit être une URL http(s) valide." }, { status: 400 });
+  }
+
   if (body.newPassword !== undefined) {
     if (!body.currentPassword) {
       return NextResponse.json(
@@ -85,6 +93,8 @@ export async function PATCH(request: Request) {
     const updated = await updateUserProfile(user.tenantId, user.id, {
       name: body.name,
       email: body.email,
+      phone: body.phone === "" ? null : body.phone,
+      avatar: body.avatar === "" ? null : body.avatar,
       currentPassword: body.currentPassword,
       newPassword: body.newPassword,
     });
@@ -102,12 +112,21 @@ export async function PATCH(request: Request) {
       metadata: {
         nameChanged: body.name !== undefined,
         emailChanged: body.email !== undefined,
+        phoneChanged: body.phone !== undefined,
+        avatarChanged: body.avatar !== undefined,
         passwordChanged: body.newPassword !== undefined,
       },
     });
 
     return NextResponse.json({
-      user: { id: updated.id, name: updated.name, email: updated.email, role: updated.role },
+      user: {
+        id: updated.id,
+        name: updated.name,
+        email: updated.email,
+        phone: updated.phone,
+        avatar: updated.avatar,
+        role: updated.role,
+      },
     });
   } catch (error) {
     if (error instanceof EmailAlreadyInUseError) {

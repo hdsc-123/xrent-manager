@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { validatePassword } from "@/lib/password-policy";
+import { ensureDefaultGroups } from "@/lib/permissions";
 
 interface RegisterBody {
   tenantName?: string;
@@ -80,6 +81,16 @@ export async function POST(request: Request) {
 
       return { tenant, user };
     });
+
+    try {
+      await ensureDefaultGroups(tenant.id);
+    } catch (error) {
+      // Résilient par choix, même principe que logAction (src/lib/audit.ts) : les groupes
+      // de permissions par défaut ne doivent jamais faire échouer l'inscription — ils
+      // restent créables a posteriori depuis /dashboard/permission-groups (backfill
+      // paresseux, voir ensureDefaultGroups).
+      console.error("Erreur lors de la création des groupes de permissions par défaut :", error);
+    }
 
     return NextResponse.json(
       {

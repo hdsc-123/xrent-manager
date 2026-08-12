@@ -37,6 +37,8 @@ export interface GetAuditLogsFilters {
   resource?: string;
   action?: string;
   userId?: string;
+  from?: Date;
+  to?: Date;
   take?: number;
   skip?: number;
 }
@@ -48,6 +50,9 @@ export async function getAuditLogs(tenantId: string, filters: GetAuditLogsFilter
       ...(filters.resource ? { resource: filters.resource } : {}),
       ...(filters.action ? { action: filters.action } : {}),
       ...(filters.userId ? { userId: filters.userId } : {}),
+      ...(filters.from || filters.to
+        ? { createdAt: { ...(filters.from ? { gte: filters.from } : {}), ...(filters.to ? { lte: filters.to } : {}) } }
+        : {}),
     },
     orderBy: { createdAt: "desc" },
     take: filters.take ?? 50,

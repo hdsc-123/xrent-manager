@@ -14,17 +14,19 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  agencies     Agency[]
-  users        User[]
-  vehicles     Vehicle[]
-  locations    Location[]
-  clients      Client[]
-  invoices     Invoice[]
-  payments     Payment[]
-  maintenances Maintenance[]
-  alerts       Alert[]
-  invitations  Invitation[]
-  auditLogs    AuditLog[]
+  agencies         Agency[]
+  users            User[]
+  vehicles         Vehicle[]
+  locations        Location[]
+  clients          Client[]
+  invoices         Invoice[]
+  payments         Payment[]
+  maintenances     Maintenance[]
+  alerts           Alert[]
+  invitations      Invitation[]
+  auditLogs        AuditLog[]
+  reservations     Reservation[]
+  permissionGroups PermissionGroup[]
 }
 
 model Agency {
@@ -41,7 +43,7 @@ model Agency {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant       Tenant       @relation(fields: [tenantId], references: [id])
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
   userAgencies UserAgency[]
   vehicles     Vehicle[]
   locations    Location[]
@@ -63,15 +65,22 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant       Tenant       @relation(fields: [tenantId], references: [id])
-  userAgencies UserAgency[]
-  accounts     Account[]
-  sessions     Session[]
-  alerts       Alert[]
+  phone             String?
+  avatar            String?
+  permissionGroupId String?
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id])
+  userAgencies    UserAgency[]
+  accounts        Account[]
+  sessions        Session[]
+  alerts          Alert[]
   sentInvitations Invitation[]
+  permissionGroup PermissionGroup? @relation(fields: [permissionGroupId], references: [id])
+  userPermissions UserPermission[]
 
   @@unique([tenantId, email])
   @@index([tenantId])
+  @@index([permissionGroupId])
 }
 
 model UserAgency {
@@ -331,19 +340,19 @@ enum MaintenanceStatus {
 // section 7). Historique conservé : suppression bloquée dès que le statut est passé par
 // IN_PROGRESS/COMPLETED (voir MaintenanceNotDeletableError, src/lib/maintenances.ts).
 model Maintenance {
-  id            String             @id @default(cuid())
+  id            String            @id @default(cuid())
   tenantId      String
   agencyId      String
   vehicleId     String
   type          MaintenanceType
-  status        MaintenanceStatus  @default(SCHEDULED)
+  status        MaintenanceStatus @default(SCHEDULED)
   scheduledDate DateTime
   completedDate DateTime?
   cost          Int?
-  currency      String             @default("MAD")
+  currency      String            @default("MAD")
   notes         String?
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
 
   tenant  Tenant  @relation(fields: [tenantId], references: [id])
   agency  Agency  @relation(fields: [agencyId], references: [id])
@@ -425,18 +434,18 @@ enum InvitationStatus {
 // identifiant opaque partout (véhicules, locations...). Aucun envoi d'email (décision Sprint 7
 // reconduite) : le lien est partagé manuellement par l'ADMIN depuis /dashboard/invitations.
 model Invitation {
-  id               String           @id @default(cuid())
-  tenantId         String
-  email            String
-  role             String           @default("MEMBER")
-  status           InvitationStatus @default(PENDING)
-  invitedByUserId  String
-  expiresAt        DateTime
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  id              String           @id @default(cuid())
+  tenantId        String
+  email           String
+  role            String           @default("MEMBER")
+  status          InvitationStatus @default(PENDING)
+  invitedByUserId String
+  expiresAt       DateTime
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
-  tenant     Tenant @relation(fields: [tenantId], references: [id])
-  invitedBy  User   @relation(fields: [invitedByUserId], references: [id])
+  tenant    Tenant @relation(fields: [tenantId], references: [id])
+  invitedBy User   @relation(fields: [invitedByUserId], references: [id])
 
   @@index([tenantId])
   @@index([email])
@@ -462,6 +471,119 @@ model AuditLog {
   @@index([tenantId])
   @@index([resource])
   @@index([createdAt])
+}
+
+enum ReservationSource {
+  BROKER
+  DIRECT
+}
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  CONVERTED
+  CANCELLED
+}
+
+// Réservation importée (Excel) ou saisie manuellement, en amont d'un contrat (Location).
+// Sprint 12C. pickupAgency/dropoffAgency/vehicleCategory restent du texte libre (comme
+// Vehicle.category, Alert.entityType — DOMAINRULES.md section 6) : les données d'un
+// import Excel/broker ne correspondent pas fiablement à une Agency/Vehicle existante ;
+// la sélection du véhicule/agence réels se fait au moment de la conversion en contrat
+// (convertReservationToLocation, src/lib/reservations.ts), jamais déduite automatiquement
+// du texte importé. Montants en centimes (Int), jamais en float (DOMAINRULES.md section 14).
+model Reservation {
+  id                  String             @id @default(cuid())
+  tenantId            String
+  voucherNumber       String
+  confirmationNumber  String?
+  receivedAt          DateTime?
+  source              ReservationSource?
+  clientFirstName     String
+  clientLastName      String
+  startDate           DateTime
+  startTime           String?
+  endDate             DateTime
+  endTime             String?
+  daysCount           Int?
+  flightNumber        String?
+  currency            String             @default("MAD")
+  totalPrice          Int?
+  pricePerDay         Int?
+  vehicleCategory     String?
+  pickupAgency        String?
+  dropoffAgency       String?
+  hasGps              Boolean            @default(false)
+  gpsPrice            Int?
+  hasBabySeat         Boolean            @default(false)
+  babySeatPrice       Int?
+  hasExtraDriver      Boolean            @default(false)
+  extraDriverPrice    Int?
+  mileage             Int?
+  includedKm          Int?
+  clientPhone         String?
+  notes               String?
+  status              ReservationStatus  @default(PENDING)
+  convertedLocationId String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([voucherNumber])
+}
+
+// Système de permissions granulaires (Sprint 12C), en complément — pas en remplacement —
+// du rôle ADMIN/MEMBER existant et de canAccessAgency() : un ADMIN a toujours accès à
+// tout (bypass, voir src/lib/permissions.ts, can()) ; un MEMBER voit ses permissions
+// effectives dérivées de son PermissionGroup + ses UserPermission individuelles
+// (additives). Le catalogue des clés de permission (ex. "vehicles.view") vit en code
+// (src/lib/permissions.ts, PERMISSIONS) et pas dans une table dédiée : GroupPermission/
+// UserPermission stockent la clé en texte libre, sans contrainte de clé étrangère —
+// même principe que Alert.entityType/Vehicle.category (DOMAINRULES.md section 6),
+// pour ne pas avoir de table de référence à garder synchronisée avec le code.
+// Portée de cette version (Sprint 12C) : seul le nouveau module Reservation applique ces
+// permissions côté serveur ; les modules existants gardent leurs vérifications de rôle/
+// agence actuelles inchangées (voir HANDOFF.md et SECURITY.md).
+model PermissionGroup {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  groupPermissions GroupPermission[]
+  users            User[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model GroupPermission {
+  id            String   @id @default(cuid())
+  groupId       String
+  permissionKey String
+  createdAt     DateTime @default(now())
+
+  group PermissionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, permissionKey])
+  @@index([groupId])
+}
+
+model UserPermission {
+  id            String   @id @default(cuid())
+  userId        String
+  permissionKey String
+  createdAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permissionKey])
+  @@index([userId])
 }
 
 // Modèles NextAuth (Auth.js) requis par @auth/prisma-adapter.

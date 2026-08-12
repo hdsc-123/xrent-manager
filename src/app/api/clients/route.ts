@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { IdType } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
-import { getClients, createClient } from "@/lib/clients";
+import { getClients, createClient, getClientById, updateClient, findDuplicateClient } from "@/lib/clients";
 import { logAction } from "@/lib/audit";
 
 const ID_TYPES: IdType[] = ["CIN", "PASSEPORT", "CARTE_SEJOUR"];
@@ -43,6 +43,10 @@ interface CreateClientBody {
   licenseIssueDate?: string;
   licenseExpiryDate?: string;
   notes?: string;
+  /** Réutilise ce client existant au lieu d'en créer un nouveau (voir DuplicateCheck.tsx). */
+  useExistingClientId?: string;
+  /** Ignore un doublon détecté et force la création d'un nouveau client quand même. */
+  forceCreate?: boolean;
 }
 
 export async function POST(request: Request) {
@@ -72,6 +76,66 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "idType invalide." }, { status: 400 });
   }
 
+  // Détection de doublons (DOMAINRULES.md section 9) : toujours exécutée (sauf choix déjà
+  // fait via useExistingClientId) pour pouvoir tracer un forceCreate malgré un doublon
+  // trouvé (note ajoutée au client créé, voir plus bas) ; ne bloque la création (409) que
+  // si l'appelant n'a pas encore fait de choix explicite.
+  const duplicate = body.useExistingClientId
+    ? null
+    : await findDuplicateClient(user.tenantId, {
+        email: body.email,
+        phone: body.phone,
+        idNumber: body.idNumber,
+        licenseNumber: body.licenseNumber,
+        firstName: body.firstName,
+        lastName: body.lastName,
+      });
+
+  if (duplicate && !body.forceCreate) {
+    return NextResponse.json(
+      { duplicate: { client: duplicate.client, matchType: duplicate.matchType, field: duplicate.field } },
+      { status: 409 }
+    );
+  }
+
+  if (body.useExistingClientId) {
+    const existingClient = await getClientById(user.tenantId, body.useExistingClientId);
+    if (!existingClient) {
+      return NextResponse.json({ error: "Client introuvable." }, { status: 404 });
+    }
+
+    // Mise à jour automatique (spec section 2) : complète le téléphone/email/permis si le
+    // client existant ne les avait pas encore ou s'ils ont changé, sans écraser le reste.
+    const updates: { phone?: string; email?: string; licenseNumber?: string } = {};
+    if (body.phone && body.phone !== existingClient.phone) updates.phone = body.phone;
+    if (body.email && body.email !== existingClient.email) updates.email = body.email;
+    if (body.licenseNumber && body.licenseNumber !== existingClient.licenseNumber) {
+      updates.licenseNumber = body.licenseNumber;
+    }
+
+    const client =
+      Object.keys(updates).length > 0
+        ? await updateClient(user.tenantId, existingClient.id, updates)
+        : existingClient;
+
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: "client.duplicate_reused",
+      resource: "Client",
+      resourceId: existingClient.id,
+      metadata: { updates },
+    });
+
+    return NextResponse.json({ client });
+  }
+
+  const notes = duplicate
+    ? [body.notes, `Créé malgré une correspondance possible avec ${duplicate.client.name}.`]
+        .filter(Boolean)
+        .join(" — ")
+    : body.notes;
+
   const client = await createClient({
     tenantId: user.tenantId,
     name,
@@ -88,7 +152,7 @@ export async function POST(request: Request) {
     licenseNumber: body.licenseNumber,
     licenseIssueDate: body.licenseIssueDate ? new Date(body.licenseIssueDate) : undefined,
     licenseExpiryDate: body.licenseExpiryDate ? new Date(body.licenseExpiryDate) : undefined,
-    notes: body.notes,
+    notes,
   });
 
   await logAction({

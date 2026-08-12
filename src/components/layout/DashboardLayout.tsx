@@ -14,15 +14,23 @@ interface DashboardLayoutProps {
   tenantName: string;
   user: DashboardLayoutUser;
   pendingAlertCount?: number;
+  /** Permissions effectives de l'user connecté ; null = ADMIN, aucune restriction. */
+  permissions: string[] | null;
   children: React.ReactNode;
 }
 
-export function DashboardLayout({ tenantName, user, pendingAlertCount, children }: DashboardLayoutProps) {
+export function DashboardLayout({
+  tenantName,
+  user,
+  pendingAlertCount,
+  permissions,
+  children,
+}: DashboardLayoutProps) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
+      <Sidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} permissions={permissions} />
       <div className="flex min-w-0 flex-1 flex-col">
         <Header
           tenantName={tenantName}

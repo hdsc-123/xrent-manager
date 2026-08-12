@@ -81,6 +81,8 @@ export async function resetUserPassword(
 export interface UpdateUserProfileInput {
   name?: string;
   email?: string;
+  phone?: string | null;
+  avatar?: string | null;
   currentPassword?: string;
   newPassword?: string;
 }
@@ -102,10 +104,19 @@ export async function updateUserProfile(
     return null;
   }
 
-  const updateData: { name?: string; email?: string; passwordHash?: string } = {};
+  const updateData: { name?: string; email?: string; phone?: string | null; avatar?: string | null; passwordHash?: string } =
+    {};
 
   if (data.name !== undefined) {
     updateData.name = data.name;
+  }
+
+  if (data.phone !== undefined) {
+    updateData.phone = data.phone;
+  }
+
+  if (data.avatar !== undefined) {
+    updateData.avatar = data.avatar;
   }
 
   if (data.email !== undefined && data.email !== existing.email) {

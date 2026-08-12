@@ -1,13 +1,16 @@
 import Link from "next/link";
+import { Plus, Pencil, Trash2, Upload, ArrowRightLeft, CheckCircle2, Circle, type LucideIcon } from "lucide-react";
 import { getSessionUser } from "@/lib/authz";
 import { getAuditLogs } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui";
+import { ExportCsvButton } from "../reports/ExportCsvButton";
 
 const ACTION_LABELS: Record<string, string> = {
   "user.role_changed": "Changement de rôle",
   "user.deleted": "Suppression d'utilisateur",
   "user.profile_updated": "Profil modifié",
+  "user.permissions_changed": "Permissions modifiées",
   "invitation.created": "Invitation créée",
   "invitation.accepted": "Invitation acceptée",
   "invitation.declined": "Invitation déclinée",
@@ -22,6 +25,7 @@ const ACTION_LABELS: Record<string, string> = {
   "client.created": "Client créé",
   "client.updated": "Client modifié",
   "client.deleted": "Client supprimé",
+  "client.duplicate_reused": "Client existant réutilisé (doublon)",
   "invoice.created": "Facture créée",
   "invoice.updated": "Facture modifiée",
   "invoice.status_changed": "Statut de facture modifié",
@@ -35,6 +39,15 @@ const ACTION_LABELS: Record<string, string> = {
   "maintenance.deleted": "Maintenance supprimée",
   "alert.acknowledged": "Alerte acquittée",
   "alert.resolved": "Alerte résolue",
+  "reservation.created": "Réservation créée",
+  "reservation.updated": "Réservation modifiée",
+  "reservation.status_changed": "Statut de réservation modifié",
+  "reservation.deleted": "Réservation supprimée",
+  "reservation.imported": "Réservations importées (Excel)",
+  "reservation.converted": "Réservation convertie en contrat",
+  "permission_group.created": "Groupe de permissions créé",
+  "permission_group.updated": "Groupe de permissions modifié",
+  "permission_group.deleted": "Groupe de permissions supprimé",
 };
 
 const RESOURCE_LABELS: Record<string, string> = {
@@ -47,10 +60,39 @@ const RESOURCE_LABELS: Record<string, string> = {
   Payment: "Paiement",
   Maintenance: "Maintenance",
   Alert: "Alerte",
+  Reservation: "Réservation",
+  PermissionGroup: "Groupe de permissions",
 };
 
+/** Icône + couleur par type d'action (section 6 du sprint), dérivées du suffixe verbal de
+ * l'action plutôt que d'une carte exhaustive par action — reste correct pour toute nouvelle
+ * action suivant la convention "<ressource>.<verbe>" (DOMAINRULES.md section 16). */
+function getActionStyle(action: string): { icon: LucideIcon; className: string } {
+  if (action.endsWith(".created") || action.endsWith(".imported")) {
+    return { icon: Plus, className: "text-success" };
+  }
+  if (action.endsWith(".deleted") || action.endsWith(".revoked") || action.endsWith(".declined")) {
+    return { icon: Trash2, className: "text-destructive" };
+  }
+  if (action.endsWith(".converted")) {
+    return { icon: ArrowRightLeft, className: "text-primary" };
+  }
+  if (action.endsWith(".acknowledged") || action.endsWith(".resolved") || action.endsWith(".accepted")) {
+    return { icon: CheckCircle2, className: "text-success" };
+  }
+  if (
+    action.endsWith(".updated") ||
+    action.endsWith(".status_changed") ||
+    action.endsWith("_changed") ||
+    action.endsWith("_reused")
+  ) {
+    return { icon: action.endsWith("_reused") ? Upload : Pencil, className: "text-primary" };
+  }
+  return { icon: Circle, className: "text-muted-foreground" };
+}
+
 interface PageProps {
-  searchParams: Promise<{ resource?: string; action?: string; userId?: string }>;
+  searchParams: Promise<{ resource?: string; action?: string; userId?: string; from?: string; to?: string }>;
 }
 
 export default async function AuditPage({ searchParams }: PageProps) {
@@ -69,12 +111,16 @@ export default async function AuditPage({ searchParams }: PageProps) {
   }
 
   const params = await searchParams;
+  const from = params.from ? new Date(params.from) : undefined;
+  const to = params.to ? new Date(params.to) : undefined;
 
   const [logs, distinctResources, distinctActions, tenantUsers] = await Promise.all([
     getAuditLogs(user.tenantId, {
       resource: params.resource,
       action: params.action,
       userId: params.userId,
+      from,
+      to,
       take: 100,
     }),
     prisma.auditLog.findMany({
@@ -97,7 +143,7 @@ export default async function AuditPage({ searchParams }: PageProps) {
   ]);
 
   const actorNameById = new Map(tenantUsers.map((actor) => [actor.id, actor.name]));
-  const hasFilters = Boolean(params.resource || params.action || params.userId);
+  const hasFilters = Boolean(params.resource || params.action || params.userId || params.from || params.to);
 
   return (
     <div className="flex flex-col gap-4">
@@ -168,6 +214,32 @@ export default async function AuditPage({ searchParams }: PageProps) {
           </select>
         </div>
 
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="from" className="text-xs font-medium text-muted-foreground">
+            Du
+          </label>
+          <input
+            id="from"
+            type="date"
+            name="from"
+            defaultValue={params.from ?? ""}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="to" className="text-xs font-medium text-muted-foreground">
+            Au
+          </label>
+          <input
+            id="to"
+            type="date"
+            name="to"
+            defaultValue={params.to ?? ""}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          />
+        </div>
+
         <Button type="submit" variant="outline" size="sm">
           Filtrer
         </Button>
@@ -176,6 +248,17 @@ export default async function AuditPage({ searchParams }: PageProps) {
             Réinitialiser
           </Button>
         )}
+
+        <ExportCsvButton
+          filename="audit.csv"
+          rows={logs.map((log) => ({
+            date: new Date(log.createdAt).toISOString(),
+            action: ACTION_LABELS[log.action] ?? log.action,
+            ressource: RESOURCE_LABELS[log.resource] ?? log.resource,
+            ressourceId: log.resourceId ?? "",
+            acteur: log.userId ? (actorNameById.get(log.userId) ?? "Utilisateur supprimé") : "Système",
+          }))}
+        />
       </form>
 
       <Card>
@@ -194,21 +277,29 @@ export default async function AuditPage({ searchParams }: PageProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {logs.map((log) => (
-                    <tr key={log.id} className="border-t border-border">
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        {new Date(log.createdAt).toLocaleString("fr-FR")}
-                      </td>
-                      <td className="px-3 py-2">{ACTION_LABELS[log.action] ?? log.action}</td>
-                      <td className="px-3 py-2">
-                        {RESOURCE_LABELS[log.resource] ?? log.resource}
-                        {log.resourceId ? ` (${log.resourceId})` : ""}
-                      </td>
-                      <td className="px-3 py-2">
-                        {log.userId ? (actorNameById.get(log.userId) ?? "Utilisateur supprimé") : "Système"}
-                      </td>
-                    </tr>
-                  ))}
+                  {logs.map((log) => {
+                    const { icon: ActionIcon, className } = getActionStyle(log.action);
+                    return (
+                      <tr key={log.id} className="border-t border-border">
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {new Date(log.createdAt).toLocaleString("fr-FR")}
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex items-center gap-1.5 ${className}`}>
+                            <ActionIcon className="size-3.5 shrink-0" />
+                            {ACTION_LABELS[log.action] ?? log.action}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          {RESOURCE_LABELS[log.resource] ?? log.resource}
+                          {log.resourceId ? ` (${log.resourceId})` : ""}
+                        </td>
+                        <td className="px-3 py-2">
+                          {log.userId ? (actorNameById.get(log.userId) ?? "Utilisateur supprimé") : "Système"}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

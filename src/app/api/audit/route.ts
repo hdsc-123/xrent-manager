@@ -21,8 +21,16 @@ export async function GET(request: Request) {
   const resource = searchParams.get("resource") ?? undefined;
   const action = searchParams.get("action") ?? undefined;
   const userId = searchParams.get("userId") ?? undefined;
+  const fromParam = searchParams.get("from") ?? undefined;
+  const toParam = searchParams.get("to") ?? undefined;
 
-  const logs = await getAuditLogs(user.tenantId, { resource, action, userId });
+  const logs = await getAuditLogs(user.tenantId, {
+    resource,
+    action,
+    userId,
+    from: fromParam ? new Date(fromParam) : undefined,
+    to: toParam ? new Date(toParam) : undefined,
+  });
 
   return NextResponse.json({ logs });
 }

@@ -1,10 +1,13 @@
 export class ApiError extends Error {
   status: number;
+  /** Corps JSON complet de la réponse d'erreur (ex. { duplicate } sur un 409 doublon client). */
+  body: unknown;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -34,7 +37,7 @@ export async function apiFetch<T>(input: string, init?: RequestInit): Promise<T>
       body && typeof body === "object" && "error" in body && typeof body.error === "string"
         ? body.error
         : `Erreur ${response.status}.`;
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, body);
   }
 
   return body as T;

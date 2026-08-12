@@ -151,3 +151,119 @@ export async function getTopVehicles(tenantId: string, limit: number): Promise<T
     .sort((a, b) => b.revenue - a.revenue)
     .slice(0, limit);
 }
+
+export interface LocationsByMonth {
+  month: string;
+  count: number;
+}
+
+/** Nombre de locations créées par mois sur la période (tous statuts confondus). */
+export async function getLocationsByMonth(
+  tenantId: string,
+  startDate: Date,
+  endDate: Date
+): Promise<LocationsByMonth[]> {
+  const locations = await prisma.location.findMany({
+    where: { tenantId, createdAt: { gte: startDate, lte: endDate } },
+    select: { createdAt: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const byMonthMap = new Map<string, number>();
+  for (const location of locations) {
+    const key = monthKey(location.createdAt);
+    byMonthMap.set(key, (byMonthMap.get(key) ?? 0) + 1);
+  }
+
+  return Array.from(byMonthMap.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, count]) => ({ month, count }));
+}
+
+export interface RevenueByAgency {
+  agencyId: string;
+  agencyName: string;
+  revenue: number;
+  currency: string;
+}
+
+/** Revenu facturé (Location.totalPrice, ACTIVE/COMPLETED) réparti par agence sur la période. */
+export async function getRevenueByAgency(
+  tenantId: string,
+  startDate: Date,
+  endDate: Date
+): Promise<RevenueByAgency[]> {
+  const agencies = await prisma.agency.findMany({
+    where: { tenantId },
+    select: {
+      id: true,
+      name: true,
+      locations: {
+        where: {
+          status: { in: [...REALIZED_LOCATION_STATUSES] },
+          createdAt: { gte: startDate, lte: endDate },
+        },
+        select: { totalPrice: true, currency: true },
+      },
+    },
+  });
+
+  return agencies
+    .map((agency) => ({
+      agencyId: agency.id,
+      agencyName: agency.name,
+      revenue: agency.locations.reduce((sum, location) => sum + location.totalPrice, 0),
+      currency: agency.locations[0]?.currency ?? "MAD",
+    }))
+    .filter((entry) => entry.revenue > 0)
+    .sort((a, b) => b.revenue - a.revenue);
+}
+
+/**
+ * Taux d'occupation global du tenant sur la période : somme des jours loués (tous
+ * véhicules confondus, voir getVehicleUtilizationReport) / (nombre de véhicules × jours de
+ * la période). 0 si le tenant n'a aucun véhicule.
+ */
+export async function getOverallOccupancyRate(tenantId: string, startDate: Date, endDate: Date): Promise<number> {
+  const utilization = await getVehicleUtilizationReport(tenantId, startDate, endDate);
+  if (utilization.length === 0) {
+    return 0;
+  }
+
+  const totalRentedDays = utilization.reduce((sum, entry) => sum + entry.rentedDays, 0);
+  const totalPossibleDays = utilization.reduce((sum, entry) => sum + entry.periodDays, 0);
+  return totalPossibleDays > 0 ? totalRentedDays / totalPossibleDays : 0;
+}
+
+export interface ReservationsByStatus {
+  status: string;
+  broker: number;
+  direct: number;
+}
+
+/** Nombre de réservations par statut (créées sur la période), réparties broker/direct
+ * pour un graphique en barres empilées (spec section 5). */
+export async function getReservationsByStatus(
+  tenantId: string,
+  startDate: Date,
+  endDate: Date
+): Promise<ReservationsByStatus[]> {
+  const grouped = await prisma.reservation.groupBy({
+    by: ["status", "source"],
+    where: { tenantId, createdAt: { gte: startDate, lte: endDate } },
+    _count: { _all: true },
+  });
+
+  const ALL_STATUSES = ["PENDING", "CONFIRMED", "CONVERTED", "CANCELLED"] as const;
+
+  return ALL_STATUSES.map((status) => {
+    const entriesForStatus = grouped.filter((entry) => entry.status === status);
+    return {
+      status,
+      broker: entriesForStatus.find((entry) => entry.source === "BROKER")?._count._all ?? 0,
+      direct:
+        (entriesForStatus.find((entry) => entry.source === "DIRECT")?._count._all ?? 0) +
+        (entriesForStatus.find((entry) => entry.source === null)?._count._all ?? 0),
+    };
+  });
+}
