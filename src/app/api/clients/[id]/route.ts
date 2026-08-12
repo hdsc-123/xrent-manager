@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
-import type { Prisma } from "@prisma/client";
+import type { Prisma, IdType } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
 import { getClientById, updateClient, deleteClient, ClientHasLocationsError } from "@/lib/clients";
 import { logAction } from "@/lib/audit";
+
+const ID_TYPES: IdType[] = ["CIN", "PASSEPORT", "CARTE_SEJOUR"];
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -27,8 +29,20 @@ export async function GET(_request: Request, { params }: RouteParams) {
 
 interface UpdateClientBody {
   name?: string;
+  firstName?: string | null;
+  lastName?: string | null;
   email?: string | null;
   phone?: string | null;
+  altPhone?: string | null;
+  address?: string | null;
+  city?: string | null;
+  country?: string | null;
+  idNumber?: string | null;
+  idType?: IdType | null;
+  licenseNumber?: string | null;
+  licenseIssueDate?: string | null;
+  licenseExpiryDate?: string | null;
+  notes?: string | null;
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
@@ -56,7 +70,36 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "name ne peut pas être vide." }, { status: 400 });
   }
 
-  const updated = await updateClient(user.tenantId, client.id, body);
+  if (body.idType && !ID_TYPES.includes(body.idType)) {
+    return NextResponse.json({ error: "idType invalide." }, { status: 400 });
+  }
+
+  // Si firstName/lastName changent sans name explicite, on garde name synchronisé
+  // (même dérivation qu'à la création, voir POST /api/clients).
+  const derivedName =
+    body.name === undefined && (body.firstName !== undefined || body.lastName !== undefined)
+      ? [body.firstName ?? client.firstName, body.lastName ?? client.lastName]
+          .filter(Boolean)
+          .join(" ")
+          .trim() || undefined
+      : undefined;
+
+  const updated = await updateClient(user.tenantId, client.id, {
+    ...body,
+    ...(derivedName ? { name: derivedName } : {}),
+    licenseIssueDate:
+      body.licenseIssueDate !== undefined
+        ? body.licenseIssueDate === null
+          ? null
+          : new Date(body.licenseIssueDate)
+        : undefined,
+    licenseExpiryDate:
+      body.licenseExpiryDate !== undefined
+        ? body.licenseExpiryDate === null
+          ? null
+          : new Date(body.licenseExpiryDate)
+        : undefined,
+  });
   await logAction({
     tenantId: user.tenantId,
     userId: user.id,

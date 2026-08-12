@@ -28,12 +28,18 @@ model Tenant {
 }
 
 model Agency {
-  id        String   @id @default(cuid())
-  tenantId  String
-  name      String
-  slug      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(cuid())
+  tenantId     String
+  name         String
+  slug         String
+  city         String?
+  address      String?
+  phone        String?
+  email        String?
+  managerName  String?
+  managerPhone String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   tenant       Tenant       @relation(fields: [tenantId], references: [id])
   userAgencies UserAgency[]
@@ -81,17 +87,38 @@ model UserAgency {
   @@index([agencyId])
 }
 
+enum IdType {
+  CIN
+  PASSEPORT
+  CARTE_SEJOUR
+}
+
 // Client représente un locataire externe (personne qui loue un véhicule),
 // distinct de User (compte staff du tenant, avec identifiants de connexion) —
-// décision explicite Sprint 5, voir HANDOFF.md.
+// décision explicite Sprint 5, voir HANDOFF.md. firstName/lastName (Sprint 12A)
+// s'ajoutent à `name` (conservé pour compatibilité avec tout le code/tests existants
+// qui l'utilisent déjà comme libellé d'affichage) plutôt que de le remplacer ;
+// `name` reste dérivé de "firstName lastName" côté formulaire dashboard.
 model Client {
-  id        String   @id @default(cuid())
-  tenantId  String
-  name      String
-  email     String?
-  phone     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                String    @id @default(cuid())
+  tenantId          String
+  name              String
+  firstName         String?
+  lastName          String?
+  email             String?
+  phone             String?
+  altPhone          String?
+  address           String?
+  city              String?
+  country           String?
+  idNumber          String?
+  idType            IdType?
+  licenseNumber     String?
+  licenseIssueDate  DateTime?
+  licenseExpiryDate DateTime?
+  notes             String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   tenant    Tenant     @relation(fields: [tenantId], references: [id])
   locations Location[]
@@ -107,21 +134,50 @@ enum VehicleStatus {
   INACTIVE
 }
 
+enum TransmissionType {
+  MANUELLE
+  AUTOMATIQUE
+}
+
+enum FuelType {
+  ESSENCE
+  DIESEL
+  HYBRIDE
+  ELECTRIQUE
+}
+
+// Attributs professionnels (Sprint 12A) : tous optionnels au niveau schéma/API pour
+// rester compatibles avec les véhicules déjà créés (sans ces champs) et avec les
+// fixtures de test existantes qui créent un véhicule sans les fournir ; requis
+// uniquement au niveau du formulaire dashboard (voir NewVehiclePage/EditVehicleForm).
 model Vehicle {
-  id           String        @id @default(cuid())
-  tenantId     String
-  agencyId     String
-  name         String
-  licensePlate String
-  make         String
-  model        String
-  year         Int
-  category     String
-  status       VehicleStatus @default(AVAILABLE)
-  pricePerDay  Int
-  currency     String        @default("MAD")
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id            String            @id @default(cuid())
+  tenantId      String
+  agencyId      String
+  name          String
+  licensePlate  String
+  make          String
+  model         String
+  year          Int
+  category      String
+  ww            String?
+  chassisNumber String?
+  color         String?
+  doors         Int?
+  seats         Int?
+  transmission  TransmissionType?
+  fuel          FuelType?
+  horsepower    Int?
+  powerKW       Int?
+  engineSize    Float?
+  ac            Boolean           @default(false)
+  gps           Boolean           @default(false)
+  imageUrl      String?
+  status        VehicleStatus     @default(AVAILABLE)
+  pricePerDay   Int
+  currency      String            @default("MAD")
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
 
   tenant       Tenant        @relation(fields: [tenantId], references: [id])
   agency       Agency        @relation(fields: [agencyId], references: [id])
@@ -143,20 +199,23 @@ enum LocationStatus {
 }
 
 model Location {
-  id          String         @id @default(cuid())
-  tenantId    String
-  agencyId    String
-  vehicleId   String
-  clientId    String
-  startDate   DateTime
-  endDate     DateTime
-  status      LocationStatus @default(PENDING)
-  pricePerDay Int
-  totalPrice  Int
-  currency    String         @default("MAD")
-  notes       String?
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  id            String         @id @default(cuid())
+  tenantId      String
+  agencyId      String
+  vehicleId     String
+  clientId      String
+  startDate     DateTime
+  endDate       DateTime
+  startOdometer Int?
+  endOdometer   Int?
+  status        LocationStatus @default(PENDING)
+  pricePerDay   Int
+  totalPrice    Int
+  deposit       Int?
+  currency      String         @default("MAD")
+  notes         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id])
   agency   Agency    @relation(fields: [agencyId], references: [id])

@@ -54,6 +54,19 @@ export default async function VehicleDetailPage({ params }: PageProps) {
         initialStatus={vehicle.status}
         initialPricePerDay={vehicle.pricePerDay}
         licensePlate={vehicle.licensePlate}
+        initialWw={vehicle.ww}
+        initialChassisNumber={vehicle.chassisNumber}
+        initialColor={vehicle.color}
+        initialDoors={vehicle.doors}
+        initialSeats={vehicle.seats}
+        initialTransmission={vehicle.transmission}
+        initialFuel={vehicle.fuel}
+        initialHorsepower={vehicle.horsepower}
+        initialPowerKW={vehicle.powerKW}
+        initialEngineSize={vehicle.engineSize}
+        initialAc={vehicle.ac}
+        initialGps={vehicle.gps}
+        initialImageUrl={vehicle.imageUrl}
       />
 
       <div>

@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
-import type { VehicleStatus } from "@prisma/client";
+import type { VehicleStatus, TransmissionType, FuelType } from "@prisma/client";
 import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/authz";
 import { getVehicles, createVehicle, type VehicleFilters } from "@/lib/vehicles";
 import { logAction } from "@/lib/audit";
 
 const VEHICLE_STATUSES: VehicleStatus[] = ["AVAILABLE", "RENTED", "MAINTENANCE", "INACTIVE"];
+const TRANSMISSION_TYPES: TransmissionType[] = ["MANUELLE", "AUTOMATIQUE"];
+const FUEL_TYPES: FuelType[] = ["ESSENCE", "DIESEL", "HYBRIDE", "ELECTRIQUE"];
 
 function isUniqueConstraintError(error: unknown): boolean {
   return (
@@ -68,6 +70,19 @@ interface CreateVehicleBody {
   status?: VehicleStatus;
   pricePerDay?: number;
   currency?: string;
+  ww?: string;
+  chassisNumber?: string;
+  color?: string;
+  doors?: number;
+  seats?: number;
+  transmission?: TransmissionType;
+  fuel?: FuelType;
+  horsepower?: number;
+  powerKW?: number;
+  engineSize?: number;
+  ac?: boolean;
+  gps?: boolean;
+  imageUrl?: string;
 }
 
 export async function POST(request: Request) {
@@ -111,6 +126,25 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "status invalide." }, { status: 400 });
   }
 
+  if (body.transmission && !TRANSMISSION_TYPES.includes(body.transmission)) {
+    return NextResponse.json({ error: "transmission invalide." }, { status: 400 });
+  }
+
+  if (body.fuel && !FUEL_TYPES.includes(body.fuel)) {
+    return NextResponse.json({ error: "fuel invalide." }, { status: 400 });
+  }
+
+  for (const field of ["doors", "seats", "horsepower", "powerKW"] as const) {
+    const fieldValue = body[field];
+    if (fieldValue !== undefined && (!Number.isInteger(fieldValue) || fieldValue <= 0)) {
+      return NextResponse.json({ error: `${field} doit être un entier positif.` }, { status: 400 });
+    }
+  }
+
+  if (body.engineSize !== undefined && (!Number.isFinite(body.engineSize) || body.engineSize <= 0)) {
+    return NextResponse.json({ error: "engineSize doit être un nombre positif." }, { status: 400 });
+  }
+
   if (!(await canAccessAgency(user, agencyId))) {
     return NextResponse.json({ error: "Accès refusé à cette agence." }, { status: 403 });
   }
@@ -128,6 +162,19 @@ export async function POST(request: Request) {
       status: body.status,
       pricePerDay,
       currency: body.currency,
+      ww: body.ww,
+      chassisNumber: body.chassisNumber,
+      color: body.color,
+      doors: body.doors,
+      seats: body.seats,
+      transmission: body.transmission,
+      fuel: body.fuel,
+      horsepower: body.horsepower,
+      powerKW: body.powerKW,
+      engineSize: body.engineSize,
+      ac: body.ac,
+      gps: body.gps,
+      imageUrl: body.imageUrl,
     });
     await logAction({
       tenantId: user.tenantId,

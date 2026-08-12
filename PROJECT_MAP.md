@@ -13,7 +13,7 @@ xrent-manager/
 │   ├── vercel.svg
 │   └── window.svg
 ├── prisma/
-│   ├── schema.prisma        # Tenant, Agency, User (passwordHash, role), UserAgency, Client, Vehicle, Location, Invoice, Payment, Maintenance, Alert, Invitation, AuditLog, Account, Session, VerificationToken
+│   ├── schema.prisma        # Tenant, Agency (Sprint 12A : coordonnées pro), User (passwordHash, role), UserAgency, Client (Sprint 12A : identité/permis), Vehicle (Sprint 12A : fiche technique), Location (Sprint 12A : kilométrage/caution), Invoice, Payment, Maintenance, Alert, Invitation, AuditLog, Account, Session, VerificationToken
 │   └── migrations/
 │       ├── migration_lock.toml
 │       ├── 20260811133155_init_tenant_agency_user/
@@ -28,7 +28,9 @@ xrent-manager/
 │       │   └── migration.sql
 │       ├── 20260812090456_add_maintenance_and_alert_models/
 │       │   └── migration.sql
-│       └── 20260812101414_add_invitation_and_audit_log_models/
+│       ├── 20260812101414_add_invitation_and_audit_log_models/
+│       │   └── migration.sql
+│       └── 20260812170214_add_sprint12a_professional_fields/
 │           └── migration.sql
 ├── components.json          # Config shadcn/ui (style base-nova, alias @/components, @/lib, @/hooks)
 ├── src/
@@ -151,8 +153,8 @@ xrent-manager/
 │   │           └── vehicles/route.ts       # Utilisation véhicule + classement par revenu facturé
 │   ├── proxy.ts              # Redirige vers /login sur /dashboard*, /settings* si non authentifié (middleware.ts est déprécié dans cette version de Next.js)
 │   ├── components/
-│   │   ├── ui/               # Composants shadcn/ui (générés) + index.ts (ré-export)
-│   │   ├── layout/            # Sidebar.tsx, Header.tsx, DashboardLayout.tsx, DataTable.tsx (TanStack Table v9)
+│   │   ├── ui/               # Composants shadcn/ui (générés) + index.ts (ré-export) ; (Sprint 12A) phone-input.tsx — composant interne (pas de dépendance npm), indicatif pays + numéro
+│   │   ├── layout/            # Sidebar.tsx, Header.tsx (Sprint 12B : DropdownMenuLabel enveloppé dans DropdownMenuGroup, correctif bug déconnexion Base UI), DashboardLayout.tsx, DataTable.tsx (TanStack Table v9)
 │   │   └── invoices/          # (Sprint 6) InvoicePdf.tsx — template @react-pdf/renderer (pas de logo, aucun asset de marque)
 │   ├── hooks/
 │   │   ├── useUser.ts        # Lecture client de GET /api/auth/me
@@ -254,7 +256,7 @@ xrent-manager/
 | `src/app/api/invitations/route.ts`, `[id]/route.ts`, `[id]/accept/route.ts`, `[id]/decline/route.ts` | (Sprint 9) `GET`/`POST /api/invitations` réservés ADMIN ; `GET /[id]` public (champs non sensibles) ; `DELETE /[id]` révocation, ADMIN ; `accept`/`decline` publics (l'invité n'a pas encore de session dans ce tenant), `email`/`role` toujours dérivés de l'invitation. |
 | `src/app/api/audit/route.ts` | (Sprint 9) `GET`, réservé ADMIN, tenant-scopé, filtrable par `resource`/`userId`. |
 | `src/app/api/vehicles/route.ts`, `[id]/route.ts`, `[id]/availability/route.ts` | (Sprint 5) CRUD `Vehicle` + disponibilité, scopé tenant + agence (`canAccessAgency`), immatriculation unique par tenant, suppression bloquée si des locations existent. |
-| `src/app/api/locations/route.ts`, `[id]/route.ts` | (Sprint 5) CRUD `Location`, `agencyId` toujours dérivé du véhicule côté serveur (jamais du client), vérification de disponibilité et calcul de `totalPrice` à la création, machine à états sur `PATCH`, suppression restreinte aux statuts `PENDING`/`CANCELLED`. |
+| `src/app/api/locations/route.ts`, `[id]/route.ts` | (Sprint 5) CRUD `Location`, `agencyId` toujours dérivé du véhicule côté serveur (jamais du client), vérification de disponibilité et calcul de `totalPrice` à la création, machine à états sur `PATCH`, suppression restreinte aux statuts `PENDING`/`CANCELLED`. (Sprint 12B) `POST` génère automatiquement une `Invoice` `DRAFT` après la location (résilient : un échec de génération n'empêche pas la création de la location) ; `deleteLocation` (`src/lib/locations.ts`) nettoie désormais aussi la facture associée si elle est encore `DRAFT` sans paiement, sinon bloque la suppression (409). |
 | `src/app/api/clients/route.ts`, `[id]/route.ts` | `GET`/`POST` (Sprint 5) + `GET`/`PATCH`/`DELETE /[id]` (Sprint 8) — CRUD `Client`, tenant-scopé sans `agencyId`, suppression bloquée si des locations existent (voir DOMAINRULES.md section 9). |
 | `src/app/api/invoices/route.ts`, `[id]/route.ts`, `[id]/pdf/route.tsx` | (Sprint 6) CRUD `Invoice`, `agencyId`/`clientId`/`currency`/`subtotal` toujours dérivés de la `Location` côté serveur, numérotation par tenant, machine à états sur `PATCH` (transitions manuelles uniquement, `PARTIALLY_PAID`/`PAID` réservés à `recomputeInvoiceStatus`), suppression restreinte à `DRAFT` sans paiement, PDF via `@react-pdf/renderer`. |
 | `src/app/api/payments/route.ts`, `[id]/route.ts` | (Sprint 6) CRUD `Payment`, `currency` toujours dérivée de l'`Invoice`, montant validé contre le solde restant dû, chaque mutation recalcule `Invoice.amountPaid`/`status` depuis la somme réelle des paiements. |
@@ -301,11 +303,11 @@ Cette arborescence est une hypothèse de travail, pas une décision figée.
 D'après les principes produit de démarrage :
 
 - Tenants (CRUD + UI implémentés, Sprint 3–4)
-- Agences (CRUD + UI implémentés, Sprint 3–4)
+- Agences (CRUD + UI implémentés, Sprint 3–4 ; coordonnées professionnelles — ville/adresse/téléphone/email/responsable — ajoutées Sprint 12A)
 - Utilisateurs et rôles (inscription + rôles `ADMIN`/`MEMBER` implémentés Sprint 3 ; liste en lecture seule Sprint 4 ; modification de rôle, suppression, invitation implémentées Sprint 9, avec garde "dernier ADMIN" ; édition du profil par l'user lui-même implémentée Sprint 10 (`/api/users/me`) ; granularité fine des permissions au-delà de `ADMIN`/`MEMBER` reste À DÉCIDER)
-- Véhicules (CRUD + UI + disponibilité implémentés, Sprint 5 ; catégorie = champ texte libre sur `Vehicle`, pas de modèle `Category` dédié — voir DOMAINRULES.md section 6)
-- Réservations et contrats (fusionnés en un seul modèle `Location` avec machine à états, Sprint 5 — décision explicite, voir HANDOFF.md et DOMAINRULES.md section 7/8)
-- Clients (modèle `Client` minimal implémenté Sprint 5 — nom/email/téléphone ; module dédié complet implémenté Sprint 8 — CRUD, page `/dashboard/clients*`, en plus de la sélection/création inline déjà disponible depuis le formulaire de location)
+- Véhicules (CRUD + UI + disponibilité implémentés, Sprint 5 ; catégorie = champ texte libre sur `Vehicle`, pas de modèle `Category` dédié — voir DOMAINRULES.md section 6 ; fiche technique professionnelle — châssis/couleur/portes/places/boîte/carburant/puissance/cylindrée/climatisation/GPS/photo — ajoutée Sprint 12A)
+- Réservations et contrats (fusionnés en un seul modèle `Location` avec machine à états, Sprint 5 — décision explicite, voir HANDOFF.md et DOMAINRULES.md section 7/8 ; kilométrage départ/retour et caution ajoutés Sprint 12A, machine à états inchangée)
+- Clients (modèle `Client` minimal implémenté Sprint 5 — nom/email/téléphone ; module dédié complet implémenté Sprint 8 — CRUD, page `/dashboard/clients*`, en plus de la sélection/création inline déjà disponible depuis le formulaire de location ; prénom/nom séparés, téléphone secondaire, adresse, pièce d'identité et permis de conduire ajoutés Sprint 12A)
 - Facturation (modèle `Invoice` implémenté Sprint 6 — liée à une `Location`, numérotation par tenant, TVA/remise/total, machine à états, export PDF)
 - Paiements (modèle `Payment` implémenté Sprint 6 — enregistrement manuel uniquement, pas d'intégration Stripe/PayPal ; voir HANDOFF.md section 8 pour les points encore ouverts)
 - Rapports (implémentés Sprint 6 — revenu par mois, utilisation véhicule, classement véhicules, export CSV ; réservés ADMIN)

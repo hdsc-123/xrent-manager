@@ -48,6 +48,16 @@ export class LocationNotDeletableError extends Error {
   }
 }
 
+export class LocationHasInvoiceError extends Error {
+  constructor() {
+    super(
+      "Cette location a une facture SENT/PARTIALLY_PAID/PAID ou avec un paiement enregistré ; " +
+        "annulez ou supprimez la facture (voir DELETE /api/invoices/[id]) avant de supprimer la location."
+    );
+    this.name = "LocationHasInvoiceError";
+  }
+}
+
 /**
  * Machine à états explicite (ARCHITECTURE.md section 12) : aucune transition non listée
  * n'est autorisée. COMPLETED et CANCELLED sont des états terminaux.
@@ -107,6 +117,9 @@ export interface CreateLocationInput {
   endDate: Date;
   status?: LocationStatus;
   notes?: string;
+  startOdometer?: number;
+  endOdometer?: number;
+  deposit?: number;
 }
 
 /**
@@ -149,6 +162,9 @@ export async function createLocation(data: CreateLocationInput): Promise<Locatio
       currency: vehicle.currency,
       totalPrice,
       notes: data.notes,
+      startOdometer: data.startOdometer,
+      endOdometer: data.endOdometer,
+      deposit: data.deposit,
     },
   });
 }
@@ -158,6 +174,9 @@ export interface UpdateLocationInput {
   endDate?: Date;
   status?: LocationStatus;
   notes?: string;
+  startOdometer?: number | null;
+  endOdometer?: number | null;
+  deposit?: number | null;
 }
 
 export async function updateLocation(
@@ -207,10 +226,20 @@ export async function updateLocation(
       totalPrice,
       ...(data.status ? { status: data.status } : {}),
       ...(data.notes !== undefined ? { notes: data.notes } : {}),
+      ...(data.startOdometer !== undefined ? { startOdometer: data.startOdometer } : {}),
+      ...(data.endOdometer !== undefined ? { endOdometer: data.endOdometer } : {}),
+      ...(data.deposit !== undefined ? { deposit: data.deposit } : {}),
     },
   });
 }
 
+/**
+ * Une Invoice DRAFT sans paiement est un simple sous-produit de la génération automatique
+ * à la création de la location (voir POST /api/locations) : elle est supprimée avec la
+ * location. Toute facture allée au-delà (SENT/PARTIALLY_PAID/PAID) ou ayant reçu un
+ * paiement (amountPaid > 0, y compris CANCELLED avec historique de paiement) est un vrai
+ * document métier et bloque la suppression — même règle que deleteInvoice (src/lib/invoices.ts).
+ */
 export async function deleteLocation(tenantId: string, locationId: string): Promise<boolean> {
   const existing = await getLocationById(tenantId, locationId);
   if (!existing) {
@@ -221,6 +250,17 @@ export async function deleteLocation(tenantId: string, locationId: string): Prom
     throw new LocationNotDeletableError();
   }
 
-  await prisma.location.delete({ where: { id: locationId } });
+  const invoices = await prisma.invoice.findMany({ where: { locationId } });
+  const hasNonDeletableInvoice = invoices.some(
+    (invoice) => invoice.status !== "DRAFT" || invoice.amountPaid > 0
+  );
+  if (hasNonDeletableInvoice) {
+    throw new LocationHasInvoiceError();
+  }
+
+  await prisma.$transaction([
+    prisma.invoice.deleteMany({ where: { locationId } }),
+    prisma.location.delete({ where: { id: locationId } }),
+  ]);
   return true;
 }

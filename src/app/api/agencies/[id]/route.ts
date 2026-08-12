@@ -30,6 +30,12 @@ export async function GET(_request: Request, { params }: RouteParams) {
 
 interface UpdateAgencyBody {
   name?: string;
+  city?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  managerName?: string;
+  managerPhone?: string;
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
@@ -57,13 +63,21 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
   }
 
-  if (!body.name) {
-    return NextResponse.json({ error: "name est requis." }, { status: 400 });
+  if (body.name !== undefined && !body.name) {
+    return NextResponse.json({ error: "name ne peut pas être vide." }, { status: 400 });
   }
 
   const updated = await prisma.agency.update({
     where: { id: agency.id },
-    data: { name: body.name },
+    data: {
+      ...(body.name !== undefined ? { name: body.name } : {}),
+      ...(body.city !== undefined ? { city: body.city } : {}),
+      ...(body.address !== undefined ? { address: body.address } : {}),
+      ...(body.phone !== undefined ? { phone: body.phone } : {}),
+      ...(body.email !== undefined ? { email: body.email } : {}),
+      ...(body.managerName !== undefined ? { managerName: body.managerName } : {}),
+      ...(body.managerPhone !== undefined ? { managerPhone: body.managerPhone } : {}),
+    },
   });
 
   return NextResponse.json({ agency: updated });

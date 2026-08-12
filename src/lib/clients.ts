@@ -1,4 +1,4 @@
-import type { Client } from "@prisma/client";
+import type { Client, IdType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -39,8 +39,20 @@ export async function getClientById(tenantId: string, clientId: string): Promise
 export interface CreateClientInput {
   tenantId: string;
   name: string;
+  firstName?: string;
+  lastName?: string;
   email?: string;
   phone?: string;
+  altPhone?: string;
+  address?: string;
+  city?: string;
+  country?: string;
+  idNumber?: string;
+  idType?: IdType;
+  licenseNumber?: string;
+  licenseIssueDate?: Date;
+  licenseExpiryDate?: Date;
+  notes?: string;
 }
 
 export async function createClient(data: CreateClientInput): Promise<Client> {
@@ -49,8 +61,20 @@ export async function createClient(data: CreateClientInput): Promise<Client> {
 
 export interface UpdateClientInput {
   name?: string;
+  firstName?: string | null;
+  lastName?: string | null;
   email?: string | null;
   phone?: string | null;
+  altPhone?: string | null;
+  address?: string | null;
+  city?: string | null;
+  country?: string | null;
+  idNumber?: string | null;
+  idType?: IdType | null;
+  licenseNumber?: string | null;
+  licenseIssueDate?: Date | null;
+  licenseExpiryDate?: Date | null;
+  notes?: string | null;
 }
 
 export async function updateClient(

@@ -27,18 +27,43 @@ const STATUS_OPTIONS = [
   { value: "INACTIVE", label: "Inactif" },
 ];
 
+const TRANSMISSION_OPTIONS = [
+  { value: "MANUELLE", label: "Manuelle" },
+  { value: "AUTOMATIQUE", label: "Automatique" },
+];
+
+const FUEL_OPTIONS = [
+  { value: "ESSENCE", label: "Essence" },
+  { value: "DIESEL", label: "Diesel" },
+  { value: "HYBRIDE", label: "Hybride" },
+  { value: "ELECTRIQUE", label: "Électrique" },
+];
+
 export default function NewVehiclePage() {
   const router = useRouter();
   const [agencies, setAgencies] = useState<Agency[]>([]);
   const [agencyId, setAgencyId] = useState("");
   const [name, setName] = useState("");
-  const [licensePlate, setLicensePlate] = useState("");
   const [make, setMake] = useState("");
   const [model, setModel] = useState("");
+  const [ww, setWw] = useState("");
+  const [chassisNumber, setChassisNumber] = useState("");
+  const [licensePlate, setLicensePlate] = useState("");
   const [year, setYear] = useState(String(new Date().getFullYear()));
   const [category, setCategory] = useState("");
+  const [color, setColor] = useState("");
+  const [doors, setDoors] = useState("");
+  const [seats, setSeats] = useState("");
+  const [transmission, setTransmission] = useState("MANUELLE");
+  const [fuel, setFuel] = useState("ESSENCE");
+  const [horsepower, setHorsepower] = useState("");
+  const [powerKW, setPowerKW] = useState("");
+  const [engineSize, setEngineSize] = useState("");
+  const [ac, setAc] = useState(false);
+  const [gps, setGps] = useState(false);
   const [status, setStatus] = useState("AVAILABLE");
   const [pricePerDay, setPricePerDay] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -52,8 +77,8 @@ export default function NewVehiclePage() {
     event.preventDefault();
     setError(null);
 
-    const priceEuros = Number(pricePerDay.replace(",", "."));
-    if (!Number.isFinite(priceEuros) || priceEuros <= 0) {
+    const priceMad = Number(pricePerDay.replace(",", "."));
+    if (!Number.isFinite(priceMad) || priceMad <= 0) {
       setError("Le prix par jour doit être un nombre positif.");
       return;
     }
@@ -69,7 +94,20 @@ export default function NewVehiclePage() {
         year: Number(year),
         category,
         status,
-        pricePerDay: Math.round(priceEuros * 100),
+        pricePerDay: Math.round(priceMad * 100),
+        ww: ww || undefined,
+        chassisNumber: chassisNumber || undefined,
+        color: color || undefined,
+        doors: doors ? Number(doors) : undefined,
+        seats: seats ? Number(seats) : undefined,
+        transmission,
+        fuel,
+        horsepower: horsepower ? Number(horsepower) : undefined,
+        powerKW: powerKW ? Number(powerKW) : undefined,
+        engineSize: engineSize ? Number(engineSize.replace(",", ".")) : undefined,
+        ac,
+        gps,
+        imageUrl: imageUrl || undefined,
       });
       toast.success("Véhicule créé.");
       router.push("/dashboard/vehicles");
@@ -88,7 +126,7 @@ export default function NewVehiclePage() {
       <Card>
         <CardHeader>
           <CardTitle>Informations</CardTitle>
-          <CardDescription>Champs requis pour ajouter un véhicule à la flotte.</CardDescription>
+          <CardDescription>Fiche technique complète du véhicule.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
@@ -119,6 +157,47 @@ export default function NewVehiclePage() {
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
+                <Label htmlFor="make">Marque</Label>
+                <Input
+                  id="make"
+                  required
+                  placeholder="Dacia, Renault, Toyota…"
+                  value={make}
+                  onChange={(e) => setMake(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="model">Modèle</Label>
+                <Input
+                  id="model"
+                  required
+                  placeholder="Sandero, Clio, Corolla…"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="ww">
+                  N° WW <span className="text-muted-foreground">— optionnel</span>
+                </Label>
+                <Input id="ww" value={ww} onChange={(e) => setWw(e.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="chassisNumber">Numéro de châssis</Label>
+                <Input
+                  id="chassisNumber"
+                  required
+                  value={chassisNumber}
+                  onChange={(e) => setChassisNumber(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="licensePlate">Immatriculation</Label>
                 <Input
                   id="licensePlate"
@@ -139,17 +218,6 @@ export default function NewVehiclePage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="make">Marque</Label>
-                <Input id="make" required value={make} onChange={(e) => setMake(e.target.value)} />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="model">Modèle</Label>
-                <Input id="model" required value={model} onChange={(e) => setModel(e.target.value)} />
-              </div>
-            </div>
-
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="category">Catégorie</Label>
               <Input
@@ -159,6 +227,111 @@ export default function NewVehiclePage() {
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
               />
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="color">Couleur</Label>
+                <Input id="color" required value={color} onChange={(e) => setColor(e.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="doors">Portes</Label>
+                <Input
+                  id="doors"
+                  type="number"
+                  required
+                  value={doors}
+                  onChange={(e) => setDoors(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="seats">Places</Label>
+                <Input
+                  id="seats"
+                  type="number"
+                  required
+                  value={seats}
+                  onChange={(e) => setSeats(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="transmission">Boîte</Label>
+                <select
+                  id="transmission"
+                  value={transmission}
+                  onChange={(e) => setTransmission(e.target.value)}
+                  className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                >
+                  {TRANSMISSION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="fuel">Carburant</Label>
+                <select
+                  id="fuel"
+                  value={fuel}
+                  onChange={(e) => setFuel(e.target.value)}
+                  className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                >
+                  {FUEL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="horsepower">Chevaux fiscaux</Label>
+                <Input
+                  id="horsepower"
+                  type="number"
+                  required
+                  value={horsepower}
+                  onChange={(e) => setHorsepower(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="powerKW">Puissance (kW)</Label>
+                <Input
+                  id="powerKW"
+                  type="number"
+                  required
+                  value={powerKW}
+                  onChange={(e) => setPowerKW(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="engineSize">Cylindrée (L)</Label>
+                <Input
+                  id="engineSize"
+                  inputMode="decimal"
+                  required
+                  placeholder="1.5"
+                  value={engineSize}
+                  onChange={(e) => setEngineSize(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-6">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={ac} onChange={(e) => setAc(e.target.checked)} />
+                Climatisé
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={gps} onChange={(e) => setGps(e.target.checked)} />
+                GPS intégré
+              </label>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -183,11 +356,23 @@ export default function NewVehiclePage() {
                   id="pricePerDay"
                   inputMode="decimal"
                   required
-                  placeholder="45.00"
+                  placeholder="450.00"
                   value={pricePerDay}
                   onChange={(e) => setPricePerDay(e.target.value)}
                 />
               </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="imageUrl">
+                URL de la photo <span className="text-muted-foreground">— optionnel</span>
+              </Label>
+              <Input
+                id="imageUrl"
+                type="url"
+                value={imageUrl}
+                onChange={(e) => setImageUrl(e.target.value)}
+              />
             </div>
 
             {error && (

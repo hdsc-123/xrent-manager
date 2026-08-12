@@ -29,11 +29,20 @@ interface LocationActionsProps {
   id: string;
   status: LocationStatus;
   notes: string | null;
+  endOdometer: number | null;
 }
 
-export function LocationActions({ id, status, notes: initialNotes }: LocationActionsProps) {
+export function LocationActions({
+  id,
+  status,
+  notes: initialNotes,
+  endOdometer: initialEndOdometer,
+}: LocationActionsProps) {
   const router = useRouter();
   const [notes, setNotes] = useState(initialNotes ?? "");
+  const [endOdometer, setEndOdometer] = useState(
+    initialEndOdometer !== null ? String(initialEndOdometer) : ""
+  );
   const [isChangingStatus, setIsChangingStatus] = useState(false);
   const [isSavingNotes, setIsSavingNotes] = useState(false);
 
@@ -53,7 +62,10 @@ export function LocationActions({ id, status, notes: initialNotes }: LocationAct
   async function handleSaveNotes() {
     setIsSavingNotes(true);
     try {
-      await apiPatch(`/api/locations/${id}`, { notes });
+      await apiPatch(`/api/locations/${id}`, {
+        notes,
+        endOdometer: endOdometer ? Number(endOdometer) : null,
+      });
       toast.success("Notes enregistrées.");
       router.refresh();
     } catch (err) {
@@ -96,6 +108,15 @@ export function LocationActions({ id, status, notes: initialNotes }: LocationAct
         </div>
 
         <div className="flex flex-col gap-1.5">
+          <span className="text-xs font-medium text-muted-foreground">Kilométrage retour</span>
+          <Input
+            type="number"
+            value={endOdometer}
+            onChange={(e) => setEndOdometer(e.target.value)}
+          />
+        </div>
+
+        <div className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-muted-foreground">Notes</span>
           <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
           <Button
@@ -106,7 +127,7 @@ export function LocationActions({ id, status, notes: initialNotes }: LocationAct
             disabled={isSavingNotes}
             onClick={handleSaveNotes}
           >
-            {isSavingNotes ? "Enregistrement..." : "Enregistrer les notes"}
+            {isSavingNotes ? "Enregistrement..." : "Enregistrer"}
           </Button>
         </div>
       </CardContent>

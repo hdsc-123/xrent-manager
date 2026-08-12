@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { MoreHorizontal, Eye, Ban } from "lucide-react";
+import { MoreHorizontal, Eye, Ban, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { apiPatch, ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
@@ -33,6 +33,7 @@ export interface LocationRow {
   status: string;
   totalPrice: number;
   currency: string;
+  invoiceId: string | null;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -118,6 +119,12 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
                   <Eye className="size-4" />
                   Détails
                 </DropdownMenuItem>
+                {row.original.invoiceId && (
+                  <DropdownMenuItem render={<Link href={`/dashboard/invoices/${row.original.invoiceId}`} />}>
+                    <FileText className="size-4" />
+                    Voir facture
+                  </DropdownMenuItem>
+                )}
                 {CANCELLABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingCancel(row.original)}>
                     <Ban className="size-4" />

@@ -13,13 +13,31 @@ import {
   CardTitle,
   Input,
   Label,
+  PhoneInput,
 } from "@/components/ui";
+
+const ID_TYPE_OPTIONS = [
+  { value: "CIN", label: "CIN" },
+  { value: "PASSEPORT", label: "Passeport" },
+  { value: "CARTE_SEJOUR", label: "Carte de séjour" },
+];
 
 export default function NewClientPage() {
   const router = useRouter();
-  const [name, setName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [altPhone, setAltPhone] = useState("");
+  const [address, setAddress] = useState("");
+  const [city, setCity] = useState("");
+  const [country, setCountry] = useState("");
+  const [idNumber, setIdNumber] = useState("");
+  const [idType, setIdType] = useState("CIN");
+  const [licenseNumber, setLicenseNumber] = useState("");
+  const [licenseIssueDate, setLicenseIssueDate] = useState("");
+  const [licenseExpiryDate, setLicenseExpiryDate] = useState("");
+  const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -27,20 +45,31 @@ export default function NewClientPage() {
     event.preventDefault();
     setError(null);
 
-    if (!name) {
-      setError("Le nom est requis.");
+    if (!firstName || !lastName) {
+      setError("Le prénom et le nom sont requis.");
       return;
     }
 
     setIsSubmitting(true);
     try {
-      const { client } = await apiPost<{ client: { id: string } }>("/api/clients", {
-        name,
+      await apiPost("/api/clients", {
+        firstName,
+        lastName,
         email: email || undefined,
         phone: phone || undefined,
+        altPhone: altPhone || undefined,
+        address: address || undefined,
+        city: city || undefined,
+        country: country || undefined,
+        idNumber: idNumber || undefined,
+        idType,
+        licenseNumber: licenseNumber || undefined,
+        licenseIssueDate: licenseIssueDate || undefined,
+        licenseExpiryDate: licenseExpiryDate || undefined,
+        notes: notes || undefined,
       });
       toast.success("Client créé.");
-      router.push(`/dashboard/clients/${client.id}`);
+      router.push("/dashboard/clients");
       router.refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Une erreur est survenue.");
@@ -56,27 +85,128 @@ export default function NewClientPage() {
       <Card>
         <CardHeader>
           <CardTitle>Informations</CardTitle>
-          <CardDescription>Le nom est requis ; email et téléphone sont optionnels.</CardDescription>
+          <CardDescription>Coordonnées, pièce d&apos;identité et permis de conduire.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="name">Nom</Label>
-              <Input id="name" required value={name} onChange={(e) => setName(e.target.value)} />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="firstName">Prénom</Label>
+                <Input
+                  id="firstName"
+                  required
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="lastName">Nom</Label>
+                <Input
+                  id="lastName"
+                  required
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                />
+              </div>
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="email">
-                Email <span className="text-muted-foreground">— optionnel</span>
-              </Label>
+              <Label htmlFor="email">Email</Label>
               <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="phone">
-                Téléphone <span className="text-muted-foreground">— optionnel</span>
+              <Label htmlFor="phone">Téléphone</Label>
+              <PhoneInput id="phone" required value={phone} onChange={setPhone} />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="altPhone">
+                Téléphone secondaire <span className="text-muted-foreground">— optionnel</span>
               </Label>
-              <Input id="phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
+              <PhoneInput id="altPhone" value={altPhone} onChange={setAltPhone} />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="address">Adresse</Label>
+              <Input id="address" required value={address} onChange={(e) => setAddress(e.target.value)} />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="city">Ville</Label>
+                <Input id="city" required value={city} onChange={(e) => setCity(e.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="country">
+                  Pays <span className="text-muted-foreground">— optionnel</span>
+                </Label>
+                <Input id="country" value={country} onChange={(e) => setCountry(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="idType">Type de pièce</Label>
+                <select
+                  id="idType"
+                  value={idType}
+                  onChange={(e) => setIdType(e.target.value)}
+                  className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                >
+                  {ID_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="idNumber">
+                  N° de pièce <span className="text-muted-foreground">— optionnel</span>
+                </Label>
+                <Input id="idNumber" value={idNumber} onChange={(e) => setIdNumber(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="licenseNumber">Numéro de permis</Label>
+              <Input
+                id="licenseNumber"
+                required
+                value={licenseNumber}
+                onChange={(e) => setLicenseNumber(e.target.value)}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="licenseIssueDate">Date d&apos;obtention</Label>
+                <Input
+                  id="licenseIssueDate"
+                  type="date"
+                  required
+                  value={licenseIssueDate}
+                  onChange={(e) => setLicenseIssueDate(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="licenseExpiryDate">Date d&apos;expiration</Label>
+                <Input
+                  id="licenseExpiryDate"
+                  type="date"
+                  required
+                  value={licenseExpiryDate}
+                  onChange={(e) => setLicenseExpiryDate(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="notes">
+                Notes internes <span className="text-muted-foreground">— optionnel</span>
+              </Label>
+              <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
             </div>
 
             {error && (

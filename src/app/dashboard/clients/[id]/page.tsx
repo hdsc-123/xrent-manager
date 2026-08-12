@@ -46,9 +46,24 @@ export default async function ClientDetailPage({ params }: PageProps) {
 
       <EditClientForm
         id={client.id}
-        initialName={client.name}
+        initialFirstName={client.firstName}
+        initialLastName={client.lastName}
         initialEmail={client.email}
         initialPhone={client.phone}
+        initialAltPhone={client.altPhone}
+        initialAddress={client.address}
+        initialCity={client.city}
+        initialCountry={client.country}
+        initialIdNumber={client.idNumber}
+        initialIdType={client.idType}
+        initialLicenseNumber={client.licenseNumber}
+        initialLicenseIssueDate={
+          client.licenseIssueDate ? client.licenseIssueDate.toISOString().slice(0, 10) : null
+        }
+        initialLicenseExpiryDate={
+          client.licenseExpiryDate ? client.licenseExpiryDate.toISOString().slice(0, 10) : null
+        }
+        initialNotes={client.notes}
       />
 
       <div>

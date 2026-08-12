@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { VehicleStatus, Prisma } from "@prisma/client";
+import type { VehicleStatus, TransmissionType, FuelType, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import {
   getVehicleById,
@@ -10,6 +10,8 @@ import {
 import { logAction } from "@/lib/audit";
 
 const VEHICLE_STATUSES: VehicleStatus[] = ["AVAILABLE", "RENTED", "MAINTENANCE", "INACTIVE"];
+const TRANSMISSION_TYPES: TransmissionType[] = ["MANUELLE", "AUTOMATIQUE"];
+const FUEL_TYPES: FuelType[] = ["ESSENCE", "DIESEL", "HYBRIDE", "ELECTRIQUE"];
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -52,6 +54,19 @@ interface UpdateVehicleBody {
   status?: VehicleStatus;
   pricePerDay?: number;
   currency?: string;
+  ww?: string | null;
+  chassisNumber?: string | null;
+  color?: string | null;
+  doors?: number | null;
+  seats?: number | null;
+  transmission?: TransmissionType;
+  fuel?: FuelType;
+  horsepower?: number | null;
+  powerKW?: number | null;
+  engineSize?: number | null;
+  ac?: boolean;
+  gps?: boolean;
+  imageUrl?: string | null;
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
@@ -88,6 +103,29 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
   if (body.status && !VEHICLE_STATUSES.includes(body.status)) {
     return NextResponse.json({ error: "status invalide." }, { status: 400 });
+  }
+
+  if (body.transmission && !TRANSMISSION_TYPES.includes(body.transmission)) {
+    return NextResponse.json({ error: "transmission invalide." }, { status: 400 });
+  }
+
+  if (body.fuel && !FUEL_TYPES.includes(body.fuel)) {
+    return NextResponse.json({ error: "fuel invalide." }, { status: 400 });
+  }
+
+  for (const field of ["doors", "seats", "horsepower", "powerKW"] as const) {
+    const fieldValue = body[field];
+    if (fieldValue !== undefined && fieldValue !== null && (!Number.isInteger(fieldValue) || fieldValue <= 0)) {
+      return NextResponse.json({ error: `${field} doit être un entier positif.` }, { status: 400 });
+    }
+  }
+
+  if (
+    body.engineSize !== undefined &&
+    body.engineSize !== null &&
+    (!Number.isFinite(body.engineSize) || body.engineSize <= 0)
+  ) {
+    return NextResponse.json({ error: "engineSize doit être un nombre positif." }, { status: 400 });
   }
 
   if (body.agencyId && !(await canAccessAgency(user, body.agencyId))) {

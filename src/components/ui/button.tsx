@@ -44,12 +44,17 @@ function Button({
   className,
   variant = "default",
   size = "default",
+  nativeButton,
   ...props
 }: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
   return (
     <ButtonPrimitive
       data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
+      // `render` swaps the underlying element (ex. next/link's <a>) : sans ce flag,
+      // Base UI part du principe qu'un vrai <button> est rendu et avertit dans la
+      // console — voir node_modules/@base-ui/react/internals/use-button/useButton.js
+      nativeButton={nativeButton ?? !props.render}
       {...props}
     />
   )

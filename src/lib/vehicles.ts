@@ -1,4 +1,4 @@
-import type { Vehicle, VehicleStatus } from "@prisma/client";
+import type { Vehicle, VehicleStatus, TransmissionType, FuelType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 /** Statuts d'une Location qui occupent effectivement le véhicule sur sa période. */
@@ -56,6 +56,19 @@ export interface CreateVehicleInput {
   status?: VehicleStatus;
   pricePerDay: number;
   currency?: string;
+  ww?: string;
+  chassisNumber?: string;
+  color?: string;
+  doors?: number;
+  seats?: number;
+  transmission?: TransmissionType;
+  fuel?: FuelType;
+  horsepower?: number;
+  powerKW?: number;
+  engineSize?: number;
+  ac?: boolean;
+  gps?: boolean;
+  imageUrl?: string;
 }
 
 export async function createVehicle(data: CreateVehicleInput): Promise<Vehicle> {
@@ -73,6 +86,19 @@ export interface UpdateVehicleInput {
   status?: VehicleStatus;
   pricePerDay?: number;
   currency?: string;
+  ww?: string | null;
+  chassisNumber?: string | null;
+  color?: string | null;
+  doors?: number | null;
+  seats?: number | null;
+  transmission?: TransmissionType;
+  fuel?: FuelType;
+  horsepower?: number | null;
+  powerKW?: number | null;
+  engineSize?: number | null;
+  ac?: boolean;
+  gps?: boolean;
+  imageUrl?: string | null;
 }
 
 export async function updateVehicle(

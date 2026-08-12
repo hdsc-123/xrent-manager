@@ -86,6 +86,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -138,6 +140,51 @@ describe("POST /api/vehicles", () => {
 
     const response = await createVehicle(memberA, agencyA1Id);
     expect(response.status).toBe(201);
+  });
+
+  it("persiste la fiche technique professionnelle (Sprint 12A)", async () => {
+    const response = await createVehicle(adminA, agencyA1Id, {
+      color: "Blanc",
+      doors: 5,
+      seats: 5,
+      transmission: "AUTOMATIQUE",
+      fuel: "DIESEL",
+      horsepower: 6,
+      powerKW: 75,
+      engineSize: 1.5,
+      ac: true,
+      gps: true,
+      chassisNumber: "VF1CHASSIS123",
+      imageUrl: "https://example.test/vehicle.jpg",
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.vehicle.color).toBe("Blanc");
+    expect(body.vehicle.doors).toBe(5);
+    expect(body.vehicle.transmission).toBe("AUTOMATIQUE");
+    expect(body.vehicle.fuel).toBe("DIESEL");
+    expect(body.vehicle.ac).toBe(true);
+    expect(body.vehicle.gps).toBe(true);
+    expect(body.vehicle.engineSize).toBe(1.5);
+  });
+
+  it("accepte toujours une création minimale sans les nouveaux champs (rétrocompatibilité)", async () => {
+    const response = await createVehicle(adminA, agencyA1Id);
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.vehicle.color).toBeNull();
+    expect(body.vehicle.ac).toBe(false);
+    expect(body.vehicle.gps).toBe(false);
+  });
+
+  it("refuse une transmission invalide", async () => {
+    const response = await createVehicle(adminA, agencyA1Id, { transmission: "TURBO" });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse un nombre de portes négatif", async () => {
+    const response = await createVehicle(adminA, agencyA1Id, { doors: -1 });
+    expect(response.status).toBe(400);
   });
 });
 
@@ -194,6 +241,27 @@ describe("PATCH /api/vehicles/[id]", () => {
     const body = await response.json();
     expect(body.vehicle.pricePerDay).toBe(6000);
     expect(body.vehicle.status).toBe("MAINTENANCE");
+  });
+
+  it("permet de modifier puis d'effacer un champ optionnel de la fiche technique (Sprint 12A)", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id, { color: "Rouge" });
+    const vehicleId = (await createResponse.json()).vehicle.id;
+
+    const setResponse = await apiFetch(`/api/vehicles/${vehicleId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ color: "Bleu", doors: 3 }),
+    });
+    expect(setResponse.status).toBe(200);
+    expect((await setResponse.json()).vehicle.color).toBe("Bleu");
+
+    const clearResponse = await apiFetch(`/api/vehicles/${vehicleId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ color: null }),
+    });
+    expect(clearResponse.status).toBe(200);
+    expect((await clearResponse.json()).vehicle.color).toBeNull();
   });
 });
 

@@ -13,12 +13,19 @@ import {
   CardTitle,
   Input,
   Label,
+  PhoneInput,
 } from "@/components/ui";
 
 export default function NewAgencyPage() {
   const router = useRouter();
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
+  const [city, setCity] = useState("");
+  const [address, setAddress] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [managerName, setManagerName] = useState("");
+  const [managerPhone, setManagerPhone] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -28,7 +35,16 @@ export default function NewAgencyPage() {
     setIsSubmitting(true);
 
     try {
-      await apiPost("/api/agencies", { name, slug: slug || undefined });
+      await apiPost("/api/agencies", {
+        name,
+        slug: slug || undefined,
+        city,
+        address,
+        phone,
+        email,
+        managerName,
+        managerPhone,
+      });
       toast.success("Agence créée.");
       router.push("/dashboard/agencies");
       router.refresh();
@@ -46,7 +62,7 @@ export default function NewAgencyPage() {
       <Card>
         <CardHeader>
           <CardTitle>Informations</CardTitle>
-          <CardDescription>Le nom et un identifiant (slug) unique pour ce tenant.</CardDescription>
+          <CardDescription>Coordonnées et responsable de l&apos;agence.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
@@ -68,6 +84,57 @@ export default function NewAgencyPage() {
                 placeholder="généré automatiquement si vide"
                 value={slug}
                 onChange={(event) => setSlug(event.target.value)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="city">Ville</Label>
+              <Input id="city" required value={city} onChange={(e) => setCity(e.target.value)} />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="address">Adresse</Label>
+              <Input
+                id="address"
+                required
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="phone">Téléphone</Label>
+              <PhoneInput id="phone" required value={phone} onChange={setPhone} />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="managerName">Nom du responsable</Label>
+              <Input
+                id="managerName"
+                required
+                value={managerName}
+                onChange={(e) => setManagerName(e.target.value)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="managerPhone">Téléphone du responsable</Label>
+              <PhoneInput
+                id="managerPhone"
+                required
+                value={managerPhone}
+                onChange={setManagerPhone}
               />
             </div>
 

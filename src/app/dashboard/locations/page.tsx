@@ -63,6 +63,21 @@ export default async function LocationsPage({ searchParams }: PageProps) {
     }),
   ]);
 
+  // Une facture DRAFT est générée automatiquement à la création d'une location (Sprint 12B,
+  // src/app/api/locations/route.ts) mais reste résiliente (peut échouer sans bloquer la
+  // location) : la plus récente facture par location est donc recherchée ici, pas garantie.
+  const invoices = await prisma.invoice.findMany({
+    where: { locationId: { in: locations.map((location) => location.id) } },
+    select: { id: true, locationId: true, createdAt: true },
+    orderBy: { createdAt: "desc" },
+  });
+  const invoiceIdByLocationId = new Map<string, string>();
+  for (const invoice of invoices) {
+    if (!invoiceIdByLocationId.has(invoice.locationId)) {
+      invoiceIdByLocationId.set(invoice.locationId, invoice.id);
+    }
+  }
+
   const rows: LocationRow[] = locations.map((location) => ({
     id: location.id,
     clientName: location.client.name,
@@ -73,6 +88,7 @@ export default async function LocationsPage({ searchParams }: PageProps) {
     status: location.status,
     totalPrice: location.totalPrice,
     currency: location.currency,
+    invoiceId: invoiceIdByLocationId.get(location.id) ?? null,
   }));
 
   const canCreate = accessibleAgencyIds === null || accessibleAgencyIds.length > 0;

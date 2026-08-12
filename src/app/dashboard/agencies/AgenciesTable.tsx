@@ -25,6 +25,8 @@ export interface AgencyRow {
   id: string;
   name: string;
   slug: string;
+  city: string | null;
+  phone: string | null;
   createdAt: string;
 }
 
@@ -58,6 +60,16 @@ export function AgenciesTable({
     const base: DataTableColumn<AgencyRow>[] = [
       { accessorKey: "name", header: "Nom" },
       { accessorKey: "slug", header: "Slug" },
+      {
+        accessorKey: "city",
+        header: "Ville",
+        cell: ({ getValue }) => getValue<string | null>() ?? "—",
+      },
+      {
+        accessorKey: "phone",
+        header: "Téléphone",
+        cell: ({ getValue }) => getValue<string | null>() ?? "—",
+      },
       {
         accessorKey: "createdAt",
         header: "Créée le",

@@ -9,6 +9,7 @@ import {
   VehicleNotAvailableError,
   InvalidStatusTransitionError,
   LocationNotDeletableError,
+  LocationHasInvoiceError,
 } from "@/lib/locations";
 import { logAction } from "@/lib/audit";
 
@@ -40,6 +41,9 @@ interface UpdateLocationBody {
   startDate?: string;
   endDate?: string;
   notes?: string;
+  startOdometer?: number | null;
+  endOdometer?: number | null;
+  deposit?: number | null;
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
@@ -74,12 +78,22 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "startDate/endDate doivent être des dates ISO valides." }, { status: 400 });
   }
 
+  for (const field of ["startOdometer", "endOdometer", "deposit"] as const) {
+    const fieldValue = body[field];
+    if (fieldValue !== undefined && fieldValue !== null && (!Number.isInteger(fieldValue) || fieldValue < 0)) {
+      return NextResponse.json({ error: `${field} doit être un entier positif ou nul.` }, { status: 400 });
+    }
+  }
+
   try {
     const updated = await updateLocation(user.tenantId, location.id, {
       status: body.status,
       startDate,
       endDate,
       notes: body.notes,
+      startOdometer: body.startOdometer,
+      endOdometer: body.endOdometer,
+      deposit: body.deposit,
     });
     await logAction({
       tenantId: user.tenantId,
@@ -126,7 +140,7 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
   try {
     await deleteLocation(user.tenantId, location.id);
   } catch (error) {
-    if (error instanceof LocationNotDeletableError) {
+    if (error instanceof LocationNotDeletableError || error instanceof LocationHasInvoiceError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     throw error;

@@ -84,6 +84,41 @@ describe("POST /api/agencies", () => {
   it("crée l'agence rattachée au tenant de l'ADMIN connecté", async () => {
     expect(agencyA1Id).toBeDefined();
   });
+
+  it("persiste les champs professionnels (ville, adresse, contact, responsable) — Sprint 12A", async () => {
+    const response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        name: "Agence complète",
+        city: "Casablanca",
+        address: "12 rue des Fleurs",
+        phone: "+212612345678",
+        email: "agence@example.test",
+        managerName: "Fatima Zahra",
+        managerPhone: "+212698765432",
+      }),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.agency.city).toBe("Casablanca");
+    expect(body.agency.address).toBe("12 rue des Fleurs");
+    expect(body.agency.phone).toBe("+212612345678");
+    expect(body.agency.email).toBe("agence@example.test");
+    expect(body.agency.managerName).toBe("Fatima Zahra");
+    expect(body.agency.managerPhone).toBe("+212698765432");
+  });
+
+  it("accepte toujours une création minimale sans les nouveaux champs (rétrocompatibilité)", async () => {
+    const response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence minimale" }),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.agency.city).toBeNull();
+  });
 });
 
 describe("GET /api/agencies", () => {
@@ -152,6 +187,18 @@ describe("PATCH /api/agencies/[id]", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.agency.name).toBe("Agence A1 renommée");
+  });
+
+  it("met à jour les champs professionnels sans exiger name (Sprint 12A)", async () => {
+    const response = await apiFetch(`/api/agencies/${agencyA1Id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ city: "Rabat", phone: "+212611111111" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.agency.city).toBe("Rabat");
+    expect(body.agency.phone).toBe("+212611111111");
   });
 });
 

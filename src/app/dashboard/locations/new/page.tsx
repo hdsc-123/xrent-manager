@@ -47,7 +47,12 @@ export default function NewLocationPage() {
   const [vehicleId, setVehicleId] = useState("");
   const [clientId, setClientId] = useState("");
   const [startDate, setStartDate] = useState("");
+  const [startTime, setStartTime] = useState("10:00");
   const [endDate, setEndDate] = useState("");
+  const [endTime, setEndTime] = useState("10:00");
+  const [startOdometer, setStartOdometer] = useState("");
+  const [endOdometer, setEndOdometer] = useState("");
+  const [deposit, setDeposit] = useState("");
   const [notes, setNotes] = useState("");
   const [status, setStatus] = useState<"PENDING" | "CONFIRMED">("PENDING");
   const [availabilityCheck, setAvailabilityCheck] = useState<AvailabilityCheck | null>(null);
@@ -75,24 +80,44 @@ export default function NewLocationPage() {
     [vehicles, vehicleId]
   );
 
+  const startDateTime = useMemo(() => {
+    if (!startDate || !startTime) return null;
+    const value = new Date(`${startDate}T${startTime}`);
+    return Number.isNaN(value.getTime()) ? null : value;
+  }, [startDate, startTime]);
+
+  const endDateTime = useMemo(() => {
+    if (!endDate || !endTime) return null;
+    const value = new Date(`${endDate}T${endTime}`);
+    return Number.isNaN(value.getTime()) ? null : value;
+  }, [endDate, endTime]);
+
+  /** Même règle que calculateTotalPrice (src/lib/locations.ts) : jours arrondis au jour
+   * supérieur, minimum 1 jour — tout dépassement, même d'une minute, compte comme un jour
+   * supplémentaire. */
   const days = useMemo(() => {
-    if (!startDate || !endDate) return 0;
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return 0;
-    return Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)));
-  }, [startDate, endDate]);
+    if (!startDateTime || !endDateTime || endDateTime <= startDateTime) return 0;
+    return Math.max(
+      1,
+      Math.ceil((endDateTime.getTime() - startDateTime.getTime()) / (24 * 60 * 60 * 1000))
+    );
+  }, [startDateTime, endDateTime]);
 
   const estimatedTotal = selectedVehicle && days > 0 ? selectedVehicle.pricePerDay * days : 0;
 
-  const availabilityKey = vehicleId && startDate && endDate && days > 0 ? `${vehicleId}|${startDate}|${endDate}` : null;
+  const availabilityKey =
+    vehicleId && startDateTime && endDateTime && days > 0
+      ? `${vehicleId}|${startDateTime.toISOString()}|${endDateTime.toISOString()}`
+      : null;
 
   useEffect(() => {
-    if (!availabilityKey) return;
+    if (!availabilityKey || !startDateTime || !endDateTime) return;
 
     let cancelled = false;
     apiGet<AvailabilityResult>(
-      `/api/vehicles/${vehicleId}/availability?start=${startDate}&end=${endDate}`
+      `/api/vehicles/${vehicleId}/availability?start=${encodeURIComponent(
+        startDateTime.toISOString()
+      )}&end=${encodeURIComponent(endDateTime.toISOString())}`
     )
       .then((result) => {
         if (!cancelled) setAvailabilityCheck({ key: availabilityKey, result });
@@ -104,7 +129,7 @@ export default function NewLocationPage() {
     return () => {
       cancelled = true;
     };
-  }, [availabilityKey, vehicleId, startDate, endDate]);
+  }, [availabilityKey, vehicleId, startDateTime, endDateTime]);
 
   // "checking" et "availability" sont dérivés (pas de setState synchrone dans l'effet) :
   // tant qu'aucun résultat ne correspond à la clé véhicule+dates courante, on est en attente.
@@ -140,8 +165,8 @@ export default function NewLocationPage() {
     event.preventDefault();
     setError(null);
 
-    if (!vehicleId || !clientId || !startDate || !endDate) {
-      setError("Véhicule, client et dates sont requis.");
+    if (!vehicleId || !clientId || !startDateTime || !endDateTime) {
+      setError("Véhicule, client, dates et heures sont requis.");
       return;
     }
 
@@ -150,15 +175,24 @@ export default function NewLocationPage() {
       return;
     }
 
+    const depositMad = deposit ? Number(deposit.replace(",", ".")) : undefined;
+    if (deposit && (!Number.isFinite(depositMad) || (depositMad as number) < 0)) {
+      setError("La caution doit être un nombre positif.");
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const { location } = await apiPost<{ location: { id: string } }>("/api/locations", {
         vehicleId,
         clientId,
-        startDate,
-        endDate,
+        startDate: startDateTime.toISOString(),
+        endDate: endDateTime.toISOString(),
         notes: notes || undefined,
         status,
+        startOdometer: startOdometer ? Number(startOdometer) : undefined,
+        endOdometer: endOdometer ? Number(endOdometer) : undefined,
+        deposit: depositMad !== undefined ? Math.round(depositMad * 100) : undefined,
       });
       toast.success("Location créée.");
       router.push(`/dashboard/locations/${location.id}`);
@@ -207,7 +241,7 @@ export default function NewLocationPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="startDate">Début</Label>
+                <Label htmlFor="startDate">Date de début</Label>
                 <Input
                   id="startDate"
                   type="date"
@@ -217,13 +251,36 @@ export default function NewLocationPage() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="endDate">Fin</Label>
+                <Label htmlFor="startTime">Heure de début</Label>
+                <Input
+                  id="startTime"
+                  type="time"
+                  required
+                  value={startTime}
+                  onChange={(e) => setStartTime(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="endDate">Date de fin</Label>
                 <Input
                   id="endDate"
                   type="date"
                   required
                   value={endDate}
                   onChange={(e) => setEndDate(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="endTime">Heure de fin</Label>
+                <Input
+                  id="endTime"
+                  type="time"
+                  required
+                  value={endTime}
+                  onChange={(e) => setEndTime(e.target.value)}
                 />
               </div>
             </div>
@@ -316,6 +373,43 @@ export default function NewLocationPage() {
                 <option value="PENDING">En attente</option>
                 <option value="CONFIRMED">Confirmée</option>
               </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="startOdometer">
+                  Kilométrage départ <span className="text-muted-foreground">— optionnel</span>
+                </Label>
+                <Input
+                  id="startOdometer"
+                  type="number"
+                  value={startOdometer}
+                  onChange={(e) => setStartOdometer(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="endOdometer">
+                  Kilométrage retour <span className="text-muted-foreground">— optionnel</span>
+                </Label>
+                <Input
+                  id="endOdometer"
+                  type="number"
+                  value={endOdometer}
+                  onChange={(e) => setEndOdometer(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="deposit">
+                Caution (MAD) <span className="text-muted-foreground">— optionnel</span>
+              </Label>
+              <Input
+                id="deposit"
+                inputMode="decimal"
+                value={deposit}
+                onChange={(e) => setDeposit(e.target.value)}
+              />
             </div>
 
             <div className="flex flex-col gap-1.5">

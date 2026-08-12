@@ -1,10 +1,11 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
+import { FileText } from "lucide-react";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { getLocationById } from "@/lib/locations";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
-import { Badge, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
 import { LocationActions } from "./LocationActions";
 
 interface PageProps {
@@ -29,10 +30,11 @@ export default async function LocationDetailPage({ params }: PageProps) {
     notFound();
   }
 
-  const [vehicle, client, agency] = await Promise.all([
+  const [vehicle, client, agency, invoice] = await Promise.all([
     prisma.vehicle.findUnique({ where: { id: location.vehicleId } }),
     prisma.client.findUnique({ where: { id: location.clientId } }),
     prisma.agency.findUnique({ where: { id: location.agencyId }, select: { name: true } }),
+    prisma.invoice.findFirst({ where: { locationId: location.id }, orderBy: { createdAt: "desc" } }),
   ]);
 
   return (
@@ -42,7 +44,15 @@ export default async function LocationDetailPage({ params }: PageProps) {
           <h1 className="font-heading text-2xl font-semibold">Location #{location.id.slice(-8)}</h1>
           <p className="text-sm text-muted-foreground">Agence : {agency?.name ?? "—"}</p>
         </div>
-        <Badge variant="outline">{STATUS_LABELS[location.status] ?? location.status}</Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline">{STATUS_LABELS[location.status] ?? location.status}</Badge>
+          {invoice && (
+            <Button render={<Link href={`/dashboard/invoices/${invoice.id}`} />} variant="outline" size="sm">
+              <FileText className="size-4" />
+              Voir facture
+            </Button>
+          )}
+        </div>
       </div>
 
       <Card>
@@ -69,7 +79,7 @@ export default async function LocationDetailPage({ params }: PageProps) {
           <div>
             <p className="text-xs font-medium text-muted-foreground">Période</p>
             <p>
-              {location.startDate.toLocaleDateString("fr-FR")} → {location.endDate.toLocaleDateString("fr-FR")}
+              {location.startDate.toLocaleString("fr-FR")} → {location.endDate.toLocaleString("fr-FR")}
             </p>
           </div>
           <div>
@@ -80,6 +90,20 @@ export default async function LocationDetailPage({ params }: PageProps) {
             <p className="text-xs font-medium text-muted-foreground">Total</p>
             <p className="font-medium">{formatMoney(location.totalPrice, location.currency)}</p>
           </div>
+          {location.deposit !== null && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">Caution</p>
+              <p>{formatMoney(location.deposit, location.currency)}</p>
+            </div>
+          )}
+          {(location.startOdometer !== null || location.endOdometer !== null) && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">Kilométrage</p>
+              <p>
+                {location.startOdometer ?? "—"} km → {location.endOdometer ?? "—"} km
+              </p>
+            </div>
+          )}
           {location.notes && (
             <div className="col-span-2">
               <p className="text-xs font-medium text-muted-foreground">Notes</p>
@@ -89,7 +113,12 @@ export default async function LocationDetailPage({ params }: PageProps) {
         </CardContent>
       </Card>
 
-      <LocationActions id={location.id} status={location.status} notes={location.notes} />
+      <LocationActions
+        id={location.id}
+        status={location.status}
+        notes={location.notes}
+        endOdometer={location.endOdometer}
+      />
     </div>
   );
 }

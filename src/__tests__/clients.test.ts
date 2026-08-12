@@ -58,6 +58,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -97,6 +99,55 @@ describe("POST /api/clients", () => {
   it("autorise un MEMBER (pas de notion d'agence pour un client, DOMAINRULES.md section 9)", async () => {
     const response = await createClient(memberA, { name: "Client par membre" });
     expect(response.status).toBe(201);
+  });
+
+  it("dérive name à partir de firstName/lastName si name n'est pas fourni (Sprint 12A)", async () => {
+    const response = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ firstName: "Karim", lastName: "El Amrani" }),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.client.name).toBe("Karim El Amrani");
+    expect(body.client.firstName).toBe("Karim");
+    expect(body.client.lastName).toBe("El Amrani");
+  });
+
+  it("refuse une requête sans name ni firstName/lastName", async () => {
+    const response = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ email: "personne@test.local" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("persiste les champs professionnels (identité, permis, adresse) — Sprint 12A", async () => {
+    const response = await createClient(adminA, {
+      name: "Client Complet",
+      altPhone: "+212600000001",
+      address: "10 avenue Hassan II",
+      city: "Marrakech",
+      country: "Maroc",
+      idNumber: "AB123456",
+      idType: "CIN",
+      licenseNumber: "12345678",
+      licenseIssueDate: "2020-01-15",
+      licenseExpiryDate: "2030-01-15",
+      notes: "Client fidèle",
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.client.city).toBe("Marrakech");
+    expect(body.client.idType).toBe("CIN");
+    expect(body.client.licenseNumber).toBe("12345678");
+    expect(new Date(body.client.licenseIssueDate).toISOString().slice(0, 10)).toBe("2020-01-15");
+  });
+
+  it("refuse un idType invalide", async () => {
+    const response = await createClient(adminA, { name: "Test idType", idType: "PERMIS_MOTO" });
+    expect(response.status).toBe(400);
   });
 });
 
@@ -164,6 +215,24 @@ describe("PATCH /api/clients/[id]", () => {
     const body = await response.json();
     expect(body.client.name).toBe("Après modif");
     expect(body.client.email).toBe("apres@test.local");
+  });
+
+  it("synchronise name quand firstName/lastName changent sans name explicite (Sprint 12A)", async () => {
+    const createResponse = await createClient(adminA, {
+      firstName: "Yassine",
+      lastName: "Bennani",
+    });
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ lastName: "Alaoui" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.client.lastName).toBe("Alaoui");
+    expect(body.client.name).toBe("Yassine Alaoui");
   });
 
   it("refuse un name vide", async () => {

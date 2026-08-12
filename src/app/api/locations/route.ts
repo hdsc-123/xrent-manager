@@ -11,6 +11,7 @@ import {
   ClientNotFoundError,
   VehicleNotAvailableError,
 } from "@/lib/locations";
+import { createInvoice } from "@/lib/invoices";
 import { logAction } from "@/lib/audit";
 
 const LOCATION_STATUSES: LocationStatus[] = ["PENDING", "CONFIRMED", "ACTIVE", "COMPLETED", "CANCELLED"];
@@ -65,6 +66,9 @@ interface CreateLocationBody {
   endDate?: string;
   status?: LocationStatus;
   notes?: string;
+  startOdometer?: number;
+  endOdometer?: number;
+  deposit?: number;
 }
 
 export async function POST(request: Request) {
@@ -117,6 +121,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Accès refusé à cette agence." }, { status: 403 });
   }
 
+  for (const field of ["startOdometer", "endOdometer", "deposit"] as const) {
+    const fieldValue = body[field];
+    if (fieldValue !== undefined && (!Number.isInteger(fieldValue) || fieldValue < 0)) {
+      return NextResponse.json({ error: `${field} doit être un entier positif ou nul.` }, { status: 400 });
+    }
+  }
+
   try {
     const location = await createLocation({
       tenantId: user.tenantId,
@@ -127,6 +138,9 @@ export async function POST(request: Request) {
       endDate: end,
       status: body.status,
       notes: body.notes,
+      startOdometer: body.startOdometer,
+      endOdometer: body.endOdometer,
+      deposit: body.deposit,
     });
     await logAction({
       tenantId: user.tenantId,
@@ -136,7 +150,28 @@ export async function POST(request: Request) {
       resourceId: location.id,
       metadata: { vehicleId: location.vehicleId, clientId: location.clientId, status: location.status },
     });
-    return NextResponse.json({ location }, { status: 201 });
+
+    // Génération automatique d'une facture DRAFT à la création de la location (Sprint 12B).
+    // Résiliente par choix : un échec de génération de facture (ex. collision de numérotation
+    // après réessais, voir src/lib/invoices.ts) ne doit jamais faire échouer la création de la
+    // location elle-même — la facture reste créable manuellement ensuite (POST /api/invoices,
+    // déjà existant depuis le Sprint 6), même principe de résilience que logAction (src/lib/audit.ts).
+    let invoice = null;
+    try {
+      invoice = await createInvoice({ tenantId: user.tenantId, locationId: location.id });
+      await logAction({
+        tenantId: user.tenantId,
+        userId: user.id,
+        action: "invoice.created",
+        resource: "Invoice",
+        resourceId: invoice.id,
+        metadata: { number: invoice.number, locationId: invoice.locationId, auto: true },
+      });
+    } catch (error) {
+      console.error("Erreur lors de la génération automatique de la facture :", error);
+    }
+
+    return NextResponse.json({ location, invoice }, { status: 201 });
   } catch (error) {
     if (error instanceof InvalidDateRangeError) {
       return NextResponse.json({ error: error.message }, { status: 400 });

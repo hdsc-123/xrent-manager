@@ -11,6 +11,7 @@ import {
   Button,
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -95,14 +96,16 @@ export function Header({ tenantName, user, onMenuClick, pendingAlertCount = 0 }:
           </span>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuLabel className="flex flex-col gap-0.5">
-            <span className="truncate text-sm font-medium text-foreground">
-              {user.name || "Utilisateur"}
-            </span>
-            <span className="truncate text-xs font-normal text-muted-foreground">
-              {user.email}
-            </span>
-          </DropdownMenuLabel>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="flex flex-col gap-0.5">
+              <span className="truncate text-sm font-medium text-foreground">
+                {user.name || "Utilisateur"}
+              </span>
+              <span className="truncate text-xs font-normal text-muted-foreground">
+                {user.email}
+              </span>
+            </DropdownMenuLabel>
+          </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuItem render={<Link href="/dashboard/settings" />}>
             <Settings className="size-4" />

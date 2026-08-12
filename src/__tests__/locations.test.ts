@@ -122,6 +122,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -193,6 +195,52 @@ describe("POST /api/locations", () => {
       endDate: "2028-06-03",
     });
     expect(response.status).toBe(403);
+  });
+
+  it("persiste startOdometer/endOdometer/deposit (Sprint 12A)", async () => {
+    const response = await createLocation(adminA, {
+      startDate: "2029-01-15",
+      endDate: "2029-01-17",
+      startOdometer: 12000,
+      endOdometer: 12250,
+      deposit: 300000,
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.location.startOdometer).toBe(12000);
+    expect(body.location.endOdometer).toBe(12250);
+    expect(body.location.deposit).toBe(300000);
+  });
+
+  it("refuse un kilométrage négatif", async () => {
+    const response = await createLocation(adminA, {
+      startDate: "2029-01-20",
+      endDate: "2029-01-22",
+      startOdometer: -10,
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("arrondit le nombre de jours au jour supérieur en tenant compte de l'heure (dépassement = jour supplémentaire)", async () => {
+    // Départ 10/02 10:00, retour 12/02 11:00 → 2 jours + 1h de dépassement → 3 jours facturés.
+    const response = await createLocation(adminA, {
+      startDate: "2029-02-10T10:00:00.000Z",
+      endDate: "2029-02-12T11:00:00.000Z",
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.location.totalPrice).toBe(15000); // 3 jours × 5000
+  });
+
+  it("n'arrondit pas à un jour de plus pour un retour légèrement anticipé", async () => {
+    // Départ 10/03 10:00, retour 12/03 09:59 → toujours 2 jours (pas de dépassement).
+    const response = await createLocation(adminA, {
+      startDate: "2029-03-10T10:00:00.000Z",
+      endDate: "2029-03-12T09:59:00.000Z",
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.location.totalPrice).toBe(10000); // 2 jours × 5000
   });
 });
 
@@ -296,6 +344,25 @@ describe("PATCH /api/locations/[id]", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.location.totalPrice).toBe(25000); // 5 jours × 5000
+  });
+
+  it("permet d'enregistrer le kilométrage de retour et la caution (Sprint 12A)", async () => {
+    const createResponse = await createLocation(adminA, {
+      startDate: "2029-04-01",
+      endDate: "2029-04-03",
+      startOdometer: 50000,
+    });
+    const locationId = (await createResponse.json()).location.id;
+
+    const response = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ endOdometer: 50180 }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.location.startOdometer).toBe(50000);
+    expect(body.location.endOdometer).toBe(50180);
   });
 });
 

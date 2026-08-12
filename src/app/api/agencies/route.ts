@@ -34,6 +34,12 @@ export async function GET() {
 interface CreateAgencyBody {
   name?: string;
   slug?: string;
+  city?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  managerName?: string;
+  managerPhone?: string;
 }
 
 export async function POST(request: Request) {
@@ -63,7 +69,17 @@ export async function POST(request: Request) {
 
   try {
     const agency = await prisma.agency.create({
-      data: { tenantId: user.tenantId, name, slug },
+      data: {
+        tenantId: user.tenantId,
+        name,
+        slug,
+        city: body.city,
+        address: body.address,
+        phone: body.phone,
+        email: body.email,
+        managerName: body.managerName,
+        managerPhone: body.managerPhone,
+      },
     });
     return NextResponse.json({ agency }, { status: 201 });
   } catch (error) {

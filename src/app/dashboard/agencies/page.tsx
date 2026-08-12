@@ -18,6 +18,8 @@ export default async function AgenciesPage() {
     id: agency.id,
     name: agency.name,
     slug: agency.slug,
+    city: agency.city,
+    phone: agency.phone,
     createdAt: agency.createdAt.toISOString(),
   }));
 
