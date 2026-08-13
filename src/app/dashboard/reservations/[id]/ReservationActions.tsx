@@ -8,22 +8,6 @@ import { Button, Card, CardContent, CardHeader, CardTitle, Input } from "@/compo
 
 type ReservationStatus = "PENDING" | "CONFIRMED" | "CONVERTED" | "CANCELLED";
 
-/** Miroir client de la machine à états de src/lib/reservations.ts (ALLOWED_TRANSITIONS).
- * CONVERTED n'est jamais proposé ici — uniquement via le flux dédié (ConvertReservationCard). */
-const ALLOWED_TRANSITIONS: Record<ReservationStatus, Exclude<ReservationStatus, "CONVERTED">[]> = {
-  PENDING: ["CONFIRMED", "CANCELLED"],
-  CONFIRMED: ["CANCELLED"],
-  CONVERTED: [],
-  CANCELLED: [],
-};
-
-const STATUS_LABELS: Record<ReservationStatus, string> = {
-  PENDING: "En attente",
-  CONFIRMED: "Confirmée",
-  CONVERTED: "Convertie",
-  CANCELLED: "Annulée",
-};
-
 interface ReservationActionsProps {
   id: string;
   status: ReservationStatus;
@@ -31,17 +15,25 @@ interface ReservationActionsProps {
   canEdit: boolean;
 }
 
+/**
+ * Actions de statut explicites (Sprint 13D, refonte du flux réservation → contrat) :
+ * "Confirmer" (PENDING → CONFIRMED) et "Annuler" (PENDING/CONFIRMED → CANCELLED) — la
+ * conversion en contrat n'est plus une transition de statut proposée ici, elle a son propre
+ * flux dédié (voir ConvertReservationLink dans page.tsx, qui mène au formulaire
+ * /dashboard/reservations/[id]/convert), pour ne plus confondre les deux actions comme dans
+ * l'ancien flux (un seul bouton « Changer le statut » générique).
+ */
 export function ReservationActions({ id, status, notes: initialNotes, canEdit }: ReservationActionsProps) {
   const router = useRouter();
   const [notes, setNotes] = useState(initialNotes ?? "");
   const [isChangingStatus, setIsChangingStatus] = useState(false);
   const [isSavingNotes, setIsSavingNotes] = useState(false);
 
-  async function handleTransition(next: ReservationStatus) {
+  async function handleTransition(next: "CONFIRMED" | "CANCELLED") {
     setIsChangingStatus(true);
     try {
       await apiPatch(`/api/reservations/${id}`, { status: next });
-      toast.success(`Statut mis à jour : ${STATUS_LABELS[next]}.`);
+      toast.success(next === "CONFIRMED" ? "Réservation confirmée." : "Réservation annulée.");
       router.refresh();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Erreur lors du changement de statut.");
@@ -67,7 +59,7 @@ export function ReservationActions({ id, status, notes: initialNotes, canEdit }:
     return null;
   }
 
-  const nextStatuses = ALLOWED_TRANSITIONS[status];
+  const canCancel = status === "PENDING" || status === "CONFIRMED";
 
   return (
     <Card>
@@ -75,29 +67,26 @@ export function ReservationActions({ id, status, notes: initialNotes, canEdit }:
         <CardTitle>Actions</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-muted-foreground">Changer le statut</span>
-          {nextStatuses.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Statut terminal ({STATUS_LABELS[status]}) — aucune transition possible.
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {nextStatuses.map((next) => (
-                <Button
-                  key={next}
-                  type="button"
-                  size="sm"
-                  variant={next === "CANCELLED" ? "destructive" : "default"}
-                  disabled={isChangingStatus}
-                  onClick={() => handleTransition(next)}
-                >
-                  {STATUS_LABELS[next]}
-                </Button>
-              ))}
-            </div>
-          )}
-        </div>
+        {(status === "PENDING" || canCancel) && (
+          <div className="flex flex-wrap gap-2">
+            {status === "PENDING" && (
+              <Button type="button" size="sm" disabled={isChangingStatus} onClick={() => handleTransition("CONFIRMED")}>
+                Confirmer la réservation
+              </Button>
+            )}
+            {canCancel && (
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                disabled={isChangingStatus}
+                onClick={() => handleTransition("CANCELLED")}
+              >
+                Annuler
+              </Button>
+            )}
+          </div>
+        )}
 
         <div className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-muted-foreground">Remarques</span>

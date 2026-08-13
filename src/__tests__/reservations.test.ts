@@ -117,6 +117,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma.reservation.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -410,6 +412,26 @@ describe("POST /api/reservations/import", () => {
 });
 
 describe("POST /api/reservations/[id]/convert", () => {
+  /** Corps minimal valide (véhicule + dates + identité client) — Sprint 13D, nouveau
+   * contrat de POST /api/reservations/[id]/convert (formulaire de conversion pré-rempli,
+   * voir DOMAINRULES.md section 26). */
+  function convertBody(
+    reservation: { startDate: string; endDate: string; clientFirstName: string; clientLastName: string; clientPhone?: string | null },
+    overrides: Record<string, unknown> = {}
+  ) {
+    return {
+      vehicleId: vehicleAId,
+      startDate: reservation.startDate,
+      endDate: reservation.endDate,
+      client: {
+        firstName: reservation.clientFirstName,
+        lastName: reservation.clientLastName,
+        phone: reservation.clientPhone ?? undefined,
+      },
+      ...overrides,
+    };
+  }
+
   it("refuse sans vehicleId", async () => {
     const createResponse = await createReservation(adminA);
     const id = (await createResponse.json()).reservation.id;
@@ -418,6 +440,18 @@ describe("POST /api/reservations/[id]/convert", () => {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify({}),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse sans prénom/nom client (client existant non réutilisé)", async () => {
+    const createResponse = await createReservation(adminA);
+    const reservation = (await createResponse.json()).reservation;
+
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ vehicleId: vehicleAId, startDate: reservation.startDate, endDate: reservation.endDate }),
     });
     expect(response.status).toBe(400);
   });
@@ -434,7 +468,7 @@ describe("POST /api/reservations/[id]/convert", () => {
     const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ vehicleId: vehicleAId }),
+      body: JSON.stringify(convertBody(reservation)),
     });
     expect(response.status).toBe(201);
     const body = await response.json();
@@ -443,6 +477,30 @@ describe("POST /api/reservations/[id]/convert", () => {
     expect(body.location.vehicleId).toBe(vehicleAId);
     expect(body.location.agencyId).toBe(agencyA1Id);
     expect(body.invoice).not.toBeNull();
+  });
+
+  it("convertit avec paiement intégré (mode simple) et alimente la Caisse", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "Payeur",
+      clientLastName: `Client-${runId}`,
+      startDate: "2030-09-05",
+      endDate: "2030-09-06",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBody(reservation, { payment: { method: "CASH", partial: false } })),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.paymentError).toBeNull();
+    expect(body.payments).toHaveLength(1);
+    expect(body.invoice.status).toBe("PAID");
+
+    const cashEntries = await prisma.cashEntry.findMany({ where: { contractId: body.location.id } });
+    expect(cashEntries).toHaveLength(1);
   });
 
   it("refuse de reconvertir une réservation déjà CONVERTED", async () => {
@@ -457,13 +515,13 @@ describe("POST /api/reservations/[id]/convert", () => {
     await apiFetch(`/api/reservations/${reservation.id}/convert`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ vehicleId: vehicleAId }),
+      body: JSON.stringify(convertBody(reservation)),
     });
 
     const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ vehicleId: vehicleAId }),
+      body: JSON.stringify(convertBody(reservation)),
     });
     expect(response.status).toBe(409);
   });
@@ -481,7 +539,7 @@ describe("POST /api/reservations/[id]/convert", () => {
     const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ vehicleId: vehicleAId }),
+      body: JSON.stringify(convertBody(reservation)),
     });
     expect(response.status).toBe(409);
     const body = await response.json();
@@ -490,7 +548,7 @@ describe("POST /api/reservations/[id]/convert", () => {
     const retryResponse = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ vehicleId: vehicleAId, useExistingClientId: body.duplicate.client.id }),
+      body: JSON.stringify(convertBody(reservation, { useExistingClientId: body.duplicate.client.id })),
     });
     expect(retryResponse.status).toBe(201);
     const retryBody = await retryResponse.json();

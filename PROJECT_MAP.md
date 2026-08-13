@@ -86,11 +86,12 @@ xrent-manager/
 │   │   │   │   ├── page.tsx, LocationsTable.tsx, loading.tsx
 │   │   │   │   ├── new/page.tsx
 │   │   │   │   └── [id]/page.tsx, LocationActions.tsx
-│   │   │   ├── reservations/       # (Sprint 12C) CRUD, machine à états, import Excel, conversion en contrat — permissions.view/create/edit/delete/import/convert ; (Sprint 13B) affichage complet (16 colonnes) + filtres date/recherche étendue, import Excel en-têtes français
+│   │   │   ├── reservations/       # (Sprint 12C) CRUD, machine à états, import Excel, conversion en contrat — permissions.view/create/edit/delete/import/convert ; (Sprint 13B) affichage complet (16 colonnes) + filtres date/recherche étendue, import Excel en-têtes français ; (Sprint 13D) refonte du flux réservation → contrat : boutons d'action explicites (Confirmer/Convertir en contrat/Annuler/Voir le contrat/Télécharger PDF), formulaire de conversion dédié
 │   │   │   │   ├── page.tsx, ReservationsTable.tsx
 │   │   │   │   ├── new/page.tsx
 │   │   │   │   ├── import/page.tsx, columns.ts
-│   │   │   │   └── [id]/page.tsx, ReservationActions.tsx, ConvertReservationCard.tsx
+│   │   │   │   └── [id]/page.tsx, ReservationActions.tsx  # (Sprint 13D) ConvertReservationCard.tsx supprimé — remplacé par convert/page.tsx, ConvertReservationForm.tsx
+│   │   │   │       └── convert/page.tsx, ConvertReservationForm.tsx  # (Sprint 13D) formulaire de conversion pré-rempli — véhicule/agence réels, identité client, paiement
 │   │   │   ├── clients/            # (Sprint 8) CRUD complet, tenant-scopé sans notion d'agence ; (Sprint 12C) détection de doublons
 │   │   │   │   ├── page.tsx, ClientsTable.tsx, loading.tsx, DuplicateCheck.tsx
 │   │   │   │   ├── new/page.tsx
@@ -184,7 +185,7 @@ xrent-manager/
 │   │           ├── route.ts                # GET (liste, filtres)/POST — permissions.view/create
 │   │           ├── [id]/
 │   │           │   ├── route.ts            # GET/PATCH/DELETE — permissions.view/edit/delete
-│   │           │   └── convert/route.ts    # POST — crée Location+Invoice, permissions.convert
+│   │           │   └── convert/route.ts    # POST — crée Client(résolu/créé)+Location+Invoice+Payment(s), permissions.convert ; (Sprint 13D) nouveau contrat de corps de requête (véhicule+dates+identité client complète+paiement), voir DOMAINRULES.md section 26
 │   │           └── import/route.ts         # POST — .xlsx (exceljs), mode preview/commit, permissions.import ; (Sprint 13B) en-têtes français, mapping vers champ interne avant parsing
 │   ├── proxy.ts              # Redirige vers /login sur /dashboard*, /settings* si non authentifié (middleware.ts est déprécié dans cette version de Next.js)
 │   ├── components/
@@ -217,6 +218,7 @@ xrent-manager/
 │   │   ├── reservations.ts  # (Sprint 12C) CRUD + machine à états + parsing d'import Excel (parseReservationImportRow) + combineDateAndTime ; (Sprint 13B) en-têtes d'import en français (RESERVATION_IMPORT_COLUMN_MAP), erreurs de colonne obligatoire précises par champ ; (Sprint 13C) generateDirectVoucherNumber — Dir-0001, Dir-0002... pour une réservation source DIRECT sans voucherNumber fourni
 │   │   ├── permissions.ts   # (Sprint 12C) catalogue PERMISSIONS (code, pas de table) + groupes par défaut + can()/getEffectivePermissions() + CRUD PermissionGroup + assignation par user
 │   │   ├── cash-register.ts # (Sprint 13A) CashRegister (singleton par tenant)/CashEntry (append-only)/ExpenseCategory — recomputeCashRegisterBalance recalcule toujours previousBalance/currentMonth/currentBalance depuis les CashEntry réels (jamais un compteur incrémenté), même principe que recomputeInvoiceStatus
+│   │   ├── location-payment.ts # (Sprint 13D, nouveau) validatePaymentInput/processLocationPayment — logique de paiement intégré extraite de POST /api/locations (Sprint 13A) pour être réutilisée telle quelle par POST /api/reservations/[id]/convert, sans duplication
 │   │   └── utils.ts         # cn() — généré par shadcn init
 │   └── __tests__/
 │       ├── db.test.ts        # Tests d'isolation multi-tenant (Vitest) sur src/lib/db.ts
@@ -298,7 +300,7 @@ xrent-manager/
 | `src/app/api/invitations/route.ts`, `[id]/route.ts`, `[id]/accept/route.ts`, `[id]/decline/route.ts` | (Sprint 9) `GET`/`POST /api/invitations` réservés ADMIN ; `GET /[id]` public (champs non sensibles) ; `DELETE /[id]` révocation, ADMIN ; `accept`/`decline` publics (l'invité n'a pas encore de session dans ce tenant), `email`/`role` toujours dérivés de l'invitation. |
 | `src/app/api/audit/route.ts` | (Sprint 9) `GET`, réservé ADMIN, tenant-scopé, filtrable par `resource`/`userId`. |
 | `src/app/api/vehicles/route.ts`, `[id]/route.ts`, `[id]/availability/route.ts` | (Sprint 5) CRUD `Vehicle` + disponibilité, scopé tenant + agence (`canAccessAgency`), immatriculation unique par tenant, suppression bloquée si des locations existent. |
-| `src/app/api/locations/route.ts`, `[id]/route.ts` | (Sprint 5) CRUD `Location`, `agencyId` toujours dérivé du véhicule côté serveur (jamais du client), vérification de disponibilité et calcul de `totalPrice` à la création, machine à états sur `PATCH`, suppression restreinte aux statuts `PENDING`/`CANCELLED`. (Sprint 12B) `POST` génère automatiquement une `Invoice` `DRAFT` après la location (résilient : un échec de génération n'empêche pas la création de la location) ; `deleteLocation` (`src/lib/locations.ts`) nettoie désormais aussi la facture associée si elle est encore `DRAFT` sans paiement, sinon bloque la suppression (409). |
+| `src/app/api/locations/route.ts`, `[id]/route.ts` | (Sprint 5) CRUD `Location`, `agencyId` toujours dérivé du véhicule côté serveur (jamais du client), vérification de disponibilité et calcul de `totalPrice` à la création, machine à états sur `PATCH`, suppression restreinte aux statuts `PENDING`/`CANCELLED`. (Sprint 12B) `POST` génère automatiquement une `Invoice` `DRAFT` après la location (résilient : un échec de génération n'empêche pas la création de la location) ; `deleteLocation` (`src/lib/locations.ts`) nettoie désormais aussi la facture associée si elle est encore `DRAFT` sans paiement, sinon bloque la suppression (409). (Sprint 13D) La section paiement de `POST` délègue désormais à `processLocationPayment` (`src/lib/location-payment.ts`), extraite pour être partagée avec `POST /api/reservations/[id]/convert` — comportement inchangé. |
 | `src/app/api/clients/route.ts`, `[id]/route.ts` | `GET`/`POST` (Sprint 5) + `GET`/`PATCH`/`DELETE /[id]` (Sprint 8) — CRUD `Client`, tenant-scopé sans `agencyId`, suppression bloquée si des locations existent (voir DOMAINRULES.md section 9). |
 | `src/app/api/invoices/route.ts`, `[id]/route.ts`, `[id]/pdf/route.tsx` | (Sprint 6) CRUD `Invoice`, `agencyId`/`clientId`/`currency`/`subtotal` toujours dérivés de la `Location` côté serveur, numérotation par tenant, machine à états sur `PATCH` (transitions manuelles uniquement, `PARTIALLY_PAID`/`PAID` réservés à `recomputeInvoiceStatus`), suppression restreinte à `DRAFT` sans paiement, PDF via `@react-pdf/renderer`. |
 | `src/app/api/payments/route.ts`, `[id]/route.ts` | (Sprint 6) CRUD `Payment`, `currency` toujours dérivée de l'`Invoice`, montant validé contre le solde restant dû, chaque mutation recalcule `Invoice.amountPaid`/`status` depuis la somme réelle des paiements. |

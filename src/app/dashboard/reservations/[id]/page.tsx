@@ -1,12 +1,13 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
+import { FileText } from "lucide-react";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getReservationById } from "@/lib/reservations";
+import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
-import { Badge, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
 import { ReservationActions } from "./ReservationActions";
-import { ConvertReservationCard } from "./ConvertReservationCard";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -42,10 +43,18 @@ export default async function ReservationDetailPage({ params }: PageProps) {
     notFound();
   }
 
-  const canEdit = await can(user, "reservations.edit");
-  const canConvert =
-    (await can(user, "reservations.convert")) &&
-    (reservation.status === "PENDING" || reservation.status === "CONFIRMED");
+  const canEdit = (await can(user, "reservations.edit")) && reservation.status !== "CONVERTED";
+  const canConvert = (await can(user, "reservations.convert")) && reservation.status === "CONFIRMED";
+
+  // Invoice la plus récente du contrat issu de cette réservation, pour le téléchargement
+  // immédiat du PDF (Sprint 13D, section 5) — même requête que /dashboard/locations/[id].
+  const invoice =
+    reservation.status === "CONVERTED" && reservation.convertedLocationId
+      ? await prisma.invoice.findFirst({
+          where: { locationId: reservation.convertedLocationId },
+          orderBy: { createdAt: "desc" },
+        })
+      : null;
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-4">
@@ -59,17 +68,32 @@ export default async function ReservationDetailPage({ params }: PageProps) {
         <Badge variant="outline">{STATUS_LABELS[reservation.status] ?? reservation.status}</Badge>
       </div>
 
-      {reservation.status === "CONVERTED" && reservation.convertedLocationId && (
-        <Card>
-          <CardContent className="py-4 text-sm">
-            Cette réservation a été convertie en contrat.{" "}
-            <Link href={`/dashboard/locations/${reservation.convertedLocationId}`} className="underline">
-              Voir la location
-            </Link>
-            .
-          </CardContent>
-        </Card>
-      )}
+      <div className="flex flex-wrap gap-2">
+        {canConvert && (
+          <Button render={<Link href={`/dashboard/reservations/${reservation.id}/convert`} />}>
+            Convertir en contrat
+          </Button>
+        )}
+        {reservation.status === "CONVERTED" && reservation.convertedLocationId && (
+          <>
+            <Button
+              variant="outline"
+              render={<Link href={`/dashboard/locations/${reservation.convertedLocationId}`} />}
+            >
+              Voir le contrat
+            </Button>
+            {invoice && (
+              <Button
+                variant="outline"
+                render={<a href={`/api/invoices/${invoice.id}/pdf`} target="_blank" rel="noreferrer" />}
+              >
+                <FileText className="size-4" />
+                Télécharger le contrat PDF
+              </Button>
+            )}
+          </>
+        )}
+      </div>
 
       <Card>
         <CardHeader>
@@ -130,17 +154,11 @@ export default async function ReservationDetailPage({ params }: PageProps) {
         </CardContent>
       </Card>
 
-      <ConvertReservationCard
-        reservationId={reservation.id}
-        voucherNumber={reservation.voucherNumber}
-        canConvert={canConvert}
-      />
-
       <ReservationActions
         id={reservation.id}
         status={reservation.status}
         notes={reservation.notes}
-        canEdit={canEdit && reservation.status !== "CONVERTED"}
+        canEdit={canEdit}
       />
     </div>
   );
