@@ -183,6 +183,18 @@ describe("POST /api/vehicles", () => {
     expect(response.status).toBe(400);
   });
 
+  it("crée un véhicule sans pricePerDay (Sprint 14A : champ optionnel/informatif)", async () => {
+    const response = await createVehicle(adminA, agencyA1Id, { pricePerDay: undefined });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.vehicle.pricePerDay).toBeNull();
+  });
+
+  it("refuse un pricePerDay non positif s'il est fourni", async () => {
+    const response = await createVehicle(adminA, agencyA1Id, { pricePerDay: 0 });
+    expect(response.status).toBe(400);
+  });
+
   it("refuse un nombre de portes négatif", async () => {
     const response = await createVehicle(adminA, agencyA1Id, { doors: -1 });
     expect(response.status).toBe(400);

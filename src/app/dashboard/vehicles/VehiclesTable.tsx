@@ -32,7 +32,8 @@ export interface VehicleRow {
   year: number;
   category: string;
   status: string;
-  pricePerDay: number;
+  /** Optionnel (Sprint 14A) — informatif, jamais la source de vérité de la facturation. */
+  pricePerDay: number | null;
   currency: string;
   agencyName: string;
 }
@@ -93,7 +94,10 @@ export function VehiclesTable({ vehicles }: { vehicles: VehicleRow[] }) {
       {
         id: "pricePerDay",
         header: "Prix / jour",
-        cell: ({ row }) => formatMoney(row.original.pricePerDay, row.original.currency),
+        cell: ({ row }) =>
+          row.original.pricePerDay !== null
+            ? formatMoney(row.original.pricePerDay, row.original.currency)
+            : "—",
       },
       {
         id: "actions",

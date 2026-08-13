@@ -8,6 +8,18 @@ export type SessionUser = Session["user"];
  * Point d'entrée unique pour récupérer l'utilisateur authentifié dans les route handlers.
  * Ne fait aucune vérification de rôle/tenant/agence — chaque route reste responsable
  * d'appliquer ses propres règles d'autorisation (SECURITY.md section 4).
+ *
+ * `role` est relu frais en base à chaque appel (Sprint 14A) : le JWT NextAuth (session
+ * strategy "jwt", voir src/lib/auth.ts) fige `role` au login et ne le rafraîchit jamais
+ * tout seul — sans cette relecture, un ADMIN rétrogradé par un autre ADMIN garderait un
+ * accès ADMIN complet (y compris le contournement de can(), src/lib/permissions.ts) sur son
+ * appareil déjà connecté jusqu'à expiration du JWT (30 jours). getEffectivePermissions()/
+ * can() relisaient déjà la base à chaque appel ; seul `role` restait périmé. Ce correctif
+ * est isolé ici plutôt que dans le callback jwt() de NextAuth pour ne pas ajouter de requête
+ * base de données à src/proxy.ts (qui appelle auth() directement, sans passer par
+ * getSessionUser(), et documente explicitement rester une vérification optimiste sans DB).
+ * Si l'utilisateur n'existe plus (supprimé), la session est traitée comme inexistante —
+ * déconnexion immédiate plutôt que d'attendre l'expiration naturelle du JWT.
  */
 export async function getSessionUser(): Promise<SessionUser | null> {
   const session = await auth();
@@ -16,7 +28,16 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     return null;
   }
 
-  return session.user;
+  const current = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { role: true },
+  });
+
+  if (!current) {
+    return null;
+  }
+
+  return { ...session.user, role: current.role };
 }
 
 /**

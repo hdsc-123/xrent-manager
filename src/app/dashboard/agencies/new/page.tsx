@@ -67,7 +67,7 @@ export default function NewAgencyPage() {
         <CardContent>
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="name">Nom</Label>
+              <Label htmlFor="name" required>Nom</Label>
               <Input
                 id="name"
                 required
@@ -88,12 +88,12 @@ export default function NewAgencyPage() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="city">Ville</Label>
+              <Label htmlFor="city" required>Ville</Label>
               <Input id="city" required value={city} onChange={(e) => setCity(e.target.value)} />
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="address">Adresse</Label>
+              <Label htmlFor="address" required>Adresse</Label>
               <Input
                 id="address"
                 required
@@ -103,12 +103,12 @@ export default function NewAgencyPage() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="phone">Téléphone</Label>
+              <Label htmlFor="phone" required>Téléphone</Label>
               <PhoneInput id="phone" required value={phone} onChange={setPhone} />
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="email" required>Email</Label>
               <Input
                 id="email"
                 type="email"
@@ -119,7 +119,7 @@ export default function NewAgencyPage() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="managerName">Nom du responsable</Label>
+              <Label htmlFor="managerName" required>Nom du responsable</Label>
               <Input
                 id="managerName"
                 required
@@ -129,7 +129,7 @@ export default function NewAgencyPage() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="managerPhone">Téléphone du responsable</Label>
+              <Label htmlFor="managerPhone" required>Téléphone du responsable</Label>
               <PhoneInput
                 id="managerPhone"
                 required

@@ -39,7 +39,7 @@ interface EditVehicleFormProps {
   initialName: string;
   initialCategory: string;
   initialStatus: string;
-  initialPricePerDay: number;
+  initialPricePerDay: number | null;
   licensePlate: string;
   initialWw: string | null;
   initialChassisNumber: string | null;
@@ -81,7 +81,9 @@ export function EditVehicleForm({
   const [name, setName] = useState(initialName);
   const [category, setCategory] = useState(initialCategory);
   const [status, setStatus] = useState(initialStatus);
-  const [pricePerDay, setPricePerDay] = useState((initialPricePerDay / 100).toFixed(2));
+  const [pricePerDay, setPricePerDay] = useState(
+    initialPricePerDay !== null ? (initialPricePerDay / 100).toFixed(2) : ""
+  );
   const [ww, setWw] = useState(initialWw ?? "");
   const [chassisNumber, setChassisNumber] = useState(initialChassisNumber ?? "");
   const [color, setColor] = useState(initialColor ?? "");
@@ -106,10 +108,14 @@ export function EditVehicleForm({
     event.preventDefault();
     setError(null);
 
-    const priceMad = Number(pricePerDay.replace(",", "."));
-    if (!Number.isFinite(priceMad) || priceMad <= 0) {
-      setError("Le prix par jour doit être un nombre positif.");
-      return;
+    let pricePerDayCentimes: number | null = null;
+    if (pricePerDay.trim()) {
+      const priceMad = Number(pricePerDay.replace(",", "."));
+      if (!Number.isFinite(priceMad) || priceMad <= 0) {
+        setError("Le prix par jour doit être un nombre positif.");
+        return;
+      }
+      pricePerDayCentimes = Math.round(priceMad * 100);
     }
 
     setIsSubmitting(true);
@@ -118,7 +124,7 @@ export function EditVehicleForm({
         name,
         category,
         status,
-        pricePerDay: Math.round(priceMad * 100),
+        pricePerDay: pricePerDayCentimes,
         ww: ww || null,
         chassisNumber: chassisNumber || null,
         color: color || null,
@@ -154,12 +160,12 @@ export function EditVehicleForm({
       <CardContent>
         <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="name">Nom</Label>
+            <Label htmlFor="name" required>Nom</Label>
             <Input id="name" required value={name} onChange={(e) => setName(e.target.value)} />
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="category">Catégorie</Label>
+            <Label htmlFor="category" required>Catégorie</Label>
             <Input
               id="category"
               required
@@ -295,10 +301,12 @@ export function EditVehicleForm({
               <Input
                 id="pricePerDay"
                 inputMode="decimal"
-                required
                 value={pricePerDay}
                 onChange={(e) => setPricePerDay(e.target.value)}
               />
+              <p className="text-xs text-muted-foreground">
+                Indicatif — le prix réel se définit à la réservation ou au contrat.
+              </p>
             </div>
           </div>
 

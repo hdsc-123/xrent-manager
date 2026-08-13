@@ -30,31 +30,37 @@ interface NavItem {
   href: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
-  /** Clé de permission requise pour afficher l'entrée (voir src/lib/permissions.ts).
-   * Absente = toujours affichée (pages sans concept de permission granulaire ce sprint —
-   * tenants/maintenances/alertes/invitations/paramètres restent gérées par leur propre
-   * vérification de rôle côté page, inchangée, voir HANDOFF.md). */
+  /** Clé de permission requise pour afficher l'entrée (voir src/lib/permissions.ts). Réservé
+   * au(x) module(s) réellement gated par can() côté serveur (Sprint 14A, DOMAINRULES.md
+   * section 22) — aujourd'hui seul Réservations. Pour tout autre module, le système de
+   * permissions granulaires ne gate rien : la route/page cible ne vérifie que le rôle
+   * (voir `adminOnly`) ou est ouverte à tout user du tenant. Utiliser `permission` sur un
+   * module non réellement gated masquerait à tort l'onglet pour des groupes qui y ont en
+   * réalité accès (bug corrigé ce sprint). */
   permission?: string;
+  /** true = n'afficher qu'aux ADMIN, reflète une vérification `role !== "ADMIN"` réelle côté
+   * page/route cible (vérifié Sprint 14A) — pas une permission granulaire. */
+  adminOnly?: boolean;
 }
 
 const navItems: NavItem[] = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
   { href: "/dashboard/tenants", label: "Tenants", icon: Building2 },
-  { href: "/dashboard/agencies", label: "Agences", icon: Store, permission: "agencies.view" },
-  { href: "/dashboard/vehicles", label: "Véhicules", icon: Car, permission: "vehicles.view" },
-  { href: "/dashboard/locations", label: "Locations", icon: CalendarRange, permission: "locations.view" },
+  { href: "/dashboard/agencies", label: "Agences", icon: Store },
+  { href: "/dashboard/vehicles", label: "Véhicules", icon: Car },
+  { href: "/dashboard/locations", label: "Locations", icon: CalendarRange },
   { href: "/dashboard/reservations", label: "Réservations", icon: CalendarClock, permission: "reservations.view" },
-  { href: "/dashboard/clients", label: "Clients", icon: UserRound, permission: "clients.view" },
+  { href: "/dashboard/clients", label: "Clients", icon: UserRound },
   { href: "/dashboard/maintenances", label: "Maintenances", icon: Wrench },
   { href: "/dashboard/alerts", label: "Alertes", icon: Bell },
-  { href: "/dashboard/invoices", label: "Factures", icon: FileText, permission: "invoices.view" },
-  { href: "/dashboard/payments", label: "Paiements", icon: CreditCard, permission: "payments.view" },
+  { href: "/dashboard/invoices", label: "Factures", icon: FileText },
+  { href: "/dashboard/payments", label: "Paiements", icon: CreditCard },
   { href: "/dashboard/cash-register", label: "Caisse", icon: Wallet },
-  { href: "/dashboard/reports", label: "Rapports", icon: BarChart3, permission: "reports.view" },
-  { href: "/dashboard/users", label: "Utilisateurs", icon: Users, permission: "users.view" },
-  { href: "/dashboard/invitations", label: "Invitations", icon: Mail },
-  { href: "/dashboard/permission-groups", label: "Permissions", icon: KeyRound },
-  { href: "/dashboard/audit", label: "Audit", icon: ClipboardList, permission: "audit.view" },
+  { href: "/dashboard/reports", label: "Rapports", icon: BarChart3, adminOnly: true },
+  { href: "/dashboard/users", label: "Utilisateurs", icon: Users, adminOnly: true },
+  { href: "/dashboard/invitations", label: "Invitations", icon: Mail, adminOnly: true },
+  { href: "/dashboard/permission-groups", label: "Permissions", icon: KeyRound, adminOnly: true },
+  { href: "/dashboard/audit", label: "Audit", icon: ClipboardList, adminOnly: true },
   { href: "/dashboard/settings", label: "Paramètres", icon: Settings },
 ];
 
@@ -70,13 +76,18 @@ interface SidebarProps {
   onClose: () => void;
   /** Permissions effectives de l'user connecté ; null = ADMIN, aucune restriction. */
   permissions: string[] | null;
+  /** Rôle de l'user connecté, pour les entrées `adminOnly` (voir NavItem). */
+  role?: string | null;
 }
 
-export function Sidebar({ isOpen, onClose, permissions }: SidebarProps) {
+export function Sidebar({ isOpen, onClose, permissions, role }: SidebarProps) {
   const pathname = usePathname();
-  const visibleItems = navItems.filter(
-    (item) => !item.permission || permissions === null || permissions.includes(item.permission)
-  );
+  const visibleItems = navItems.filter((item) => {
+    if (item.adminOnly) {
+      return role === "ADMIN";
+    }
+    return !item.permission || permissions === null || permissions.includes(item.permission);
+  });
 
   const nav = (
     <nav aria-label="Navigation principale" className="flex flex-1 flex-col gap-1 p-3">

@@ -81,7 +81,7 @@ export function NewEntryForm() {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="entry-amount">Montant (MAD)</Label>
+            <Label htmlFor="entry-amount" required>Montant (MAD)</Label>
             <Input
               id="entry-amount"
               inputMode="decimal"

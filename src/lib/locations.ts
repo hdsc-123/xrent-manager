@@ -58,6 +58,16 @@ export class LocationHasInvoiceError extends Error {
   }
 }
 
+export class MissingPriceError extends Error {
+  constructor() {
+    super(
+      "Aucun prix/jour n'est disponible : le véhicule n'a pas de prix informatif et aucun " +
+        "pricePerDay n'a été fourni pour cette location (voir DOMAINRULES.md section 5/7)."
+    );
+    this.name = "MissingPriceError";
+  }
+}
+
 /**
  * Machine à états explicite (ARCHITECTURE.md section 12) : aucune transition non listée
  * n'est autorisée. COMPLETED et CANCELLED sont des états terminaux.
@@ -120,12 +130,18 @@ export interface CreateLocationInput {
   startOdometer?: number;
   endOdometer?: number;
   deposit?: number;
+  /** Prix/jour réel de cette location (centimes), saisi à la réservation/au contrat — source
+   * de vérité de la facturation (Sprint 14A, DOMAINRULES.md section 5/7). Si absent, retombe
+   * sur `vehicle.pricePerDay` (valeur informative) ; si ni l'un ni l'autre n'est disponible,
+   * `MissingPriceError` est levée plutôt que de créer une location à prix 0/indéfini. */
+  pricePerDay?: number;
 }
 
 /**
- * Vérifie la disponibilité du véhicule et calcule totalPrice à partir du pricePerDay
- * du véhicule au moment de la création (snapshot immuable : un changement ultérieur
- * du tarif du véhicule ne doit pas modifier rétroactivement une location existante).
+ * Vérifie la disponibilité du véhicule et calcule totalPrice à partir du pricePerDay effectif
+ * (fourni explicitement, sinon celui — informatif — du véhicule) au moment de la création
+ * (snapshot immuable : un changement ultérieur du tarif du véhicule ne doit pas modifier
+ * rétroactivement une location existante).
  */
 export async function createLocation(data: CreateLocationInput): Promise<Location> {
   if (data.endDate <= data.startDate) {
@@ -147,7 +163,12 @@ export async function createLocation(data: CreateLocationInput): Promise<Locatio
     throw new VehicleNotAvailableError(availability?.conflictingLocations ?? []);
   }
 
-  const totalPrice = calculateTotalPrice(vehicle.pricePerDay, data.startDate, data.endDate);
+  const pricePerDay = data.pricePerDay ?? vehicle.pricePerDay ?? undefined;
+  if (pricePerDay === undefined) {
+    throw new MissingPriceError();
+  }
+
+  const totalPrice = calculateTotalPrice(pricePerDay, data.startDate, data.endDate);
 
   return prisma.location.create({
     data: {
@@ -158,7 +179,7 @@ export async function createLocation(data: CreateLocationInput): Promise<Locatio
       startDate: data.startDate,
       endDate: data.endDate,
       status: data.status ?? "PENDING",
-      pricePerDay: vehicle.pricePerDay,
+      pricePerDay,
       currency: vehicle.currency,
       totalPrice,
       notes: data.notes,

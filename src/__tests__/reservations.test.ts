@@ -228,6 +228,31 @@ describe("POST /api/reservations", () => {
     const body = await response.json();
     expect(body.reservation.voucherNumber).toBe(`Manual-${runId}`);
   });
+
+  it("accepte une ville de départ/retour correspondant à une agence réelle (Sprint 14A)", async () => {
+    const response = await createReservation(adminA, {
+      pickupAgency: "Agence A1",
+      dropoffAgency: "agence a1",
+    });
+    expect(response.status).toBe(201);
+  });
+
+  it("refuse une ville de départ ne correspondant à aucune agence du tenant (Sprint 14A)", async () => {
+    const response = await createReservation(adminA, { pickupAgency: "Ville Inexistante" });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("Ville de départ inconnue");
+  });
+
+  it("refuse une ville de retour ne correspondant à aucune agence du tenant (Sprint 14A)", async () => {
+    const response = await createReservation(adminA, {
+      pickupAgency: "Agence A1",
+      dropoffAgency: "Ville Inexistante",
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("Ville de retour inconnue");
+  });
 });
 
 describe("GET /api/reservations", () => {
@@ -250,6 +275,32 @@ describe("GET /api/reservations", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.reservations.every((r: { status: string }) => r.status === "PENDING")).toBe(true);
+  });
+
+  it("filtre par ville de départ/retour et catégorie de véhicule (Sprint 14A)", async () => {
+    const voucherNumber = `V-FILTER-${runId}`;
+    const created = await createReservation(adminA, {
+      voucherNumber,
+      pickupAgency: "Agence A1",
+      dropoffAgency: "Agence A1",
+      vehicleCategory: "SUV-Filtre",
+    });
+    expect(created.status).toBe(201);
+
+    const matching = await apiFetch(
+      `/api/reservations?pickupAgency=${encodeURIComponent("agence a1")}&vehicleCategory=${encodeURIComponent("suv-filtre")}`,
+      { headers: { Cookie: adminA.sessionCookie } }
+    );
+    const matchingIds: string[] = (await matching.json()).reservations.map((r: { voucherNumber: string }) => r.voucherNumber);
+    expect(matchingIds).toContain(voucherNumber);
+
+    const nonMatching = await apiFetch(`/api/reservations?vehicleCategory=${encodeURIComponent("Citadine-Introuvable")}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const nonMatchingIds: string[] = (await nonMatching.json()).reservations.map(
+      (r: { voucherNumber: string }) => r.voucherNumber
+    );
+    expect(nonMatchingIds).not.toContain(voucherNumber);
   });
 });
 
@@ -409,6 +460,159 @@ describe("POST /api/reservations/import", () => {
     });
     expect(response.status).toBe(400);
   });
+
+  describe("robustesse dates/heures/villes (Sprint 14A)", () => {
+    it("convertit un numéro de série Excel en date (cellule ayant perdu son format date)", async () => {
+      const voucherNumber = `V-SERIAL-${runId}`;
+      const startSerial = new Date("2030-07-20").getTime() / 86_400_000 + 25569;
+      const endSerial = new Date("2030-07-22").getTime() / 86_400_000 + 25569;
+      const rows = [
+        importRow({
+          voucherNumber,
+          clientFirstName: "Serial",
+          clientLastName: "Excel",
+          startDate: startSerial,
+          endDate: endSerial,
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.errors).toHaveLength(0);
+      expect(body.imported).toBe(1);
+
+      const persisted = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber } });
+      expect(persisted?.startDate.toISOString().slice(0, 10)).toBe("2030-07-20");
+      expect(persisted?.endDate.toISOString().slice(0, 10)).toBe("2030-07-22");
+    });
+
+    it("accepte une date au format DD/MM/YYYY en texte brut", async () => {
+      const voucherNumber = `V-FR-DATE-${runId}`;
+      const rows = [
+        importRow({
+          voucherNumber,
+          clientFirstName: "Format",
+          clientLastName: "Francais",
+          startDate: "25/07/2030",
+          endDate: "27/07/2030",
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.errors).toHaveLength(0);
+      expect(body.imported).toBe(1);
+
+      const persisted = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber } });
+      expect(persisted?.startDate.toISOString().slice(0, 10)).toBe("2030-07-25");
+      expect(persisted?.endDate.toISOString().slice(0, 10)).toBe("2030-07-27");
+    });
+
+    it("rapporte un message précis pour une date présente mais invalide (pas 'manquante')", async () => {
+      const rows = [
+        importRow({
+          voucherNumber: `V-BADDATE-${runId}`,
+          clientFirstName: "Mauvaise",
+          clientLastName: "Date",
+          startDate: "pas une date",
+          endDate: "2030-07-30",
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].error).toContain("Colonne invalide: Date de départ");
+      expect(body.errors[0].error).not.toContain("manquante");
+    });
+
+    it("nettoie une heure stockée comme cellule Date (correctif du bug de date parasite)", async () => {
+      const voucherNumber = `V-TIME-${runId}`;
+      const rows = [
+        importRow({
+          voucherNumber,
+          clientFirstName: "Heure",
+          clientLastName: "Propre",
+          startDate: new Date("2030-08-05"),
+          startTime: new Date(Date.UTC(1899, 11, 30, 14, 30)),
+          endDate: new Date("2030-08-06"),
+          endTime: new Date(Date.UTC(1899, 11, 30, 10, 0)),
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.errors).toHaveLength(0);
+
+      const persisted = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber } });
+      expect(persisted?.startTime).toBe("14:30");
+      expect(persisted?.endTime).toBe("10:00");
+    });
+
+    it("accepte une ville de départ/retour correspondant au nom d'une agence (insensible à la casse)", async () => {
+      const voucherNumber = `V-CITYOK-${runId}`;
+      const rows = [
+        importRow({
+          voucherNumber,
+          clientFirstName: "Ville",
+          clientLastName: "Connue",
+          startDate: new Date("2030-08-10"),
+          endDate: new Date("2030-08-12"),
+          pickupAgency: "agence a1",
+          dropoffAgency: "AGENCE A1",
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.errors).toHaveLength(0);
+      expect(body.imported).toBe(1);
+    });
+
+    it("refuse une ville de départ inconnue en précisant qu'il s'agit du départ", async () => {
+      const rows = [
+        importRow({
+          voucherNumber: `V-CITYBAD-${runId}`,
+          clientFirstName: "Ville",
+          clientLastName: "Inconnue",
+          startDate: new Date("2030-08-15"),
+          endDate: new Date("2030-08-16"),
+          pickupAgency: "Ville Qui N'Existe Pas",
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].error).toContain("Ville de départ inconnue");
+    });
+
+    it("refuse une ville de retour inconnue en précisant qu'il s'agit du retour", async () => {
+      const rows = [
+        importRow({
+          voucherNumber: `V-CITYBAD2-${runId}`,
+          clientFirstName: "Ville",
+          clientLastName: "Retour",
+          startDate: new Date("2030-08-17"),
+          endDate: new Date("2030-08-18"),
+          pickupAgency: "Agence A1",
+          dropoffAgency: "Ville Qui N'Existe Pas Non Plus",
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].error).toContain("Ville de retour inconnue");
+    });
+  });
 });
 
 describe("POST /api/reservations/[id]/convert", () => {
@@ -477,6 +681,26 @@ describe("POST /api/reservations/[id]/convert", () => {
     expect(body.location.vehicleId).toBe(vehicleAId);
     expect(body.location.agencyId).toBe(agencyA1Id);
     expect(body.invoice).not.toBeNull();
+  });
+
+  it("un pricePerDay explicite à la conversion prime sur le prix informatif du véhicule (Sprint 14A)", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "PrixExplicite",
+      clientLastName: `Client-${runId}`,
+      startDate: "2030-09-10",
+      endDate: "2030-09-12",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBody(reservation, { pricePerDay: 9000 })),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.location.pricePerDay).toBe(9000);
+    expect(body.location.totalPrice).toBe(18000); // 2 jours × 9000
   });
 
   it("convertit avec paiement intégré (mode simple) et alimente la Caisse", async () => {

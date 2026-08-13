@@ -66,7 +66,7 @@ export default function RegisterPage() {
       <CardContent>
         <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="tenantName">Nom de l&apos;organisation</Label>
+            <Label htmlFor="tenantName" required>Nom de l&apos;organisation</Label>
             <Input
               id="tenantName"
               name="tenantName"
@@ -88,7 +88,7 @@ export default function RegisterPage() {
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="name">Votre nom</Label>
+            <Label htmlFor="name" required>Votre nom</Label>
             <Input
               id="name"
               name="name"
@@ -99,7 +99,7 @@ export default function RegisterPage() {
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="email">Email</Label>
+            <Label htmlFor="email" required>Email</Label>
             <Input
               id="email"
               name="email"
@@ -111,7 +111,7 @@ export default function RegisterPage() {
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="password">Mot de passe</Label>
+            <Label htmlFor="password" required>Mot de passe</Label>
             <Input
               id="password"
               name="password"

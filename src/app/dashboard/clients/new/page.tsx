@@ -106,7 +106,7 @@ export default function NewClientPage() {
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="firstName">Prénom</Label>
+                <Label htmlFor="firstName" required>Prénom</Label>
                 <Input
                   id="firstName"
                   required
@@ -115,7 +115,7 @@ export default function NewClientPage() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="lastName">Nom</Label>
+                <Label htmlFor="lastName" required>Nom</Label>
                 <Input
                   id="lastName"
                   required
@@ -131,7 +131,7 @@ export default function NewClientPage() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="phone">Téléphone</Label>
+              <Label htmlFor="phone" required>Téléphone</Label>
               <PhoneInput id="phone" required value={phone} onChange={setPhone} />
             </div>
 
@@ -143,13 +143,13 @@ export default function NewClientPage() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="address">Adresse</Label>
+              <Label htmlFor="address" required>Adresse</Label>
               <Input id="address" required value={address} onChange={(e) => setAddress(e.target.value)} />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="city">Ville</Label>
+                <Label htmlFor="city" required>Ville</Label>
                 <Input id="city" required value={city} onChange={(e) => setCity(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
@@ -185,7 +185,7 @@ export default function NewClientPage() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="licenseNumber">Numéro de permis</Label>
+              <Label htmlFor="licenseNumber" required>Numéro de permis</Label>
               <Input
                 id="licenseNumber"
                 required
@@ -196,7 +196,7 @@ export default function NewClientPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="licenseIssueDate">Date d&apos;obtention</Label>
+                <Label htmlFor="licenseIssueDate" required>Date d&apos;obtention</Label>
                 <Input
                   id="licenseIssueDate"
                   type="date"
@@ -206,7 +206,7 @@ export default function NewClientPage() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="licenseExpiryDate">Date d&apos;expiration</Label>
+                <Label htmlFor="licenseExpiryDate" required>Date d&apos;expiration</Label>
                 <Input
                   id="licenseExpiryDate"
                   type="date"

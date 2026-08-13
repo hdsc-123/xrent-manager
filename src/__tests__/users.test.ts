@@ -157,6 +157,68 @@ describe("PATCH /api/users/[id]", () => {
   });
 });
 
+describe("Rafraîchissement du rôle sans reconnexion (Sprint 14A)", () => {
+  it("applique une promotion/rétrogradation de rôle à la session déjà émise, sans nouvelle connexion", async () => {
+    const owner = await registerTenantAdmin({
+      tenantName: "Role Refresh Tenant",
+      tenantSlug: `role-refresh-${runId}`,
+      name: "Owner",
+      email: `role-refresh-owner-${runId}@test.local`,
+      password,
+    });
+    createdTenantIds.push(owner.tenantId);
+
+    const target = await createAndLoginMember({
+      tenantId: owner.tenantId,
+      name: "Target",
+      email: `role-refresh-target-${runId}@test.local`,
+      password,
+    });
+    // Cookie de session émis alors que target est encore MEMBER (JWT figé à role: "MEMBER").
+    const cookieAsMember = target.sessionCookie;
+
+    const promote = await apiFetch(`/api/users/${target.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: owner.sessionCookie },
+      body: JSON.stringify({ role: "ADMIN" }),
+    });
+    expect(promote.status).toBe(200);
+
+    // Même cookie qu'avant la promotion (aucune reconnexion) : une route réservée ADMIN
+    // (GET /api/users) doit désormais accepter la requête — la preuve que getSessionUser()
+    // relit le rôle en base plutôt que de faire confiance au JWT figé au login.
+    const asAdminNow = await apiFetch("/api/users", {
+      headers: { Cookie: cookieAsMember },
+    });
+    expect(asAdminNow.status).toBe(200);
+
+    // target se reconnecte pour obtenir un JWT qui reflète désormais role: "ADMIN".
+    const reloginResponse = await apiFetch("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email: target.email, password, tenantId: owner.tenantId }),
+    });
+    const cookieAsAdmin = extractSessionCookie(reloginResponse);
+    if (!cookieAsAdmin) {
+      throw new Error("Échec de la reconnexion de test.");
+    }
+
+    const demote = await apiFetch(`/api/users/${target.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: owner.sessionCookie },
+      body: JSON.stringify({ role: "MEMBER" }),
+    });
+    expect(demote.status).toBe(200);
+
+    // Même cookie qu'avant la rétrogradation (aucune reconnexion) : la route réservée
+    // ADMIN doit désormais refuser la requête, fermant la fenêtre d'exposition de sécurité
+    // (un ADMIN rétrogradé ne doit pas garder un accès ADMIN jusqu'à expiration du JWT).
+    const asMemberNow = await apiFetch("/api/users", {
+      headers: { Cookie: cookieAsAdmin },
+    });
+    expect(asMemberNow.status).toBe(403);
+  });
+});
+
 describe("PATCH /api/users/[id] — agencyIds (Sprint 13C)", () => {
   it("un MEMBER fraîchement créé n'a aucune agence assignée (bug historique)", async () => {
     const member = await createAndLoginMember({

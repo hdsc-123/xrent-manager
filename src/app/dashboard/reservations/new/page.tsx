@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, ApiError } from "@/lib/api";
 import {
   Button,
   Card,
@@ -21,6 +21,12 @@ const SOURCE_OPTIONS = [
   { value: "BROKER", label: "Broker" },
   { value: "DIRECT", label: "Direct" },
 ];
+
+interface Agency {
+  id: string;
+  name: string;
+  city: string | null;
+}
 
 function toCentimes(value: string): number | undefined {
   if (!value) return undefined;
@@ -58,10 +64,35 @@ export default function NewReservationPage() {
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [agencies, setAgencies] = useState<Agency[]>([]);
+
+  useEffect(() => {
+    apiGet<{ agencies: Agency[] }>("/api/agencies")
+      .then((data) => setAgencies(data.agencies))
+      .catch(() => setAgencies([]));
+  }, []);
+
+  // Villes/agences (Sprint 14A) : la ville de départ/retour doit désormais correspondre à une
+  // agence déjà créée (voir DOMAINRULES.md section 21) — plus de saisie libre, remplacée par
+  // ces listes déroulantes dérivées des agences du tenant (ville si renseignée, sinon nom).
+  const agencyOptions = useMemo(() => {
+    const values = new Set<string>();
+    for (const agency of agencies) {
+      values.add(agency.city?.trim() || agency.name);
+    }
+    return Array.from(values).sort((a, b) => a.localeCompare(b));
+  }, [agencies]);
 
   function handleStartTimeChange(value: string) {
     setStartTime(value);
     setEndTime(value);
+  }
+
+  // Modifier la ville de départ recopie automatiquement la valeur dans la ville de retour
+  // (même pattern que handleStartTimeChange, Sprint 13C) — modifiable ensuite manuellement.
+  function handlePickupAgencyChange(value: string) {
+    setPickupAgency(value);
+    setDropoffAgency(value);
   }
 
   async function handleSubmit(event: React.FormEvent) {
@@ -130,7 +161,7 @@ export default function NewReservationPage() {
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="voucherNumber">N° voucher</Label>
+                <Label htmlFor="voucherNumber" required={source !== "DIRECT"}>N° voucher</Label>
                 {source === "DIRECT" ? (
                   <p className="flex h-8 items-center text-sm text-muted-foreground">
                     Généré automatiquement (ex. Dir-0001)
@@ -174,7 +205,7 @@ export default function NewReservationPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="clientFirstName">Prénom du client</Label>
+                <Label htmlFor="clientFirstName" required>Prénom du client</Label>
                 <Input
                   id="clientFirstName"
                   required
@@ -183,7 +214,7 @@ export default function NewReservationPage() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="clientLastName">Nom du client</Label>
+                <Label htmlFor="clientLastName" required>Nom du client</Label>
                 <Input
                   id="clientLastName"
                   required
@@ -202,7 +233,7 @@ export default function NewReservationPage() {
 
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="startDate">Date de départ</Label>
+                <Label htmlFor="startDate" required>Date de départ</Label>
                 <Input id="startDate" type="date" required value={startDate} onChange={(e) => setStartDate(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
@@ -210,7 +241,7 @@ export default function NewReservationPage() {
                 <Input id="startTime" type="time" value={startTime} onChange={(e) => handleStartTimeChange(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="endDate">Date de retour</Label>
+                <Label htmlFor="endDate" required>Date de retour</Label>
                 <Input id="endDate" type="date" required value={endDate} onChange={(e) => setEndDate(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
@@ -232,12 +263,36 @@ export default function NewReservationPage() {
                 <Input id="vehicleCategory" value={vehicleCategory} onChange={(e) => setVehicleCategory(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="pickupAgency">Agence départ</Label>
-                <Input id="pickupAgency" value={pickupAgency} onChange={(e) => setPickupAgency(e.target.value)} />
+                <Label htmlFor="pickupAgency">Ville de départ</Label>
+                <select
+                  id="pickupAgency"
+                  value={pickupAgency}
+                  onChange={(e) => handlePickupAgencyChange(e.target.value)}
+                  className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                >
+                  <option value="">—</option>
+                  {agencyOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="dropoffAgency">Agence retour</Label>
-                <Input id="dropoffAgency" value={dropoffAgency} onChange={(e) => setDropoffAgency(e.target.value)} />
+                <Label htmlFor="dropoffAgency">Ville de retour</Label>
+                <select
+                  id="dropoffAgency"
+                  value={dropoffAgency}
+                  onChange={(e) => setDropoffAgency(e.target.value)}
+                  className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                >
+                  <option value="">—</option>
+                  {agencyOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 

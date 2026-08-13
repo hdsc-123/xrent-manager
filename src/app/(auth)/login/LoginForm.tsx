@@ -111,7 +111,7 @@ export function LoginForm() {
       <CardContent>
         <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="email">Email</Label>
+            <Label htmlFor="email" required>Email</Label>
             <Input
               id="email"
               name="email"
@@ -124,7 +124,7 @@ export function LoginForm() {
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="password">Mot de passe</Label>
+            <Label htmlFor="password" required>Mot de passe</Label>
             <Input
               id="password"
               name="password"

@@ -172,6 +172,61 @@ describe("POST /api/locations", () => {
     expect(body.location.currency).toBe("MAD");
   });
 
+  it("un pricePerDay explicite prime sur le prix informatif du véhicule (Sprint 14A)", async () => {
+    const response = await createLocation(adminA, {
+      startDate: "2028-01-20",
+      endDate: "2028-01-22",
+      pricePerDay: 8000,
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.location.pricePerDay).toBe(8000);
+    expect(body.location.totalPrice).toBe(16000); // 2 jours × 8000
+  });
+
+  describe("véhicule sans pricePerDay (Sprint 14A, prix optionnel)", () => {
+    let vehicleNoPriceId: string;
+
+    beforeAll(async () => {
+      const response = await apiFetch("/api/vehicles", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({
+          agencyId: agencyA1Id,
+          name: "Sans prix",
+          licensePlate: `LOC-NOPRICE-${runId}`,
+          make: "Dacia",
+          model: "Sandero",
+          year: 2023,
+          category: "Citadine",
+        }),
+      });
+      vehicleNoPriceId = (await response.json()).vehicle.id;
+    });
+
+    it("crée la location si un pricePerDay explicite est fourni", async () => {
+      const response = await createLocation(adminA, {
+        vehicleId: vehicleNoPriceId,
+        startDate: "2028-01-24",
+        endDate: "2028-01-26",
+        pricePerDay: 3000,
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.location.pricePerDay).toBe(3000);
+      expect(body.location.totalPrice).toBe(6000); // 2 jours × 3000
+    });
+
+    it("refuse (400) sans pricePerDay explicite ni prix véhicule", async () => {
+      const response = await createLocation(adminA, {
+        vehicleId: vehicleNoPriceId,
+        startDate: "2028-01-27",
+        endDate: "2028-01-29",
+      });
+      expect(response.status).toBe(400);
+    });
+  });
+
   it("refuse une location en conflit avec une location existante sur le même véhicule", async () => {
     const first = await createLocation(adminA, { startDate: "2028-05-01", endDate: "2028-05-05" });
     expect(first.status).toBe(201);

@@ -186,7 +186,10 @@ model Vehicle {
   gps           Boolean           @default(false)
   imageUrl      String?
   status        VehicleStatus     @default(AVAILABLE)
-  pricePerDay   Int
+  // Optionnel depuis le Sprint 14A : purement informatif, jamais la source de vérité de la
+  // facturation (voir DOMAINRULES.md section 5/7) — le prix réel est saisi à la location/au
+  // contrat (src/lib/locations.ts, createLocation).
+  pricePerDay   Int?
   currency      String            @default("MAD")
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt

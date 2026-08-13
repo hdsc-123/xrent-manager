@@ -99,12 +99,12 @@ export function EditProfileForm({ initialName, initialEmail, initialPhone, initi
       <CardContent>
         <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="name">Nom</Label>
+            <Label htmlFor="name" required>Nom</Label>
             <Input id="name" required value={name} onChange={(event) => setName(event.target.value)} />
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="email">Email</Label>
+            <Label htmlFor="email" required>Email</Label>
             <Input
               id="email"
               type="email"
@@ -147,7 +147,7 @@ export function EditProfileForm({ initialName, initialEmail, initialPhone, initi
 
           {newPassword && (
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="confirmPassword">Confirmer le nouveau mot de passe</Label>
+              <Label htmlFor="confirmPassword" required>Confirmer le nouveau mot de passe</Label>
               <Input
                 id="confirmPassword"
                 type="password"
@@ -160,7 +160,7 @@ export function EditProfileForm({ initialName, initialEmail, initialPhone, initi
 
           {newPassword && (
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="currentPassword">Mot de passe actuel</Label>
+              <Label htmlFor="currentPassword" required>Mot de passe actuel</Label>
               <Input
                 id="currentPassword"
                 type="password"

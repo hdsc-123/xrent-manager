@@ -11,6 +11,7 @@ import {
   VehicleNotFoundError,
   ClientNotFoundError,
   VehicleNotAvailableError,
+  MissingPriceError,
 } from "@/lib/locations";
 import { createInvoice } from "@/lib/invoices";
 import { processLocationPayment, validatePaymentInput, type PaymentInput } from "@/lib/location-payment";
@@ -71,6 +72,9 @@ interface CreateLocationBody {
   startOdometer?: number;
   endOdometer?: number;
   deposit?: number;
+  /** Prix/jour réel (centimes) — voir DOMAINRULES.md section 5/7. Optionnel : retombe sur le
+   * prix informatif du véhicule s'il en a un ; sinon 400 (voir MissingPriceError). */
+  pricePerDay?: number;
   payment?: PaymentInput;
 }
 
@@ -131,6 +135,10 @@ export async function POST(request: Request) {
     }
   }
 
+  if (body.pricePerDay !== undefined && (!Number.isInteger(body.pricePerDay) || body.pricePerDay <= 0)) {
+    return NextResponse.json({ error: "pricePerDay doit être un entier positif (centimes)." }, { status: 400 });
+  }
+
   const paymentError = validatePaymentInput(body.payment);
   if (paymentError) {
     return NextResponse.json({ error: paymentError }, { status: 400 });
@@ -149,6 +157,7 @@ export async function POST(request: Request) {
       startOdometer: body.startOdometer,
       endOdometer: body.endOdometer,
       deposit: body.deposit,
+      pricePerDay: body.pricePerDay,
     });
     await logAction({
       tenantId: user.tenantId,
@@ -211,6 +220,9 @@ export async function POST(request: Request) {
         { error: error.message, conflictingLocations: error.conflictingLocations },
         { status: 409 }
       );
+    }
+    if (error instanceof MissingPriceError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
     }
 
     console.error("Erreur lors de la création de la location :", error);

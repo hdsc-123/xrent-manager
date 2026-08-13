@@ -31,7 +31,12 @@ export function DashboardLayout({
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} permissions={permissions} />
+      <Sidebar
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        permissions={permissions}
+        role={user.role}
+      />
       <div className="flex min-w-0 flex-1 flex-col">
         <Header
           tenantName={tenantName}

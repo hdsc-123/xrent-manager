@@ -4,6 +4,7 @@ import type { ReservationSource, ReservationStatus } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getReservations } from "@/lib/reservations";
+import { prisma } from "@/lib/prisma";
 import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { ReservationsTable, type ReservationRow } from "./ReservationsTable";
 
@@ -20,7 +21,16 @@ const SOURCE_OPTIONS: { value: ReservationSource; label: string }[] = [
 ];
 
 interface PageProps {
-  searchParams: Promise<{ status?: string; source?: string; search?: string; from?: string; to?: string }>;
+  searchParams: Promise<{
+    status?: string;
+    source?: string;
+    search?: string;
+    from?: string;
+    to?: string;
+    pickupAgency?: string;
+    dropoffAgency?: string;
+    vehicleCategory?: string;
+  }>;
 }
 
 export default async function ReservationsPage({ searchParams }: PageProps) {
@@ -41,6 +51,7 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const canCreate = await can(user, "reservations.create");
   const canImport = await can(user, "reservations.import");
+  const canDelete = await can(user, "reservations.delete");
 
   const reservations = await getReservations(user.tenantId, {
     ...(params.status ? { status: params.status as ReservationStatus } : {}),
@@ -48,7 +59,17 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
     ...(params.search ? { search: params.search } : {}),
     ...(params.from ? { from: new Date(params.from) } : {}),
     ...(params.to ? { to: new Date(params.to) } : {}),
+    ...(params.pickupAgency ? { pickupAgency: params.pickupAgency } : {}),
+    ...(params.dropoffAgency ? { dropoffAgency: params.dropoffAgency } : {}),
+    ...(params.vehicleCategory ? { vehicleCategory: params.vehicleCategory } : {}),
   });
+
+  // Villes/agences (Sprint 14A) : mêmes options que le formulaire de création (ville si
+  // renseignée, sinon nom), pour filtrer sur les mêmes valeurs que celles saisissables.
+  const agencies = await prisma.agency.findMany({ where: { tenantId: user.tenantId }, select: { name: true, city: true } });
+  const agencyOptions = Array.from(new Set(agencies.map((agency) => agency.city?.trim() || agency.name))).sort(
+    (a, b) => a.localeCompare(b)
+  );
 
   const rows: ReservationRow[] = reservations.map((reservation) => ({
     id: reservation.id,
@@ -180,17 +201,76 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
           />
         </div>
 
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="pickupAgency" className="text-xs font-medium text-muted-foreground">
+            Ville de départ
+          </label>
+          <select
+            id="pickupAgency"
+            name="pickupAgency"
+            defaultValue={params.pickupAgency ?? ""}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          >
+            <option value="">Toutes</option>
+            {agencyOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="dropoffAgency" className="text-xs font-medium text-muted-foreground">
+            Ville de retour
+          </label>
+          <select
+            id="dropoffAgency"
+            name="dropoffAgency"
+            defaultValue={params.dropoffAgency ?? ""}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          >
+            <option value="">Toutes</option>
+            {agencyOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="vehicleCategory" className="text-xs font-medium text-muted-foreground">
+            Catégorie
+          </label>
+          <input
+            id="vehicleCategory"
+            type="text"
+            name="vehicleCategory"
+            placeholder="Citadine, SUV..."
+            defaultValue={params.vehicleCategory ?? ""}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          />
+        </div>
+
         <Button type="submit" variant="outline" size="sm">
           Filtrer
         </Button>
-        {(params.status || params.source || params.search || params.from || params.to) && (
+        {(params.status ||
+          params.source ||
+          params.search ||
+          params.from ||
+          params.to ||
+          params.pickupAgency ||
+          params.dropoffAgency ||
+          params.vehicleCategory) && (
           <Button render={<Link href="/dashboard/reservations" />} variant="ghost" size="sm">
             Réinitialiser
           </Button>
         )}
       </form>
 
-      <ReservationsTable reservations={rows} />
+      <ReservationsTable reservations={rows} canDelete={canDelete} />
     </div>
   );
 }

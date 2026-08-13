@@ -86,7 +86,7 @@ export function AcceptInvitationForm({ id, email, tenantName, role }: AcceptInvi
             <Input id="email" value={email} disabled readOnly />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="name">Votre nom</Label>
+            <Label htmlFor="name" required>Votre nom</Label>
             <Input
               id="name"
               autoComplete="name"
@@ -96,7 +96,7 @@ export function AcceptInvitationForm({ id, email, tenantName, role }: AcceptInvi
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="password">Mot de passe</Label>
+            <Label htmlFor="password" required>Mot de passe</Label>
             <Input
               id="password"
               type="password"

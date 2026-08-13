@@ -146,7 +146,7 @@ export default function NewInvoicePage() {
         <CardContent>
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="locationId">Location</Label>
+              <Label htmlFor="locationId" required>Location</Label>
               <select
                 id="locationId"
                 required

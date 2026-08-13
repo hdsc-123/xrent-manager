@@ -170,7 +170,7 @@ export function InvoiceActions({ id, status, remainingBalance, currency }: Invoi
           <form onSubmit={handleRecordPayment} noValidate className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="amount">Montant ({currency})</Label>
+                <Label htmlFor="amount" required>Montant ({currency})</Label>
                 <Input
                   id="amount"
                   inputMode="decimal"

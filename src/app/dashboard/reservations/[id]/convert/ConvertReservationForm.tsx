@@ -47,7 +47,8 @@ interface Vehicle {
   name: string;
   licensePlate: string;
   agencyId: string;
-  pricePerDay: number;
+  /** Optionnel (Sprint 14A) — informatif, jamais la source de vérité de la facturation. */
+  pricePerDay: number | null;
   currency: string;
 }
 
@@ -110,6 +111,9 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
   const [agencyId, setAgencyId] = useState("");
   const [vehicleId, setVehicleId] = useState("");
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [pricePerDay, setPricePerDay] = useState(
+    reservation.pricePerDay != null ? (reservation.pricePerDay / 100).toFixed(2) : ""
+  );
 
   // Paiement — même formulaire que /dashboard/locations/new (Sprint 13A).
   const [paymentDeferred, setPaymentDeferred] = useState(false);
@@ -144,6 +148,24 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
     [vehicles, vehicleId]
   );
 
+  // Le prix véhicule (s'il existe), sinon le prix informatif de la réservation importée, ne
+  // sert que de valeur par défaut — jamais la source de vérité de la facturation
+  // (DOMAINRULES.md section 5/7). Pré-rempli à chaque changement de véhicule (setState pendant
+  // le rendu, pas dans un effet — "Adjusting state when a prop changes" de la doc React),
+  // modifiable ensuite librement par l'utilisateur.
+  const [pricePerDayVehicleId, setPricePerDayVehicleId] = useState(vehicleId);
+  if (vehicleId !== pricePerDayVehicleId) {
+    setPricePerDayVehicleId(vehicleId);
+    const fallbackCentimes = selectedVehicle?.pricePerDay ?? reservation.pricePerDay;
+    setPricePerDay(fallbackCentimes != null ? (fallbackCentimes / 100).toFixed(2) : "");
+  }
+
+  const pricePerDayCentimes = useMemo(() => {
+    if (!pricePerDay.trim()) return null;
+    const value = Number(pricePerDay.replace(",", "."));
+    return Number.isFinite(value) && value > 0 ? Math.round(value * 100) : null;
+  }, [pricePerDay]);
+
   const startDateTime = useMemo(() => {
     if (!startDate || !startTime) return null;
     const value = new Date(`${startDate}T${startTime}`);
@@ -161,7 +183,7 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
       ? calculateDaysCount(startDateTime, endDateTime)
       : 0;
 
-  const estimatedTotal = selectedVehicle && days > 0 ? selectedVehicle.pricePerDay * days : 0;
+  const estimatedTotal = pricePerDayCentimes && days > 0 ? pricePerDayCentimes * days : 0;
 
   function buildPayload(overrides?: { useExistingClientId?: string; forceCreateClient?: boolean }) {
     const depositMad = deposit ? Number(deposit.replace(",", ".")) : undefined;
@@ -189,6 +211,7 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
       startDate: startDateTime?.toISOString(),
       endDate: endDateTime?.toISOString(),
       deposit: depositMad !== undefined && Number.isFinite(depositMad) ? Math.round(depositMad * 100) : undefined,
+      pricePerDay: pricePerDayCentimes ?? undefined,
       notes: notes || undefined,
       client: {
         firstName,
@@ -257,6 +280,10 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
       setError("Dates/heures de départ et de retour invalides.");
       return;
     }
+    if (!pricePerDayCentimes) {
+      setError("Le prix / jour doit être renseigné (un nombre positif).");
+      return;
+    }
     if (paymentMixed) {
       const amount1Centimes = paymentAmount1 ? Math.round(Number(paymentAmount1.replace(",", ".")) * 100) : 0;
       const amount2Centimes = paymentAmount2 ? Math.round(Number(paymentAmount2.replace(",", ".")) * 100) : 0;
@@ -287,11 +314,11 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
           <CardContent className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="firstName">Prénom</Label>
+                <Label htmlFor="firstName" required>Prénom</Label>
                 <Input id="firstName" required value={firstName} onChange={(e) => setFirstName(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="lastName">Nom</Label>
+                <Label htmlFor="lastName" required>Nom</Label>
                 <Input id="lastName" required value={lastName} onChange={(e) => setLastName(e.target.value)} />
               </div>
             </div>
@@ -417,7 +444,7 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="vehicleId">
+              <Label htmlFor="vehicleId" required>
                 Véhicule{reservation.vehicleCategory ? ` (catégorie : ${reservation.vehicleCategory})` : ""}
               </Label>
               <select
@@ -432,7 +459,10 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
                 </option>
                 {vehicles.map((vehicle) => (
                   <option key={vehicle.id} value={vehicle.id}>
-                    {vehicle.name} ({vehicle.licensePlate}) — {formatMoney(vehicle.pricePerDay, vehicle.currency)}/jour
+                    {vehicle.name} ({vehicle.licensePlate})
+                    {vehicle.pricePerDay !== null
+                      ? ` — ${formatMoney(vehicle.pricePerDay, vehicle.currency)}/jour (indicatif)`
+                      : ""}
                   </option>
                 ))}
               </select>
@@ -443,11 +473,11 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="startDate">Date de départ</Label>
+                <Label htmlFor="startDate" required>Date de départ</Label>
                 <Input id="startDate" type="date" required value={startDate} onChange={(e) => setStartDate(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="startTime">Heure de départ</Label>
+                <Label htmlFor="startTime" required>Heure de départ</Label>
                 <Input
                   id="startTime"
                   type="time"
@@ -460,25 +490,35 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="endDate">Date de retour</Label>
+                <Label htmlFor="endDate" required>Date de retour</Label>
                 <Input id="endDate" type="date" required value={endDate} onChange={(e) => setEndDate(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="endTime">Heure de retour</Label>
+                <Label htmlFor="endTime" required>Heure de retour</Label>
                 <Input id="endTime" type="time" required value={endTime} onChange={(e) => setEndTime(e.target.value)} />
               </div>
             </div>
 
-            {selectedVehicle && days > 0 && (
-              <p className="text-sm text-muted-foreground">
-                {days} jour(s) × {formatMoney(selectedVehicle.pricePerDay, selectedVehicle.currency)} ={" "}
-                <span className="font-medium text-foreground">{formatMoney(estimatedTotal, selectedVehicle.currency)}</span>
-              </p>
-            )}
-            {!selectedVehicle && reservation.totalPrice !== null && (
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="pricePerDay" required>Prix / jour</Label>
+              <Input
+                id="pricePerDay"
+                inputMode="decimal"
+                required
+                placeholder="450.00"
+                value={pricePerDay}
+                onChange={(e) => setPricePerDay(e.target.value)}
+              />
               <p className="text-xs text-muted-foreground">
-                Prix informatif de la réservation : {formatMoney(reservation.totalPrice, reservation.currency)}{" "}
-                — le prix réel du contrat sera calculé à partir du véhicule sélectionné.
+                Prix réel de ce contrat — le prix véhicule/réservation (s&apos;il existe) n&apos;est
+                qu&apos;une valeur par défaut.
+              </p>
+            </div>
+
+            {days > 0 && pricePerDayCentimes && selectedVehicle && (
+              <p className="text-sm text-muted-foreground">
+                {days} jour(s) × {formatMoney(pricePerDayCentimes, selectedVehicle.currency)} ={" "}
+                <span className="font-medium text-foreground">{formatMoney(estimatedTotal, selectedVehicle.currency)}</span>
               </p>
             )}
 

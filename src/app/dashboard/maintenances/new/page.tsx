@@ -96,7 +96,7 @@ export default function NewMaintenancePage() {
         <CardContent>
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="vehicleId">Véhicule</Label>
+              <Label htmlFor="vehicleId" required>Véhicule</Label>
               <select
                 id="vehicleId"
                 required
@@ -135,7 +135,7 @@ export default function NewMaintenancePage() {
                 </select>
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="scheduledDate">Date prévue</Label>
+                <Label htmlFor="scheduledDate" required>Date prévue</Label>
                 <Input
                   id="scheduledDate"
                   type="date"

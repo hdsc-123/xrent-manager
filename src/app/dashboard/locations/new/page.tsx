@@ -22,7 +22,9 @@ interface Vehicle {
   name: string;
   licensePlate: string;
   status: string;
-  pricePerDay: number;
+  /** Optionnel (Sprint 14A) — informatif seulement, jamais la source de vérité de la
+   * facturation (voir DOMAINRULES.md section 5/7) : le prix réel est saisi ci-dessous. */
+  pricePerDay: number | null;
   currency: string;
 }
 
@@ -61,6 +63,7 @@ export default function NewLocationPage() {
   const [startTime, setStartTime] = useState("10:00");
   const [endDate, setEndDate] = useState("");
   const [endTime, setEndTime] = useState("10:00");
+  const [pricePerDay, setPricePerDay] = useState("");
   const [startOdometer, setStartOdometer] = useState("");
   const [endOdometer, setEndOdometer] = useState("");
   const [deposit, setDeposit] = useState("");
@@ -106,6 +109,23 @@ export default function NewLocationPage() {
     [vehicles, vehicleId]
   );
 
+  // Le prix véhicule (s'il existe) ne sert que de valeur par défaut — jamais la source de
+  // vérité de la facturation (DOMAINRULES.md section 5/7). Pré-rempli à chaque changement de
+  // véhicule (setState pendant le rendu, pas dans un effet — "Adjusting state when a prop
+  // changes" de la doc React, même pattern que la détection de changement d'agence
+  // ailleurs dans le projet), modifiable ensuite librement par l'utilisateur.
+  const [pricePerDayVehicleId, setPricePerDayVehicleId] = useState(vehicleId);
+  if (vehicleId !== pricePerDayVehicleId) {
+    setPricePerDayVehicleId(vehicleId);
+    setPricePerDay(selectedVehicle?.pricePerDay != null ? (selectedVehicle.pricePerDay / 100).toFixed(2) : "");
+  }
+
+  const pricePerDayCentimes = useMemo(() => {
+    if (!pricePerDay.trim()) return null;
+    const value = Number(pricePerDay.replace(",", "."));
+    return Number.isFinite(value) && value > 0 ? Math.round(value * 100) : null;
+  }, [pricePerDay]);
+
   const startDateTime = useMemo(() => {
     if (!startDate || !startTime) return null;
     const value = new Date(`${startDate}T${startTime}`);
@@ -129,7 +149,7 @@ export default function NewLocationPage() {
     );
   }, [startDateTime, endDateTime]);
 
-  const estimatedTotal = selectedVehicle && days > 0 ? selectedVehicle.pricePerDay * days : 0;
+  const estimatedTotal = pricePerDayCentimes && days > 0 ? pricePerDayCentimes * days : 0;
 
   const availabilityKey =
     vehicleId && startDateTime && endDateTime && days > 0
@@ -201,6 +221,11 @@ export default function NewLocationPage() {
       return;
     }
 
+    if (!pricePerDayCentimes) {
+      setError("Le prix / jour doit être renseigné (un nombre positif).");
+      return;
+    }
+
     const depositMad = deposit ? Number(deposit.replace(",", ".")) : undefined;
     if (deposit && (!Number.isFinite(depositMad) || (depositMad as number) < 0)) {
       setError("La caution doit être un nombre positif.");
@@ -255,6 +280,7 @@ export default function NewLocationPage() {
         endDate: endDateTime.toISOString(),
         notes: notes || undefined,
         status,
+        pricePerDay: pricePerDayCentimes,
         startOdometer: startOdometer ? Number(startOdometer) : undefined,
         endOdometer: endOdometer ? Number(endOdometer) : undefined,
         deposit: depositMad !== undefined ? Math.round(depositMad * 100) : undefined,
@@ -286,7 +312,7 @@ export default function NewLocationPage() {
         <CardContent>
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="vehicleId">Véhicule</Label>
+              <Label htmlFor="vehicleId" required>Véhicule</Label>
               <select
                 id="vehicleId"
                 required
@@ -299,8 +325,10 @@ export default function NewLocationPage() {
                 </option>
                 {vehicles.map((vehicle) => (
                   <option key={vehicle.id} value={vehicle.id}>
-                    {vehicle.name} ({vehicle.licensePlate}) —{" "}
-                    {formatMoney(vehicle.pricePerDay, vehicle.currency)}/jour
+                    {vehicle.name} ({vehicle.licensePlate})
+                    {vehicle.pricePerDay !== null
+                      ? ` — ${formatMoney(vehicle.pricePerDay, vehicle.currency)}/jour (indicatif)`
+                      : ""}
                   </option>
                 ))}
               </select>
@@ -311,7 +339,7 @@ export default function NewLocationPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="startDate">Date de début</Label>
+                <Label htmlFor="startDate" required>Date de début</Label>
                 <Input
                   id="startDate"
                   type="date"
@@ -321,7 +349,7 @@ export default function NewLocationPage() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="startTime">Heure de début</Label>
+                <Label htmlFor="startTime" required>Heure de début</Label>
                 <Input
                   id="startTime"
                   type="time"
@@ -334,7 +362,7 @@ export default function NewLocationPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="endDate">Date de fin</Label>
+                <Label htmlFor="endDate" required>Date de fin</Label>
                 <Input
                   id="endDate"
                   type="date"
@@ -344,7 +372,7 @@ export default function NewLocationPage() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="endTime">Heure de fin</Label>
+                <Label htmlFor="endTime" required>Heure de fin</Label>
                 <Input
                   id="endTime"
                   type="time"
@@ -364,9 +392,25 @@ export default function NewLocationPage() {
                 conflit(s)).
               </p>
             )}
-            {selectedVehicle && days > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="pricePerDay" required>Prix / jour</Label>
+              <Input
+                id="pricePerDay"
+                inputMode="decimal"
+                required
+                placeholder="450.00"
+                value={pricePerDay}
+                onChange={(e) => setPricePerDay(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Prix réel de cette location — le prix véhicule (s&apos;il existe) n&apos;est qu&apos;une
+                valeur par défaut.
+              </p>
+            </div>
+
+            {selectedVehicle && days > 0 && pricePerDayCentimes && (
               <p className="text-sm text-muted-foreground">
-                {days} jour(s) × {formatMoney(selectedVehicle.pricePerDay, selectedVehicle.currency)} ={" "}
+                {days} jour(s) × {formatMoney(pricePerDayCentimes, selectedVehicle.currency)} ={" "}
                 <span className="font-medium text-foreground">
                   {formatMoney(estimatedTotal, selectedVehicle.currency)}
                 </span>
@@ -375,7 +419,7 @@ export default function NewLocationPage() {
 
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between">
-                <Label htmlFor="clientId">Client</Label>
+                <Label htmlFor="clientId" required>Client</Label>
                 <button
                   type="button"
                   onClick={() => setShowNewClient((v) => !v)}

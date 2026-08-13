@@ -101,17 +101,16 @@ export async function POST(request: Request) {
 
   const { agencyId, name, licensePlate, make, model, year, category, pricePerDay } = body;
 
-  if (!agencyId || !name || !licensePlate || !make || !model || !year || !category || !pricePerDay) {
+  if (!agencyId || !name || !licensePlate || !make || !model || !year || !category) {
     return NextResponse.json(
-      {
-        error:
-          "agencyId, name, licensePlate, make, model, year, category et pricePerDay sont requis.",
-      },
+      { error: "agencyId, name, licensePlate, make, model, year et category sont requis." },
       { status: 400 }
     );
   }
 
-  if (!Number.isInteger(pricePerDay) || pricePerDay <= 0) {
+  // pricePerDay est optionnel depuis le Sprint 14A (purement informatif, voir
+  // DOMAINRULES.md section 5/7) — validé uniquement s'il est fourni.
+  if (pricePerDay !== undefined && (!Number.isInteger(pricePerDay) || pricePerDay <= 0)) {
     return NextResponse.json(
       { error: "pricePerDay doit être un entier positif (centimes)." },
       { status: 400 }

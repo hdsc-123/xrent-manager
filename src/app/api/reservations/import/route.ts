@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import {
   createReservation,
   parseReservationImportRow,
+  getKnownAgencyNames,
   RESERVATION_IMPORT_COLUMN_MAP,
   RESERVATION_IMPORT_COLUMNS,
 } from "@/lib/reservations";
@@ -94,6 +95,10 @@ export async function POST(request: Request) {
     ).map((r) => r.voucherNumber)
   );
 
+  // Villes/agences connues du tenant (Sprint 14A) — voir parseReservationImportRow, refuse
+  // désormais pickupAgency/dropoffAgency qui ne correspond à aucune agence réelle.
+  const knownAgencyNames = await getKnownAgencyNames(user.tenantId);
+
   const errors: { row: number; error: string }[] = [];
   const duplicates: { row: number; voucherNumber: string }[] = [];
   const preview: { row: number; voucherNumber: string; clientFirstName: string; clientLastName: string; startDate: string; endDate: string }[] = [];
@@ -115,7 +120,7 @@ export async function POST(request: Request) {
       continue; // ligne vide
     }
 
-    const parsed = parseReservationImportRow(rowObject);
+    const parsed = parseReservationImportRow(rowObject, knownAgencyNames);
     if ("error" in parsed) {
       errors.push({ row: rowNumber, error: parsed.error });
       continue;

@@ -77,10 +77,17 @@ export default function NewVehiclePage() {
     event.preventDefault();
     setError(null);
 
-    const priceMad = Number(pricePerDay.replace(",", "."));
-    if (!Number.isFinite(priceMad) || priceMad <= 0) {
-      setError("Le prix par jour doit être un nombre positif.");
-      return;
+    // Prix/jour optionnel depuis le Sprint 14A — purement informatif, jamais la source de
+    // vérité de la facturation (voir DOMAINRULES.md section 5/7). Validé uniquement s'il est
+    // renseigné.
+    let pricePerDayCentimes: number | undefined;
+    if (pricePerDay.trim()) {
+      const priceMad = Number(pricePerDay.replace(",", "."));
+      if (!Number.isFinite(priceMad) || priceMad <= 0) {
+        setError("Le prix par jour doit être un nombre positif.");
+        return;
+      }
+      pricePerDayCentimes = Math.round(priceMad * 100);
     }
 
     setIsSubmitting(true);
@@ -94,7 +101,7 @@ export default function NewVehiclePage() {
         year: Number(year),
         category,
         status,
-        pricePerDay: Math.round(priceMad * 100),
+        pricePerDay: pricePerDayCentimes,
         ww: ww || undefined,
         chassisNumber: chassisNumber || undefined,
         color: color || undefined,
@@ -131,7 +138,7 @@ export default function NewVehiclePage() {
         <CardContent>
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="agencyId">Agence</Label>
+              <Label htmlFor="agencyId" required>Agence</Label>
               <select
                 id="agencyId"
                 required
@@ -151,13 +158,13 @@ export default function NewVehiclePage() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="name">Nom</Label>
+              <Label htmlFor="name" required>Nom</Label>
               <Input id="name" required value={name} onChange={(e) => setName(e.target.value)} />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="make">Marque</Label>
+                <Label htmlFor="make" required>Marque</Label>
                 <Input
                   id="make"
                   required
@@ -167,7 +174,7 @@ export default function NewVehiclePage() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="model">Modèle</Label>
+                <Label htmlFor="model" required>Modèle</Label>
                 <Input
                   id="model"
                   required
@@ -186,7 +193,7 @@ export default function NewVehiclePage() {
                 <Input id="ww" value={ww} onChange={(e) => setWw(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="chassisNumber">Numéro de châssis</Label>
+                <Label htmlFor="chassisNumber" required>Numéro de châssis</Label>
                 <Input
                   id="chassisNumber"
                   required
@@ -198,7 +205,7 @@ export default function NewVehiclePage() {
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="licensePlate">Immatriculation</Label>
+                <Label htmlFor="licensePlate" required>Immatriculation</Label>
                 <Input
                   id="licensePlate"
                   required
@@ -207,7 +214,7 @@ export default function NewVehiclePage() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="year">Année</Label>
+                <Label htmlFor="year" required>Année</Label>
                 <Input
                   id="year"
                   type="number"
@@ -219,7 +226,7 @@ export default function NewVehiclePage() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="category">Catégorie</Label>
+              <Label htmlFor="category" required>Catégorie</Label>
               <Input
                 id="category"
                 required
@@ -231,11 +238,11 @@ export default function NewVehiclePage() {
 
             <div className="grid grid-cols-3 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="color">Couleur</Label>
+                <Label htmlFor="color" required>Couleur</Label>
                 <Input id="color" required value={color} onChange={(e) => setColor(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="doors">Portes</Label>
+                <Label htmlFor="doors" required>Portes</Label>
                 <Input
                   id="doors"
                   type="number"
@@ -245,7 +252,7 @@ export default function NewVehiclePage() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="seats">Places</Label>
+                <Label htmlFor="seats" required>Places</Label>
                 <Input
                   id="seats"
                   type="number"
@@ -291,7 +298,7 @@ export default function NewVehiclePage() {
 
             <div className="grid grid-cols-3 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="horsepower">Chevaux fiscaux</Label>
+                <Label htmlFor="horsepower" required>Chevaux fiscaux</Label>
                 <Input
                   id="horsepower"
                   type="number"
@@ -301,7 +308,7 @@ export default function NewVehiclePage() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="powerKW">Puissance (kW)</Label>
+                <Label htmlFor="powerKW" required>Puissance (kW)</Label>
                 <Input
                   id="powerKW"
                   type="number"
@@ -311,7 +318,7 @@ export default function NewVehiclePage() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="engineSize">Cylindrée (L)</Label>
+                <Label htmlFor="engineSize" required>Cylindrée (L)</Label>
                 <Input
                   id="engineSize"
                   inputMode="decimal"
@@ -355,11 +362,13 @@ export default function NewVehiclePage() {
                 <Input
                   id="pricePerDay"
                   inputMode="decimal"
-                  required
                   placeholder="450.00"
                   value={pricePerDay}
                   onChange={(e) => setPricePerDay(e.target.value)}
                 />
+                <p className="text-xs text-muted-foreground">
+                  Indicatif — le prix réel se définit à la réservation ou au contrat.
+                </p>
               </div>
             </div>
 

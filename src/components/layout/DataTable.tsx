@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import {
+  columnSizingFeature,
   createPaginatedRowModel,
   createSortedRowModel,
   flexRender,
@@ -37,6 +38,10 @@ const features = tableFeatures({
   sortFns: { alphanumeric: sortFn_alphanumeric },
   rowPaginationFeature,
   paginatedRowModel: createPaginatedRowModel(),
+  // Sprint 14A : enregistré uniquement pour que `size` soit un champ valide de ColumnDef
+  // (typé par feature en v9) — lu directement depuis columnDef.size (pas getSize()), aucun
+  // redimensionnement interactif n'est câblé, l'état columnSizing par défaut reste inutilisé.
+  columnSizingFeature,
 });
 
 export type DataTableColumn<TData extends RowData> = ColumnDef<typeof features, TData>;
@@ -76,9 +81,18 @@ export function DataTable<TData extends RowData>({
                   const label = header.isPlaceholder
                     ? null
                     : flexRender(header.column.columnDef.header, header.getContext());
+                  // Largeur explicite optionnelle (Sprint 14A) : seules les colonnes qui
+                  // déclarent `size` dans leur ColumnDef sont contraintes — n'affecte donc
+                  // aucune table existante qui n'en définit pas (pas de largeur par défaut
+                  // TanStack appliquée ici, volontairement, pour ne rien changer ailleurs).
+                  const width = header.column.columnDef.size;
 
                   return (
-                    <TableHead key={header.id}>
+                    <TableHead
+                      key={header.id}
+                      className="whitespace-normal break-words align-bottom"
+                      style={width !== undefined ? { width, maxWidth: width } : undefined}
+                    >
                       {canSort ? (
                         <button
                           type="button"
@@ -112,11 +126,18 @@ export function DataTable<TData extends RowData>({
             ) : (
               table.getRowModel().rows.map((row) => (
                 <TableRow key={row.id}>
-                  {row.getAllCells().map((cell) => (
-                    <TableCell key={cell.id}>
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </TableCell>
-                  ))}
+                  {row.getAllCells().map((cell) => {
+                    const width = cell.column.columnDef.size;
+                    return (
+                      <TableCell
+                        key={cell.id}
+                        className={width !== undefined ? "whitespace-normal break-words" : undefined}
+                        style={width !== undefined ? { width, maxWidth: width } : undefined}
+                      >
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </TableCell>
+                    );
+                  })}
                 </TableRow>
               ))
             )}

@@ -113,7 +113,7 @@ export function NewExpenseForm({ categories }: NewExpenseFormProps) {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="expense-amount">Montant (MAD)</Label>
+            <Label htmlFor="expense-amount" required>Montant (MAD)</Label>
             <Input
               id="expense-amount"
               inputMode="decimal"

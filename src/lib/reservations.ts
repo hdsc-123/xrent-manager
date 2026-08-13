@@ -64,6 +64,12 @@ export interface ReservationFilters {
   from?: Date;
   to?: Date;
   search?: string;
+  /** Sprint 14A : filtres dédiés aux colonnes Ville de départ/retour/Catégorie, absents
+   * jusqu'ici alors qu'elles sont affichées (voir ReservationsTable.tsx). Correspondance
+   * exacte, insensible à la casse. */
+  pickupAgency?: string;
+  dropoffAgency?: string;
+  vehicleCategory?: string;
 }
 
 export async function getReservations(
@@ -77,6 +83,11 @@ export async function getReservations(
       ...(filters.source ? { source: filters.source } : {}),
       ...(filters.from ? { endDate: { gte: filters.from } } : {}),
       ...(filters.to ? { startDate: { lte: filters.to } } : {}),
+      ...(filters.pickupAgency ? { pickupAgency: { equals: filters.pickupAgency, mode: "insensitive" } } : {}),
+      ...(filters.dropoffAgency ? { dropoffAgency: { equals: filters.dropoffAgency, mode: "insensitive" } } : {}),
+      ...(filters.vehicleCategory
+        ? { vehicleCategory: { equals: filters.vehicleCategory, mode: "insensitive" } }
+        : {}),
       ...(filters.search
         ? {
             OR: [
@@ -351,45 +362,153 @@ function cellToBoolean(value: unknown): boolean {
   return false;
 }
 
+/** Excel compte les jours depuis 1899-12-30 (le "jour 0" historique, qui compense le bug de
+ * l'année bissextile 1900 hérité de Lotus 1-2-3) — conversion standard vers un timestamp Unix
+ * (ms). Nécessaire quand une cellule date perd son format Excel et arrive comme un simple
+ * nombre (ex. copier-coller depuis une autre feuille) plutôt que comme un objet Date, qu'exceljs
+ * ne convertit alors plus automatiquement. */
+const EXCEL_EPOCH_OFFSET_DAYS = 25569;
+
+function excelSerialToDate(serial: number): Date {
+  return new Date(Math.round((serial - EXCEL_EPOCH_OFFSET_DAYS) * 86_400_000));
+}
+
+/** DD/MM/YYYY, DD-MM-YYYY ou DD.MM.YYYY — formats français courants qu'un fichier Excel mal
+ * formaté peut produire en texte brut ; `new Date(string)` les interprète de façon peu fiable
+ * (souvent comme MM/DD/YYYY ou pas du tout). */
+const FRENCH_DATE_RE = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/;
+
 function cellToDate(value: unknown): Date | undefined {
   if (value instanceof Date) {
     return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const date = excelSerialToDate(value);
+    return Number.isNaN(date.getTime()) ? undefined : date;
   }
   const str = cellToString(value);
   if (!str) {
     return undefined;
   }
+  const frenchMatch = str.match(FRENCH_DATE_RE);
+  if (frenchMatch) {
+    const [, day, month, year] = frenchMatch;
+    const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+    return Number.isNaN(date.getTime()) ? undefined : date;
+  }
   const date = new Date(str);
   return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+/** Extrait "HH:mm" d'une cellule heure — gère les trois formes qu'exceljs peut renvoyer pour
+ * une colonne heure : objet Date (cellule formatée heure, l'écueil le plus fréquent — passer
+ * une telle valeur à cellToString produirait une chaîne de date complète, ex.
+ * "Mon Dec 30 1899 14:30:00 GMT...", au lieu d'une heure propre), fraction de journée (nombre,
+ * 0.5 = 12:00), ou chaîne déjà lisible ("14:30", "14:30:00"). */
+function cellToTime(value: unknown): string | undefined {
+  if (value instanceof Date) {
+    const hours = String(value.getUTCHours()).padStart(2, "0");
+    const minutes = String(value.getUTCMinutes()).padStart(2, "0");
+    return `${hours}:${minutes}`;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const totalMinutes = Math.round((value % 1) * 24 * 60);
+    const hours = String(Math.floor(totalMinutes / 60) % 24).padStart(2, "0");
+    const minutes = String(totalMinutes % 60).padStart(2, "0");
+    return `${hours}:${minutes}`;
+  }
+  const str = cellToString(value);
+  if (!str) {
+    return undefined;
+  }
+  const match = str.match(/^(\d{1,2}):(\d{2})/);
+  return match ? `${match[1].padStart(2, "0")}:${match[2]}` : str;
 }
 
 export type ParsedReservationRow =
   | { data: Omit<CreateReservationInput, "tenantId"> }
   | { error: string };
 
-const REQUIRED_IMPORT_VALUE_GETTERS: Record<string, (row: Record<string, unknown>) => unknown> = {
+const REQUIRED_STRING_IMPORT_FIELDS = REQUIRED_IMPORT_FIELDS.filter(
+  ({ field }) => field !== "startDate" && field !== "endDate"
+);
+
+function isCellEmpty(value: unknown): boolean {
+  return value === null || value === undefined || (typeof value === "string" && value.trim() === "");
+}
+
+const REQUIRED_STRING_VALUE_GETTERS: Record<string, (row: Record<string, unknown>) => unknown> = {
   voucherNumber: (row) => cellToString(row.voucherNumber),
   clientFirstName: (row) => cellToString(row.clientFirstName),
   clientLastName: (row) => cellToString(row.clientLastName),
-  startDate: (row) => cellToDate(row.startDate),
-  endDate: (row) => cellToDate(row.endDate),
 };
 
-export function parseReservationImportRow(row: Record<string, unknown>): ParsedReservationRow {
-  for (const { field, column } of REQUIRED_IMPORT_FIELDS) {
-    if (!REQUIRED_IMPORT_VALUE_GETTERS[field](row)) {
+/** Valide une date obligatoire (startDate/endDate) : distingue une cellule vide (« Colonne
+ * obligatoire manquante », message historique) d'une cellule renseignée mais imparsable
+ * (nouveau message précis, avec la valeur brute reçue) — jusqu'ici les deux cas produisaient le
+ * même message trompeur "manquante" alors que la ligne contenait bien une date, juste dans un
+ * format non reconnu. */
+function parseRequiredDate(
+  row: Record<string, unknown>,
+  field: "startDate" | "endDate",
+  column: string
+): { date: Date } | { error: string } {
+  const raw = row[field];
+  if (isCellEmpty(raw)) {
+    return { error: `Colonne obligatoire manquante: ${column}` };
+  }
+  const date = cellToDate(raw);
+  if (!date) {
+    return { error: `Colonne invalide: ${column} (valeur "${cellToString(raw) ?? raw}" non reconnue comme une date)` };
+  }
+  return { date };
+}
+
+export function parseReservationImportRow(
+  row: Record<string, unknown>,
+  knownAgencyNames?: Set<string>
+): ParsedReservationRow {
+  for (const { field, column } of REQUIRED_STRING_IMPORT_FIELDS) {
+    if (!REQUIRED_STRING_VALUE_GETTERS[field](row)) {
       return { error: `Colonne obligatoire manquante: ${column}` };
     }
+  }
+
+  const startDateResult = parseRequiredDate(row, "startDate", "Date de départ");
+  if ("error" in startDateResult) {
+    return startDateResult;
+  }
+  const endDateResult = parseRequiredDate(row, "endDate", "Date de retour");
+  if ("error" in endDateResult) {
+    return endDateResult;
   }
 
   const voucherNumber = cellToString(row.voucherNumber) as string;
   const clientFirstName = cellToString(row.clientFirstName) as string;
   const clientLastName = cellToString(row.clientLastName) as string;
-  const startDate = cellToDate(row.startDate) as Date;
-  const endDate = cellToDate(row.endDate) as Date;
+  const startDate = startDateResult.date;
+  const endDate = endDateResult.date;
 
   if (endDate < startDate) {
     return { error: "endDate doit être postérieure ou égale à startDate." };
+  }
+
+  const pickupAgency = cellToString(row.pickupAgency);
+  const dropoffAgency = cellToString(row.dropoffAgency);
+
+  // Validation des villes/agences (Sprint 14A) : révise la décision Sprint 12C de texte
+  // libre non validé (voir DOMAINRULES.md section 21) — la valeur doit désormais
+  // correspondre à la ville ou au nom d'une agence réelle du tenant (insensible à la
+  // casse). `knownAgencyNames` non vide = le tenant a au moins une agence créée ; sinon la
+  // validation est ignorée (rien à valider contre, pas de régression pour un tenant qui vient
+  // de s'inscrire).
+  if (knownAgencyNames && knownAgencyNames.size > 0) {
+    if (pickupAgency && !knownAgencyNames.has(pickupAgency.trim().toLowerCase())) {
+      return { error: `Ville de départ inconnue : "${pickupAgency}" (aucune agence correspondante)` };
+    }
+    if (dropoffAgency && !knownAgencyNames.has(dropoffAgency.trim().toLowerCase())) {
+      return { error: `Ville de retour inconnue : "${dropoffAgency}" (aucune agence correspondante)` };
+    }
   }
 
   const sourceRaw = cellToString(row.source)?.toUpperCase();
@@ -405,17 +524,17 @@ export function parseReservationImportRow(row: Record<string, unknown>): ParsedR
       clientFirstName,
       clientLastName,
       startDate,
-      startTime: cellToString(row.startTime),
+      startTime: cellToTime(row.startTime),
       endDate,
-      endTime: cellToString(row.endTime),
+      endTime: cellToTime(row.endTime),
       daysCount: cellToInt(row.daysCount),
       flightNumber: cellToString(row.flightNumber),
       currency: cellToString(row.currency),
       totalPrice: cellToMoney(row.totalPrice),
       pricePerDay: cellToMoney(row.pricePerDay),
       vehicleCategory: cellToString(row.vehicleCategory),
-      pickupAgency: cellToString(row.pickupAgency),
-      dropoffAgency: cellToString(row.dropoffAgency),
+      pickupAgency,
+      dropoffAgency,
       hasGps: cellToBoolean(row.hasGps),
       gpsPrice: cellToMoney(row.gpsPrice),
       hasBabySeat: cellToBoolean(row.hasBabySeat),
@@ -428,6 +547,24 @@ export function parseReservationImportRow(row: Record<string, unknown>): ParsedR
       notes: cellToString(row.notes),
     },
   };
+}
+
+/** Ensemble normalisé (minuscules, trim) des villes/noms d'agence du tenant — utilisé pour
+ * valider pickupAgency/dropoffAgency à l'import (ci-dessus) et à la création manuelle
+ * (POST /api/reservations). Vide si le tenant n'a aucune agence avec une ville renseignée
+ * (la validation est alors ignorée par l'appelant, voir commentaire plus haut). */
+export async function getKnownAgencyNames(tenantId: string): Promise<Set<string>> {
+  const agencies = await prisma.agency.findMany({
+    where: { tenantId },
+    select: { city: true, name: true },
+  });
+
+  const names = new Set<string>();
+  for (const agency of agencies) {
+    if (agency.city) names.add(agency.city.trim().toLowerCase());
+    if (agency.name) names.add(agency.name.trim().toLowerCase());
+  }
+  return names;
 }
 
 export async function deleteReservation(tenantId: string, reservationId: string): Promise<boolean> {

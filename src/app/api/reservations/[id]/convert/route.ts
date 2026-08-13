@@ -16,6 +16,7 @@ import {
   VehicleNotFoundError,
   ClientNotFoundError,
   VehicleNotAvailableError,
+  MissingPriceError,
 } from "@/lib/locations";
 import { createInvoice } from "@/lib/invoices";
 import { processLocationPayment, validatePaymentInput, type PaymentInput } from "@/lib/location-payment";
@@ -47,6 +48,9 @@ interface ConvertBody {
   startDate?: string;
   endDate?: string;
   deposit?: number;
+  /** Prix/jour réel (centimes) — voir DOMAINRULES.md section 5/7. Optionnel : retombe sur le
+   * prix informatif du véhicule choisi s'il en a un ; sinon 400 (voir MissingPriceError). */
+  pricePerDay?: number;
   notes?: string;
   client?: ConvertClientInput;
   useExistingClientId?: string;
@@ -109,6 +113,10 @@ export async function POST(request: Request, { params }: RouteParams) {
 
   if (body.deposit !== undefined && (!Number.isInteger(body.deposit) || body.deposit < 0)) {
     return NextResponse.json({ error: "deposit doit être un entier positif ou nul." }, { status: 400 });
+  }
+
+  if (body.pricePerDay !== undefined && (!Number.isInteger(body.pricePerDay) || body.pricePerDay <= 0)) {
+    return NextResponse.json({ error: "pricePerDay doit être un entier positif (centimes)." }, { status: 400 });
   }
 
   const clientInput = body.client ?? {};
@@ -226,6 +234,7 @@ export async function POST(request: Request, { params }: RouteParams) {
       endDate,
       notes: body.notes ?? reservation.notes ?? undefined,
       deposit: body.deposit,
+      pricePerDay: body.pricePerDay,
     });
 
     const updatedReservation = await markReservationConverted(user.tenantId, reservation.id, location.id);
@@ -302,6 +311,9 @@ export async function POST(request: Request, { params }: RouteParams) {
     }
     if (error instanceof InvalidReservationStatusTransitionError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof MissingPriceError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
     }
     console.error("Erreur lors de la conversion de la réservation :", error);
     return NextResponse.json({ error: "Erreur interne." }, { status: 500 });

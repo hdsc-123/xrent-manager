@@ -54,7 +54,9 @@ export interface CreateVehicleInput {
   year: number;
   category: string;
   status?: VehicleStatus;
-  pricePerDay: number;
+  /** Optionnel (Sprint 14A) — purement informatif, jamais la source de vérité de la
+   * facturation (voir DOMAINRULES.md section 5/7). */
+  pricePerDay?: number;
   currency?: string;
   ww?: string;
   chassisNumber?: string;
@@ -84,7 +86,7 @@ export interface UpdateVehicleInput {
   year?: number;
   category?: string;
   status?: VehicleStatus;
-  pricePerDay?: number;
+  pricePerDay?: number | null;
   currency?: string;
   ww?: string | null;
   chassisNumber?: string | null;

@@ -52,7 +52,7 @@ interface UpdateVehicleBody {
   year?: number;
   category?: string;
   status?: VehicleStatus;
-  pricePerDay?: number;
+  pricePerDay?: number | null;
   currency?: string;
   ww?: string | null;
   chassisNumber?: string | null;
@@ -90,7 +90,11 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
   }
 
-  if (body.pricePerDay !== undefined && (!Number.isInteger(body.pricePerDay) || body.pricePerDay <= 0)) {
+  if (
+    body.pricePerDay !== undefined &&
+    body.pricePerDay !== null &&
+    (!Number.isInteger(body.pricePerDay) || body.pricePerDay <= 0)
+  ) {
     return NextResponse.json(
       { error: "pricePerDay doit être un entier positif (centimes)." },
       { status: 400 }

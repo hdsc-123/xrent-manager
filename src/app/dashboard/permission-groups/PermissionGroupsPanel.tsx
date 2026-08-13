@@ -96,7 +96,7 @@ export function PermissionGroupsPanel({
             </DialogHeader>
             <form onSubmit={handleCreate} className="flex flex-col gap-4">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="name">Nom</Label>
+                <Label htmlFor="name" required>Nom</Label>
                 <Input id="name" required value={name} onChange={(e) => setName(e.target.value)} />
               </div>
 

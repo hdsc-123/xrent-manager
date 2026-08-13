@@ -6,6 +6,7 @@ import {
   getReservations,
   createReservation,
   generateDirectVoucherNumber,
+  getKnownAgencyNames,
   type ReservationFilters,
   InvalidReservationDateRangeError,
 } from "@/lib/reservations";
@@ -32,6 +33,9 @@ export async function GET(request: Request) {
   const searchParam = searchParams.get("search") ?? undefined;
   const fromParam = searchParams.get("from") ?? undefined;
   const toParam = searchParams.get("to") ?? undefined;
+  const pickupAgencyParam = searchParams.get("pickupAgency") ?? undefined;
+  const dropoffAgencyParam = searchParams.get("dropoffAgency") ?? undefined;
+  const vehicleCategoryParam = searchParams.get("vehicleCategory") ?? undefined;
 
   if (statusParam && !RESERVATION_STATUSES.includes(statusParam as ReservationStatus)) {
     return NextResponse.json({ error: "status invalide." }, { status: 400 });
@@ -46,6 +50,9 @@ export async function GET(request: Request) {
     search: searchParam,
     from: fromParam ? new Date(fromParam) : undefined,
     to: toParam ? new Date(toParam) : undefined,
+    pickupAgency: pickupAgencyParam,
+    dropoffAgency: dropoffAgencyParam,
+    vehicleCategory: vehicleCategoryParam,
   };
 
   const reservations = await getReservations(user.tenantId, filters);
@@ -158,6 +165,27 @@ export async function POST(request: Request) {
     const value = body[field];
     if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
       return NextResponse.json({ error: `${field} doit être un entier positif ou nul.` }, { status: 400 });
+    }
+  }
+
+  // Villes/agences (Sprint 14A) : mêmes règles que l'import Excel — doit correspondre à une
+  // agence réelle du tenant (ville ou nom, insensible à la casse), voir
+  // src/lib/reservations.ts getKnownAgencyNames/parseReservationImportRow.
+  if (body.pickupAgency || body.dropoffAgency) {
+    const knownAgencyNames = await getKnownAgencyNames(user.tenantId);
+    if (knownAgencyNames.size > 0) {
+      if (body.pickupAgency && !knownAgencyNames.has(body.pickupAgency.trim().toLowerCase())) {
+        return NextResponse.json(
+          { error: `Ville de départ inconnue : "${body.pickupAgency}" (aucune agence correspondante)` },
+          { status: 400 }
+        );
+      }
+      if (body.dropoffAgency && !knownAgencyNames.has(body.dropoffAgency.trim().toLowerCase())) {
+        return NextResponse.json(
+          { error: `Ville de retour inconnue : "${body.dropoffAgency}" (aucune agence correspondante)` },
+          { status: 400 }
+        );
+      }
     }
   }
 
