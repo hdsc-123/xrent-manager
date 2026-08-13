@@ -41,7 +41,7 @@ xrent-manager/
 │   ├── app/                 # App Router Next.js
 │   │   ├── favicon.ico
 │   │   ├── globals.css      # Styles Tailwind + tokens shadcn/ui (générés par `shadcn init`)
-│   │   ├── layout.tsx       # Layout racine (police, <Toaster /> global sonner) — page d'accueil / toujours celle par défaut create-next-app
+│   │   ├── layout.tsx       # Layout racine (police Inter — Geist jusqu'au Sprint 13E —, <Toaster /> global sonner) — page d'accueil / toujours celle par défaut create-next-app
 │   │   ├── page.tsx         # Page d'accueil par défaut (démo create-next-app, non modifiée)
 │   │   ├── (auth)/          # Groupe de routes auth (URLs /login, /register — pas de préfixe)
 │   │   │   ├── layout.tsx          # Layout centré, sans sidebar
@@ -189,8 +189,8 @@ xrent-manager/
 │   │           └── import/route.ts         # POST — .xlsx (exceljs), mode preview/commit, permissions.import ; (Sprint 13B) en-têtes français, mapping vers champ interne avant parsing
 │   ├── proxy.ts              # Redirige vers /login sur /dashboard*, /settings* si non authentifié (middleware.ts est déprécié dans cette version de Next.js)
 │   ├── components/
-│   │   ├── ui/               # Composants shadcn/ui (générés) + index.ts (ré-export) ; (Sprint 12A) phone-input.tsx — composant interne (pas de dépendance npm), indicatif pays + numéro ; (Sprint 12C) checkbox.tsx (grille de permissions) ; (Sprint 13B) StatusBadge.tsx — badge de statut coloré partagé Reservation/Location ; (Sprint 13C) phone-input.tsx étendu — 20 indicatifs (Maroc en tête), recherche, dernier pays mémorisé en localStorage via useSyncExternalStore
-│   │   ├── layout/            # Sidebar.tsx, Header.tsx (Sprint 12B : DropdownMenuLabel enveloppé dans DropdownMenuGroup, correctif bug déconnexion Base UI), DashboardLayout.tsx, DataTable.tsx (TanStack Table v9)
+│   │   ├── ui/               # Composants shadcn/ui (générés) + index.ts (ré-export) ; (Sprint 12A) phone-input.tsx — composant interne (pas de dépendance npm), indicatif pays + numéro ; (Sprint 12C) checkbox.tsx (grille de permissions) ; (Sprint 13B) StatusBadge.tsx — badge de statut coloré partagé Reservation/Location ; (Sprint 13C) phone-input.tsx étendu — 20 indicatifs (Maroc en tête), recherche, dernier pays mémorisé en localStorage via useSyncExternalStore ; (Sprint 13E) button.tsx/card.tsx étendus (animations de clic/survol, `rounded-2xl`/`border-slate-100`, prop `hoverable` sur Card) — pas de nouveaux composants, voir HANDOFF.md
+│   │   ├── layout/            # Sidebar.tsx, Header.tsx (Sprint 12B : DropdownMenuLabel enveloppé dans DropdownMenuGroup, correctif bug déconnexion Base UI), DashboardLayout.tsx, DataTable.tsx (TanStack Table v9) ; (Sprint 13E) BottomNav.tsx — navigation rapide mobile (4 entrées, `md:hidden`), complète Sidebar.tsx (tiroir hamburger, 18 entrées) sans le remplacer ; Sidebar.tsx/Header.tsx : cibles tactiles mobiles ≥48px
 │   │   └── invoices/          # (Sprint 6) InvoicePdf.tsx — template @react-pdf/renderer (pas de logo, aucun asset de marque)
 │   ├── hooks/
 │   │   ├── useUser.ts        # Lecture client de GET /api/auth/me

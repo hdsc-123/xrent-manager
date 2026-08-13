@@ -90,7 +90,7 @@ export function Sidebar({ isOpen, onClose, permissions }: SidebarProps) {
             onClick={onClose}
             aria-current={active ? "page" : undefined}
             className={cn(
-              "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors max-md:min-h-12 max-md:py-3",
               active
                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
                 : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
@@ -128,6 +128,7 @@ export function Sidebar({ isOpen, onClose, permissions }: SidebarProps) {
           <Button
             variant="ghost"
             size="icon"
+            className="max-md:size-12"
             onClick={onClose}
             aria-label="Fermer le menu"
           >
