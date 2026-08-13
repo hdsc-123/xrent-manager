@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import ExcelJS from "exceljs";
 import { prisma } from "@/lib/prisma";
-import { RESERVATION_IMPORT_COLUMNS } from "@/lib/reservations";
+import { RESERVATION_IMPORT_COLUMNS, RESERVATION_IMPORT_COLUMN_MAP } from "@/lib/reservations";
 import { apiFetch } from "./helpers/http";
 import { TEST_BASE_URL } from "./helpers/testServer";
 import { registerTenantAdmin, type AuthenticatedTestUser } from "./helpers/fixtures";
@@ -54,9 +54,14 @@ async function importReservationsFile(
   });
 }
 
-/** Construit une ligne d'import avec les colonnes dans l'ordre de RESERVATION_IMPORT_COLUMNS. */
-function importRow(values: Partial<Record<(typeof RESERVATION_IMPORT_COLUMNS)[number], unknown>>): unknown[] {
-  return RESERVATION_IMPORT_COLUMNS.map((column) => values[column] ?? null);
+/** Construit une ligne d'import (en-têtes français, RESERVATION_IMPORT_COLUMNS) à partir de
+ * valeurs indexées par nom de CHAMP interne (ex. "voucherNumber") — plus lisible dans les
+ * tests que l'en-tête français exact. */
+function importRow(values: Partial<Record<string, unknown>>): unknown[] {
+  return RESERVATION_IMPORT_COLUMNS.map((column) => {
+    const field = (RESERVATION_IMPORT_COLUMN_MAP as Record<string, string>)[column];
+    return values[field] ?? null;
+  });
 }
 
 beforeAll(async () => {

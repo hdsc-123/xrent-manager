@@ -9,7 +9,6 @@ import { apiPatch, ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
 import { DataTable, type DataTableColumn } from "@/components/layout/DataTable";
 import {
-  Badge,
   Button,
   Dialog,
   DialogContent,
@@ -21,6 +20,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  StatusBadge,
 } from "@/components/ui";
 
 export interface LocationRow {
@@ -35,22 +35,6 @@ export interface LocationRow {
   currency: string;
   invoiceId: string | null;
 }
-
-const STATUS_LABELS: Record<string, string> = {
-  PENDING: "En attente",
-  CONFIRMED: "Confirmée",
-  ACTIVE: "En cours",
-  COMPLETED: "Terminée",
-  CANCELLED: "Annulée",
-};
-
-const STATUS_VARIANTS: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-  PENDING: "outline",
-  CONFIRMED: "secondary",
-  ACTIVE: "default",
-  COMPLETED: "secondary",
-  CANCELLED: "destructive",
-};
 
 const CANCELLABLE_STATUSES = new Set(["PENDING", "CONFIRMED", "ACTIVE"]);
 
@@ -93,10 +77,7 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
       {
         accessorKey: "status",
         header: "Statut",
-        cell: ({ getValue }) => {
-          const status = getValue<string>();
-          return <Badge variant={STATUS_VARIANTS[status] ?? "outline"}>{STATUS_LABELS[status] ?? status}</Badge>;
-        },
+        cell: ({ getValue }) => <StatusBadge status={getValue<string>()} />,
       },
       {
         id: "totalPrice",

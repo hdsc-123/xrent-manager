@@ -1,6 +1,8 @@
 import type { Reservation, ReservationStatus, ReservationSource } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
+export { combineDateAndTime, calculateDaysCount } from "@/lib/format";
+
 /**
  * Réservation (Sprint 12C) : étape en amont d'un contrat (Location), importée en masse
  * (Excel) ou saisie manuellement. pickupAgency/dropoffAgency/vehicleCategory restent du
@@ -81,6 +83,7 @@ export async function getReservations(
               { voucherNumber: { contains: filters.search, mode: "insensitive" } },
               { clientFirstName: { contains: filters.search, mode: "insensitive" } },
               { clientLastName: { contains: filters.search, mode: "insensitive" } },
+              { flightNumber: { contains: filters.search, mode: "insensitive" } },
             ],
           }
         : {}),
@@ -229,48 +232,56 @@ export async function updateReservation(
 }
 
 /**
- * Import Excel (Sprint 12C) : en-têtes exacts attendus = les noms de champs ci-dessous
- * (voir l'énoncé du sprint, "champs dans l'ordre Excel"). Colonnes requises minimales :
- * voucherNumber, clientFirstName, clientLastName, startDate, endDate.
+ * Import Excel (Sprint 12C, en-têtes = noms de champs ; Sprint 13B, en-têtes en français) :
+ * `RESERVATION_IMPORT_COLUMN_MAP` fait correspondre chaque en-tête exact attendu (ordre exact
+ * de l'énoncé du sprint) au nom du champ interne correspondant sur `Reservation`.
+ * `RESERVATION_IMPORT_COLUMNS` (en-têtes, dans l'ordre) reste exporté séparément pour
+ * l'affichage (page d'import) et pour construire l'en-tête d'un fichier de test/exemple.
  */
-export const RESERVATION_IMPORT_COLUMNS = [
-  "voucherNumber",
-  "confirmationNumber",
-  "receivedAt",
-  "source",
-  "clientFirstName",
-  "clientLastName",
-  "startDate",
-  "startTime",
-  "endDate",
-  "endTime",
-  "daysCount",
-  "flightNumber",
-  "currency",
-  "totalPrice",
-  "pricePerDay",
-  "vehicleCategory",
-  "pickupAgency",
-  "dropoffAgency",
-  "hasGps",
-  "gpsPrice",
-  "hasBabySeat",
-  "babySeatPrice",
-  "hasExtraDriver",
-  "extraDriverPrice",
-  "mileage",
-  "includedKm",
-  "clientPhone",
-  "notes",
-] as const;
+export const RESERVATION_IMPORT_COLUMN_MAP = {
+  "Numéro voucher": "voucherNumber",
+  "Numéro de confirmation": "confirmationNumber",
+  "Date de réception": "receivedAt",
+  "Broker / Direct": "source",
+  Nom: "clientLastName",
+  Prénom: "clientFirstName",
+  "Date de départ": "startDate",
+  "Heure de départ": "startTime",
+  "Date de retour": "endDate",
+  "Heure de retour": "endTime",
+  "Nombre de jours (facturés)": "daysCount",
+  "Numéro de vol": "flightNumber",
+  Devise: "currency",
+  "Prix total": "totalPrice",
+  "Prix par jour": "pricePerDay",
+  "Catégorie du véhicule": "vehicleCategory",
+  "Agence de départ": "pickupAgency",
+  "Agence de retour": "dropoffAgency",
+  GPS: "hasGps",
+  "Prix GPS": "gpsPrice",
+  "Siège bébé": "hasBabySeat",
+  "Prix siège bébé": "babySeatPrice",
+  "Conducteur supplémentaire": "hasExtraDriver",
+  "Prix conducteur supplémentaire": "extraDriverPrice",
+  Kilométrage: "mileage",
+  "Km inclus": "includedKm",
+  "Téléphone client": "clientPhone",
+  Remarques: "notes",
+} as const;
 
-export const REQUIRED_IMPORT_COLUMNS = [
-  "voucherNumber",
-  "clientFirstName",
-  "clientLastName",
-  "startDate",
-  "endDate",
-] as const;
+export const RESERVATION_IMPORT_COLUMNS = Object.keys(
+  RESERVATION_IMPORT_COLUMN_MAP
+) as (keyof typeof RESERVATION_IMPORT_COLUMN_MAP)[];
+
+/** Champs internes requis (voucherNumber, clientFirstName, clientLastName, startDate,
+ * endDate) + leur en-tête français, pour rapporter une erreur précise par ligne/colonne. */
+export const REQUIRED_IMPORT_FIELDS: { field: string; column: string }[] = [
+  { field: "voucherNumber", column: "Numéro voucher" },
+  { field: "clientFirstName", column: "Prénom" },
+  { field: "clientLastName", column: "Nom" },
+  { field: "startDate", column: "Date de départ" },
+  { field: "endDate", column: "Date de retour" },
+];
 
 function cellToString(value: unknown): string | undefined {
   if (value === null || value === undefined) {
@@ -315,7 +326,7 @@ function cellToBoolean(value: unknown): boolean {
   }
   if (typeof value === "string") {
     const normalized = value.trim().toUpperCase();
-    return normalized === "OUI" || normalized === "TRUE" || normalized === "1" || normalized === "YES";
+    return normalized === "OUI" || normalized === "O" || normalized === "TRUE" || normalized === "1" || normalized === "YES";
   }
   return false;
 }
@@ -336,18 +347,26 @@ export type ParsedReservationRow =
   | { data: Omit<CreateReservationInput, "tenantId"> }
   | { error: string };
 
-export function parseReservationImportRow(row: Record<string, unknown>): ParsedReservationRow {
-  const voucherNumber = cellToString(row.voucherNumber);
-  const clientFirstName = cellToString(row.clientFirstName);
-  const clientLastName = cellToString(row.clientLastName);
-  const startDate = cellToDate(row.startDate);
-  const endDate = cellToDate(row.endDate);
+const REQUIRED_IMPORT_VALUE_GETTERS: Record<string, (row: Record<string, unknown>) => unknown> = {
+  voucherNumber: (row) => cellToString(row.voucherNumber),
+  clientFirstName: (row) => cellToString(row.clientFirstName),
+  clientLastName: (row) => cellToString(row.clientLastName),
+  startDate: (row) => cellToDate(row.startDate),
+  endDate: (row) => cellToDate(row.endDate),
+};
 
-  if (!voucherNumber || !clientFirstName || !clientLastName || !startDate || !endDate) {
-    return {
-      error: `Colonnes requises manquantes ou invalides (${REQUIRED_IMPORT_COLUMNS.join(", ")}).`,
-    };
+export function parseReservationImportRow(row: Record<string, unknown>): ParsedReservationRow {
+  for (const { field, column } of REQUIRED_IMPORT_FIELDS) {
+    if (!REQUIRED_IMPORT_VALUE_GETTERS[field](row)) {
+      return { error: `Colonne obligatoire manquante: ${column}` };
+    }
   }
+
+  const voucherNumber = cellToString(row.voucherNumber) as string;
+  const clientFirstName = cellToString(row.clientFirstName) as string;
+  const clientLastName = cellToString(row.clientLastName) as string;
+  const startDate = cellToDate(row.startDate) as Date;
+  const endDate = cellToDate(row.endDate) as Date;
 
   if (endDate < startDate) {
     return { error: "endDate doit être postérieure ou égale à startDate." };
@@ -403,24 +422,6 @@ export async function deleteReservation(tenantId: string, reservationId: string)
 
   await prisma.reservation.delete({ where: { id: reservationId } });
   return true;
-}
-
-/**
- * Combine une date (typiquement minuit UTC, telle qu'importée/saisie) et une heure
- * "HH:mm" en un DateTime unique, en UTC (DOMAINRULES.md section 15). Sans heure fournie
- * ou heure non reconnue, la date est renvoyée telle quelle.
- */
-export function combineDateAndTime(date: Date, time?: string): Date {
-  if (!time) {
-    return date;
-  }
-  const match = /^(\d{1,2}):(\d{2})$/.exec(time.trim());
-  if (!match) {
-    return date;
-  }
-  const combined = new Date(date);
-  combined.setUTCHours(Number(match[1]), Number(match[2]), 0, 0);
-  return combined;
 }
 
 /** Marque la réservation CONVERTED et l'associe à la Location créée (voir la route

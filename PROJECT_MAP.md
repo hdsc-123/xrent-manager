@@ -86,7 +86,7 @@ xrent-manager/
 │   │   │   │   ├── page.tsx, LocationsTable.tsx, loading.tsx
 │   │   │   │   ├── new/page.tsx
 │   │   │   │   └── [id]/page.tsx, LocationActions.tsx
-│   │   │   ├── reservations/       # (Sprint 12C) CRUD, machine à états, import Excel, conversion en contrat — permissions.view/create/edit/delete/import/convert
+│   │   │   ├── reservations/       # (Sprint 12C) CRUD, machine à états, import Excel, conversion en contrat — permissions.view/create/edit/delete/import/convert ; (Sprint 13B) affichage complet (16 colonnes) + filtres date/recherche étendue, import Excel en-têtes français
 │   │   │   │   ├── page.tsx, ReservationsTable.tsx
 │   │   │   │   ├── new/page.tsx
 │   │   │   │   ├── import/page.tsx, columns.ts
@@ -185,10 +185,10 @@ xrent-manager/
 │   │           ├── [id]/
 │   │           │   ├── route.ts            # GET/PATCH/DELETE — permissions.view/edit/delete
 │   │           │   └── convert/route.ts    # POST — crée Location+Invoice, permissions.convert
-│   │           └── import/route.ts         # POST — .xlsx (exceljs), mode preview/commit, permissions.import
+│   │           └── import/route.ts         # POST — .xlsx (exceljs), mode preview/commit, permissions.import ; (Sprint 13B) en-têtes français, mapping vers champ interne avant parsing
 │   ├── proxy.ts              # Redirige vers /login sur /dashboard*, /settings* si non authentifié (middleware.ts est déprécié dans cette version de Next.js)
 │   ├── components/
-│   │   ├── ui/               # Composants shadcn/ui (générés) + index.ts (ré-export) ; (Sprint 12A) phone-input.tsx — composant interne (pas de dépendance npm), indicatif pays + numéro ; (Sprint 12C) checkbox.tsx (grille de permissions)
+│   │   ├── ui/               # Composants shadcn/ui (générés) + index.ts (ré-export) ; (Sprint 12A) phone-input.tsx — composant interne (pas de dépendance npm), indicatif pays + numéro ; (Sprint 12C) checkbox.tsx (grille de permissions) ; (Sprint 13B) StatusBadge.tsx — badge de statut coloré partagé Reservation/Location
 │   │   ├── layout/            # Sidebar.tsx, Header.tsx (Sprint 12B : DropdownMenuLabel enveloppé dans DropdownMenuGroup, correctif bug déconnexion Base UI), DashboardLayout.tsx, DataTable.tsx (TanStack Table v9)
 │   │   └── invoices/          # (Sprint 6) InvoicePdf.tsx — template @react-pdf/renderer (pas de logo, aucun asset de marque)
 │   ├── hooks/
@@ -200,7 +200,7 @@ xrent-manager/
 │   │   ├── auth.ts          # Config NextAuth (CredentialsProvider, sessions JWT, callbacks jwt/session/signIn)
 │   │   ├── authz.ts         # getSessionUser(), canAccessAgency(), getAccessibleAgencyIds() — session + autorisation agence
 │   │   ├── api.ts           # Wrapper fetch pour /api/* (normalise les erreurs { error })
-│   │   ├── format.ts        # (Sprint 5) formatMoney() — formatage des montants entiers + devise
+│   │   ├── format.ts        # (Sprint 5) formatMoney() — formatage des montants entiers + devise ; (Sprint 13B) combineDateAndTime()/calculateDaysCount() — fonctions pures (pas d'import Prisma), utilisables depuis un composant client, réexportées par reservations.ts
 │   │   ├── clients.ts       # (Sprint 5 : getClients/getClientById/createClient ; Sprint 8 : updateClient/deleteClient ; Sprint 12C : findDuplicateClient — exact email/téléphone/CIN/permis + fuzzy nom Levenshtein) — tenant-scopé
 │   │   ├── vehicles.ts      # (Sprint 5) CRUD + checkAvailability — tenant/agence-scopé
 │   │   ├── locations.ts     # (Sprint 5) CRUD + calculateTotalPrice + machine à états (canTransition)
@@ -214,7 +214,7 @@ xrent-manager/
 │   │   ├── invitations.ts   # (Sprint 9) createInvitation/acceptInvitation/declineInvitation/revokeInvitation — email/rôle toujours dérivés de l'invitation
 │   │   ├── audit.ts         # (Sprint 9) logAction/getAuditLogs — n'échoue jamais l'action métier appelante ; (Sprint 10) filtre action, câblé sur tout le CRUD métier (vehicles/locations/clients/invoices/payments/maintenances/alerts, voir routes API correspondantes) ; (Sprint 12C) filtres from/to
 │   │   ├── password-policy.ts # (Sprint 9) validatePassword() — min 8 caractères + majuscule + chiffre + spécial
-│   │   ├── reservations.ts  # (Sprint 12C) CRUD + machine à états + parsing d'import Excel (parseReservationImportRow) + combineDateAndTime
+│   │   ├── reservations.ts  # (Sprint 12C) CRUD + machine à états + parsing d'import Excel (parseReservationImportRow) + combineDateAndTime ; (Sprint 13B) en-têtes d'import en français (RESERVATION_IMPORT_COLUMN_MAP), erreurs de colonne obligatoire précises par champ
 │   │   ├── permissions.ts   # (Sprint 12C) catalogue PERMISSIONS (code, pas de table) + groupes par défaut + can()/getEffectivePermissions() + CRUD PermissionGroup + assignation par user
 │   │   ├── cash-register.ts # (Sprint 13A) CashRegister (singleton par tenant)/CashEntry (append-only)/ExpenseCategory — recomputeCashRegisterBalance recalcule toujours previousBalance/currentMonth/currentBalance depuis les CashEntry réels (jamais un compteur incrémenté), même principe que recomputeInvoiceStatus
 │   │   └── utils.ts         # cn() — généré par shadcn init
@@ -238,7 +238,7 @@ xrent-manager/
 │       ├── audit.test.ts      # (Sprint 9) logAction, GET /api/audit ADMIN-only et tenant-scopé ; (Sprint 10) traçabilité de chaque ressource métier instrumentée (vehicles/locations/clients/invoices/payments/maintenances/alerts)
 │       ├── e2e.test.ts        # (Sprint 9) Scénario complet inscription→facturation→rapport + sécurité ciblée sur les nouvelles surfaces
 │       ├── e2e-full.test.ts   # (Sprint 10) Scénario complet inscription→sélection de tenant (Option B)→CRUD complet (dont maintenances/alertes)→facturation→rapports→édition profil→vérification finale du journal d'audit
-│       ├── reservations.test.ts # (Sprint 12C) CRUD, machine à états, import Excel (fichier généré via exceljs), conversion en contrat + détection de doublon client à la conversion
+│       ├── reservations.test.ts # (Sprint 12C) CRUD, machine à états, import Excel (fichier généré via exceljs), conversion en contrat + détection de doublon client à la conversion ; (Sprint 13B) lignes de test construites via le mapping en-tête français → champ interne
 │       ├── permissions.test.ts  # (Sprint 12C) CRUD groupes de permissions, assignation par user, application réelle sur une route gated (reservations.*)
 │       ├── cash-register.test.ts    # (Sprint 13A) CRUD écritures/catégories, recalcul du solde (previousBalance/monthEntries/monthExpenses/finalBalance), isolation multi-tenant
 │       ├── location-payment.test.ts # (Sprint 13A) Paiement intégré à POST /api/locations : simple/partiel/mixte/au retour, impact sur le statut de facture et sur le solde de caisse
@@ -348,7 +348,7 @@ D'après les principes produit de démarrage :
 - Agences (CRUD + UI implémentés, Sprint 3–4 ; coordonnées professionnelles — ville/adresse/téléphone/email/responsable — ajoutées Sprint 12A)
 - Utilisateurs et rôles (inscription + rôles `ADMIN`/`MEMBER` implémentés Sprint 3 ; liste en lecture seule Sprint 4 ; modification de rôle, suppression, invitation implémentées Sprint 9, avec garde "dernier ADMIN" ; édition du profil par l'user lui-même implémentée Sprint 10 (`/api/users/me`) ; granularité fine des permissions au-delà de `ADMIN`/`MEMBER` reste À DÉCIDER)
 - Véhicules (CRUD + UI + disponibilité implémentés, Sprint 5 ; catégorie = champ texte libre sur `Vehicle`, pas de modèle `Category` dédié — voir DOMAINRULES.md section 6 ; fiche technique professionnelle — châssis/couleur/portes/places/boîte/carburant/puissance/cylindrée/climatisation/GPS/photo — ajoutée Sprint 12A)
-- Réservations et contrats (`Location` fusionne toujours réservation confirmée et contrat, Sprint 5, inchangé ; kilométrage départ/retour et caution ajoutés Sprint 12A ; **Sprint 12C** ajoute un modèle `Reservation` distinct et amont — réservation brute reçue par broker/direct, avant attribution d'un véhicule réel — avec import Excel et conversion explicite vers `Location`, voir DOMAINRULES.md section 21)
+- Réservations et contrats (`Location` fusionne toujours réservation confirmée et contrat, Sprint 5, inchangé ; kilométrage départ/retour et caution ajoutés Sprint 12A ; **Sprint 12C** ajoute un modèle `Reservation` distinct et amont — réservation brute reçue par broker/direct, avant attribution d'un véhicule réel — avec import Excel et conversion explicite vers `Location`, voir DOMAINRULES.md section 21 ; **Sprint 13B** passe l'import Excel en en-têtes français, complète `ReservationsTable` (16 colonnes, filtres date) et introduit `StatusBadge` (badge de statut coloré partagé avec `Location`), voir DOMAINRULES.md section 24)
 - Permissions granulaires (modèle `PermissionGroup`/`GroupPermission`/`UserPermission` implémenté Sprint 12C, catalogue de clés en code — voir DOMAINRULES.md section 22 ; appliqué au module Réservations et à la sidebar uniquement, modules existants toujours sur rôle `ADMIN`/`MEMBER` + `canAccessAgency()`)
 - Clients (modèle `Client` minimal implémenté Sprint 5 — nom/email/téléphone ; module dédié complet implémenté Sprint 8 — CRUD, page `/dashboard/clients*`, en plus de la sélection/création inline déjà disponible depuis le formulaire de location ; prénom/nom séparés, téléphone secondaire, adresse, pièce d'identité et permis de conduire ajoutés Sprint 12A)
 - Facturation (modèle `Invoice` implémenté Sprint 6 — liée à une `Location`, numérotation par tenant, TVA/remise/total, machine à états, export PDF)

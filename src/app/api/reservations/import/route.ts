@@ -3,17 +3,23 @@ import ExcelJS from "exceljs";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
-import { createReservation, parseReservationImportRow, RESERVATION_IMPORT_COLUMNS } from "@/lib/reservations";
+import {
+  createReservation,
+  parseReservationImportRow,
+  RESERVATION_IMPORT_COLUMN_MAP,
+  RESERVATION_IMPORT_COLUMNS,
+} from "@/lib/reservations";
 import { logAction } from "@/lib/audit";
 
 /**
- * Import Excel des réservations (Sprint 12C) — .xlsx uniquement, première feuille, première
- * ligne = en-têtes exacts (voir RESERVATION_IMPORT_COLUMNS, src/lib/reservations.ts). Chaque
- * ligne est validée indépendamment : les lignes invalides sont rapportées sans bloquer
- * l'import des lignes valides. Une ligne dont le voucherNumber existe déjà pour ce tenant
- * (import précédent ou doublon au sein du même fichier) est comptée comme doublon et non
- * réimportée — pas de fusion, l'énoncé du sprint ne détaille pas de résolution de doublon
- * au niveau réservation (contrairement aux clients, voir DOMAINRULES.md section 9).
+ * Import Excel des réservations (Sprint 12C ; en-têtes en français depuis le Sprint 13B) —
+ * .xlsx uniquement, première feuille, première ligne = en-têtes exacts en français (voir
+ * RESERVATION_IMPORT_COLUMN_MAP, src/lib/reservations.ts). Chaque ligne est validée
+ * indépendamment : les lignes invalides sont rapportées sans bloquer l'import des lignes
+ * valides. Une ligne dont le voucherNumber existe déjà pour ce tenant (import précédent ou
+ * doublon au sein du même fichier) est comptée comme doublon et non réimportée — pas de
+ * fusion, l'énoncé du sprint ne détaille pas de résolution de doublon au niveau réservation
+ * (contrairement aux clients, voir DOMAINRULES.md section 9).
  */
 export async function POST(request: Request) {
   const user = await getSessionUser();
@@ -61,15 +67,18 @@ export async function POST(request: Request) {
   }
 
   const headerRow = worksheet.getRow(1);
-  const columnIndexByHeader = new Map<string, number>();
+  // Index par nom de CHAMP interne (jamais par en-tête français directement) : ce mapping
+  // isole le reste de la route (et parseReservationImportRow) du texte exact des en-têtes.
+  const columnIndexByField = new Map<string, number>();
   headerRow.eachCell((cell, colNumber) => {
     const header = String(cell.value ?? "").trim();
-    if (RESERVATION_IMPORT_COLUMNS.includes(header as (typeof RESERVATION_IMPORT_COLUMNS)[number])) {
-      columnIndexByHeader.set(header, colNumber);
+    const field = (RESERVATION_IMPORT_COLUMN_MAP as Record<string, string>)[header];
+    if (field) {
+      columnIndexByField.set(field, colNumber);
     }
   });
 
-  if (columnIndexByHeader.size === 0) {
+  if (columnIndexByField.size === 0) {
     return NextResponse.json(
       { error: `Aucun en-tête reconnu. En-têtes attendus : ${RESERVATION_IMPORT_COLUMNS.join(", ")}.` },
       { status: 400 }
@@ -98,8 +107,8 @@ export async function POST(request: Request) {
     }
 
     const rowObject: Record<string, unknown> = {};
-    for (const [header, colIndex] of columnIndexByHeader) {
-      rowObject[header] = row.getCell(colIndex).value;
+    for (const [field, colIndex] of columnIndexByField) {
+      rowObject[field] = row.getCell(colIndex).value;
     }
 
     if (Object.values(rowObject).every((value) => value === null || value === undefined || value === "")) {

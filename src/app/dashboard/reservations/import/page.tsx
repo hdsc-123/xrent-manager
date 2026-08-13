@@ -18,7 +18,7 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui";
-import { RESERVATION_IMPORT_COLUMNS_CLIENT } from "./columns";
+import { RESERVATION_IMPORT_COLUMNS_CLIENT, REQUIRED_IMPORT_COLUMNS_CLIENT } from "./columns";
 
 interface PreviewRow {
   row: number;
@@ -106,8 +106,8 @@ export default function ImportReservationsPage() {
         <CardHeader>
           <CardTitle>Fichier</CardTitle>
           <CardDescription>
-            Fichier .xlsx, première feuille, première ligne = en-têtes exacts : {RESERVATION_IMPORT_COLUMNS_CLIENT.join(", ")}.
-            Colonnes requises : voucherNumber, clientFirstName, clientLastName, startDate, endDate.
+            Fichier .xlsx, première feuille, première ligne = en-têtes exacts (en français) : {RESERVATION_IMPORT_COLUMNS_CLIENT.join(", ")}.
+            Colonnes requises : {REQUIRED_IMPORT_COLUMNS_CLIENT.join(", ")}.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">

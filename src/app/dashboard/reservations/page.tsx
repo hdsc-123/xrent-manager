@@ -3,7 +3,7 @@ import { Plus, Upload } from "lucide-react";
 import type { ReservationSource, ReservationStatus } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
-import { prisma } from "@/lib/prisma";
+import { getReservations } from "@/lib/reservations";
 import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { ReservationsTable, type ReservationRow } from "./ReservationsTable";
 
@@ -20,7 +20,7 @@ const SOURCE_OPTIONS: { value: ReservationSource; label: string }[] = [
 ];
 
 interface PageProps {
-  searchParams: Promise<{ status?: string; source?: string; search?: string }>;
+  searchParams: Promise<{ status?: string; source?: string; search?: string; from?: string; to?: string }>;
 }
 
 export default async function ReservationsPage({ searchParams }: PageProps) {
@@ -42,35 +42,38 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
   const canCreate = await can(user, "reservations.create");
   const canImport = await can(user, "reservations.import");
 
-  const reservations = await prisma.reservation.findMany({
-    where: {
-      tenantId: user.tenantId,
-      ...(params.status ? { status: params.status as ReservationStatus } : {}),
-      ...(params.source ? { source: params.source as ReservationSource } : {}),
-      ...(params.search
-        ? {
-            OR: [
-              { voucherNumber: { contains: params.search, mode: "insensitive" } },
-              { clientFirstName: { contains: params.search, mode: "insensitive" } },
-              { clientLastName: { contains: params.search, mode: "insensitive" } },
-            ],
-          }
-        : {}),
-    },
-    orderBy: { startDate: "desc" },
+  const reservations = await getReservations(user.tenantId, {
+    ...(params.status ? { status: params.status as ReservationStatus } : {}),
+    ...(params.source ? { source: params.source as ReservationSource } : {}),
+    ...(params.search ? { search: params.search } : {}),
+    ...(params.from ? { from: new Date(params.from) } : {}),
+    ...(params.to ? { to: new Date(params.to) } : {}),
   });
 
   const rows: ReservationRow[] = reservations.map((reservation) => ({
     id: reservation.id,
     voucherNumber: reservation.voucherNumber,
+    source: reservation.source,
+    flightNumber: reservation.flightNumber,
     clientFirstName: reservation.clientFirstName,
     clientLastName: reservation.clientLastName,
     startDate: reservation.startDate.toISOString(),
+    startTime: reservation.startTime,
     endDate: reservation.endDate.toISOString(),
-    status: reservation.status,
-    source: reservation.source,
+    endTime: reservation.endTime,
+    pickupAgency: reservation.pickupAgency,
+    dropoffAgency: reservation.dropoffAgency,
+    vehicleCategory: reservation.vehicleCategory,
+    hasGps: reservation.hasGps,
+    hasBabySeat: reservation.hasBabySeat,
+    hasExtraDriver: reservation.hasExtraDriver,
     totalPrice: reservation.totalPrice,
+    gpsPrice: reservation.gpsPrice,
+    babySeatPrice: reservation.babySeatPrice,
+    extraDriverPrice: reservation.extraDriverPrice,
     currency: reservation.currency,
+    notes: reservation.notes,
+    status: reservation.status,
   }));
 
   return (
@@ -138,6 +141,32 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
         </div>
 
         <div className="flex flex-col gap-1.5">
+          <label htmlFor="from" className="text-xs font-medium text-muted-foreground">
+            Du
+          </label>
+          <input
+            id="from"
+            type="date"
+            name="from"
+            defaultValue={params.from ?? ""}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="to" className="text-xs font-medium text-muted-foreground">
+            Au
+          </label>
+          <input
+            id="to"
+            type="date"
+            name="to"
+            defaultValue={params.to ?? ""}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1.5">
           <label htmlFor="search" className="text-xs font-medium text-muted-foreground">
             Recherche
           </label>
@@ -145,7 +174,7 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
             id="search"
             type="text"
             name="search"
-            placeholder="Voucher, nom, prénom..."
+            placeholder="Voucher, nom, prénom, n° vol..."
             defaultValue={params.search ?? ""}
             className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
           />
@@ -154,7 +183,7 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
         <Button type="submit" variant="outline" size="sm">
           Filtrer
         </Button>
-        {(params.status || params.source || params.search) && (
+        {(params.status || params.source || params.search || params.from || params.to) && (
           <Button render={<Link href="/dashboard/reservations" />} variant="ghost" size="sm">
             Réinitialiser
           </Button>
