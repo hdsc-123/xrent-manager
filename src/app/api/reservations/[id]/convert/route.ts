@@ -283,6 +283,7 @@ export async function POST(request: Request, { params }: RouteParams) {
         tenantId: user.tenantId,
         userId: user.id,
         locationId: location.id,
+        contractNumber: location.contractNumber,
         invoice,
         clientName: client?.name,
         payment: body.payment,

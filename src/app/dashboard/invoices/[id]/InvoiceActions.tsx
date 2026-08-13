@@ -11,6 +11,7 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  Checkbox,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -56,12 +57,21 @@ interface InvoiceActionsProps {
   currency: string;
 }
 
+function formatMoneyLocal(amountInSmallestUnit: number, currency: string): string {
+  return new Intl.NumberFormat("fr-FR", { style: "currency", currency }).format(amountInSmallestUnit / 100);
+}
+
 export function InvoiceActions({ id, status, remainingBalance, currency }: InvoiceActionsProps) {
   const router = useRouter();
   const [isChangingStatus, setIsChangingStatus] = useState(false);
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
+  const [mixed, setMixed] = useState(false);
   const [amount, setAmount] = useState((remainingBalance / 100).toFixed(2));
   const [method, setMethod] = useState<PaymentMethod>("CASH");
+  const [amount1, setAmount1] = useState("");
+  const [method1, setMethod1] = useState<PaymentMethod>("CASH");
+  const [amount2, setAmount2] = useState("");
+  const [method2, setMethod2] = useState<PaymentMethod>("CARD");
   const [reference, setReference] = useState("");
   const [notes, setNotes] = useState("");
   const [paymentError, setPaymentError] = useState<string | null>(null);
@@ -84,22 +94,47 @@ export function InvoiceActions({ id, status, remainingBalance, currency }: Invoi
     event.preventDefault();
     setPaymentError(null);
 
-    const amountValue = Math.round(Number(amount.replace(",", ".")) * 100);
-    if (!Number.isInteger(amountValue) || amountValue <= 0) {
-      setPaymentError("Le montant doit être un nombre positif.");
+    // Paiement mixte (Sprint 14B) : plusieurs lignes méthode+montant dans la même opération,
+    // même logique que le paiement intégré à la création de location (src/lib/location-payment.ts)
+    // — le total est validé contre le solde restant *avant* d'écrire quoi que ce soit, pour ne
+    // jamais laisser un paiement partiel orphelin derrière un message d'erreur technique.
+    const lines = mixed
+      ? [
+          { method: method1, amount: amount1 ? Math.round(Number(amount1.replace(",", ".")) * 100) : 0 },
+          { method: method2, amount: amount2 ? Math.round(Number(amount2.replace(",", ".")) * 100) : 0 },
+        ].filter((line) => line.amount > 0)
+      : [{ method, amount: Math.round(Number(amount.replace(",", ".")) * 100) }];
+
+    if (lines.length === 0 || lines.some((line) => !Number.isInteger(line.amount) || line.amount <= 0)) {
+      setPaymentError(
+        mixed
+          ? "Le paiement mixte nécessite au moins un montant positif."
+          : "Le montant doit être un nombre positif."
+      );
+      return;
+    }
+
+    const linesTotal = lines.reduce((sum, line) => sum + line.amount, 0);
+    if (linesTotal > remainingBalance) {
+      setPaymentError(
+        `Le total du paiement (${formatMoneyLocal(linesTotal, currency)}) dépasse le solde restant dû ` +
+          `(${formatMoneyLocal(remainingBalance, currency)}).`
+      );
       return;
     }
 
     setIsSubmittingPayment(true);
     try {
-      await apiPost("/api/payments", {
-        invoiceId: id,
-        amount: amountValue,
-        method,
-        reference: reference || undefined,
-        notes: notes || undefined,
-      });
-      toast.success("Paiement enregistré.");
+      for (const line of lines) {
+        await apiPost("/api/payments", {
+          invoiceId: id,
+          amount: line.amount,
+          method: line.method,
+          reference: reference || undefined,
+          notes: notes || undefined,
+        });
+      }
+      toast.success(lines.length > 1 ? "Paiements enregistrés." : "Paiement enregistré.");
       setShowPaymentDialog(false);
       router.refresh();
     } catch (err) {
@@ -168,6 +203,57 @@ export function InvoiceActions({ id, status, remainingBalance, currency }: Invoi
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleRecordPayment} noValidate className="flex flex-col gap-4">
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox checked={mixed} onCheckedChange={(checked) => setMixed(checked === true)} />
+              Paiement mixte (deux modes de règlement)
+            </label>
+
+            {mixed ? (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="method1">Mode 1</Label>
+                  <select
+                    id="method1"
+                    value={method1}
+                    onChange={(e) => setMethod1(e.target.value as PaymentMethod)}
+                    className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                  >
+                    {METHOD_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <Input
+                    inputMode="decimal"
+                    placeholder={`Montant 1 (${currency})`}
+                    value={amount1}
+                    onChange={(e) => setAmount1(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="method2">Mode 2</Label>
+                  <select
+                    id="method2"
+                    value={method2}
+                    onChange={(e) => setMethod2(e.target.value as PaymentMethod)}
+                    className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                  >
+                    {METHOD_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <Input
+                    inputMode="decimal"
+                    placeholder={`Montant 2 (${currency})`}
+                    value={amount2}
+                    onChange={(e) => setAmount2(e.target.value)}
+                  />
+                </div>
+              </div>
+            ) : (
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="amount" required>Montant ({currency})</Label>
@@ -195,6 +281,7 @@ export function InvoiceActions({ id, status, remainingBalance, currency }: Invoi
                 </select>
               </div>
             </div>
+            )}
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="reference">

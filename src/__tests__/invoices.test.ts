@@ -314,3 +314,26 @@ describe("DELETE /api/invoices/[id]", () => {
     expect(response.status).toBe(409);
   });
 });
+
+describe("GET /api/invoices/[id]/pdf", () => {
+  it("génère le PDF de la facture (Sprint 14B : inclut désormais le numéro de contrat)", async () => {
+    const createResponse = await createInvoice(adminA);
+    const invoiceId = (await createResponse.json()).invoice.id;
+
+    const response = await apiFetch(`/api/invoices/${invoiceId}/pdf`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/pdf");
+  });
+
+  it("refuse l'accès à la facture d'un autre tenant", async () => {
+    const createResponse = await createInvoice(adminA);
+    const invoiceId = (await createResponse.json()).invoice.id;
+
+    const response = await apiFetch(`/api/invoices/${invoiceId}/pdf`, {
+      headers: { Cookie: adminB.sessionCookie },
+    });
+    expect(response.status).toBe(404);
+  });
+});

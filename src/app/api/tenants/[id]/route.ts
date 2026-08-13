@@ -42,6 +42,8 @@ export async function GET(_request: Request, { params }: RouteParams) {
 
 interface UpdateTenantBody {
   name?: string;
+  contractNumberPrefix?: string;
+  lastContractNumber?: number;
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
@@ -72,9 +74,25 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "name est requis." }, { status: 400 });
   }
 
+  if (
+    body.lastContractNumber !== undefined &&
+    (!Number.isInteger(body.lastContractNumber) || body.lastContractNumber < 0)
+  ) {
+    return NextResponse.json(
+      { error: "lastContractNumber doit être un entier positif ou nul." },
+      { status: 400 }
+    );
+  }
+
   const tenant = await prisma.tenant.update({
     where: { id },
-    data: { name: body.name },
+    data: {
+      name: body.name,
+      ...(body.contractNumberPrefix !== undefined
+        ? { contractNumberPrefix: body.contractNumberPrefix.trim() }
+        : {}),
+      ...(body.lastContractNumber !== undefined ? { lastContractNumber: body.lastContractNumber } : {}),
+    },
   });
 
   return NextResponse.json({ tenant });

@@ -11,6 +11,7 @@ export interface EntryRow {
   amount: number;
   currency: string;
   description: string | null;
+  contractNumber: string | null;
   clientName: string | null;
   paymentMethod: string | null;
   createdAt: string;
@@ -34,6 +35,11 @@ export function EntriesTable({ entries }: { entries: EntryRow[] }) {
       },
       { accessorKey: "category", header: "Catégorie", cell: ({ getValue }) => getValue<string>() ?? "—" },
       { accessorKey: "description", header: "Description", cell: ({ getValue }) => getValue<string>() ?? "—" },
+      {
+        accessorKey: "contractNumber",
+        header: "N° contrat",
+        cell: ({ getValue }) => getValue<string | null>() ?? "—",
+      },
       { accessorKey: "clientName", header: "Client", cell: ({ getValue }) => getValue<string>() ?? "—" },
       {
         accessorKey: "paymentMethod",

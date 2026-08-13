@@ -116,6 +116,27 @@ describe("PATCH /api/tenants/[id]", () => {
     });
     expect(response.status).toBe(403);
   });
+
+  it("Sprint 14B — met à jour le préfixe et le dernier numéro de contrat", async () => {
+    const response = await apiFetch(`/api/tenants/${adminA.tenantId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Tenants Test A", contractNumberPrefix: "RAK", lastContractNumber: 42 }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.tenant.contractNumberPrefix).toBe("RAK");
+    expect(body.tenant.lastContractNumber).toBe(42);
+  });
+
+  it("Sprint 14B — refuse un lastContractNumber négatif ou non entier", async () => {
+    const response = await apiFetch(`/api/tenants/${adminA.tenantId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Tenants Test A", lastContractNumber: -1 }),
+    });
+    expect(response.status).toBe(400);
+  });
 });
 
 it("POST /api/tenants n'existe pas : la création de tenant est exclusive à /api/auth/register (Sprint 11, écart orphelin corrigé — voir HANDOFF.md)", async () => {

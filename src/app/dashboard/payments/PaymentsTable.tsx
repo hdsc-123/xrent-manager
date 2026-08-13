@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui";
 export interface PaymentRow {
   id: string;
   invoiceNumber: string;
+  contractNumber: string | null;
   clientName: string;
   method: string;
   paidAt: string;
@@ -36,6 +37,11 @@ export function PaymentsTable({ payments }: { payments: PaymentRow[] }) {
             {row.original.invoiceNumber}
           </Link>
         ),
+      },
+      {
+        accessorKey: "contractNumber",
+        header: "N° contrat",
+        cell: ({ getValue }) => getValue<string | null>() ?? "—",
       },
       { accessorKey: "clientName", header: "Client" },
       {

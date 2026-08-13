@@ -1,6 +1,7 @@
 import type { Payment, PaymentMethod } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getInvoiceById } from "@/lib/invoices";
+import { formatMoney } from "@/lib/format";
 
 export class PaymentInvoiceNotFoundError extends Error {
   constructor() {
@@ -26,8 +27,13 @@ export class InvalidPaymentAmountError extends Error {
 export class PaymentExceedsRemainingBalanceError extends Error {
   remainingBalance: number;
 
-  constructor(remainingBalance: number) {
-    super(`Le montant dépasse le solde restant dû (${remainingBalance}).`);
+  /**
+   * Message toujours exprimé dans la devise de la facture (jamais un entier brut de centimes)
+   * — corrige un message technique incompréhensible pour un agent (Sprint 14B, voir
+   * DOMAINRULES.md section 10).
+   */
+  constructor(remainingBalance: number, currency: string) {
+    super(`Le montant dépasse le solde restant dû (${formatMoney(remainingBalance, currency)}).`);
     this.name = "PaymentExceedsRemainingBalanceError";
     this.remainingBalance = remainingBalance;
   }
@@ -118,7 +124,7 @@ export async function createPayment(data: CreatePaymentInput): Promise<Payment> 
 
   const remainingBalance = invoice.totalAmount - invoice.amountPaid;
   if (data.amount > remainingBalance) {
-    throw new PaymentExceedsRemainingBalanceError(remainingBalance);
+    throw new PaymentExceedsRemainingBalanceError(remainingBalance, invoice.currency);
   }
 
   const payment = await prisma.payment.create({
@@ -169,7 +175,7 @@ export async function updatePayment(
     // Solde restant en excluant ce paiement lui-même, pour permettre d'ajuster son propre montant.
     const remainingExcludingThis = invoice.totalAmount - (invoice.amountPaid - existing.amount);
     if (data.amount > remainingExcludingThis) {
-      throw new PaymentExceedsRemainingBalanceError(remainingExcludingThis);
+      throw new PaymentExceedsRemainingBalanceError(remainingExcludingThis, invoice.currency);
     }
   }
 

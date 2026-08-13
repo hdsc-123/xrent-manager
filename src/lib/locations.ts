@@ -68,6 +68,16 @@ export class MissingPriceError extends Error {
   }
 }
 
+export class LocationLockedError extends Error {
+  constructor() {
+    super(
+      "Ce contrat est verrouillé : les dates ne sont plus modifiables une fois la location " +
+        "confirmée. Seuls le statut, le kilométrage de retour, la caution et les notes restent éditables."
+    );
+    this.name = "LocationLockedError";
+  }
+}
+
 /**
  * Machine à états explicite (ARCHITECTURE.md section 12) : aucune transition non listée
  * n'est autorisée. COMPLETED et CANCELLED sont des états terminaux.
@@ -88,6 +98,33 @@ export function canTransition(from: LocationStatus, to: LocationStatus): boolean
 export function calculateTotalPrice(pricePerDay: number, start: Date, end: Date): number {
   const days = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)));
   return pricePerDay * days;
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}
+
+/**
+ * Génère le prochain numéro de contrat séquentiel pour le tenant : "{prefix}-{5 chiffres}"
+ * (ou juste "{5 chiffres}" si aucun préfixe n'est configuré). Contrairement à la numérotation
+ * des factures (générée par COUNT(), src/lib/invoices.ts), le compteur est un champ persisté
+ * (Tenant.lastContractNumber) incrémenté atomiquement (UPDATE ... SET n = n + 1 côté Postgres,
+ * donc sans condition de course même sous forte concurrence) — nécessaire pour permettre de le
+ * redéfinir manuellement depuis les paramètres (DOMAINRULES.md section 29).
+ */
+export async function generateContractNumber(tenantId: string): Promise<string> {
+  const tenant = await prisma.tenant.update({
+    where: { id: tenantId },
+    data: { lastContractNumber: { increment: 1 } },
+    select: { lastContractNumber: true, contractNumberPrefix: true },
+  });
+  const padded = String(tenant.lastContractNumber).padStart(5, "0");
+  return tenant.contractNumberPrefix ? `${tenant.contractNumberPrefix}-${padded}` : padded;
 }
 
 export interface LocationFilters {
@@ -170,24 +207,42 @@ export async function createLocation(data: CreateLocationInput): Promise<Locatio
 
   const totalPrice = calculateTotalPrice(pricePerDay, data.startDate, data.endDate);
 
-  return prisma.location.create({
-    data: {
-      tenantId: data.tenantId,
-      agencyId: data.agencyId,
-      vehicleId: data.vehicleId,
-      clientId: data.clientId,
-      startDate: data.startDate,
-      endDate: data.endDate,
-      status: data.status ?? "PENDING",
-      pricePerDay,
-      currency: vehicle.currency,
-      totalPrice,
-      notes: data.notes,
-      startOdometer: data.startOdometer,
-      endOdometer: data.endOdometer,
-      deposit: data.deposit,
-    },
-  });
+  const MAX_CONTRACT_NUMBER_ATTEMPTS = 5;
+  for (let attempt = 0; attempt < MAX_CONTRACT_NUMBER_ATTEMPTS; attempt++) {
+    const contractNumber = await generateContractNumber(data.tenantId);
+    try {
+      return await prisma.location.create({
+        data: {
+          tenantId: data.tenantId,
+          agencyId: data.agencyId,
+          vehicleId: data.vehicleId,
+          clientId: data.clientId,
+          startDate: data.startDate,
+          endDate: data.endDate,
+          status: data.status ?? "PENDING",
+          pricePerDay,
+          currency: vehicle.currency,
+          totalPrice,
+          notes: data.notes,
+          startOdometer: data.startOdometer,
+          endOdometer: data.endOdometer,
+          deposit: data.deposit,
+          contractNumber,
+        },
+      });
+    } catch (error) {
+      // Collision possible uniquement si lastContractNumber a été redéfini manuellement en
+      // arrière depuis les paramètres (voir generateContractNumber) — jamais en usage normal
+      // (compteur toujours strictement croissant). Réessaie avec le numéro suivant plutôt que
+      // d'échouer, même principe que generateInvoiceNumber (src/lib/invoices.ts).
+      if (isUniqueConstraintError(error) && attempt < MAX_CONTRACT_NUMBER_ATTEMPTS - 1) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error("Impossible de générer un numéro de contrat unique.");
 }
 
 export interface UpdateLocationInput {
@@ -208,6 +263,14 @@ export async function updateLocation(
   const existing = await getLocationById(tenantId, locationId);
   if (!existing) {
     return null;
+  }
+
+  // Contrat verrouillé (Sprint 14B, DOMAINRULES.md section 29) : les dates ne sont plus
+  // modifiables une fois la location sortie de PENDING (confirmée/active/terminée/annulée) —
+  // un contrat déjà généré est une pièce métier figée. Toujours autorisé tant que PENDING
+  // (simple brouillon), pour ne pas régresser sur le comportement déjà testé/validé du Sprint 5.
+  if ((data.startDate || data.endDate) && existing.status !== "PENDING") {
+    throw new LocationLockedError();
   }
 
   const nextStart = data.startDate ?? existing.startDate;

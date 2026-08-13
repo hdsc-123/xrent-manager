@@ -470,3 +470,129 @@ describe("DELETE /api/locations/[id]", () => {
     expect(deleteAfterCancelResponse.status).toBe(200);
   });
 });
+
+describe("Sprint 14B — numérotation de contrat", () => {
+  it("génère un numéro de contrat séquentiel à la création", async () => {
+    const first = await createLocation(adminA, { startDate: "2029-05-01", endDate: "2029-05-03" });
+    const firstBody = await first.json();
+    const second = await createLocation(adminA, { startDate: "2029-05-05", endDate: "2029-05-07" });
+    const secondBody = await second.json();
+
+    expect(firstBody.location.contractNumber).toBeTruthy();
+    expect(secondBody.location.contractNumber).toBeTruthy();
+
+    const firstN = Number(firstBody.location.contractNumber.split("-").pop());
+    const secondN = Number(secondBody.location.contractNumber.split("-").pop());
+    expect(secondN).toBe(firstN + 1);
+  });
+
+  it("respecte le préfixe et le dernier numéro configurés dans les paramètres du tenant", async () => {
+    await apiFetch(`/api/tenants/${adminA.tenantId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Locations Test A", contractNumberPrefix: "RAK", lastContractNumber: 120 }),
+    });
+
+    const response = await createLocation(adminA, { startDate: "2029-06-01", endDate: "2029-06-03" });
+    const body = await response.json();
+    expect(body.location.contractNumber).toBe("RAK-00121");
+  });
+
+  it("réessaie avec le numéro suivant en cas de collision (redéfinition manuelle en arrière)", async () => {
+    const first = await createLocation(adminA, { startDate: "2029-07-01", endDate: "2029-07-03" });
+    const firstBody = await first.json();
+    const firstN = Number(firstBody.location.contractNumber.split("-").pop());
+
+    // Rembobine volontairement le compteur pour forcer une collision sur le prochain numéro.
+    await apiFetch(`/api/tenants/${adminA.tenantId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Locations Test A", lastContractNumber: firstN - 1 }),
+    });
+
+    const second = await createLocation(adminA, { startDate: "2029-07-10", endDate: "2029-07-12" });
+    expect(second.status).toBe(201);
+    const secondBody = await second.json();
+    expect(secondBody.location.contractNumber).not.toBe(firstBody.location.contractNumber);
+    // Le contrat existant n'a pas été affecté par la collision.
+    const existing = await prisma.location.findUnique({ where: { id: firstBody.location.id } });
+    expect(existing?.contractNumber).toBe(firstBody.location.contractNumber);
+  });
+
+  it("verrouille les dates une fois le contrat sorti de PENDING (CONFIRMED)", async () => {
+    const createResponse = await createLocation(adminA, { startDate: "2029-08-01", endDate: "2029-08-03" });
+    const locationId = (await createResponse.json()).location.id;
+
+    await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+
+    const response = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ startDate: "2029-08-02", endDate: "2029-08-04" }),
+    });
+    expect(response.status).toBe(409);
+
+    // Le statut, lui, reste modifiable (seules les dates sont verrouillées).
+    const notesResponse = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ notes: "toujours modifiable" }),
+    });
+    expect(notesResponse.status).toBe(200);
+  });
+
+  it("permet toujours de modifier les dates tant que le contrat est PENDING", async () => {
+    const createResponse = await createLocation(adminA, { startDate: "2029-09-01", endDate: "2029-09-03" });
+    const locationId = (await createResponse.json()).location.id;
+
+    const response = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ startDate: "2029-09-01", endDate: "2029-09-05" }),
+    });
+    expect(response.status).toBe(200);
+  });
+});
+
+describe("GET /api/locations/[id]/pdf", () => {
+  it("refuse une requête non authentifiée", async () => {
+    const response = await apiFetch("/api/locations/nonexistent/pdf");
+    expect(response.status).toBe(401);
+  });
+
+  it("génère le PDF du contrat pour un contrat numéroté", async () => {
+    const createResponse = await createLocation(adminA, { startDate: "2029-10-01", endDate: "2029-10-03" });
+    const locationId = (await createResponse.json()).location.id;
+
+    const response = await apiFetch(`/api/locations/${locationId}/pdf`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/pdf");
+  });
+
+  it("refuse un contrat sans numéro (créé avant la numérotation)", async () => {
+    const createResponse = await createLocation(adminA, { startDate: "2029-10-10", endDate: "2029-10-12" });
+    const locationId = (await createResponse.json()).location.id;
+    await prisma.location.update({ where: { id: locationId }, data: { contractNumber: null } });
+
+    const response = await apiFetch(`/api/locations/${locationId}/pdf`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("refuse l'accès à un contrat d'un autre tenant", async () => {
+    const createResponse = await createLocation(adminA, { startDate: "2029-10-15", endDate: "2029-10-17" });
+    const locationId = (await createResponse.json()).location.id;
+
+    const response = await apiFetch(`/api/locations/${locationId}/pdf`, {
+      headers: { Cookie: adminB.sessionCookie },
+    });
+    expect(response.status).toBe(404);
+  });
+});

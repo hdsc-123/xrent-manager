@@ -3,6 +3,7 @@ import { createPayment } from "@/lib/payments";
 import { getInvoiceById } from "@/lib/invoices";
 import { createCashEntry } from "@/lib/cash-register";
 import { logAction } from "@/lib/audit";
+import { formatMoney } from "@/lib/format";
 
 export const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "CARD", "BANK_TRANSFER", "CHECK", "OTHER"];
 
@@ -68,6 +69,8 @@ export interface ProcessLocationPaymentInput {
   tenantId: string;
   userId: string;
   locationId: string;
+  /** Numéro de contrat (Sprint 14B) — dénormalisé sur l'écriture de caisse, voir CashEntry.contractNumber. */
+  contractNumber?: string | null;
   invoice: Invoice;
   clientName?: string;
   payment: PaymentInput | undefined;
@@ -86,11 +89,18 @@ export interface ProcessLocationPaymentResult {
  * paiements. Chaque Payment réussi alimente aussi la Caisse (createCashEntry). Résilient par
  * choix, même principe que la génération automatique de facture (Sprint 12B) : un échec ne
  * doit jamais faire échouer la création de la location/du contrat elle-même.
+ *
+ * Correctif Sprint 14B (paiement mixte) : le total des lignes est validé contre le solde
+ * restant dû *avant* d'écrire quoi que ce soit — auparavant, un paiement mixte dont la somme
+ * dépassait le solde écrivait quand même la première ligne (createPayment) avant d'échouer sur
+ * la seconde, laissant un paiement partiel orphelin derrière un message d'erreur technique
+ * (entier brut de centimes, voir PaymentExceedsRemainingBalanceError). Le message est
+ * désormais toujours exprimé dans la devise de la facture (formatMoney), jamais un nombre brut.
  */
 export async function processLocationPayment(
   input: ProcessLocationPaymentInput
 ): Promise<ProcessLocationPaymentResult> {
-  const { tenantId, userId, locationId, payment, clientName } = input;
+  const { tenantId, userId, locationId, contractNumber, payment, clientName } = input;
   let invoice = input.invoice;
   const payments: Payment[] = [];
   let paymentError: string | null = null;
@@ -113,6 +123,20 @@ export async function processLocationPayment(
           amount: payment.partial ? (payment.amount as number) : invoice.totalAmount,
         },
       ];
+
+  const remainingBalance = invoice.totalAmount - invoice.amountPaid;
+  const linesTotal = lines.reduce((sum, line) => sum + line.amount, 0);
+
+  if (linesTotal > remainingBalance) {
+    return {
+      invoice,
+      payments,
+      paymentError:
+        `Le total du paiement (${formatMoney(linesTotal, invoice.currency)}) dépasse le solde restant dû ` +
+        `(${formatMoney(remainingBalance, invoice.currency)}). Aucun paiement n'a été enregistré : ` +
+        `corrigez les montants et réessayez.`,
+    };
+  }
 
   try {
     for (const line of lines) {
@@ -137,8 +161,9 @@ export async function processLocationPayment(
         type: "ENTRY",
         category: "VERSEMENT",
         amount: created.amount,
-        description: `Paiement location #${locationId.slice(-8)}`,
+        description: `Paiement location ${contractNumber ?? `#${locationId.slice(-8)}`}`,
         contractId: locationId,
+        contractNumber,
         clientName,
         paymentMethod: created.method,
       });

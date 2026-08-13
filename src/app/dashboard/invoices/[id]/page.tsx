@@ -69,6 +69,16 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
           <CardTitle>Détails</CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-2 gap-4 text-sm">
+          {location?.contractNumber && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">N° contrat</p>
+              <p>
+                <Link href={`/dashboard/locations/${location.id}`} className="text-primary hover:underline">
+                  {location.contractNumber}
+                </Link>
+              </p>
+            </div>
+          )}
           <div>
             <p className="text-xs font-medium text-muted-foreground">Location</p>
             <p>

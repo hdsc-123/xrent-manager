@@ -32,13 +32,18 @@ export default async function PaymentsPage({ searchParams }: PageProps) {
       ...(params.from ? { paidAt: { gte: new Date(params.from) } } : {}),
       ...(params.to ? { paidAt: { lte: new Date(params.to) } } : {}),
     },
-    include: { invoice: { select: { number: true, client: { select: { name: true } } } } },
+    include: {
+      invoice: {
+        select: { number: true, client: { select: { name: true } }, location: { select: { contractNumber: true } } },
+      },
+    },
     orderBy: { paidAt: "desc" },
   });
 
   const rows: PaymentRow[] = payments.map((payment) => ({
     id: payment.id,
     invoiceNumber: payment.invoice.number,
+    contractNumber: payment.invoice.location.contractNumber,
     clientName: payment.invoice.client.name,
     method: payment.method,
     paidAt: payment.paidAt.toISOString(),

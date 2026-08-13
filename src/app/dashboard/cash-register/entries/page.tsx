@@ -24,6 +24,7 @@ export default async function CashEntriesPage({ searchParams }: PageProps) {
     amount: entry.amount,
     currency: entry.currency,
     description: entry.description,
+    contractNumber: entry.contractNumber,
     clientName: entry.clientName,
     paymentMethod: entry.paymentMethod,
     createdAt: entry.createdAt.toISOString(),

@@ -33,13 +33,14 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
       ...(params.from ? { issuedAt: { gte: new Date(params.from) } } : {}),
       ...(params.to ? { issuedAt: { lte: new Date(params.to) } } : {}),
     },
-    include: { client: { select: { name: true } } },
+    include: { client: { select: { name: true } }, location: { select: { contractNumber: true } } },
     orderBy: { issuedAt: "desc" },
   });
 
   const rows: InvoiceRow[] = invoices.map((invoice) => ({
     id: invoice.id,
     number: invoice.number,
+    contractNumber: invoice.location.contractNumber,
     clientName: invoice.client.name,
     status: invoice.status,
     issuedAt: invoice.issuedAt.toISOString(),

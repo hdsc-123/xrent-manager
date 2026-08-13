@@ -39,6 +39,7 @@ export async function GET(_request: Request, { params }: RouteParams) {
       tenantName={tenant.name}
       agencyName={agency.name}
       invoiceNumber={invoice.number}
+      contractNumber={location.contractNumber}
       status={invoice.status}
       issuedAt={invoice.issuedAt}
       dueDate={invoice.dueDate}

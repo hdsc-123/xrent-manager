@@ -113,6 +113,8 @@ export interface CreateCashEntryInput {
   amount: number;
   description?: string;
   contractId?: string;
+  /** Numéro de contrat (Sprint 14B) — dénormalisé, voir CashEntry.contractNumber. */
+  contractNumber?: string | null;
   clientName?: string;
   paymentMethod?: PaymentMethod;
   createdAt?: Date;
@@ -136,6 +138,7 @@ export async function createCashEntry(data: CreateCashEntryInput): Promise<CashE
       currency: register.currency,
       description: data.description,
       contractId: data.contractId,
+      contractNumber: data.contractNumber,
       clientName: data.clientName,
       paymentMethod: data.paymentMethod,
       ...(data.createdAt ? { createdAt: data.createdAt } : {}),

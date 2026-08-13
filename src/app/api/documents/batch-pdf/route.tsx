@@ -1,0 +1,250 @@
+import { NextResponse } from "next/server";
+import { Document, renderToBuffer } from "@react-pdf/renderer";
+import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { prisma } from "@/lib/prisma";
+import { ContractPdfPage } from "@/components/contracts/ContractPdf";
+import { InvoicePdfPage } from "@/components/invoices/InvoicePdf";
+
+type BatchType = "CONTRACT" | "INVOICE";
+
+interface BatchPdfBody {
+  type?: BatchType;
+  ids?: string[];
+  from?: string;
+  to?: string;
+  contractNumberFrom?: number;
+  contractNumberTo?: number;
+}
+
+/**
+ * Génère un unique PDF regroupant plusieurs contrats ou factures (Sprint 14B, DOMAINRULES.md
+ * section 29) — sélection par identifiants explicites, par plage de dates, ou (contrats
+ * uniquement) par plage de numéros de contrat. Exactement un mode de sélection à la fois.
+ * Chaque document est une simple page @react-pdf/renderer (ContractPdfPage/InvoicePdfPage,
+ * extraites de leur <Document> habituel) assemblée dans un seul <Document> — même rendu que
+ * le PDF unitaire, juste concaténé. Portée : mêmes règles de visibilité que les pages de liste
+ * /dashboard/locations et /dashboard/invoices (aucune permission granulaire sur ces modules,
+ * voir DOMAINRULES.md section 22) — un MEMBER ne voit que les documents de ses agences.
+ */
+export async function POST(request: Request) {
+  const user = await getSessionUser();
+  if (!user) {
+    return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+
+  let body: BatchPdfBody;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
+  }
+
+  if (body.type !== "CONTRACT" && body.type !== "INVOICE") {
+    return NextResponse.json({ error: "type doit être CONTRACT ou INVOICE." }, { status: 400 });
+  }
+
+  const hasIds = Array.isArray(body.ids) && body.ids.length > 0;
+  const hasDateRange = Boolean(body.from || body.to);
+  const hasNumberRange = body.contractNumberFrom !== undefined || body.contractNumberTo !== undefined;
+
+  if (hasNumberRange && body.type !== "CONTRACT") {
+    return NextResponse.json(
+      { error: "La sélection par plage de numéros n'est disponible que pour les contrats." },
+      { status: 400 }
+    );
+  }
+
+  const selectionModes = [hasIds, hasDateRange, hasNumberRange].filter(Boolean).length;
+  if (selectionModes !== 1) {
+    return NextResponse.json(
+      {
+        error:
+          "Choisissez exactement un mode de sélection : identifiants, plage de dates, ou " +
+          "(contrats uniquement) plage de numéros de contrat.",
+      },
+      { status: 400 }
+    );
+  }
+
+  const from = body.from ? new Date(body.from) : undefined;
+  const to = body.to ? new Date(body.to) : undefined;
+  if ((body.from && Number.isNaN(from?.getTime())) || (body.to && Number.isNaN(to?.getTime()))) {
+    return NextResponse.json({ error: "from/to doivent être des dates ISO valides." }, { status: 400 });
+  }
+
+  if (
+    hasNumberRange &&
+    (body.contractNumberFrom === undefined ||
+      body.contractNumberTo === undefined ||
+      !Number.isInteger(body.contractNumberFrom) ||
+      !Number.isInteger(body.contractNumberTo) ||
+      body.contractNumberFrom < 0 ||
+      body.contractNumberTo < body.contractNumberFrom)
+  ) {
+    return NextResponse.json(
+      { error: "contractNumberFrom/contractNumberTo doivent être des entiers valides (from <= to)." },
+      { status: 400 }
+    );
+  }
+  const MAX_NUMBER_RANGE = 500;
+  if (hasNumberRange && body.contractNumberTo! - body.contractNumberFrom! + 1 > MAX_NUMBER_RANGE) {
+    return NextResponse.json(
+      { error: `La plage de numéros ne peut pas dépasser ${MAX_NUMBER_RANGE} contrats.` },
+      { status: 400 }
+    );
+  }
+
+  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+  const agencyScope = accessibleAgencyIds ? { agencyId: { in: accessibleAgencyIds } } : {};
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: user.tenantId },
+    select: { name: true, contractNumberPrefix: true },
+  });
+  if (!tenant) {
+    return NextResponse.json({ error: "Tenant introuvable." }, { status: 404 });
+  }
+
+  if (body.type === "CONTRACT") {
+    let contractNumbers: string[] | undefined;
+    if (hasNumberRange) {
+      contractNumbers = [];
+      for (let n = body.contractNumberFrom!; n <= body.contractNumberTo!; n++) {
+        const padded = String(n).padStart(5, "0");
+        contractNumbers.push(tenant.contractNumberPrefix ? `${tenant.contractNumberPrefix}-${padded}` : padded);
+      }
+    }
+
+    const locations = await prisma.location.findMany({
+      where: {
+        tenantId: user.tenantId,
+        ...agencyScope,
+        contractNumber: { not: null },
+        ...(hasIds ? { id: { in: body.ids } } : {}),
+        ...(hasDateRange
+          ? {
+              ...(from ? { startDate: { gte: from } } : {}),
+              ...(to ? { startDate: { lte: to } } : {}),
+            }
+          : {}),
+        ...(contractNumbers ? { contractNumber: { in: contractNumbers } } : {}),
+      },
+      include: { vehicle: true, client: true },
+      orderBy: { contractNumber: "asc" },
+    });
+
+    if (locations.length === 0) {
+      return NextResponse.json({ error: "Aucun contrat ne correspond à cette sélection." }, { status: 404 });
+    }
+
+    const agencies = await prisma.agency.findMany({
+      where: { id: { in: [...new Set(locations.map((location) => location.agencyId))] } },
+      select: { id: true, name: true },
+    });
+    const agencyNameById = new Map(agencies.map((agency) => [agency.id, agency.name]));
+
+    const buffer = await renderToBuffer(
+      <Document title={`Lot de contrats (${locations.length})`}>
+        {locations.map((location) => (
+          <ContractPdfPage
+            key={location.id}
+            tenantName={tenant.name}
+            agencyName={agencyNameById.get(location.agencyId) ?? "—"}
+            contractNumber={location.contractNumber as string}
+            status={location.status}
+            createdAt={location.createdAt}
+            clientName={location.client.name}
+            clientEmail={location.client.email}
+            clientPhone={location.client.phone}
+            clientIdNumber={location.client.idNumber}
+            clientLicenseNumber={location.client.licenseNumber}
+            vehicleName={location.vehicle.name}
+            vehicleLicensePlate={location.vehicle.licensePlate}
+            locationStart={location.startDate}
+            locationEnd={location.endDate}
+            pricePerDay={location.pricePerDay}
+            totalPrice={location.totalPrice}
+            deposit={location.deposit}
+            startOdometer={location.startOdometer}
+            endOdometer={location.endOdometer}
+            currency={location.currency}
+            notes={location.notes}
+          />
+        ))}
+      </Document>
+    );
+
+    return new NextResponse(new Uint8Array(buffer), {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `inline; filename="lot-contrats.pdf"`,
+      },
+    });
+  }
+
+  const invoices = await prisma.invoice.findMany({
+    where: {
+      tenantId: user.tenantId,
+      ...agencyScope,
+      ...(hasIds ? { id: { in: body.ids } } : {}),
+      ...(hasDateRange
+        ? {
+            ...(from ? { issuedAt: { gte: from } } : {}),
+            ...(to ? { issuedAt: { lte: to } } : {}),
+          }
+        : {}),
+    },
+    include: { client: true, location: { include: { vehicle: true } } },
+    orderBy: { number: "asc" },
+  });
+
+  if (invoices.length === 0) {
+    return NextResponse.json({ error: "Aucune facture ne correspond à cette sélection." }, { status: 404 });
+  }
+
+  const agencies = await prisma.agency.findMany({
+    where: { id: { in: [...new Set(invoices.map((invoice) => invoice.agencyId))] } },
+    select: { id: true, name: true },
+  });
+  const agencyNameById = new Map(agencies.map((agency) => [agency.id, agency.name]));
+
+  const buffer = await renderToBuffer(
+    <Document title={`Lot de factures (${invoices.length})`}>
+      {invoices.map((invoice) => (
+        <InvoicePdfPage
+          key={invoice.id}
+          tenantName={tenant.name}
+          agencyName={agencyNameById.get(invoice.agencyId) ?? "—"}
+          invoiceNumber={invoice.number}
+          contractNumber={invoice.location.contractNumber}
+          status={invoice.status}
+          issuedAt={invoice.issuedAt}
+          dueDate={invoice.dueDate}
+          clientName={invoice.client.name}
+          clientEmail={invoice.client.email}
+          clientPhone={invoice.client.phone}
+          vehicleName={invoice.location.vehicle.name}
+          vehicleLicensePlate={invoice.location.vehicle.licensePlate}
+          locationStart={invoice.location.startDate}
+          locationEnd={invoice.location.endDate}
+          pricePerDay={invoice.location.pricePerDay}
+          subtotal={invoice.subtotal}
+          taxRate={invoice.taxRate}
+          taxAmount={invoice.taxAmount}
+          discountAmount={invoice.discountAmount}
+          totalAmount={invoice.totalAmount}
+          amountPaid={invoice.amountPaid}
+          currency={invoice.currency}
+          notes={invoice.notes}
+        />
+      ))}
+    </Document>
+  );
+
+  return new NextResponse(new Uint8Array(buffer), {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="lot-factures.pdf"`,
+    },
+  });
+}

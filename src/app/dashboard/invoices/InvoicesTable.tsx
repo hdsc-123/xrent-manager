@@ -1,22 +1,34 @@
 "use client";
 
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { MoreHorizontal, Eye, Download } from "lucide-react";
+import { toast } from "sonner";
+import { apiPostDownload, ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
 import { DataTable, type DataTableColumn } from "@/components/layout/DataTable";
 import {
   Badge,
   Button,
+  Checkbox,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  Input,
+  Label,
 } from "@/components/ui";
 
 export interface InvoiceRow {
   id: string;
   number: string;
+  contractNumber: string | null;
   clientName: string;
   status: string;
   issuedAt: string;
@@ -42,9 +54,94 @@ const STATUS_VARIANTS: Record<string, "default" | "secondary" | "destructive" | 
 };
 
 export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [showRangeDialog, setShowRangeDialog] = useState(false);
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
+  const [rangeError, setRangeError] = useState<string | null>(null);
+
+  const allSelected = invoices.length > 0 && invoices.every((invoice) => selectedIds.has(invoice.id));
+
+  const toggleSelected = useCallback((id: string, checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(
+    (checked: boolean) => {
+      setSelectedIds(checked ? new Set(invoices.map((invoice) => invoice.id)) : new Set());
+    },
+    [invoices]
+  );
+
+  async function handleDownloadSelection() {
+    if (selectedIds.size === 0) return;
+    setIsDownloading(true);
+    try {
+      await apiPostDownload(
+        "/api/documents/batch-pdf",
+        { type: "INVOICE", ids: Array.from(selectedIds) },
+        "lot-factures.pdf"
+      );
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Erreur lors de la génération du lot PDF.");
+    } finally {
+      setIsDownloading(false);
+    }
+  }
+
+  async function handleDownloadRange() {
+    setRangeError(null);
+    if (!rangeFrom && !rangeTo) {
+      setRangeError("Renseignez au moins une date.");
+      return;
+    }
+    setIsDownloading(true);
+    try {
+      await apiPostDownload(
+        "/api/documents/batch-pdf",
+        { type: "INVOICE", from: rangeFrom || undefined, to: rangeTo || undefined },
+        "lot-factures.pdf"
+      );
+      setShowRangeDialog(false);
+    } catch (err) {
+      setRangeError(err instanceof ApiError ? err.message : "Erreur lors de la génération du lot PDF.");
+    } finally {
+      setIsDownloading(false);
+    }
+  }
+
   const columns = useMemo<DataTableColumn<InvoiceRow>[]>(
     () => [
+      {
+        id: "select",
+        header: () => (
+          <Checkbox
+            checked={allSelected}
+            onCheckedChange={(checked: boolean) => toggleSelectAll(checked === true)}
+            aria-label="Tout sélectionner"
+          />
+        ),
+        cell: ({ row }) => (
+          <Checkbox
+            checked={selectedIds.has(row.original.id)}
+            onCheckedChange={(checked: boolean) => toggleSelected(row.original.id, checked === true)}
+            aria-label="Sélectionner cette facture"
+          />
+        ),
+        size: 32,
+      },
       { accessorKey: "number", header: "Numéro" },
+      {
+        accessorKey: "contractNumber",
+        header: "N° contrat",
+        cell: ({ getValue }) => getValue<string | null>() ?? "—",
+      },
       { accessorKey: "clientName", header: "Client" },
       {
         id: "issuedAt",
@@ -97,8 +194,64 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
         ),
       },
     ],
-    []
+    [allSelected, selectedIds, toggleSelectAll, toggleSelected]
   );
 
-  return <DataTable columns={columns} data={invoices} emptyMessage="Aucune facture." />;
+  return (
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {selectedIds.size > 0 && (
+            <>
+              <p className="text-sm text-muted-foreground">{selectedIds.size} sélectionnée(s)</p>
+              <Button type="button" size="sm" variant="outline" disabled={isDownloading} onClick={handleDownloadSelection}>
+                <Download className="size-4" />
+                {isDownloading ? "Génération..." : "Télécharger le lot"}
+              </Button>
+            </>
+          )}
+        </div>
+        <Button type="button" size="sm" variant="ghost" onClick={() => setShowRangeDialog(true)}>
+          <Download className="size-4" />
+          Lot par période
+        </Button>
+      </div>
+
+      <DataTable columns={columns} data={invoices} emptyMessage="Aucune facture." />
+
+      <Dialog open={showRangeDialog} onOpenChange={setShowRangeDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Télécharger un lot de factures</DialogTitle>
+            <DialogDescription>
+              Génère un seul PDF regroupant toutes les factures émises sur la période choisie.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="invoiceRangeFrom">Du</Label>
+              <Input id="invoiceRangeFrom" type="date" value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="invoiceRangeTo">Au</Label>
+              <Input id="invoiceRangeTo" type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} />
+            </div>
+          </div>
+          {rangeError && (
+            <p role="alert" className="text-sm text-destructive">
+              {rangeError}
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowRangeDialog(false)}>
+              Annuler
+            </Button>
+            <Button onClick={handleDownloadRange} disabled={isDownloading}>
+              {isDownloading ? "Génération..." : "Télécharger"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
 }

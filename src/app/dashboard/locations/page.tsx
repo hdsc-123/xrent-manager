@@ -80,6 +80,7 @@ export default async function LocationsPage({ searchParams }: PageProps) {
 
   const rows: LocationRow[] = locations.map((location) => ({
     id: location.id,
+    contractNumber: location.contractNumber,
     clientName: location.client.name,
     vehicleName: location.vehicle.name,
     licensePlate: location.vehicle.licensePlate,

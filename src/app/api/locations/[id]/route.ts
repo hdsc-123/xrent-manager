@@ -10,6 +10,7 @@ import {
   InvalidStatusTransitionError,
   LocationNotDeletableError,
   LocationHasInvoiceError,
+  LocationLockedError,
 } from "@/lib/locations";
 import { logAction } from "@/lib/audit";
 
@@ -109,6 +110,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof InvalidStatusTransitionError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof LocationLockedError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     if (error instanceof VehicleNotAvailableError) {

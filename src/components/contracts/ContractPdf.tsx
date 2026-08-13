@@ -1,19 +1,19 @@
 import { Document, Page, View, Text, StyleSheet } from "@react-pdf/renderer";
 
-/** pricePerDay/subtotal/etc. sont en plus petite unité monétaire (centimes) — voir src/lib/format.ts. */
+/** pricePerDay/totalPrice/deposit sont en plus petite unité monétaire (centimes) — voir src/lib/format.ts. */
 function formatMoneyPdf(amountInSmallestUnit: number, currency: string): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency }).format(amountInSmallestUnit / 100);
 }
 
 function formatDatePdf(date: Date): string {
-  return date.toLocaleDateString("fr-FR");
+  return date.toLocaleString("fr-FR");
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  DRAFT: "Brouillon",
-  SENT: "Envoyée",
-  PARTIALLY_PAID: "Partiellement payée",
-  PAID: "Payée",
+  PENDING: "En attente",
+  CONFIRMED: "Confirmée",
+  ACTIVE: "En cours",
+  COMPLETED: "Terminée",
   CANCELLED: "Annulée",
 };
 
@@ -22,11 +22,11 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 24 },
   tenantName: { fontSize: 16, fontWeight: 700 },
   agencyName: { fontSize: 10, color: "#555555", marginTop: 2 },
-  invoiceTitle: { fontSize: 20, fontWeight: 700, textAlign: "right" },
-  invoiceMeta: { fontSize: 10, color: "#555555", textAlign: "right", marginTop: 4 },
+  docTitle: { fontSize: 20, fontWeight: 700, textAlign: "right" },
+  docMeta: { fontSize: 10, color: "#555555", textAlign: "right", marginTop: 4 },
+  row: { flexDirection: "row", justifyContent: "space-between", marginBottom: 12 },
   section: { marginBottom: 16 },
   sectionTitle: { fontSize: 9, color: "#888888", marginBottom: 4, textTransform: "uppercase" },
-  row: { flexDirection: "row", justifyContent: "space-between", marginBottom: 12 },
   table: { marginTop: 8, borderTop: "1 solid #dddddd" },
   tableRow: { flexDirection: "row", paddingVertical: 6, borderBottom: "1 solid #eeeeee" },
   tableHeaderRow: { flexDirection: "row", paddingVertical: 6, borderBottom: "1 solid #dddddd" },
@@ -46,45 +46,45 @@ const styles = StyleSheet.create({
   grandTotalLabel: { fontWeight: 700 },
   grandTotalValue: { fontWeight: 700 },
   notes: { marginTop: 24, fontSize: 9, color: "#555555" },
+  signatures: { flexDirection: "row", justifyContent: "space-between", marginTop: 48 },
+  signatureBox: { width: 200, borderTop: "1 solid #1a1a1a", paddingTop: 4, textAlign: "center", color: "#555555" },
 });
 
-export interface InvoicePdfProps {
+export interface ContractPdfProps {
   tenantName: string;
   agencyName: string;
-  invoiceNumber: string;
-  contractNumber: string | null;
+  contractNumber: string;
   status: string;
-  issuedAt: Date;
-  dueDate: Date | null;
+  createdAt: Date;
   clientName: string;
   clientEmail: string | null;
   clientPhone: string | null;
+  clientIdNumber: string | null;
+  clientLicenseNumber: string | null;
   vehicleName: string;
   vehicleLicensePlate: string;
   locationStart: Date;
   locationEnd: Date;
   pricePerDay: number;
-  subtotal: number;
-  taxRate: number;
-  taxAmount: number;
-  discountAmount: number;
-  totalAmount: number;
-  amountPaid: number;
+  totalPrice: number;
+  deposit: number | null;
+  startOdometer: number | null;
+  endOdometer: number | null;
   currency: string;
   notes: string | null;
 }
 
 /**
- * Contenu d'une page facture (sans <Document> englobant) — réutilisé tel quel par le PDF
- * facture unitaire (InvoicePdf ci-dessous) et par le PDF de lot (Sprint 14B, plusieurs
- * <InvoicePdfPage> partageant un seul <Document>, voir /api/documents/batch-pdf).
+ * Template PDF du contrat (Sprint 14B) — même style visuel que InvoicePdf (pas de logo,
+ * aucun asset de marque n'existe dans ce dépôt). Le numéro de contrat (Location.contractNumber)
+ * est toujours présent : cette page n'est jamais rendue pour une Location sans numéro (voir
+ * GET /api/locations/[id]/pdf, qui refuse la génération sinon).
  */
-export function InvoicePdfPage(props: InvoicePdfProps) {
+export function ContractPdfPage(props: ContractPdfProps) {
   const days = Math.max(
     1,
     Math.ceil((props.locationEnd.getTime() - props.locationStart.getTime()) / (24 * 60 * 60 * 1000))
   );
-  const remainingBalance = props.totalAmount - props.amountPaid;
 
   return (
     <Page size="A4" style={styles.page}>
@@ -94,10 +94,9 @@ export function InvoicePdfPage(props: InvoicePdfProps) {
           <Text style={styles.agencyName}>{props.agencyName}</Text>
         </View>
         <View>
-          <Text style={styles.invoiceTitle}>FACTURE</Text>
-          <Text style={styles.invoiceMeta}>{props.invoiceNumber}</Text>
-          {props.contractNumber && <Text style={styles.invoiceMeta}>Contrat {props.contractNumber}</Text>}
-          <Text style={styles.invoiceMeta}>{STATUS_LABELS[props.status] ?? props.status}</Text>
+          <Text style={styles.docTitle}>CONTRAT DE LOCATION</Text>
+          <Text style={styles.docMeta}>{props.contractNumber}</Text>
+          <Text style={styles.docMeta}>{STATUS_LABELS[props.status] ?? props.status}</Text>
         </View>
       </View>
 
@@ -107,16 +106,20 @@ export function InvoicePdfPage(props: InvoicePdfProps) {
           <Text>{props.clientName}</Text>
           {props.clientEmail && <Text>{props.clientEmail}</Text>}
           {props.clientPhone && <Text>{props.clientPhone}</Text>}
+          {props.clientIdNumber && <Text>Pièce d&apos;identité : {props.clientIdNumber}</Text>}
+          {props.clientLicenseNumber && <Text>Permis : {props.clientLicenseNumber}</Text>}
         </View>
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Facture</Text>
-          <Text>Émise le {formatDatePdf(props.issuedAt)}</Text>
-          {props.dueDate && <Text>Échéance le {formatDatePdf(props.dueDate)}</Text>}
+          <Text style={styles.sectionTitle}>Contrat</Text>
+          <Text>Généré le {formatDatePdf(props.createdAt)}</Text>
+          <Text>
+            {formatDatePdf(props.locationStart)} → {formatDatePdf(props.locationEnd)} ({days} jour(s))
+          </Text>
         </View>
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Location</Text>
+        <Text style={styles.sectionTitle}>Véhicule</Text>
         <View style={styles.table}>
           <View style={styles.tableHeaderRow}>
             <Text style={styles.colDescription}>Description</Text>
@@ -124,43 +127,30 @@ export function InvoicePdfPage(props: InvoicePdfProps) {
           </View>
           <View style={styles.tableRow}>
             <Text style={styles.colDescription}>
-              {props.vehicleName} ({props.vehicleLicensePlate}) — {formatDatePdf(props.locationStart)} →{" "}
-              {formatDatePdf(props.locationEnd)} ({days} jour(s) × {formatMoneyPdf(props.pricePerDay, props.currency)})
+              {props.vehicleName} ({props.vehicleLicensePlate}) — {days} jour(s) ×{" "}
+              {formatMoneyPdf(props.pricePerDay, props.currency)}
             </Text>
-            <Text style={styles.colAmount}>{formatMoneyPdf(props.subtotal, props.currency)}</Text>
+            <Text style={styles.colAmount}>{formatMoneyPdf(props.totalPrice, props.currency)}</Text>
           </View>
         </View>
+        {(props.startOdometer !== null || props.endOdometer !== null) && (
+          <Text style={{ marginTop: 6, color: "#555555" }}>
+            Kilométrage : {props.startOdometer ?? "—"} km → {props.endOdometer ?? "—"} km
+          </Text>
+        )}
       </View>
 
       <View style={styles.totalsBlock}>
-        <View style={styles.totalsRow}>
-          <Text style={styles.totalsLabel}>Sous-total</Text>
-          <Text>{formatMoneyPdf(props.subtotal, props.currency)}</Text>
-        </View>
-        {props.discountAmount > 0 && (
-          <View style={styles.totalsRow}>
-            <Text style={styles.totalsLabel}>Remise</Text>
-            <Text>-{formatMoneyPdf(props.discountAmount, props.currency)}</Text>
-          </View>
-        )}
-        {props.taxRate > 0 && (
-          <View style={styles.totalsRow}>
-            <Text style={styles.totalsLabel}>TVA ({(props.taxRate / 100).toFixed(2)}%)</Text>
-            <Text>{formatMoneyPdf(props.taxAmount, props.currency)}</Text>
-          </View>
-        )}
         <View style={styles.grandTotalRow}>
           <Text style={styles.grandTotalLabel}>Total</Text>
-          <Text style={styles.grandTotalValue}>{formatMoneyPdf(props.totalAmount, props.currency)}</Text>
+          <Text style={styles.grandTotalValue}>{formatMoneyPdf(props.totalPrice, props.currency)}</Text>
         </View>
-        <View style={styles.totalsRow}>
-          <Text style={styles.totalsLabel}>Payé</Text>
-          <Text>{formatMoneyPdf(props.amountPaid, props.currency)}</Text>
-        </View>
-        <View style={styles.totalsRow}>
-          <Text style={styles.totalsLabel}>Solde dû</Text>
-          <Text>{formatMoneyPdf(remainingBalance, props.currency)}</Text>
-        </View>
+        {props.deposit !== null && (
+          <View style={styles.totalsRow}>
+            <Text style={styles.totalsLabel}>Caution</Text>
+            <Text>{formatMoneyPdf(props.deposit, props.currency)}</Text>
+          </View>
+        )}
       </View>
 
       {props.notes && (
@@ -169,15 +159,19 @@ export function InvoicePdfPage(props: InvoicePdfProps) {
           <Text>{props.notes}</Text>
         </View>
       )}
+
+      <View style={styles.signatures}>
+        <Text style={styles.signatureBox}>Signature du client</Text>
+        <Text style={styles.signatureBox}>Signature de l&apos;agence</Text>
+      </View>
     </Page>
   );
 }
 
-/** Template PDF simple (pas de logo image — aucun asset de marque n'existe dans ce dépôt). */
-export function InvoicePdf(props: InvoicePdfProps) {
+export function ContractPdf(props: ContractPdfProps) {
   return (
-    <Document title={`Facture ${props.invoiceNumber}`}>
-      <InvoicePdfPage {...props} />
+    <Document title={`Contrat ${props.contractNumber}`}>
+      <ContractPdfPage {...props} />
     </Document>
   );
 }

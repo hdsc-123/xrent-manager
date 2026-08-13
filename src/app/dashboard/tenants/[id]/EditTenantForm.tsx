@@ -19,21 +19,41 @@ interface EditTenantFormProps {
   id: string;
   initialName: string;
   slug: string;
+  initialContractNumberPrefix: string;
+  initialLastContractNumber: number;
 }
 
-export function EditTenantForm({ id, initialName, slug }: EditTenantFormProps) {
+export function EditTenantForm({
+  id,
+  initialName,
+  slug,
+  initialContractNumberPrefix,
+  initialLastContractNumber,
+}: EditTenantFormProps) {
   const router = useRouter();
   const [name, setName] = useState(initialName);
+  const [contractNumberPrefix, setContractNumberPrefix] = useState(initialContractNumberPrefix);
+  const [lastContractNumber, setLastContractNumber] = useState(String(initialLastContractNumber));
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    setIsSubmitting(true);
 
+    const lastContractNumberValue = Number(lastContractNumber);
+    if (!Number.isInteger(lastContractNumberValue) || lastContractNumberValue < 0) {
+      setError("Le dernier numéro de contrat utilisé doit être un entier positif ou nul.");
+      return;
+    }
+
+    setIsSubmitting(true);
     try {
-      await apiPatch(`/api/tenants/${id}`, { name });
+      await apiPatch(`/api/tenants/${id}`, {
+        name,
+        contractNumberPrefix: contractNumberPrefix.trim(),
+        lastContractNumber: lastContractNumberValue,
+      });
       toast.success("Tenant mis à jour.");
       router.refresh();
     } catch (err) {
@@ -42,6 +62,10 @@ export function EditTenantForm({ id, initialName, slug }: EditTenantFormProps) {
       setIsSubmitting(false);
     }
   }
+
+  const previewNumber = contractNumberPrefix.trim()
+    ? `${contractNumberPrefix.trim()}-${String(Math.max(0, (Number.isInteger(Number(lastContractNumber)) ? Number(lastContractNumber) : 0) + 1)).padStart(5, "0")}`
+    : String(Math.max(0, (Number.isInteger(Number(lastContractNumber)) ? Number(lastContractNumber) : 0) + 1)).padStart(5, "0");
 
   return (
     <Card>
@@ -61,6 +85,39 @@ export function EditTenantForm({ id, initialName, slug }: EditTenantFormProps) {
               value={name}
               onChange={(event) => setName(event.target.value)}
             />
+          </div>
+
+          <div className="flex flex-col gap-3 rounded-md border border-border p-3">
+            <span className="text-sm font-medium">Numérotation des contrats</span>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="contractNumberPrefix">
+                  Préfixe <span className="text-muted-foreground">— optionnel</span>
+                </Label>
+                <Input
+                  id="contractNumberPrefix"
+                  placeholder="RAK"
+                  value={contractNumberPrefix}
+                  onChange={(event) => setContractNumberPrefix(event.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="lastContractNumber" required>Dernier numéro utilisé</Label>
+                <Input
+                  id="lastContractNumber"
+                  type="number"
+                  min={0}
+                  required
+                  value={lastContractNumber}
+                  onChange={(event) => setLastContractNumber(event.target.value)}
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Le prochain contrat créé portera le numéro <span className="font-medium">{previewNumber}</span>.
+              Ne modifiez le dernier numéro utilisé que pour reprendre une numérotation existante
+              (ex. migration depuis un autre système).
+            </p>
           </div>
 
           {error && (

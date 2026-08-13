@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { FileText } from "lucide-react";
+import { FileText, Download } from "lucide-react";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { getLocationById } from "@/lib/locations";
 import { prisma } from "@/lib/prisma";
@@ -41,11 +41,23 @@ export default async function LocationDetailPage({ params }: PageProps) {
     <div className="mx-auto flex max-w-2xl flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="font-heading text-2xl font-semibold">Location #{location.id.slice(-8)}</h1>
+          <h1 className="font-heading text-2xl font-semibold">
+            {location.contractNumber ?? `Location #${location.id.slice(-8)}`}
+          </h1>
           <p className="text-sm text-muted-foreground">Agence : {agency?.name ?? "—"}</p>
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="outline">{STATUS_LABELS[location.status] ?? location.status}</Badge>
+          {location.contractNumber && (
+            <Button
+              render={<a href={`/api/locations/${location.id}/pdf`} target="_blank" rel="noreferrer" />}
+              variant="outline"
+              size="sm"
+            >
+              <Download className="size-4" />
+              Contrat PDF
+            </Button>
+          )}
           {invoice && (
             <Button render={<Link href={`/dashboard/invoices/${invoice.id}`} />} variant="outline" size="sm">
               <FileText className="size-4" />
@@ -60,6 +72,12 @@ export default async function LocationDetailPage({ params }: PageProps) {
           <CardTitle>Détails</CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-2 gap-4 text-sm">
+          {location.contractNumber && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">N° contrat</p>
+              <p className="font-medium">{location.contractNumber}</p>
+            </div>
+          )}
           <div>
             <p className="text-xs font-medium text-muted-foreground">Client</p>
             <p>{client?.name ?? "—"}</p>

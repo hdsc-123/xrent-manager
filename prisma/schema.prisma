@@ -14,6 +14,15 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Numérotation séquentielle des contrats (Sprint 14B, DOMAINRULES.md section 29).
+  // contractNumberPrefix est du texte libre (ex. "RAK"), vide par défaut (aucun préfixe
+  // inventé — CLAUDE.md section 2). lastContractNumber est le dernier numéro attribué :
+  // incrémenté atomiquement à chaque nouveau contrat (Location) créé, jamais dérivé d'un
+  // COUNT() (contrairement à Invoice.number) car l'énoncé exige de pouvoir le redéfinir
+  // manuellement depuis les paramètres (reprise de numérotation après migration de données).
+  contractNumberPrefix String @default("")
+  lastContractNumber   Int    @default(0)
+
   agencies         Agency[]
   users            User[]
   vehicles         Vehicle[]
@@ -229,6 +238,11 @@ model Location {
   deposit       Int?
   currency      String         @default("MAD")
   notes         String?
+  // Numéro de contrat séquentiel (Sprint 14B), ex. "RAK-00122" — voir generateContractNumber,
+  // src/lib/locations.ts. Nullable : les Location déjà créées avant ce sprint n'en ont pas
+  // (jamais backfillées rétroactivement, même principe que Vehicle.pricePerDay Sprint 14A) ;
+  // toute nouvelle Location en reçoit un systématiquement, quel que soit son statut initial.
+  contractNumber String?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
@@ -238,6 +252,7 @@ model Location {
   client   Client    @relation(fields: [clientId], references: [id])
   invoices Invoice[]
 
+  @@unique([tenantId, contractNumber])
   @@index([tenantId])
   @@index([agencyId])
   @@index([vehicleId])
@@ -638,6 +653,10 @@ model CashEntry {
   currency       String         @default("MAD")
   description    String?
   contractId     String?
+  // Numéro de contrat au moment de l'écriture (Sprint 14B) — dénormalisé pour l'affichage
+  // (même principe que clientName ci-dessous) : évite une jointure vers Location, qui peut
+  // ne plus exister (contractId n'a pas de contrainte de clé étrangère, voir plus haut).
+  contractNumber String?
   clientName     String?
   paymentMethod  PaymentMethod?
   createdAt      DateTime       @default(now())

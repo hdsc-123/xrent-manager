@@ -153,6 +153,35 @@ describe("POST /api/locations — paiement intégré", () => {
     expect(cashEntries.map((entry) => entry.amount).sort((a, b) => a - b)).toEqual([5_000, 10_000]);
   });
 
+  it("Sprint 14B — paiement mixte dépassant le total : aucune écriture partielle, message clair", async () => {
+    // totalPrice = 15 000 ; la somme des deux lignes (10 000 + 10 000 = 20 000) dépasse le
+    // total. Avant le correctif Sprint 14B, la première ligne (10 000, CASH) était tout de
+    // même écrite avant que la seconde échoue avec un message technique (entier brut de
+    // centimes) — désormais, le total est validé avant toute écriture : rien n'est créé.
+    const response = await createLocationWithPayment({
+      mixed: true,
+      method1: "CASH",
+      amount1: 10_000,
+      method2: "CARD",
+      amount2: 10_000,
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+
+    expect(body.payments).toEqual([]);
+    expect(body.paymentError).toBeTruthy();
+    // Le message est exprimé dans la devise (MAD), jamais un entier brut de centimes.
+    expect(body.paymentError).toContain("MAD");
+    expect(body.paymentError).not.toMatch(/\(\d+\)/);
+    expect(body.invoice.status).toBe("DRAFT");
+    expect(body.invoice.amountPaid).toBe(0);
+
+    const payments = await prisma.payment.findMany({ where: { invoiceId: body.invoice.id } });
+    expect(payments).toEqual([]);
+    const cashEntries = await prisma.cashEntry.findMany({ where: { contractId: body.location.id } });
+    expect(cashEntries).toEqual([]);
+  });
+
   it("le solde de caisse reflète les paiements encaissés à la création des locations", async () => {
     const before = await (
       await apiFetch("/api/cash-register", { headers: { Cookie: admin.sessionCookie } })
