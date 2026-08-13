@@ -132,6 +132,26 @@ export interface CreateReservationInput extends ReservationInputFields {
   tenantId: string;
 }
 
+/**
+ * Génère un numéro de voucher pour une réservation source DIRECT (Sprint 13C), au format
+ * Dir-{4 chiffres} (Dir-0001, Dir-0002...) — compteur basé sur le nombre de réservations
+ * DIRECT déjà créées pour ce tenant, même principe que generateInvoiceNumber
+ * (src/lib/invoices.ts). Pas de contrainte unique en base sur voucherNumber (CLAUDE.md
+ * section 7 : aucun changement de schéma pour ce sprint) : la boucle ci-dessous vérifie
+ * explicitement l'absence de collision plutôt que de s'appuyer sur un P2002.
+ */
+export async function generateDirectVoucherNumber(tenantId: string): Promise<string> {
+  const count = await prisma.reservation.count({ where: { tenantId, source: "DIRECT" } });
+
+  let next = count + 1;
+  let candidate = `Dir-${String(next).padStart(4, "0")}`;
+  while (await prisma.reservation.findFirst({ where: { tenantId, voucherNumber: candidate } })) {
+    next += 1;
+    candidate = `Dir-${String(next).padStart(4, "0")}`;
+  }
+  return candidate;
+}
+
 export async function createReservation(data: CreateReservationInput): Promise<Reservation> {
   if (data.endDate < data.startDate) {
     throw new InvalidReservationDateRangeError();

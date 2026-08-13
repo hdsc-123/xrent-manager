@@ -163,6 +163,69 @@ describe("POST /api/reservations", () => {
     const response = await createReservation(adminA, { source: "AUTRE" });
     expect(response.status).toBe(400);
   });
+
+  it("refuse l'absence de voucherNumber pour une source BROKER (Sprint 13C)", async () => {
+    const response = await apiFetch("/api/reservations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        source: "BROKER",
+        clientFirstName: "Jean",
+        clientLastName: "Testeur",
+        startDate: "2030-06-01",
+        endDate: "2030-06-03",
+      }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("génère automatiquement un voucherNumber Dir-0001, Dir-0002... pour une source DIRECT (Sprint 13C)", async () => {
+    const directTenant = await registerTenantAdmin({
+      tenantName: "Reservations Direct Voucher",
+      tenantSlug: `reservations-direct-voucher-${runId}`,
+      name: "Admin Direct",
+      email: `admin-direct-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    createdTenantIds.push(directTenant.tenantId);
+
+    const first = await apiFetch("/api/reservations", {
+      method: "POST",
+      headers: { Cookie: directTenant.sessionCookie },
+      body: JSON.stringify({
+        source: "DIRECT",
+        clientFirstName: "Jean",
+        clientLastName: "Testeur",
+        startDate: "2030-06-01",
+        endDate: "2030-06-03",
+      }),
+    });
+    expect(first.status).toBe(201);
+    const firstBody = await first.json();
+    expect(firstBody.reservation.voucherNumber).toBe("Dir-0001");
+
+    const second = await apiFetch("/api/reservations", {
+      method: "POST",
+      headers: { Cookie: directTenant.sessionCookie },
+      body: JSON.stringify({
+        source: "DIRECT",
+        clientFirstName: "Paul",
+        clientLastName: "Testeur",
+        startDate: "2030-06-01",
+        endDate: "2030-06-03",
+      }),
+    });
+    expect(second.status).toBe(201);
+    const secondBody = await second.json();
+    expect(secondBody.reservation.voucherNumber).toBe("Dir-0002");
+  });
+
+  it("respecte un voucherNumber DIRECT saisi manuellement plutôt que de le régénérer", async () => {
+    const response = await createReservation(adminA, { source: "DIRECT", voucherNumber: `Manual-${runId}` });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.reservation.voucherNumber).toBe(`Manual-${runId}`);
+  });
 });
 
 describe("GET /api/reservations", () => {

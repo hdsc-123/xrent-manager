@@ -8,6 +8,7 @@ import { ExportCsvButton } from "../reports/ExportCsvButton";
 
 const ACTION_LABELS: Record<string, string> = {
   "user.role_changed": "Changement de rôle",
+  "user.agencies_changed": "Agences assignées modifiées",
   "user.deleted": "Suppression d'utilisateur",
   "user.profile_updated": "Profil modifié",
   "user.permissions_changed": "Permissions modifiées",

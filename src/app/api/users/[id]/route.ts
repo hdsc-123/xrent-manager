@@ -1,6 +1,15 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/authz";
-import { getUserById, updateUserRole, resetUserPassword, deleteUser, LastAdminError } from "@/lib/users";
+import {
+  getUserById,
+  updateUserRole,
+  resetUserPassword,
+  deleteUser,
+  setUserAgencies,
+  getUserAgencyIds,
+  LastAdminError,
+  InvalidAgencyError,
+} from "@/lib/users";
 import { validatePassword } from "@/lib/password-policy";
 import { logAction } from "@/lib/audit";
 
@@ -23,14 +32,24 @@ export async function GET(_request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Utilisateur introuvable." }, { status: 404 });
   }
 
+  const agencyIds = await getUserAgencyIds(target.id);
+
   return NextResponse.json({
-    user: { id: target.id, name: target.name, email: target.email, role: target.role, createdAt: target.createdAt },
+    user: {
+      id: target.id,
+      name: target.name,
+      email: target.email,
+      role: target.role,
+      createdAt: target.createdAt,
+      agencyIds,
+    },
   });
 }
 
 interface PatchUserBody {
   role?: string;
   password?: string;
+  agencyIds?: string[];
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
@@ -66,6 +85,10 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     }
   }
 
+  if (body.agencyIds !== undefined && !Array.isArray(body.agencyIds)) {
+    return NextResponse.json({ error: "agencyIds doit être un tableau." }, { status: 400 });
+  }
+
   try {
     if (body.role !== undefined && body.role !== target.role) {
       await updateUserRole(user.tenantId, target.id, body.role as "ADMIN" | "MEMBER");
@@ -82,16 +105,32 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     if (body.password !== undefined) {
       await resetUserPassword(user.tenantId, target.id, body.password);
     }
+
+    if (body.agencyIds !== undefined) {
+      await setUserAgencies(user.tenantId, target.id, body.agencyIds);
+      await logAction({
+        tenantId: user.tenantId,
+        userId: user.id,
+        action: "user.agencies_changed",
+        resource: "User",
+        resourceId: target.id,
+        metadata: { agencyIds: body.agencyIds },
+      });
+    }
   } catch (error) {
     if (error instanceof LastAdminError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof InvalidAgencyError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
     }
     throw error;
   }
 
   const updated = await getUserById(user.tenantId, target.id);
+  const agencyIds = await getUserAgencyIds(target.id);
   return NextResponse.json({
-    user: { id: updated!.id, name: updated!.name, email: updated!.email, role: updated!.role },
+    user: { id: updated!.id, name: updated!.name, email: updated!.email, role: updated!.role, agencyIds },
   });
 }
 

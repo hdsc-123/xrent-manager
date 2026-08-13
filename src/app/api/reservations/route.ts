@@ -5,6 +5,7 @@ import { can } from "@/lib/permissions";
 import {
   getReservations,
   createReservation,
+  generateDirectVoucherNumber,
   type ReservationFilters,
   InvalidReservationDateRangeError,
 } from "@/lib/reservations";
@@ -99,12 +100,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
   }
 
-  const { voucherNumber, clientFirstName, clientLastName, startDate, endDate } = body;
-  if (!voucherNumber || !clientFirstName || !clientLastName || !startDate || !endDate) {
+  const { clientFirstName, clientLastName, startDate, endDate } = body;
+  if (!clientFirstName || !clientLastName || !startDate || !endDate) {
     return NextResponse.json(
-      { error: "voucherNumber, clientFirstName, clientLastName, startDate et endDate sont requis." },
+      { error: "clientFirstName, clientLastName, startDate et endDate sont requis." },
       { status: 400 }
     );
+  }
+
+  if (body.source && !RESERVATION_SOURCES.includes(body.source)) {
+    return NextResponse.json({ error: "source invalide." }, { status: 400 });
+  }
+
+  // voucherNumber est saisi manuellement pour une réservation BROKER, mais généré
+  // automatiquement (Dir-0001, Dir-0002...) pour une réservation DIRECT (Sprint 13C).
+  let voucherNumber = body.voucherNumber;
+  if (!voucherNumber) {
+    if (body.source === "DIRECT") {
+      voucherNumber = await generateDirectVoucherNumber(user.tenantId);
+    } else {
+      return NextResponse.json({ error: "voucherNumber est requis." }, { status: 400 });
+    }
   }
 
   const start = new Date(startDate);
@@ -119,10 +135,6 @@ export async function POST(request: Request) {
   const receivedAt = body.receivedAt ? new Date(body.receivedAt) : undefined;
   if (receivedAt && Number.isNaN(receivedAt.getTime())) {
     return NextResponse.json({ error: "receivedAt doit être une date ISO valide." }, { status: 400 });
-  }
-
-  if (body.source && !RESERVATION_SOURCES.includes(body.source)) {
-    return NextResponse.json({ error: "source invalide." }, { status: 400 });
   }
 
   if (body.status && body.status !== "PENDING" && body.status !== "CONFIRMED") {

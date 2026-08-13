@@ -68,6 +68,11 @@ export default function NewLocationPage() {
   const [status, setStatus] = useState<"PENDING" | "CONFIRMED">("PENDING");
   const [availabilityCheck, setAvailabilityCheck] = useState<AvailabilityCheck | null>(null);
 
+  function handleStartTimeChange(value: string) {
+    setStartTime(value);
+    setEndTime(value);
+  }
+
   const [paymentDeferred, setPaymentDeferred] = useState(false);
   const [paymentMixed, setPaymentMixed] = useState(false);
   const [paymentPartial, setPaymentPartial] = useState(false);
@@ -322,7 +327,7 @@ export default function NewLocationPage() {
                   type="time"
                   required
                   value={startTime}
-                  onChange={(e) => setStartTime(e.target.value)}
+                  onChange={(e) => handleStartTimeChange(e.target.value)}
                 />
               </div>
             </div>

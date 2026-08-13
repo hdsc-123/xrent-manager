@@ -12,6 +12,7 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
+  Checkbox,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -22,20 +23,40 @@ import {
   Label,
 } from "@/components/ui";
 
+interface AgencyOption {
+  id: string;
+  name: string;
+}
+
 interface EditUserFormProps {
   id: string;
   initialRole: string;
   isSelf: boolean;
+  agencies: AgencyOption[];
+  initialAgencyIds: string[];
 }
 
-export function EditUserForm({ id, initialRole, isSelf }: EditUserFormProps) {
+export function EditUserForm({ id, initialRole, isSelf, agencies, initialAgencyIds }: EditUserFormProps) {
   const router = useRouter();
   const [role, setRole] = useState(initialRole);
   const [password, setPassword] = useState("");
+  const [agencyIds, setAgencyIds] = useState<Set<string>>(new Set(initialAgencyIds));
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  function toggleAgency(agencyId: string, checked: boolean) {
+    setAgencyIds((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        next.add(agencyId);
+      } else {
+        next.delete(agencyId);
+      }
+      return next;
+    });
+  }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -43,7 +64,10 @@ export function EditUserForm({ id, initialRole, isSelf }: EditUserFormProps) {
     setIsSubmitting(true);
 
     try {
-      const body: { role?: string; password?: string } = { role };
+      const body: { role?: string; password?: string; agencyIds?: string[] } = {
+        role,
+        agencyIds: Array.from(agencyIds),
+      };
       if (password) {
         body.password = password;
       }
@@ -78,7 +102,7 @@ export function EditUserForm({ id, initialRole, isSelf }: EditUserFormProps) {
       <Card>
         <CardHeader>
           <CardTitle>Modifier l&apos;utilisateur</CardTitle>
-          <CardDescription>Rôle et réinitialisation du mot de passe.</CardDescription>
+          <CardDescription>Rôle, agences assignées et réinitialisation du mot de passe.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
@@ -94,6 +118,31 @@ export function EditUserForm({ id, initialRole, isSelf }: EditUserFormProps) {
                 <option value="ADMIN">Administrateur</option>
               </select>
             </div>
+
+            {role === "MEMBER" && (
+              <div className="flex flex-col gap-1.5">
+                <Label>Agences</Label>
+                <p className="text-xs text-muted-foreground">
+                  Un membre ne voit et ne peut agir que sur les agences cochées ci-dessous
+                  (véhicules, locations, clients de ces agences).
+                </p>
+                {agencies.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Aucune agence pour ce tenant.</p>
+                ) : (
+                  <div className="flex flex-col gap-2 rounded-md border border-border p-3">
+                    {agencies.map((agency) => (
+                      <label key={agency.id} className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={agencyIds.has(agency.id)}
+                          onCheckedChange={(checked) => toggleAgency(agency.id, checked === true)}
+                        />
+                        {agency.name}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="password">

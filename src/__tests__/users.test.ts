@@ -33,6 +33,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
+  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -153,6 +154,165 @@ describe("PATCH /api/users/[id]", () => {
       body: JSON.stringify({ email: member.email, password: newPassword, tenantId: adminA.tenantId }),
     });
     expect(loginResponse.status).toBe(200);
+  });
+});
+
+describe("PATCH /api/users/[id] — agencyIds (Sprint 13C)", () => {
+  it("un MEMBER fraîchement créé n'a aucune agence assignée (bug historique)", async () => {
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Fresh Member",
+      email: `fresh-member-${runId}@test.local`,
+      password,
+    });
+
+    const response = await apiFetch(`/api/users/${member.userId}`, {
+      method: "GET",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.user.agencyIds).toEqual([]);
+  });
+
+  it("permet à un ADMIN d'assigner des agences à un MEMBER", async () => {
+    const agencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence Assign", slug: `agence-assign-${runId}` }),
+    });
+    const agencyId = (await agencyResponse.json()).agency.id;
+
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Assignable Member",
+      email: `assignable-${runId}@test.local`,
+      password,
+    });
+
+    const response = await apiFetch(`/api/users/${member.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ agencyIds: [agencyId] }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.user.agencyIds).toEqual([agencyId]);
+
+    const links = await prisma.userAgency.findMany({ where: { userId: member.userId } });
+    expect(links).toHaveLength(1);
+    expect(links[0].agencyId).toBe(agencyId);
+  });
+
+  it("remplace l'ensemble des agences assignées (pas d'ajout incrémental)", async () => {
+    const agency1Response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence Replace 1", slug: `agence-replace-1-${runId}` }),
+    });
+    const agency1Id = (await agency1Response.json()).agency.id;
+
+    const agency2Response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence Replace 2", slug: `agence-replace-2-${runId}` }),
+    });
+    const agency2Id = (await agency2Response.json()).agency.id;
+
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Replace Member",
+      email: `replace-member-${runId}@test.local`,
+      password,
+    });
+
+    await apiFetch(`/api/users/${member.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ agencyIds: [agency1Id] }),
+    });
+
+    const response = await apiFetch(`/api/users/${member.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ agencyIds: [agency2Id] }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.user.agencyIds).toEqual([agency2Id]);
+  });
+
+  it("refuse une agence d'un autre tenant (isolation multi-tenant)", async () => {
+    const foreignAgencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminB.sessionCookie },
+      body: JSON.stringify({ name: "Agence B Isolation", slug: `agence-b-isolation-${runId}` }),
+    });
+    const foreignAgencyId = (await foreignAgencyResponse.json()).agency.id;
+
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Isolation Member",
+      email: `isolation-member-${runId}@test.local`,
+      password,
+    });
+
+    const response = await apiFetch(`/api/users/${member.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ agencyIds: [foreignAgencyId] }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("un MEMBER voit ses véhicules une fois assigné à l'agence via /api/users/[id]", async () => {
+    const agencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence E2E", slug: `agence-e2e-${runId}` }),
+    });
+    const agencyId = (await agencyResponse.json()).agency.id;
+
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId,
+        name: "Golf",
+        licensePlate: `E2E-${Math.floor(Math.random() * 1_000_000)}-AA`,
+        make: "Volkswagen",
+        model: "Golf",
+        year: 2023,
+        category: "Berline",
+        pricePerDay: 5000,
+      }),
+    });
+    expect(vehicleResponse.status).toBe(201);
+
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "E2E Member",
+      email: `e2e-member-${runId}@test.local`,
+      password,
+    });
+
+    const beforeAssignment = await apiFetch("/api/vehicles", {
+      headers: { Cookie: member.sessionCookie },
+    });
+    expect((await beforeAssignment.json()).vehicles).toEqual([]);
+
+    await apiFetch(`/api/users/${member.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ agencyIds: [agencyId] }),
+    });
+
+    const afterAssignment = await apiFetch("/api/vehicles", {
+      headers: { Cookie: member.sessionCookie },
+    });
+    const afterVehicles = (await afterAssignment.json()).vehicles;
+    expect(afterVehicles).toHaveLength(1);
+    expect(afterVehicles[0].agencyId).toBe(agencyId);
   });
 });
 

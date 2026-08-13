@@ -59,19 +59,28 @@ export default function NewReservationPage() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  function handleStartTimeChange(value: string) {
+    setStartTime(value);
+    setEndTime(value);
+  }
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
 
-    if (!voucherNumber || !clientFirstName || !clientLastName || !startDate || !endDate) {
-      setError("Voucher, prénom, nom et dates de départ/retour sont requis.");
+    if ((source !== "DIRECT" && !voucherNumber) || !clientFirstName || !clientLastName || !startDate || !endDate) {
+      setError(
+        source === "DIRECT"
+          ? "Prénom, nom et dates de départ/retour sont requis."
+          : "Voucher, prénom, nom et dates de départ/retour sont requis."
+      );
       return;
     }
 
     setIsSubmitting(true);
     try {
       await apiPost("/api/reservations", {
-        voucherNumber,
+        voucherNumber: voucherNumber || undefined,
         confirmationNumber: confirmationNumber || undefined,
         source: source || undefined,
         clientFirstName,
@@ -122,7 +131,18 @@ export default function NewReservationPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="voucherNumber">N° voucher</Label>
-                <Input id="voucherNumber" required value={voucherNumber} onChange={(e) => setVoucherNumber(e.target.value)} />
+                {source === "DIRECT" ? (
+                  <p className="flex h-8 items-center text-sm text-muted-foreground">
+                    Généré automatiquement (ex. Dir-0001)
+                  </p>
+                ) : (
+                  <Input
+                    id="voucherNumber"
+                    required
+                    value={voucherNumber}
+                    onChange={(e) => setVoucherNumber(e.target.value)}
+                  />
+                )}
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="confirmationNumber">
@@ -187,7 +207,7 @@ export default function NewReservationPage() {
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="startTime">Heure</Label>
-                <Input id="startTime" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+                <Input id="startTime" type="time" value={startTime} onChange={(e) => handleStartTimeChange(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="endDate">Date de retour</Label>

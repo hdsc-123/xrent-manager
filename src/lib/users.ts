@@ -28,6 +28,13 @@ export class InvalidCurrentPasswordError extends Error {
   }
 }
 
+export class InvalidAgencyError extends Error {
+  constructor() {
+    super("Une ou plusieurs agences sont introuvables pour ce tenant.");
+    this.name = "InvalidAgencyError";
+  }
+}
+
 export async function getUserById(tenantId: string, userId: string): Promise<User | null> {
   return prisma.user.findFirst({ where: { id: userId, tenantId } });
 }
@@ -62,6 +69,50 @@ export async function updateUserRole(
   }
 
   return prisma.user.update({ where: { id: targetUserId }, data: { role } });
+}
+
+/** Agences actuellement assignées à un user (pour préremplir le formulaire d'édition). */
+export async function getUserAgencyIds(userId: string): Promise<string[]> {
+  const links = await prisma.userAgency.findMany({ where: { userId }, select: { agencyId: true } });
+  return links.map((link) => link.agencyId);
+}
+
+/**
+ * Remplace l'ensemble des agences assignées à un MEMBER (SECURITY.md section 2 :
+ * un MEMBER ne voit/agit que sur les agences auxquelles il est explicitement rattaché
+ * via UserAgency — jusqu'ici, rien dans l'application ne créait jamais ce lien, un MEMBER
+ * fraîchement invité n'avait donc accès à aucune agence). Remplacement complet (pas
+ * d'ajout incrémental) : plus simple à raisonner côté UI (case à cocher = état voulu),
+ * même principe que setUserPermissions (src/lib/permissions.ts). Sans effet pour un
+ * ADMIN (canAccessAgency/getAccessibleAgencyIds ignorent déjà UserAgency pour ce rôle),
+ * mais autorisé quand même : rien n'empêche de préparer les agences avant une éventuelle
+ * rétrogradation en MEMBER.
+ */
+export async function setUserAgencies(
+  tenantId: string,
+  targetUserId: string,
+  agencyIds: string[]
+): Promise<void> {
+  const uniqueIds = Array.from(new Set(agencyIds));
+  if (uniqueIds.length > 0) {
+    const validAgencies = await prisma.agency.count({
+      where: { tenantId, id: { in: uniqueIds } },
+    });
+    if (validAgencies !== uniqueIds.length) {
+      throw new InvalidAgencyError();
+    }
+  }
+
+  await prisma.$transaction([
+    prisma.userAgency.deleteMany({ where: { userId: targetUserId } }),
+    ...(uniqueIds.length > 0
+      ? [
+          prisma.userAgency.createMany({
+            data: uniqueIds.map((agencyId) => ({ userId: targetUserId, agencyId })),
+          }),
+        ]
+      : []),
+  ]);
 }
 
 export async function resetUserPassword(

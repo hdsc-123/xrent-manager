@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getSessionUser } from "@/lib/authz";
-import { getUserById } from "@/lib/users";
+import { getUserById, getUserAgencyIds } from "@/lib/users";
+import { prisma } from "@/lib/prisma";
 import { Button } from "@/components/ui";
 import { EditUserForm } from "./EditUserForm";
 
@@ -23,6 +24,11 @@ export default async function UserDetailPage({ params }: PageProps) {
     notFound();
   }
 
+  const [agencies, agencyIds] = await Promise.all([
+    prisma.agency.findMany({ where: { tenantId: sessionUser.tenantId }, orderBy: { name: "asc" } }),
+    getUserAgencyIds(target.id),
+  ]);
+
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
@@ -39,6 +45,8 @@ export default async function UserDetailPage({ params }: PageProps) {
         id={target.id}
         initialRole={target.role}
         isSelf={target.id === sessionUser.id}
+        agencies={agencies.map((agency) => ({ id: agency.id, name: agency.name }))}
+        initialAgencyIds={agencyIds}
       />
     </div>
   );
