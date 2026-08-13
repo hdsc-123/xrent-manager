@@ -243,6 +243,7 @@ export function ReservationsTable({
       {
         id: "daysCount",
         header: "Jours",
+        meta: { align: "right" },
         cell: ({ row }) => {
           const start = combineDateAndTime(new Date(row.original.startDate), row.original.startTime);
           const end = combineDateAndTime(new Date(row.original.endDate), row.original.endTime);
@@ -285,12 +286,14 @@ export function ReservationsTable({
       {
         id: "totalPrice",
         header: "Prix total",
+        meta: { align: "right" },
         cell: ({ row }) =>
           row.original.totalPrice !== null ? formatMoney(row.original.totalPrice, row.original.currency) : "—",
       },
       {
         id: "finalPrice",
         header: "Prix final",
+        meta: { align: "right" },
         cell: ({ row }) => {
           const { totalPrice, gpsPrice, babySeatPrice, extraDriverPrice, currency } = row.original;
           if (totalPrice === null) return "—";

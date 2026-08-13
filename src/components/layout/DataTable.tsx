@@ -6,6 +6,7 @@ import {
   createPaginatedRowModel,
   createSortedRowModel,
   flexRender,
+  metaHelper,
   rowPaginationFeature,
   rowSortingFeature,
   sortFn_alphanumeric,
@@ -15,6 +16,7 @@ import {
   type RowData,
   type SortingState,
 } from "@tanstack/react-table";
+import { cn } from "@/lib/utils";
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight } from "lucide-react";
 import {
   Button,
@@ -32,6 +34,20 @@ import {
  * optionnels (tri, pagination) sont enregistrés comme "features" plutôt que passés
  * en options à useReactTable (qui n'existe plus, remplacé par useTable).
  */
+/**
+ * `align` (Sprint 14D) : alignement du contenu d'une colonne (en-tête + cellules),
+ * harmonisé une seule fois ici plutôt que dans chaque page — voir ALIGN_CLASS ci-dessous.
+ * Par défaut "left" (comportement historique, inchangé pour toute colonne qui ne déclare
+ * pas `meta.align`), sauf la colonne `id: "actions"` qui est toujours alignée à droite
+ * (convention déjà systématique dans toutes les tables du SaaS — le bouton d'action y est
+ * lui-même toujours enveloppé dans un `flex justify-end` par la page appelante ; seul
+ * l'en-tête correspondant ne l'était pas, incohérence corrigée ici pour toutes les tables
+ * d'un coup).
+ */
+export interface DataTableColumnMeta {
+  align?: "left" | "center" | "right";
+}
+
 const features = tableFeatures({
   rowSortingFeature,
   sortedRowModel: createSortedRowModel(),
@@ -42,9 +58,27 @@ const features = tableFeatures({
   // (typé par feature en v9) — lu directement depuis columnDef.size (pas getSize()), aucun
   // redimensionnement interactif n'est câblé, l'état columnSizing par défaut reste inutilisé.
   columnSizingFeature,
+  columnMeta: metaHelper<DataTableColumnMeta>(),
 });
 
 export type DataTableColumn<TData extends RowData> = ColumnDef<typeof features, TData>;
+
+function resolveAlign(columnId: string, declared: DataTableColumnMeta["align"] | undefined) {
+  if (declared) return declared;
+  return columnId === "actions" ? "right" : "left";
+}
+
+const ALIGN_CLASS: Record<NonNullable<DataTableColumnMeta["align"]>, string> = {
+  left: "text-left",
+  center: "text-center",
+  right: "text-right",
+};
+
+const ALIGN_JUSTIFY_CLASS: Record<NonNullable<DataTableColumnMeta["align"]>, string> = {
+  left: "justify-start",
+  center: "justify-center",
+  right: "justify-end",
+};
 
 interface DataTableProps<TData extends RowData> {
   columns: DataTableColumn<TData>[];
@@ -86,18 +120,22 @@ export function DataTable<TData extends RowData>({
                   // aucune table existante qui n'en définit pas (pas de largeur par défaut
                   // TanStack appliquée ici, volontairement, pour ne rien changer ailleurs).
                   const width = header.column.columnDef.size;
+                  const align = resolveAlign(header.column.id, header.column.columnDef.meta?.align);
 
                   return (
                     <TableHead
                       key={header.id}
-                      className="whitespace-normal break-words align-bottom"
+                      className={cn("whitespace-normal break-words align-bottom", ALIGN_CLASS[align])}
                       style={width !== undefined ? { width, maxWidth: width } : undefined}
                     >
                       {canSort ? (
                         <button
                           type="button"
                           onClick={header.column.getToggleSortingHandler()}
-                          className="flex items-center gap-1 font-medium hover:text-foreground"
+                          className={cn(
+                            "flex w-full items-center gap-1 font-medium hover:text-foreground",
+                            ALIGN_JUSTIFY_CLASS[align]
+                          )}
                         >
                           {label}
                           {sorted === "asc" && <ArrowUp className="size-3.5" />}
@@ -128,10 +166,14 @@ export function DataTable<TData extends RowData>({
                 <TableRow key={row.id}>
                   {row.getAllCells().map((cell) => {
                     const width = cell.column.columnDef.size;
+                    const align = resolveAlign(cell.column.id, cell.column.columnDef.meta?.align);
                     return (
                       <TableCell
                         key={cell.id}
-                        className={width !== undefined ? "whitespace-normal break-words" : undefined}
+                        className={cn(
+                          width !== undefined && "whitespace-normal break-words",
+                          ALIGN_CLASS[align]
+                        )}
                         style={width !== undefined ? { width, maxWidth: width } : undefined}
                       >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}

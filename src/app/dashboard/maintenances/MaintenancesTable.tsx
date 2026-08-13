@@ -146,6 +146,7 @@ export function MaintenancesTable({ maintenances }: { maintenances: MaintenanceR
       {
         id: "cost",
         header: "Coût",
+        meta: { align: "right" },
         cell: ({ row }) =>
           row.original.cost !== null ? formatMoney(row.original.cost, row.original.currency) : "—",
       },

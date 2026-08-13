@@ -125,8 +125,8 @@ xrent-manager/
 │   │   │   │   └── expenses/page.tsx, ExpensesTable.tsx, NewExpenseForm.tsx
 │   │   │   ├── reports/            # (Sprint 6) KPIs, graphiques (recharts), export CSV — ADMIN uniquement
 │   │   │   │   ├── page.tsx, ReportsCharts.tsx, ExportCsvButton.tsx, loading.tsx
-│   │   │   └── settings/            # Nom du tenant (éditable, ADMIN) ; (Sprint 10) profil user éditable
-│   │   │       └── page.tsx, EditProfileForm.tsx  # (Sprint 11) EditProfileForm appelle useSession().update() après un PATCH réussi (nom/email)
+│   │   │   └── settings/            # Nom du tenant (éditable, ADMIN) ; (Sprint 10) profil user éditable ; (Sprint 14D) reset de données
+│   │   │       └── page.tsx, EditProfileForm.tsx, DataResetCard.tsx  # (Sprint 11) EditProfileForm appelle useSession().update() après un PATCH réussi (nom/email) ; (Sprint 14D, nouveau) DataResetCard.tsx — carte « Zone dangereuse », ADMIN uniquement
 │   │   └── api/
 │   │       ├── auth/
 │   │       │   ├── [...nextauth]/route.ts  # Handler NextAuth (GET/POST)
@@ -275,6 +275,7 @@ xrent-manager/
 │       ├── vehicle-transfers.test.ts # (Sprint 14C, nouveau) Lancement, dérivation fromAgencyId, exclusion des sélecteurs AVAILABLE, blocage transfert incohérent/concurrent, validation + mise à jour agence, blocage kilométrage/date incohérents, annulation, isolation multi-tenant
 │       ├── vehicle-trips.test.ts     # (Sprint 14C, nouveau) Départ automatique, exclusion des sélecteurs AVAILABLE, blocage déplacement concurrent, retour (blocage kilométrage ≤ départ, retour valide), annulation, isolation multi-tenant
 │       ├── vehicle-mobility-alerts.test.ts # (Sprint 14C, nouveau) Génération STOCK_INCONSISTENCY/RETURN_OVERDUE + consultation/traitement ; rendu de la vue "État des véhicules" (/dashboard/maintenances)
+│       ├── data-reset.test.ts       # (Sprint 14D, nouveau) Autorisation ADMIN-only, aperçu des comptages, confirmation par nom de tenant, reset complet vérifié modèle par modèle + isolation inter-tenant, option includeAuditLog, verrou de double-exécution, garde de production
 │       └── helpers/          # testServer.ts (port/URL), http.ts (fetch + cookies), fixtures.ts (register/login de test)
 ├── vitest.global-setup.ts    # Démarre/arrête un vrai serveur `next dev` de test (requis par NextAuth, voir TESTREPORT.md)
 ├── AGENTS.md                # Règles agent Next.js, régénéré automatiquement par `next dev`
@@ -287,14 +288,16 @@ xrent-manager/
 ├── SECURITY.md                # Règles de sécurité
 ├── TESTREPORT.md              # Suivi des tests
 ├── INCIDENTS.md                # Suivi des incidents
-├── eslint.config.mjs          # Configuration ESLint (eslint-config-next)
+├── eslint.config.mjs          # Configuration ESLint (eslint-config-next) ; (Sprint 14D) scripts/** ajouté aux ignores — outil CLI Node autonome, require() intentionnel
 ├── next.config.ts             # Configuration Next.js (par défaut, non personnalisée)
 ├── postcss.config.mjs         # Configuration PostCSS pour Tailwind
 ├── tsconfig.json               # Configuration TypeScript (alias @/* -> ./src/*)
 ├── vitest.config.mts           # Configuration Vitest (alias @/*, setup dotenv, globalSetup)
 ├── vitest.setup.ts             # Charge .env avant les tests (dotenv/config)
 ├── package.json                 # Dépendances et scripts npm
-└── package-lock.json
+├── package-lock.json
+└── scripts/
+    └── reset-dev-data.js       # (présent sur la copie de travail, non commis dans Git jusqu'ici) Outil CLI de reset global (tous tenants) d'un environnement xrent_dev/xrent_test local, garde-fouté par nom de base — distinct du reset SaaS tenant-scopé du Sprint 14D (GET/POST /api/data-reset), voir HANDOFF.md section 1 et DOMAINRULES.md section 31
 ```
 
 `.env` et `.env.test` (non versionnés, exclus par `.gitignore`) contiennent `DATABASE_URL` (`xrent_dev`/`xrent_test`) et `AUTH_SECRET` (secret de signature/chiffrement des sessions JWT NextAuth, généré localement).
@@ -321,6 +324,7 @@ xrent-manager/
 | `src/lib/users.ts` | (Sprint 9) `updateUserRole`/`resetUserPassword`/`deleteUser`, garde `LastAdminError` (409) empêchant de retirer le dernier `ADMIN` d'un tenant (self ou non-self) ; `deleteUser` nettoie `UserAgency`/`Alert.userId` avant suppression (pas de cascade DB sur ces relations). (Sprint 13C) `getUserAgencyIds`/`setUserAgencies` — première écriture jamais faite sur `UserAgency` en dehors des tests, corrige le bug où un `MEMBER` ne voyait aucun véhicule/location. |
 | `src/lib/invitations.ts` | (Sprint 9) `createInvitation`/`acceptInvitation`/`declineInvitation`/`revokeInvitation` ; `id` (cuid) sert d'identifiant non-devinable dans le lien partageable, pas de colonne `token` séparée ; `acceptInvitation` dérive toujours `email`/`role` de l'invitation, jamais du client. |
 | `src/lib/audit.ts` | (Sprint 9) `logAction`/`getAuditLogs`, scopés tenant ; `logAction` n'échoue jamais l'action métier appelante (catch + log console). Câblé uniquement sur les actions Sprint 9 (rôle/suppression user, invitations) — voir section 4. |
+| `src/lib/data-reset.ts` | (Sprint 14D, nouveau) `getDataResetSummary`/`resetTenantData` — reset des données métier/test d'un tenant (voir DOMAINRULES.md section 31) : garde de production (`NODE_ENV`, SECURITY.md section 17), verrou anti-double-exécution en mémoire de process, confirmation par nom de tenant, journalisation systématique via `logAction` (action `"data.reset"`) même si l'option « réinitialisation complète » vide `AuditLog` lui-même. |
 | `src/lib/password-policy.ts` | (Sprint 9) `validatePassword()` — 8 caractères minimum, majuscule, chiffre, caractère spécial ; utilisée par `/api/auth/register`, l'acceptation d'invitation et la réinitialisation de mot de passe par un ADMIN. |
 | `src/proxy.ts` | Redirection optimiste vers `/login` pour `/dashboard*`/`/settings*` si non authentifié (lecture du JWT côté cookie uniquement, pas de requête base de données). N'intercepte pas `/invitations/*` (route publique, Sprint 9). |
 | `src/app/api/auth/register/route.ts` | Crée un `Tenant` et son premier `User` (`role: "ADMIN"`), mot de passe haché avec `bcryptjs`, validé par `validatePassword` (Sprint 9). |
@@ -340,8 +344,9 @@ xrent-manager/
 | `src/app/api/maintenances/route.ts`, `[id]/route.ts` | (Sprint 7) CRUD `Maintenance`, `agencyId`/`currency` toujours dérivés du `Vehicle` côté serveur, machine à états sur `PATCH`, suppression restreinte à `SCHEDULED`. |
 | `src/app/api/alerts/route.ts`, `[id]/acknowledge/route.ts`, `[id]/resolve/route.ts` | (Sprint 7) `GET` (liste filtrable) + `PATCH` acknowledge/resolve — aucune route `POST`/`DELETE` (alertes créées par le système uniquement, jamais supprimables). |
 | `src/app/api/tasks/check-alerts/route.ts` | (Sprint 7) `POST`, réservé `ADMIN` — déclenche `checkDueMaintenances`/`checkReturnsToday`/`checkOverdueInvoices` pour le tenant connecté. |
+| `src/app/api/data-reset/route.ts` | (Sprint 14D, nouveau) `GET` (aperçu des comptages) / `POST` (exécution), réservés `ADMIN`, toujours scopés au tenant connecté (aucun `tenantId` accepté en entrée) — voir `src/lib/data-reset.ts`. |
 | `src/app/dashboard/layout.tsx` | (Sprint 4) Server Component : résout la session et le tenant courant, redirige vers `/login` si non authentifié, fournit `DashboardLayout`. (Sprint 11) Enveloppe la sortie dans `<SessionProvider>` (`next-auth/react`), nécessaire pour `useSession().update()` (voir `EditProfileForm.tsx`) — première introduction de ce provider, scopée à `/dashboard`. |
-| `src/components/layout/DataTable.tsx` | (Sprint 4) Table générique (TanStack Table **v9** — API `useTable`/`tableFeatures`, pas `useReactTable` — voir `node_modules/@tanstack/react-table/skills/migrate-v8-to-v9/`), tri par colonne et pagination, réutilisée par les pages tenants/agencies/users. (Sprint 14A) En-têtes en retour à la ligne automatique ; largeur de colonne optionnelle lue depuis `columnDef.size` (jamais imposée par défaut) — n'affecte que les tables qui déclarent explicitement `size` sur leurs colonnes. |
+| `src/components/layout/DataTable.tsx` | (Sprint 4) Table générique (TanStack Table **v9** — API `useTable`/`tableFeatures`, pas `useReactTable` — voir `node_modules/@tanstack/react-table/skills/migrate-v8-to-v9/`), tri par colonne et pagination, réutilisée par les pages tenants/agencies/users. (Sprint 14A) En-têtes en retour à la ligne automatique ; largeur de colonne optionnelle lue depuis `columnDef.size` (jamais imposée par défaut) — n'affecte que les tables qui déclarent explicitement `size` sur leurs colonnes. (Sprint 14D) Nouveau champ `meta.align` (`"left"`/`"center"`/`"right"`, typé via `metaHelper`) appliqué à l'en-tête et à la cellule d'une colonne — la colonne `id: "actions"` est alignée à droite automatiquement partout ; voir DOMAINRULES.md section 27 (addendum). |
 | `src/lib/api.ts` | (Sprint 4) Wrapper `fetch` pour les appels `/api/*` côté client ; lève `ApiError` avec le message `{ error }` renvoyé par la route. |
 | `src/__tests__/db.test.ts` | Tests Vitest vérifiant qu'`getAgencyById`/`getUserById` ne retournent jamais une ressource d'un autre tenant ; crée puis nettoie ses propres données dans `xrent_test`. |
 | `src/__tests__/auth.test.ts`, `tenants.test.ts`, `agencies.test.ts` | Tests d'intégration HTTP contre un vrai serveur `next dev` de test (voir `vitest.global-setup.ts`) : authentification, CRUD, isolation multi-tenant/multi-agence. |

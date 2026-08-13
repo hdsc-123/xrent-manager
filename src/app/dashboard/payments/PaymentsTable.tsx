@@ -61,6 +61,7 @@ export function PaymentsTable({ payments }: { payments: PaymentRow[] }) {
       {
         id: "amount",
         header: "Montant",
+        meta: { align: "right" },
         cell: ({ row }) => formatMoney(row.original.amount, row.original.currency),
       },
     ],

@@ -26,6 +26,7 @@ export function ExpensesTable({ expenses }: { expenses: ExpenseRow[] }) {
       {
         id: "amount",
         header: "Montant",
+        meta: { align: "right" },
         cell: ({ row }) => `-${formatMoney(row.original.amount, row.original.currency)}`,
       },
     ],

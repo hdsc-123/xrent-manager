@@ -159,11 +159,13 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
       {
         id: "totalAmount",
         header: "Total",
+        meta: { align: "right" },
         cell: ({ row }) => formatMoney(row.original.totalAmount, row.original.currency),
       },
       {
         id: "amountPaid",
         header: "Payé",
+        meta: { align: "right" },
         cell: ({ row }) => formatMoney(row.original.amountPaid, row.original.currency),
       },
       {

@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Scripts CLI Node autonomes (ex. scripts/reset-dev-data.js), exécutés directement via
+    // `node`, hors du bundle Next.js — CommonJS `require()` y est intentionnel, pas une
+    // erreur (voir CLAUDE.md section 7).
+    "scripts/**",
   ]),
 ]);
 

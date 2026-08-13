@@ -98,6 +98,7 @@ export function VehiclesTable({ vehicles }: { vehicles: VehicleRow[] }) {
       {
         id: "pricePerDay",
         header: "Prix / jour",
+        meta: { align: "right" },
         cell: ({ row }) =>
           row.original.pricePerDay !== null
             ? formatMoney(row.original.pricePerDay, row.original.currency)

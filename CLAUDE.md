@@ -15,7 +15,7 @@ XRent Manager est un **SaaS de gestion de location de véhicules**, conçu dès 
 - **mobile-first** dans son approche d'interface ;
 - doté d'un **dashboard-admin** dès le MVP.
 
-À la date de ce document, le projet est au stade **Sprint 0 (fondation)** : uniquement le socle Next.js par défaut et la documentation. Aucun module métier (véhicules, réservations, contrats, paiements, etc.) n'existe encore. Voir [PROJECT_MAP.md](./PROJECT_MAP.md) pour l'état réel des dossiers et [HANDOFF.md](./HANDOFF.md) pour l'état d'avancement.
+À la date de ce document, le projet a dépassé le stade de fondation : les Sprints 0 à 14C sont livrés (authentification, multi-tenant/multi-agence, véhicules, réservations, contrats/locations, facturation, paiements, caisse, maintenance, alertes, transferts entre agences, bons de déplacement, permissions granulaires, audit, etc.). Le Sprint 14D (réalignement documentaire, reset de données de test, harmonisation UI) est en cours. Voir [PROJECT_MAP.md](./PROJECT_MAP.md) pour l'état réel des dossiers et [HANDOFF.md](./HANDOFF.md) pour l'état d'avancement détaillé, sprint par sprint.
 
 ## 2. Règles impératives
 
@@ -38,14 +38,14 @@ XRent Manager est un **SaaS de gestion de location de véhicules**, conçu dès 
 
 ## 4. Règles financières
 
-- Aucun montant financier ne doit être représenté ou calculé en `float`/`double`. Les montants doivent utiliser une représentation exacte (entiers en plus petite unité monétaire, ou type décimal exact) — le choix précis du type est **À DÉCIDER** (voir [DOMAINRULES.md](./DOMAINRULES.md)).
+- Aucun montant financier ne doit être représenté ou calculé en `float`/`double`. Décidé (Sprint 1) : tout montant financier est un entier exprimé dans la plus petite unité monétaire (centimes), toujours accompagné d'un champ `currency` explicite — voir [DOMAINRULES.md](./DOMAINRULES.md) section 14.
 - Toute règle de calcul financier (prix, caution, remboursement, pénalité) doit être documentée dans [DOMAINRULES.md](./DOMAINRULES.md) avant implémentation.
 
 ## 5. Règles multi-tenant et multi-agence
 
-- Chaque enregistrement métier futur devra être rattaché sans ambiguïté à un tenant, et selon le cas à une agence.
+- Chaque enregistrement métier est rattaché sans ambiguïté à un tenant, et selon le cas à une agence (`tenantId`/`agencyId`, voir `prisma/schema.prisma`).
 - Aucune requête ne doit pouvoir retourner des données d'un tenant à un autre, y compris par erreur de filtrage côté client.
-- Le modèle précis d'isolation (colonne `tenant_id` partagée, schémas séparés, bases séparées) est **À DÉCIDER** — voir [ARCHITECTURE.md](./ARCHITECTURE.md).
+- Décidé (Sprint 1) : l'isolation repose sur une colonne `tenant_id` partagée entre tenants dans les mêmes tables (pas de schémas ni de bases séparées) — isolation **logique**, appliquée côté serveur à chaque requête (`src/lib/authz.ts`, `getAccessibleAgencyIds()`). Voir [ARCHITECTURE.md](./ARCHITECTURE.md) section « Multi-tenant/multi-agence » et [SECURITY.md](./SECURITY.md) section 1.
 
 ## 6. Commandes actuellement disponibles
 
@@ -57,8 +57,10 @@ Définies dans `package.json` :
 | `npm run build` | Build de production Next.js (validé ✅) |
 | `npm run start` | Démarre le serveur en mode production (build requis au préalable) |
 | `npm run lint` | Lint ESLint (validé ✅) |
+| `npm run test` | Suite de tests Vitest (validé ✅ — voir [TESTREPORT.md](./TESTREPORT.md)) |
+| `npx prisma migrate dev` / `npx prisma migrate deploy` | Applique les migrations de base de données (voir `prisma/migrations/`) |
 
-Aucune commande de test, de migration de base de données ou de seed n'existe à ce jour.
+Aucune commande de seed n'existe à ce jour — voir règle 7 du présent document (pas de données fictives dans l'application).
 
 ## 7. Règles de modification du code
 
@@ -71,7 +73,7 @@ Aucune commande de test, de migration de base de données ou de seed n'existe à
 
 ## 8. Interdiction de coder sans validation
 
-**Aucun code métier ne doit être écrit sans validation explicite préalable du propriétaire du projet.** Cela inclut : schéma de base de données, authentification, pages ou routes métier, logique de réservation/contrat/paiement, migrations. La phase actuelle (Sprint 0) est strictement documentaire.
+**Aucun code métier ne doit être écrit sans validation explicite préalable du propriétaire du projet.** Cela inclut : schéma de base de données, authentification, pages ou routes métier, logique de réservation/contrat/paiement, migrations. Cette règle reste pleinement en vigueur malgré l'avancement du projet (voir section 1) : chaque sprint listé dans [HANDOFF.md](./HANDOFF.md) a fait l'objet d'un brief explicite du propriétaire du projet avant implémentation (ou, pour les rares décisions prises en cours d'implémentation, d'une documentation a posteriori marquée « à confirmer » — voir HANDOFF.md section 8).
 
 ## 9. Règles d'utilisation de /clear, /compact, /usage et /cost
 

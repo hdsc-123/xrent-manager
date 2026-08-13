@@ -3,6 +3,7 @@ import { getTenantById } from "@/lib/db";
 import { getUserById } from "@/lib/users";
 import { EditTenantForm } from "@/app/dashboard/tenants/[id]/EditTenantForm";
 import { EditProfileForm } from "./EditProfileForm";
+import { DataResetCard } from "./DataResetCard";
 
 export default async function SettingsPage() {
   const user = await getSessionUser();
@@ -35,6 +36,8 @@ export default async function SettingsPage() {
         initialPhone={currentUser.phone ?? ""}
         initialAvatar={currentUser.avatar ?? ""}
       />
+
+      {tenant && user.role === "ADMIN" && <DataResetCard tenantName={tenant.name} />}
     </div>
   );
 }

@@ -52,6 +52,7 @@ export function EntriesTable({ entries }: { entries: EntryRow[] }) {
       {
         id: "amount",
         header: "Montant",
+        meta: { align: "right" },
         cell: ({ row }) => `+${formatMoney(row.original.amount, row.original.currency)}`,
       },
     ],

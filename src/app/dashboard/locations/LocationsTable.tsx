@@ -188,6 +188,7 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
       {
         id: "totalPrice",
         header: "Total",
+        meta: { align: "right" },
         cell: ({ row }) => formatMoney(row.original.totalPrice, row.original.currency),
       },
       {
