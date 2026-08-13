@@ -27,6 +27,9 @@ model Tenant {
   auditLogs        AuditLog[]
   reservations     Reservation[]
   permissionGroups PermissionGroup[]
+  cashRegister     CashRegister?
+  cashEntries      CashEntry[]
+  expenseCategories ExpenseCategory[]
 }
 
 model Agency {
@@ -584,6 +587,78 @@ model UserPermission {
 
   @@unique([userId, permissionKey])
   @@index([userId])
+}
+
+enum CashEntryType {
+  ENTRY
+  EXPENSE
+}
+
+// Caisse (Sprint 13A) : un CashRegister par tenant (singleton, @@unique tenantId), pas
+// de notion d'agence (comme Reservation, section 21 DOMAINRULES) — tous les CashEntry
+// d'un tenant alimentent une caisse unique. currentBalance/currentMonth/previousBalance
+// ne sont jamais incrémentés directement : ils sont recalculés en entier à partir des
+// CashEntry réels après chaque écriture (recomputeCashRegisterBalance, src/lib/cash-register.ts),
+// même principe que Invoice.amountPaid/status vis-à-vis de Payment (DOMAINRULES section 10)
+// — pour ne jamais laisser un solde dériver de la réalité des écritures.
+model CashRegister {
+  id              String   @id @default(cuid())
+  tenantId        String   @unique
+  currentBalance  Int      @default(0)
+  currentMonth    String
+  previousBalance Int      @default(0)
+  currency        String   @default("MAD")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant  Tenant      @relation(fields: [tenantId], references: [id])
+  entries CashEntry[]
+
+  @@index([tenantId])
+}
+
+// Écriture de caisse (entrée ou dépense), jamais modifiable ni supprimable une fois créée
+// (même principe append-only que Alert, DOMAINRULES section 19 — traçabilité financière).
+// contractId pointe en texte libre vers une Location (pas de contrainte de clé étrangère,
+// même principe que Alert.entityType/Vehicle.category, DOMAINRULES section 6) : une location
+// supprimée ne doit jamais bloquer/casser son historique de caisse. category est également
+// du texte libre (nom d'ExpenseCategory pour une dépense, ou une des valeurs suggérées
+// VERSEMENT/COMMISSION/VIREMENT pour une entrée) plutôt qu'un enum figé, pour rester
+// extensible sans migration à chaque nouvelle catégorie.
+model CashEntry {
+  id             String         @id @default(cuid())
+  tenantId       String
+  cashRegisterId String
+  type           CashEntryType
+  category       String?
+  amount         Int
+  currency       String         @default("MAD")
+  description    String?
+  contractId     String?
+  clientName     String?
+  paymentMethod  PaymentMethod?
+  createdAt      DateTime       @default(now())
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id])
+  cashRegister CashRegister @relation(fields: [cashRegisterId], references: [id])
+
+  @@index([tenantId])
+  @@index([cashRegisterId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model ExpenseCategory {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  color     String?
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
 }
 
 // Modèles NextAuth (Auth.js) requis par @auth/prisma-adapter.

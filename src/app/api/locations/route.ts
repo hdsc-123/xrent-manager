@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import type { LocationStatus } from "@prisma/client";
+import type { LocationStatus, PaymentMethod } from "@prisma/client";
 import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/authz";
 import { getVehicleById } from "@/lib/vehicles";
+import { getClientById } from "@/lib/clients";
 import {
   getLocations,
   createLocation,
@@ -11,10 +12,72 @@ import {
   ClientNotFoundError,
   VehicleNotAvailableError,
 } from "@/lib/locations";
-import { createInvoice } from "@/lib/invoices";
+import { createInvoice, getInvoiceById } from "@/lib/invoices";
+import { createPayment } from "@/lib/payments";
+import { createCashEntry } from "@/lib/cash-register";
 import { logAction } from "@/lib/audit";
 
 const LOCATION_STATUSES: LocationStatus[] = ["PENDING", "CONFIRMED", "ACTIVE", "COMPLETED", "CANCELLED"];
+const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "CARD", "BANK_TRANSFER", "CHECK", "OTHER"];
+
+/**
+ * Section paiement du formulaire de création de location (Sprint 13A). deferred = "paiement
+ * au retour" (aucun Payment créé, la facture DRAFT auto-générée reste telle quelle) ; mixed =
+ * 2 lignes méthode+montant plutôt qu'une seule ; partial (non mixte uniquement) = un montant
+ * inférieur au total facturé (sinon le total facturé est réglé intégralement). Chaque montant
+ * réellement réglé passe par createPayment (src/lib/payments.ts, inchangé) : le calcul du
+ * statut de facture (SENT/PARTIALLY_PAID/PAID) est donc déjà entièrement géré par la logique
+ * existante (recomputeInvoiceStatus, Sprint 6) — aucune duplication de cette règle ici.
+ */
+interface PaymentInput {
+  deferred?: boolean;
+  mixed?: boolean;
+  partial?: boolean;
+  method?: PaymentMethod;
+  amount?: number;
+  method1?: PaymentMethod;
+  amount1?: number;
+  method2?: PaymentMethod;
+  amount2?: number;
+}
+
+function validatePaymentInput(payment: PaymentInput | undefined): string | null {
+  if (!payment || payment.deferred) {
+    return null;
+  }
+
+  if (payment.mixed) {
+    const lines = [
+      { method: payment.method1, amount: payment.amount1 },
+      { method: payment.method2, amount: payment.amount2 },
+    ].filter((line) => line.amount !== undefined && line.amount > 0);
+
+    if (lines.length === 0) {
+      return "Le paiement mixte nécessite au moins un montant renseigné.";
+    }
+    for (const line of lines) {
+      if (!line.method || !PAYMENT_METHODS.includes(line.method)) {
+        return "Mode de paiement invalide dans le paiement mixte.";
+      }
+      if (!Number.isInteger(line.amount) || (line.amount as number) <= 0) {
+        return "Chaque montant du paiement mixte doit être un entier positif.";
+      }
+    }
+    return null;
+  }
+
+  if (!payment.method || !PAYMENT_METHODS.includes(payment.method)) {
+    return "Mode de paiement invalide.";
+  }
+
+  if (payment.partial) {
+    if (!Number.isInteger(payment.amount) || (payment.amount as number) <= 0) {
+      return "Le montant payé doit être un entier positif.";
+    }
+  }
+
+  return null;
+}
 
 export async function GET(request: Request) {
   const user = await getSessionUser();
@@ -69,6 +132,7 @@ interface CreateLocationBody {
   startOdometer?: number;
   endOdometer?: number;
   deposit?: number;
+  payment?: PaymentInput;
 }
 
 export async function POST(request: Request) {
@@ -128,6 +192,11 @@ export async function POST(request: Request) {
     }
   }
 
+  const paymentError = validatePaymentInput(body.payment);
+  if (paymentError) {
+    return NextResponse.json({ error: paymentError }, { status: 400 });
+  }
+
   try {
     const location = await createLocation({
       tenantId: user.tenantId,
@@ -171,7 +240,86 @@ export async function POST(request: Request) {
       console.error("Erreur lors de la génération automatique de la facture :", error);
     }
 
-    return NextResponse.json({ location, invoice }, { status: 201 });
+    // Paiement intégré au formulaire de location (Sprint 13A) : "paiement au retour" ne crée
+    // aucun Payment (la facture DRAFT auto-générée ci-dessus reste telle quelle) ; sinon, un ou
+    // deux Payment sont créés (createPayment, Sprint 6, inchangé — refuse déjà tout montant
+    // dépassant le solde restant dû, et recalcule automatiquement amountPaid/status de la
+    // facture). Chaque Payment réussi alimente aussi la Caisse (createCashEntry) : un contrat
+    // réglé à la création doit apparaître comme une entrée de caisse au même titre qu'une
+    // entrée manuelle. Résilient par choix, même principe que la génération de facture
+    // ci-dessus : un échec ne doit jamais faire échouer la création de la location elle-même
+    // (le paiement reste enregistrable manuellement ensuite via /dashboard/invoices/[id]).
+    const payments: Awaited<ReturnType<typeof createPayment>>[] = [];
+    let paymentSaveError: string | null = null;
+    if (invoice && body.payment && !body.payment.deferred) {
+      const lines = body.payment.mixed
+        ? [
+            { method: body.payment.method1, amount: body.payment.amount1 },
+            { method: body.payment.method2, amount: body.payment.amount2 },
+          ].filter(
+            (line): line is { method: PaymentMethod; amount: number } =>
+              line.amount !== undefined && line.amount > 0 && line.method !== undefined
+          )
+        : [
+            {
+              method: body.payment.method as PaymentMethod,
+              amount: body.payment.partial ? (body.payment.amount as number) : invoice.totalAmount,
+            },
+          ];
+
+      const client = await getClientById(user.tenantId, clientId);
+      try {
+        for (const line of lines) {
+          const payment = await createPayment({
+            tenantId: user.tenantId,
+            invoiceId: invoice.id,
+            amount: line.amount,
+            method: line.method,
+          });
+          payments.push(payment);
+          await logAction({
+            tenantId: user.tenantId,
+            userId: user.id,
+            action: "payment.created",
+            resource: "Payment",
+            resourceId: payment.id,
+            metadata: { invoiceId: payment.invoiceId, amount: payment.amount, method: payment.method, auto: true },
+          });
+
+          const cashEntry = await createCashEntry({
+            tenantId: user.tenantId,
+            type: "ENTRY",
+            category: "VERSEMENT",
+            amount: payment.amount,
+            description: `Paiement location #${location.id.slice(-8)}`,
+            contractId: location.id,
+            clientName: client?.name,
+            paymentMethod: payment.method,
+          });
+          await logAction({
+            tenantId: user.tenantId,
+            userId: user.id,
+            action: "cashEntry.created",
+            resource: "CashEntry",
+            resourceId: cashEntry.id,
+            metadata: { type: cashEntry.type, amount: cashEntry.amount, contractId: location.id, auto: true },
+          });
+        }
+      } catch (error) {
+        paymentSaveError =
+          error instanceof Error ? error.message : "Erreur lors de l'enregistrement du paiement.";
+        console.error("Erreur lors de l'enregistrement du paiement intégré à la location :", error);
+      }
+
+      // createPayment (ci-dessus) a déjà recalculé amountPaid/status en base (recomputeInvoiceStatus,
+      // src/lib/payments.ts) ; la variable locale `invoice` doit être relue pour refléter ce nouveau
+      // statut dans la réponse, sinon le client afficherait à tort la facture comme DRAFT.
+      if (payments.length > 0) {
+        invoice = await getInvoiceById(user.tenantId, invoice.id);
+      }
+    }
+
+    return NextResponse.json({ location, invoice, payments, paymentError: paymentSaveError }, { status: 201 });
   } catch (error) {
     if (error instanceof InvalidDateRangeError) {
       return NextResponse.json({ error: error.message }, { status: 400 });

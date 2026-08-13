@@ -13,7 +13,7 @@ xrent-manager/
 │   ├── vercel.svg
 │   └── window.svg
 ├── prisma/
-│   ├── schema.prisma        # Tenant, Agency (Sprint 12A : coordonnées pro), User (passwordHash, role ; Sprint 12C : phone/avatar/permissionGroupId), UserAgency, Client (Sprint 12A : identité/permis), Vehicle (Sprint 12A : fiche technique), Location (Sprint 12A : kilométrage/caution), Invoice, Payment, Maintenance, Alert, Invitation, AuditLog, Reservation (Sprint 12C), PermissionGroup/GroupPermission/UserPermission (Sprint 12C), Account, Session, VerificationToken
+│   ├── schema.prisma        # Tenant, Agency (Sprint 12A : coordonnées pro), User (passwordHash, role ; Sprint 12C : phone/avatar/permissionGroupId), UserAgency, Client (Sprint 12A : identité/permis), Vehicle (Sprint 12A : fiche technique), Location (Sprint 12A : kilométrage/caution), Invoice, Payment, Maintenance, Alert, Invitation, AuditLog, Reservation (Sprint 12C), PermissionGroup/GroupPermission/UserPermission (Sprint 12C), CashRegister/CashEntry/ExpenseCategory (Sprint 13A), Account, Session, VerificationToken
 │   └── migrations/
 │       ├── migration_lock.toml
 │       ├── 20260811133155_init_tenant_agency_user/
@@ -32,7 +32,9 @@ xrent-manager/
 │       │   └── migration.sql
 │       ├── 20260812170214_add_sprint12a_professional_fields/
 │       │   └── migration.sql
-│       └── 20260812181105_add_sprint12c_reservations_and_permissions/
+│       ├── 20260812181105_add_sprint12c_reservations_and_permissions/
+│       │   └── migration.sql
+│       └── 20260813001505_add_sprint13a_cash_register/
 │           └── migration.sql
 ├── components.json          # Config shadcn/ui (style base-nova, alias @/components, @/lib, @/hooks)
 ├── src/
@@ -104,6 +106,10 @@ xrent-manager/
 │   │   │   │   └── [id]/page.tsx, InvoiceActions.tsx
 │   │   │   ├── payments/           # (Sprint 6) Liste + filtres (lecture seule, création via facture)
 │   │   │   │   ├── page.tsx, PaymentsTable.tsx, loading.tsx
+│   │   │   ├── cash-register/      # (Sprint 13A) Caisse — solde recalculé depuis les écritures réelles
+│   │   │   │   ├── page.tsx, CashRegisterCharts.tsx, loading.tsx
+│   │   │   │   ├── entries/page.tsx, EntriesTable.tsx, NewEntryForm.tsx
+│   │   │   │   └── expenses/page.tsx, ExpensesTable.tsx, NewExpenseForm.tsx
 │   │   │   ├── reports/            # (Sprint 6) KPIs, graphiques (recharts), export CSV — ADMIN uniquement
 │   │   │   │   ├── page.tsx, ReportsCharts.tsx, ExportCsvButton.tsx, loading.tsx
 │   │   │   └── settings/            # Nom du tenant (éditable, ADMIN) ; (Sprint 10) profil user éditable
@@ -166,6 +172,11 @@ xrent-manager/
 │   │       ├── payments/                   # (Sprint 6)
 │   │       │   ├── route.ts                # GET (liste, filtres)/POST — valide amount ≤ solde restant, recalcule la facture
 │   │       │   └── [id]/route.ts           # GET/PATCH/DELETE — recalcule systématiquement amountPaid/status de la facture
+│   │       ├── cash-register/              # (Sprint 13A)
+│   │       │   ├── route.ts                # GET (solde recalculé + répartition/jour + 10 dernières opérations)/POST (crée une écriture ENTRY/EXPENSE)
+│   │       │   ├── entries/route.ts        # GET — écritures ENTRY, filtres catégorie/dates
+│   │       │   ├── expenses/route.ts       # GET — écritures EXPENSE, filtres catégorie/dates
+│   │       │   └── categories/route.ts     # GET (liste)/POST (création) — ExpenseCategory, pas de PATCH/DELETE
 │   │       ├── reports/                    # (Sprint 6) GET, réservées ADMIN
 │   │       │   ├── revenue/route.ts        # Revenu encaissé (Payment), par mois, sur une période
 │   │       │   └── vehicles/route.ts       # Utilisation véhicule + classement par revenu facturé
@@ -205,6 +216,7 @@ xrent-manager/
 │   │   ├── password-policy.ts # (Sprint 9) validatePassword() — min 8 caractères + majuscule + chiffre + spécial
 │   │   ├── reservations.ts  # (Sprint 12C) CRUD + machine à états + parsing d'import Excel (parseReservationImportRow) + combineDateAndTime
 │   │   ├── permissions.ts   # (Sprint 12C) catalogue PERMISSIONS (code, pas de table) + groupes par défaut + can()/getEffectivePermissions() + CRUD PermissionGroup + assignation par user
+│   │   ├── cash-register.ts # (Sprint 13A) CashRegister (singleton par tenant)/CashEntry (append-only)/ExpenseCategory — recomputeCashRegisterBalance recalcule toujours previousBalance/currentMonth/currentBalance depuis les CashEntry réels (jamais un compteur incrémenté), même principe que recomputeInvoiceStatus
 │   │   └── utils.ts         # cn() — généré par shadcn init
 │   └── __tests__/
 │       ├── db.test.ts        # Tests d'isolation multi-tenant (Vitest) sur src/lib/db.ts
@@ -228,6 +240,8 @@ xrent-manager/
 │       ├── e2e-full.test.ts   # (Sprint 10) Scénario complet inscription→sélection de tenant (Option B)→CRUD complet (dont maintenances/alertes)→facturation→rapports→édition profil→vérification finale du journal d'audit
 │       ├── reservations.test.ts # (Sprint 12C) CRUD, machine à états, import Excel (fichier généré via exceljs), conversion en contrat + détection de doublon client à la conversion
 │       ├── permissions.test.ts  # (Sprint 12C) CRUD groupes de permissions, assignation par user, application réelle sur une route gated (reservations.*)
+│       ├── cash-register.test.ts    # (Sprint 13A) CRUD écritures/catégories, recalcul du solde (previousBalance/monthEntries/monthExpenses/finalBalance), isolation multi-tenant
+│       ├── location-payment.test.ts # (Sprint 13A) Paiement intégré à POST /api/locations : simple/partiel/mixte/au retour, impact sur le statut de facture et sur le solde de caisse
 │       └── helpers/          # testServer.ts (port/URL), http.ts (fetch + cookies), fixtures.ts (register/login de test)
 ├── vitest.global-setup.ts    # Démarre/arrête un vrai serveur `next dev` de test (requis par NextAuth, voir TESTREPORT.md)
 ├── AGENTS.md                # Règles agent Next.js, régénéré automatiquement par `next dev`
@@ -338,7 +352,8 @@ D'après les principes produit de démarrage :
 - Permissions granulaires (modèle `PermissionGroup`/`GroupPermission`/`UserPermission` implémenté Sprint 12C, catalogue de clés en code — voir DOMAINRULES.md section 22 ; appliqué au module Réservations et à la sidebar uniquement, modules existants toujours sur rôle `ADMIN`/`MEMBER` + `canAccessAgency()`)
 - Clients (modèle `Client` minimal implémenté Sprint 5 — nom/email/téléphone ; module dédié complet implémenté Sprint 8 — CRUD, page `/dashboard/clients*`, en plus de la sélection/création inline déjà disponible depuis le formulaire de location ; prénom/nom séparés, téléphone secondaire, adresse, pièce d'identité et permis de conduire ajoutés Sprint 12A)
 - Facturation (modèle `Invoice` implémenté Sprint 6 — liée à une `Location`, numérotation par tenant, TVA/remise/total, machine à états, export PDF)
-- Paiements (modèle `Payment` implémenté Sprint 6 — enregistrement manuel uniquement, pas d'intégration Stripe/PayPal ; voir HANDOFF.md section 8 pour les points encore ouverts)
+- Paiements (modèle `Payment` implémenté Sprint 6 — enregistrement manuel uniquement, pas d'intégration Stripe/PayPal ; voir HANDOFF.md section 8 pour les points encore ouverts ; **Sprint 13A** intègre l'enregistrement du paiement directement dans le formulaire de création de location — simple/partiel/mixte/au retour)
+- Caisse (modèles `CashRegister`/`CashEntry`/`ExpenseCategory` implémentés Sprint 13A — solde toujours recalculé depuis les écritures réelles, jamais un compteur incrémenté ; `/dashboard/cash-register*` ; chaque paiement encaissé à la création d'une location alimente automatiquement une entrée de caisse)
 - Rapports (implémentés Sprint 6 — revenu par mois, utilisation véhicule, classement véhicules, export CSV ; réservés ADMIN)
 - Maintenance véhicules (modèle `Maintenance` implémenté Sprint 7 — CRUD, machine à états, historique conservé, `/dashboard/maintenances`)
 - Alertes / notifications (modèle `Alert` implémenté Sprint 7 — in-app uniquement, pas d'email ; badge header, `/dashboard/alerts`, génération automatique via `src/lib/scheduled-tasks.ts`/`POST /api/tasks/check-alerts`)

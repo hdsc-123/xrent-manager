@@ -12,6 +12,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  Checkbox,
   Input,
   Label,
 } from "@/components/ui";
@@ -40,6 +41,16 @@ interface AvailabilityCheck {
   result: AvailabilityResult | "error";
 }
 
+const PAYMENT_METHOD_OPTIONS = [
+  { value: "CASH", label: "Espèces" },
+  { value: "CARD", label: "Carte" },
+  { value: "BANK_TRANSFER", label: "Virement" },
+  { value: "CHECK", label: "Chèque" },
+  { value: "OTHER", label: "Autre" },
+] as const;
+
+type PaymentMethodValue = (typeof PAYMENT_METHOD_OPTIONS)[number]["value"];
+
 export default function NewLocationPage() {
   const router = useRouter();
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -56,6 +67,16 @@ export default function NewLocationPage() {
   const [notes, setNotes] = useState("");
   const [status, setStatus] = useState<"PENDING" | "CONFIRMED">("PENDING");
   const [availabilityCheck, setAvailabilityCheck] = useState<AvailabilityCheck | null>(null);
+
+  const [paymentDeferred, setPaymentDeferred] = useState(false);
+  const [paymentMixed, setPaymentMixed] = useState(false);
+  const [paymentPartial, setPaymentPartial] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethodValue>("CASH");
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentMethod1, setPaymentMethod1] = useState<PaymentMethodValue>("CASH");
+  const [paymentAmount1, setPaymentAmount1] = useState("");
+  const [paymentMethod2, setPaymentMethod2] = useState<PaymentMethodValue>("CARD");
+  const [paymentAmount2, setPaymentAmount2] = useState("");
 
   const [showNewClient, setShowNewClient] = useState(false);
   const [newClientName, setNewClientName] = useState("");
@@ -181,9 +202,48 @@ export default function NewLocationPage() {
       return;
     }
 
+    let payment: Record<string, unknown> | undefined;
+    if (paymentDeferred) {
+      payment = { deferred: true };
+    } else if (paymentMixed) {
+      const amount1Centimes = paymentAmount1 ? Math.round(Number(paymentAmount1.replace(",", ".")) * 100) : 0;
+      const amount2Centimes = paymentAmount2 ? Math.round(Number(paymentAmount2.replace(",", ".")) * 100) : 0;
+      if (amount1Centimes <= 0 && amount2Centimes <= 0) {
+        setError("Le paiement mixte nécessite au moins un montant.");
+        return;
+      }
+      if (estimatedTotal > 0 && amount1Centimes + amount2Centimes > estimatedTotal) {
+        setError("Le total des deux montants dépasse le prix de la location.");
+        return;
+      }
+      payment = {
+        mixed: true,
+        method1: paymentMethod1,
+        amount1: amount1Centimes > 0 ? amount1Centimes : undefined,
+        method2: paymentMethod2,
+        amount2: amount2Centimes > 0 ? amount2Centimes : undefined,
+      };
+    } else {
+      const amountCentimes = paymentAmount ? Math.round(Number(paymentAmount.replace(",", ".")) * 100) : undefined;
+      if (paymentPartial) {
+        if (!amountCentimes || amountCentimes <= 0) {
+          setError("Le montant payé doit être renseigné pour un paiement partiel.");
+          return;
+        }
+        if (estimatedTotal > 0 && amountCentimes > estimatedTotal) {
+          setError("Le montant payé dépasse le prix de la location.");
+          return;
+        }
+      }
+      payment = { method: paymentMethod, partial: paymentPartial, amount: paymentPartial ? amountCentimes : undefined };
+    }
+
     setIsSubmitting(true);
     try {
-      const { location } = await apiPost<{ location: { id: string } }>("/api/locations", {
+      const { location, paymentError } = await apiPost<{
+        location: { id: string };
+        paymentError: string | null;
+      }>("/api/locations", {
         vehicleId,
         clientId,
         startDate: startDateTime.toISOString(),
@@ -193,8 +253,13 @@ export default function NewLocationPage() {
         startOdometer: startOdometer ? Number(startOdometer) : undefined,
         endOdometer: endOdometer ? Number(endOdometer) : undefined,
         deposit: depositMad !== undefined ? Math.round(depositMad * 100) : undefined,
+        payment,
       });
-      toast.success("Location créée.");
+      if (paymentError) {
+        toast.warning(`Location créée, mais le paiement n'a pas pu être enregistré : ${paymentError}`);
+      } else {
+        toast.success("Location créée.");
+      }
       router.push(`/dashboard/locations/${location.id}`);
       router.refresh();
     } catch (err) {
@@ -417,6 +482,118 @@ export default function NewLocationPage() {
                 Notes <span className="text-muted-foreground">— optionnel</span>
               </Label>
               <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
+            </div>
+
+            <div className="flex flex-col gap-3 rounded-md border border-border p-3">
+              <span className="text-sm font-medium">Paiement</span>
+
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={paymentDeferred}
+                  onCheckedChange={(checked) => setPaymentDeferred(checked === true)}
+                />
+                Paiement au retour (la facture reste à régler)
+              </label>
+
+              {!paymentDeferred && (
+                <>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={paymentMixed}
+                      onCheckedChange={(checked) => {
+                        setPaymentMixed(checked === true);
+                        if (checked === true) setPaymentPartial(false);
+                      }}
+                    />
+                    Paiement mixte (deux modes de règlement)
+                  </label>
+
+                  {paymentMixed ? (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1.5">
+                        <Label htmlFor="paymentMethod1">Mode 1</Label>
+                        <select
+                          id="paymentMethod1"
+                          value={paymentMethod1}
+                          onChange={(e) => setPaymentMethod1(e.target.value as PaymentMethodValue)}
+                          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                        >
+                          {PAYMENT_METHOD_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        <Input
+                          inputMode="decimal"
+                          placeholder="Montant 1 (MAD)"
+                          value={paymentAmount1}
+                          onChange={(e) => setPaymentAmount1(e.target.value)}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <Label htmlFor="paymentMethod2">Mode 2</Label>
+                        <select
+                          id="paymentMethod2"
+                          value={paymentMethod2}
+                          onChange={(e) => setPaymentMethod2(e.target.value as PaymentMethodValue)}
+                          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                        >
+                          {PAYMENT_METHOD_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        <Input
+                          inputMode="decimal"
+                          placeholder="Montant 2 (MAD)"
+                          value={paymentAmount2}
+                          onChange={(e) => setPaymentAmount2(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex flex-col gap-1.5">
+                        <Label htmlFor="paymentMethod">Mode de paiement</Label>
+                        <select
+                          id="paymentMethod"
+                          value={paymentMethod}
+                          onChange={(e) => setPaymentMethod(e.target.value as PaymentMethodValue)}
+                          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                        >
+                          {PAYMENT_METHOD_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={paymentPartial}
+                          onCheckedChange={(checked) => setPaymentPartial(checked === true)}
+                        />
+                        Paiement partiel
+                      </label>
+
+                      {paymentPartial && (
+                        <div className="flex flex-col gap-1.5">
+                          <Label htmlFor="paymentAmount">Montant payé (MAD)</Label>
+                          <Input
+                            id="paymentAmount"
+                            inputMode="decimal"
+                            value={paymentAmount}
+                            onChange={(e) => setPaymentAmount(e.target.value)}
+                          />
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
             </div>
 
             {error && (
