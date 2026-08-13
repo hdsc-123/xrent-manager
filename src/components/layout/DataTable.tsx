@@ -100,6 +100,15 @@ export function DataTable<TData extends RowData>({
     state: { sorting },
     onSortingChange: setSorting,
     initialState: { pagination: { pageIndex: 0, pageSize: 10 } },
+    // Sprint 14E : columnSizingFeature fusionne un `size: 150` par défaut dans le
+    // columnDef résolu de CHAQUE colonne (voir constructColumn.js), y compris celles
+    // qui n'en déclarent aucun — `header.column.columnDef.size` n'était donc jamais
+    // réellement `undefined` comme le supposait le commentaire Sprint 14A ci-dessous.
+    // Résultat concret : une colonne sans `size` explicite (ex. "Conducteur suppl.")
+    // se retrouvait quand même contrainte à 150px, d'où le wrap anarchique des en-têtes
+    // à travers tout le SaaS. En réinitialisant ce défaut à `undefined`, seule une
+    // colonne qui déclare vraiment `size` dans son ColumnDef reçoit une largeur/un wrap.
+    defaultColumn: { size: undefined },
   });
 
   return (
@@ -125,7 +134,17 @@ export function DataTable<TData extends RowData>({
                   return (
                     <TableHead
                       key={header.id}
-                      className={cn("whitespace-normal break-words align-bottom", ALIGN_CLASS[align])}
+                      // Sprint 14E : seules les colonnes à largeur explicite (`size`) passent sur
+                      // plusieurs lignes (wrap maîtrisé, coupure aux espaces uniquement, jamais
+                      // `break-words` qui coupait au milieu d'un mot) ; les autres restent sur une
+                      // ligne. `align-middle` (au lieu de `align-bottom`) garantit que les en-têtes
+                      // sur une ligne et celles sur deux lignes restent alignées sur la même barre,
+                      // quelle que soit la hauteur réelle de la ligne d'en-tête.
+                      className={cn(
+                        "align-middle leading-tight",
+                        width !== undefined ? "whitespace-normal" : "whitespace-nowrap",
+                        ALIGN_CLASS[align]
+                      )}
                       style={width !== undefined ? { width, maxWidth: width } : undefined}
                     >
                       {canSort ? (
@@ -170,10 +189,7 @@ export function DataTable<TData extends RowData>({
                     return (
                       <TableCell
                         key={cell.id}
-                        className={cn(
-                          width !== undefined && "whitespace-normal break-words",
-                          ALIGN_CLASS[align]
-                        )}
+                        className={cn(width !== undefined && "whitespace-normal", ALIGN_CLASS[align])}
                         style={width !== undefined ? { width, maxWidth: width } : undefined}
                       >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}

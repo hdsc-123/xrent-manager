@@ -271,10 +271,10 @@ export default async function AuditPage({ searchParams }: PageProps) {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50 text-left text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2 font-medium">Date</th>
-                    <th className="px-3 py-2 font-medium">Action</th>
-                    <th className="px-3 py-2 font-medium">Ressource</th>
-                    <th className="px-3 py-2 font-medium">Acteur</th>
+                    <th className="h-10 px-3 align-middle font-medium whitespace-nowrap">Date</th>
+                    <th className="h-10 px-3 align-middle font-medium whitespace-nowrap">Action</th>
+                    <th className="h-10 px-3 align-middle font-medium whitespace-nowrap">Ressource</th>
+                    <th className="h-10 px-3 align-middle font-medium whitespace-nowrap">Acteur</th>
                   </tr>
                 </thead>
                 <tbody>

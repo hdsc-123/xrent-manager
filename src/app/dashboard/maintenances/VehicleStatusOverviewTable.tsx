@@ -74,9 +74,9 @@ export function VehicleStatusOverviewTable({ vehicles }: { vehicles: VehicleStat
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border bg-muted/40 text-left">
-            <th className="p-2 font-medium">
+            <th className="px-3 py-2 align-middle font-medium">
               <div className="flex flex-col gap-1">
-                <span>Véhicule / Immatriculation</span>
+                <span className="whitespace-nowrap">Véhicule / Immatriculation</span>
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
@@ -85,10 +85,10 @@ export function VehicleStatusOverviewTable({ vehicles }: { vehicles: VehicleStat
                 />
               </div>
             </th>
-            <th className="p-2 font-medium">Agence</th>
-            <th className="p-2 font-medium">
+            <th className="px-3 py-2 align-middle font-medium whitespace-nowrap">Agence</th>
+            <th className="px-3 py-2 align-middle font-medium">
               <div className="flex flex-col gap-1">
-                <span>État</span>
+                <span className="whitespace-nowrap">État</span>
                 <select
                   value={statusFilter}
                   onChange={(e) => setStatusFilter(e.target.value)}
@@ -103,10 +103,10 @@ export function VehicleStatusOverviewTable({ vehicles }: { vehicles: VehicleStat
                 </select>
               </div>
             </th>
-            <th className="p-2 font-medium">Date de retour</th>
-            <th className="p-2 font-medium">
+            <th className="px-3 py-2 align-middle font-medium whitespace-nowrap">Date de retour</th>
+            <th className="px-3 py-2 align-middle font-medium">
               <div className="flex flex-col gap-1">
-                <span>Disponibilité</span>
+                <span className="whitespace-nowrap">Disponibilité</span>
                 <select
                   value={availabilityFilter}
                   onChange={(e) => setAvailabilityFilter(e.target.value)}
