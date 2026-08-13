@@ -8,7 +8,13 @@ import { AlertsList, type AlertRow } from "./AlertsList";
 const TYPE_OPTIONS: { value: AlertType; label: string }[] = [
   { value: "MAINTENANCE_DUE", label: "Maintenance à venir" },
   { value: "RETURN_TODAY", label: "Retour aujourd'hui" },
+  { value: "RETURN_OVERDUE", label: "Retour en retard" },
   { value: "INVOICE_OVERDUE", label: "Facture en retard" },
+  { value: "PAYMENT_DUE", label: "Paiement restant dû" },
+  { value: "CONTRACT_AT_RISK", label: "Contrat à risque" },
+  { value: "VEHICLE_UNAVAILABLE", label: "Véhicule indisponible" },
+  { value: "DOCUMENT_EXPIRED", label: "Document expiré" },
+  { value: "STOCK_INCONSISTENCY", label: "Incohérence de stock" },
   { value: "OTHER", label: "Autre" },
 ];
 

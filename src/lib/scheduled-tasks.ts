@@ -145,3 +145,243 @@ export async function checkOverdueInvoices(tenantId: string): Promise<Alert[]> {
 
   return created;
 }
+
+/**
+ * Six vérifications ajoutées Sprint 14C (DOMAINRULES.md section 30) pour rendre l'onglet
+ * Alertes réellement utile au quotidien. Chaque fonction utilise un `entityType` distinct de
+ * ceux déjà utilisés par les vérifications ci-dessus (`Location`/`Invoice`/`Maintenance`) même
+ * quand elle porte sur le même type de ressource métier (ex. "LocationAtRisk" plutôt que
+ * "Location") — hasUnresolvedAlert() ne distingue pas par AlertType, seulement par
+ * entityType+entityId : réutiliser un entityType déjà pris par une autre vérification
+ * empêcherait les deux alertes de coexister sur la même ressource alors qu'elles signalent des
+ * situations différentes et toutes deux actionnables.
+ */
+const CONTRACT_AT_RISK_LOOKAHEAD_DAYS = 2;
+const VEHICLE_UNAVAILABLE_STUCK_DAYS = 3;
+
+function startOfToday(): Date {
+  return startOfDay(new Date());
+}
+
+/** ACTIVE dont le retour approche (ou est déjà dépassé) alors que la facture n'est pas soldée —
+ * risque financier distinct d'un simple retour du jour (RETURN_TODAY) ou d'une échéance dépassée
+ * (INVOICE_OVERDUE, qui exige un dueDate renseigné et dépassé — beaucoup de factures n'en ont
+ * pas, voir Invoice.dueDate optionnel). */
+export async function checkContractsAtRisk(tenantId: string): Promise<Alert[]> {
+  const now = new Date();
+  const threshold = new Date(now.getTime() + CONTRACT_AT_RISK_LOOKAHEAD_DAYS * ONE_DAY_MS);
+
+  const atRiskLocations = await prisma.location.findMany({
+    where: {
+      tenantId,
+      status: "ACTIVE",
+      endDate: { lte: threshold },
+      invoices: { some: { status: { in: ["SENT", "PARTIALLY_PAID"] } } },
+    },
+    include: {
+      vehicle: { select: { name: true, licensePlate: true } },
+      client: { select: { name: true } },
+      invoices: { where: { status: { in: ["SENT", "PARTIALLY_PAID"] } }, take: 1 },
+    },
+  });
+
+  const created: Alert[] = [];
+  for (const location of atRiskLocations) {
+    if (await hasUnresolvedAlert(tenantId, "LocationAtRisk", location.id)) {
+      continue;
+    }
+
+    const invoice = location.invoices[0];
+    const remaining = invoice.totalAmount - invoice.amountPaid;
+    const overdue = location.endDate.getTime() <= now.getTime();
+    const alert = await createAlert({
+      tenantId,
+      agencyId: location.agencyId,
+      type: "CONTRACT_AT_RISK",
+      priority: overdue ? "URGENT" : "HIGH",
+      message: `Contrat à risque : ${location.vehicle.name} (${location.vehicle.licensePlate}), client ${location.client.name} — retour ${overdue ? "dépassé" : "proche"} avec ${formatMoney(remaining, invoice.currency)} restant dû.`,
+      entityType: "LocationAtRisk",
+      entityId: location.id,
+    });
+    created.push(alert);
+  }
+
+  return created;
+}
+
+/** Location COMPLETED (contrat terminé) dont la facture reste SENT/PARTIALLY_PAID, sans égard à
+ * un éventuel dueDate — comble le cas fréquent où Invoice.dueDate n'est pas renseigné (optionnel,
+ * voir DOMAINRULES.md section 17), donc jamais couvert par INVOICE_OVERDUE. */
+export async function checkPaymentsDue(tenantId: string): Promise<Alert[]> {
+  const completedWithBalance = await prisma.location.findMany({
+    where: { tenantId, status: "COMPLETED", invoices: { some: { status: { in: ["SENT", "PARTIALLY_PAID"] } } } },
+    include: {
+      vehicle: { select: { name: true, licensePlate: true } },
+      client: { select: { name: true } },
+      invoices: { where: { status: { in: ["SENT", "PARTIALLY_PAID"] } }, take: 1 },
+    },
+  });
+
+  const created: Alert[] = [];
+  for (const location of completedWithBalance) {
+    const invoice = location.invoices[0];
+    if (await hasUnresolvedAlert(tenantId, "InvoicePaymentDue", invoice.id)) {
+      continue;
+    }
+
+    const remaining = invoice.totalAmount - invoice.amountPaid;
+    const alert = await createAlert({
+      tenantId,
+      agencyId: location.agencyId,
+      type: "PAYMENT_DUE",
+      priority: "MEDIUM",
+      message: `Paiement restant dû : contrat terminé ${location.vehicle.name} (${location.vehicle.licensePlate}), client ${location.client.name} — ${formatMoney(remaining, invoice.currency)} restant.`,
+      entityType: "InvoicePaymentDue",
+      entityId: invoice.id,
+    });
+    created.push(alert);
+  }
+
+  return created;
+}
+
+/** Véhicule bloqué (MAINTENANCE/TRANSFERRING/ON_TRIP) depuis plus de
+ * VEHICLE_UNAVAILABLE_STUCK_DAYS jours sans résolution — signale un blocage opérationnel réel
+ * (INACTIVE est un choix délibéré du staff, exclu de cette vérification). */
+export async function checkVehiclesUnavailable(tenantId: string): Promise<Alert[]> {
+  const threshold = new Date(Date.now() - VEHICLE_UNAVAILABLE_STUCK_DAYS * ONE_DAY_MS);
+
+  const stuckVehicles = await prisma.vehicle.findMany({
+    where: { tenantId, status: { in: ["MAINTENANCE", "TRANSFERRING", "ON_TRIP"] }, updatedAt: { lte: threshold } },
+  });
+
+  const created: Alert[] = [];
+  for (const vehicle of stuckVehicles) {
+    if (await hasUnresolvedAlert(tenantId, "VehicleUnavailable", vehicle.id)) {
+      continue;
+    }
+
+    const alert = await createAlert({
+      tenantId,
+      agencyId: vehicle.agencyId,
+      type: "VEHICLE_UNAVAILABLE",
+      priority: "HIGH",
+      message: `Véhicule indisponible depuis plus de ${VEHICLE_UNAVAILABLE_STUCK_DAYS} jours : ${vehicle.name} (${vehicle.licensePlate}) — statut ${vehicle.status}.`,
+      entityType: "VehicleUnavailable",
+      entityId: vehicle.id,
+    });
+    created.push(alert);
+  }
+
+  return created;
+}
+
+/** ACTIVE dont la date de retour est déjà dépassée (pas seulement "aujourd'hui", voir
+ * checkReturnsToday) — un vrai retard, jamais généré tant que checkReturnsToday n'a pas laissé
+ * passer le jour même. */
+export async function checkOverdueReturns(tenantId: string): Promise<Alert[]> {
+  const overdueLocations = await prisma.location.findMany({
+    where: { tenantId, status: "ACTIVE", endDate: { lt: startOfToday() } },
+    include: {
+      vehicle: { select: { name: true, licensePlate: true } },
+      client: { select: { name: true } },
+    },
+  });
+
+  const created: Alert[] = [];
+  for (const location of overdueLocations) {
+    if (await hasUnresolvedAlert(tenantId, "LocationOverdueReturn", location.id)) {
+      continue;
+    }
+
+    const alert = await createAlert({
+      tenantId,
+      agencyId: location.agencyId,
+      type: "RETURN_OVERDUE",
+      priority: "URGENT",
+      message: `Retour en retard : ${location.vehicle.name} (${location.vehicle.licensePlate}) — client ${location.client.name}, prévu le ${location.endDate.toLocaleDateString("fr-FR")}.`,
+      entityType: "LocationOverdueReturn",
+      entityId: location.id,
+    });
+    created.push(alert);
+  }
+
+  return created;
+}
+
+/** Client dont le permis est expiré alors qu'il a une location PENDING/CONFIRMED/ACTIVE en
+ * cours — utile pour anticiper un refus de prise en charge ou un contrôle routier. */
+export async function checkExpiredDocuments(tenantId: string): Promise<Alert[]> {
+  const now = new Date();
+
+  const clientsWithExpiredLicense = await prisma.client.findMany({
+    where: {
+      tenantId,
+      licenseExpiryDate: { lt: now },
+      locations: { some: { status: { in: ["PENDING", "CONFIRMED", "ACTIVE"] } } },
+    },
+    include: { locations: { where: { status: { in: ["PENDING", "CONFIRMED", "ACTIVE"] } }, take: 1 } },
+  });
+
+  const created: Alert[] = [];
+  for (const client of clientsWithExpiredLicense) {
+    if (await hasUnresolvedAlert(tenantId, "ClientExpiredDocument", client.id)) {
+      continue;
+    }
+
+    const location = client.locations[0];
+    const alert = await createAlert({
+      tenantId,
+      agencyId: location?.agencyId,
+      type: "DOCUMENT_EXPIRED",
+      priority: "HIGH",
+      message: `Permis expiré : ${client.name} — a une location en cours/à venir alors que son permis a expiré le ${client.licenseExpiryDate!.toLocaleDateString("fr-FR")}.`,
+      entityType: "ClientExpiredDocument",
+      entityId: client.id,
+    });
+    created.push(alert);
+  }
+
+  return created;
+}
+
+/** Incohérence entre Vehicle.status (champ manuel, DOMAINRULES.md section 5) et la réalité des
+ * locations : AVAILABLE avec une location ACTIVE en cours, ou RENTED sans aucune location
+ * ACTIVE — signale une désynchronisation à corriger manuellement (aucune correction
+ * automatique : voir la même prudence documentée pour deleteUser/Alert.userId). */
+export async function checkStockInconsistencies(tenantId: string): Promise<Alert[]> {
+  const vehicles = await prisma.vehicle.findMany({
+    where: { tenantId, status: { in: ["AVAILABLE", "RENTED"] } },
+    include: { locations: { where: { status: "ACTIVE" }, take: 1 } },
+  });
+
+  const created: Alert[] = [];
+  for (const vehicle of vehicles) {
+    const hasActiveLocation = vehicle.locations.length > 0;
+    const inconsistent =
+      (vehicle.status === "AVAILABLE" && hasActiveLocation) || (vehicle.status === "RENTED" && !hasActiveLocation);
+    if (!inconsistent) {
+      continue;
+    }
+    if (await hasUnresolvedAlert(tenantId, "VehicleStockInconsistency", vehicle.id)) {
+      continue;
+    }
+
+    const detail =
+      vehicle.status === "AVAILABLE"
+        ? "marqué Disponible alors qu'une location est ACTIVE"
+        : "marqué Loué alors qu'aucune location n'est ACTIVE";
+    const alert = await createAlert({
+      tenantId,
+      agencyId: vehicle.agencyId,
+      type: "STOCK_INCONSISTENCY",
+      priority: "MEDIUM",
+      message: `Incohérence de stock : ${vehicle.name} (${vehicle.licensePlate}) ${detail}.`,
+      entityType: "VehicleStockInconsistency",
+      entityId: vehicle.id,
+    });
+    created.push(alert);
+  }
+
+  return created;
+}

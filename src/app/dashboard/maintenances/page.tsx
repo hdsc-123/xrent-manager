@@ -5,6 +5,7 @@ import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { Button } from "@/components/ui";
 import { MaintenancesTable, type MaintenanceRow } from "./MaintenancesTable";
+import { VehicleStatusOverviewTable, type VehicleStatusRow } from "./VehicleStatusOverviewTable";
 
 const STATUS_OPTIONS: { value: MaintenanceStatus; label: string }[] = [
   { value: "SCHEDULED", label: "Planifiée" },
@@ -32,11 +33,30 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
 
-  const [vehicles, maintenances] = await Promise.all([
+  const [vehicles, vehiclesWithStatus, maintenances] = await Promise.all([
     prisma.vehicle.findMany({
       where: {
         tenantId: user.tenantId,
         ...(accessibleAgencyIds ? { agencyId: { in: accessibleAgencyIds } } : {}),
+      },
+      orderBy: { name: "asc" },
+    }),
+    // État réel des véhicules (Sprint 14C, section 3) : la location ACTIVE en cours (s'il y en
+    // a une) donne la date de retour à afficher, indépendamment de Vehicle.status (qui peut être
+    // désynchronisé — voir l'alerte STOCK_INCONSISTENCY, src/lib/scheduled-tasks.ts).
+    prisma.vehicle.findMany({
+      where: {
+        tenantId: user.tenantId,
+        ...(accessibleAgencyIds ? { agencyId: { in: accessibleAgencyIds } } : {}),
+      },
+      include: {
+        agency: { select: { name: true } },
+        locations: {
+          where: { status: "ACTIVE" },
+          orderBy: { endDate: "asc" },
+          take: 1,
+          select: { endDate: true },
+        },
       },
       orderBy: { name: "asc" },
     }),
@@ -72,6 +92,19 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
     notes: maintenance.notes,
   }));
 
+  const overviewRows: VehicleStatusRow[] = vehiclesWithStatus.map((vehicle) => {
+    const activeLocation = vehicle.locations[0] ?? null;
+    return {
+      id: vehicle.id,
+      name: vehicle.name,
+      licensePlate: vehicle.licensePlate,
+      agencyName: vehicle.agency.name,
+      status: vehicle.status,
+      returnDate: activeLocation?.endDate.toISOString() ?? null,
+      available: vehicle.status === "AVAILABLE" && activeLocation === null,
+    };
+  });
+
   const canCreate = accessibleAgencyIds === null || accessibleAgencyIds.length > 0;
 
   return (
@@ -88,6 +121,16 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
           </Button>
         )}
       </div>
+
+      <div className="flex flex-col gap-2">
+        <h2 className="font-heading text-lg font-semibold">État des véhicules</h2>
+        <p className="text-sm text-muted-foreground">
+          Un véhicule loué reste visible ici (avec sa date de retour) pour anticiper une maintenance à son retour.
+        </p>
+        <VehicleStatusOverviewTable vehicles={overviewRows} />
+      </div>
+
+      <h2 className="font-heading text-lg font-semibold">Historique des maintenances</h2>
 
       <form className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3" method="get">
         <div className="flex flex-col gap-1.5">

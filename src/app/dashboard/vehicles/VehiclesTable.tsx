@@ -43,6 +43,8 @@ const STATUS_LABELS: Record<string, string> = {
   RENTED: "Loué",
   MAINTENANCE: "Maintenance",
   INACTIVE: "Inactif",
+  TRANSFERRING: "En transfert",
+  ON_TRIP: "En déplacement",
 };
 
 const STATUS_VARIANTS: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
@@ -50,6 +52,8 @@ const STATUS_VARIANTS: Record<string, "default" | "secondary" | "destructive" | 
   RENTED: "secondary",
   MAINTENANCE: "outline",
   INACTIVE: "destructive",
+  TRANSFERRING: "outline",
+  ON_TRIP: "outline",
 };
 
 export function VehiclesTable({ vehicles }: { vehicles: VehicleRow[] }) {

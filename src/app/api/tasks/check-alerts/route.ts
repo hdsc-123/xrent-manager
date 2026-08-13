@@ -1,13 +1,24 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/authz";
-import { checkDueMaintenances, checkReturnsToday, checkOverdueInvoices } from "@/lib/scheduled-tasks";
+import {
+  checkDueMaintenances,
+  checkReturnsToday,
+  checkOverdueInvoices,
+  checkContractsAtRisk,
+  checkPaymentsDue,
+  checkVehiclesUnavailable,
+  checkOverdueReturns,
+  checkExpiredDocuments,
+  checkStockInconsistencies,
+} from "@/lib/scheduled-tasks";
 
 /**
- * Déclenche les trois vérifications pour le tenant de l'ADMIN connecté (aucun rôle
- * "superadmin" transverse n'existe — HANDOFF.md section 8 point 16 — donc pas de scan
- * multi-tenant global ici ; un vrai cron devrait itérer les tenants avec un mécanisme
- * d'authentification dédié, hors périmètre de ce sprint). Réservé ADMIN, même
- * justification pragmatique que pour /api/reports/* (HANDOFF.md, décision Sprint 6).
+ * Déclenche les neuf vérifications (3 initiales + 6 ajoutées Sprint 14C, DOMAINRULES.md
+ * section 30) pour le tenant de l'ADMIN connecté (aucun rôle "superadmin" transverse n'existe —
+ * HANDOFF.md section 8 point 16 — donc pas de scan multi-tenant global ici ; un vrai cron
+ * devrait itérer les tenants avec un mécanisme d'authentification dédié, hors périmètre de ce
+ * sprint). Réservé ADMIN, même justification pragmatique que pour /api/reports/* (HANDOFF.md,
+ * décision Sprint 6).
  */
 export async function POST() {
   const user = await getSessionUser();
@@ -20,10 +31,26 @@ export async function POST() {
     return NextResponse.json({ error: "Réservé aux administrateurs." }, { status: 403 });
   }
 
-  const [dueMaintenances, returnsToday, overdueInvoices] = await Promise.all([
+  const [
+    dueMaintenances,
+    returnsToday,
+    overdueInvoices,
+    contractsAtRisk,
+    paymentsDue,
+    vehiclesUnavailable,
+    overdueReturns,
+    expiredDocuments,
+    stockInconsistencies,
+  ] = await Promise.all([
     checkDueMaintenances(user.tenantId),
     checkReturnsToday(user.tenantId),
     checkOverdueInvoices(user.tenantId),
+    checkContractsAtRisk(user.tenantId),
+    checkPaymentsDue(user.tenantId),
+    checkVehiclesUnavailable(user.tenantId),
+    checkOverdueReturns(user.tenantId),
+    checkExpiredDocuments(user.tenantId),
+    checkStockInconsistencies(user.tenantId),
   ]);
 
   return NextResponse.json({
@@ -31,6 +58,12 @@ export async function POST() {
       dueMaintenances: dueMaintenances.length,
       returnsToday: returnsToday.length,
       overdueInvoices: overdueInvoices.length,
+      contractsAtRisk: contractsAtRisk.length,
+      paymentsDue: paymentsDue.length,
+      vehiclesUnavailable: vehiclesUnavailable.length,
+      overdueReturns: overdueReturns.length,
+      expiredDocuments: expiredDocuments.length,
+      stockInconsistencies: stockInconsistencies.length,
     },
   });
 }

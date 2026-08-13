@@ -1,0 +1,166 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { prisma } from "@/lib/prisma";
+import { apiFetch } from "./helpers/http";
+import { registerTenantAdmin, type AuthenticatedTestUser } from "./helpers/fixtures";
+
+/**
+ * Sprint 14C (DOMAINRULES.md section 30) : nouvelles alertes métier (checkStockInconsistencies,
+ * checkOverdueReturns — deux des six nouvelles vérifications de src/lib/scheduled-tasks.ts) et
+ * revue de l'onglet Maintenance (état réel des véhicules).
+ */
+
+const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
+const createdTenantIds: string[] = [];
+
+let admin: AuthenticatedTestUser;
+let agencyId: string;
+let clientId: string;
+
+async function createVehicle(overrides: Record<string, unknown> = {}) {
+  const response = await apiFetch("/api/vehicles", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({
+      agencyId,
+      name: "Clio",
+      licensePlate: `AL-${Math.floor(Math.random() * 1_000_000)}-AL`,
+      make: "Renault",
+      model: "Clio",
+      year: 2022,
+      category: "Citadine",
+      pricePerDay: 4500,
+      ...overrides,
+    }),
+  });
+  return (await response.json()).vehicle as { id: string; licensePlate: string };
+}
+
+beforeAll(async () => {
+  admin = await registerTenantAdmin({
+    tenantName: "Mobility Alerts Test",
+    tenantSlug: `mobility-alerts-test-${runId}`,
+    name: "Admin",
+    email: `admin-${runId}@test.local`,
+    password: "Correct-Horse-Battery-Staple9!",
+  });
+  createdTenantIds.push(admin.tenantId);
+
+  const agencyResponse = await apiFetch("/api/agencies", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ name: "Agence Alertes", slug: `al-agence-${runId}` }),
+  });
+  agencyId = (await agencyResponse.json()).agency.id;
+
+  const clientResponse = await apiFetch("/api/clients", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ name: "Client Alertes", email: `client-al-${runId}@test.local` }),
+  });
+  clientId = (await clientResponse.json()).client.id;
+});
+
+afterAll(async () => {
+  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await prisma.$disconnect();
+});
+
+describe("POST /api/tasks/check-alerts — nouvelles vérifications Sprint 14C", () => {
+  it("crée STOCK_INCONSISTENCY quand un véhicule AVAILABLE a une location ACTIVE, et RETURN_OVERDUE pour un retour dépassé", async () => {
+    const vehicle = await createVehicle();
+
+    const locationResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: vehicle.id,
+        clientId,
+        // Période déjà entièrement passée : le retour est donc en retard une fois ACTIVE.
+        startDate: "2020-01-10",
+        endDate: "2020-01-13",
+      }),
+    });
+    const locationId = (await locationResponse.json()).location.id;
+
+    // ACTIVE (via CONFIRMED, transitions autorisées quel que soit le statut des dates).
+    await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ status: "ACTIVE" }),
+    });
+
+    // Désynchronisation délibérée : le véhicule reste marqué "AVAILABLE" alors qu'une location
+    // ACTIVE existe désormais (reproduit le scénario réel visé par STOCK_INCONSISTENCY).
+    await prisma.vehicle.update({ where: { id: vehicle.id }, data: { status: "AVAILABLE" } });
+
+    const response = await apiFetch("/api/tasks/check-alerts", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.created.stockInconsistencies).toBeGreaterThanOrEqual(1);
+    expect(body.created.overdueReturns).toBeGreaterThanOrEqual(1);
+
+    const stockAlerts = await apiFetch("/api/alerts?type=STOCK_INCONSISTENCY", {
+      headers: { Cookie: admin.sessionCookie },
+    });
+    const stockAlertsBody = await stockAlerts.json();
+    const stockAlert = stockAlertsBody.alerts.find((alert: { entityId: string }) => alert.entityId === vehicle.id);
+    expect(stockAlert).toBeDefined();
+    expect(stockAlert.status).toBe("PENDING");
+
+    const returnAlerts = await apiFetch("/api/alerts?type=RETURN_OVERDUE", {
+      headers: { Cookie: admin.sessionCookie },
+    });
+    const returnAlertsBody = await returnAlerts.json();
+    const returnAlert = returnAlertsBody.alerts.find((alert: { entityId: string }) => alert.entityId === locationId);
+    expect(returnAlert).toBeDefined();
+    expect(returnAlert.priority).toBe("URGENT");
+
+    // Consultation + traitement (acknowledge puis resolve) — même machine à états que les
+    // alertes existantes (src/lib/alerts.ts), déjà testée génériquement dans alerts.test.ts.
+    const ack = await apiFetch(`/api/alerts/${stockAlert.id}/acknowledge`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+    });
+    expect(ack.status).toBe(200);
+    const resolve = await apiFetch(`/api/alerts/${stockAlert.id}/resolve`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+    });
+    expect(resolve.status).toBe(200);
+    expect((await resolve.json()).alert.status).toBe("RESOLVED");
+  });
+});
+
+describe("GET /dashboard/maintenances — état réel des véhicules", () => {
+  it("affiche l'immatriculation, l'état et la disponibilité de chaque véhicule", async () => {
+    const available = await createVehicle({ licensePlate: `AL-DISPO-${runId}` });
+    const maintenance = await createVehicle({ licensePlate: `AL-MAINT-${runId}`, status: "MAINTENANCE" });
+
+    const response = await apiFetch("/dashboard/maintenances", { headers: { Cookie: admin.sessionCookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+
+    expect(html).toContain("État des véhicules");
+    expect(html).toContain(available.licensePlate);
+    expect(html).toContain(maintenance.licensePlate);
+    expect(html).toContain("Disponible");
+    expect(html).toContain("Maintenance");
+  });
+});

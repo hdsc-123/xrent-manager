@@ -19,7 +19,13 @@ export interface AlertRow {
 const TYPE_LABELS: Record<string, string> = {
   MAINTENANCE_DUE: "Maintenance à venir",
   RETURN_TODAY: "Retour aujourd'hui",
+  RETURN_OVERDUE: "Retour en retard",
   INVOICE_OVERDUE: "Facture en retard",
+  PAYMENT_DUE: "Paiement restant dû",
+  CONTRACT_AT_RISK: "Contrat à risque",
+  VEHICLE_UNAVAILABLE: "Véhicule indisponible",
+  DOCUMENT_EXPIRED: "Document expiré",
+  STOCK_INCONSISTENCY: "Incohérence de stock",
   OTHER: "Autre",
 };
 

@@ -13,7 +13,7 @@ xrent-manager/
 │   ├── vercel.svg
 │   └── window.svg
 ├── prisma/
-│   ├── schema.prisma        # Tenant (Sprint 14B : contractNumberPrefix/lastContractNumber), Agency (Sprint 12A : coordonnées pro), User (passwordHash, role ; Sprint 12C : phone/avatar/permissionGroupId), UserAgency, Client (Sprint 12A : identité/permis), Vehicle (Sprint 12A : fiche technique ; Sprint 14A : pricePerDay optionnel/informatif), Location (Sprint 12A : kilométrage/caution ; Sprint 14B : contractNumber unique par tenant), Invoice, Payment, Maintenance, Alert, Invitation, AuditLog, Reservation (Sprint 12C), PermissionGroup/GroupPermission/UserPermission (Sprint 12C), CashRegister/CashEntry (Sprint 13A ; Sprint 14B : CashEntry.contractNumber)/ExpenseCategory (Sprint 13A), Account, Session, VerificationToken
+│   ├── schema.prisma        # Tenant (Sprint 14B : contractNumberPrefix/lastContractNumber), Agency (Sprint 12A : coordonnées pro), User (passwordHash, role ; Sprint 12C : phone/avatar/permissionGroupId), UserAgency, Client (Sprint 12A : identité/permis), Vehicle (Sprint 12A : fiche technique ; Sprint 14A : pricePerDay optionnel/informatif ; Sprint 14C : VehicleStatus +TRANSFERRING/ON_TRIP), Location (Sprint 12A : kilométrage/caution ; Sprint 14B : contractNumber unique par tenant), Invoice, Payment, Maintenance, Alert (Sprint 14C : +6 AlertType), Invitation, AuditLog, Reservation (Sprint 12C), PermissionGroup/GroupPermission/UserPermission (Sprint 12C), CashRegister/CashEntry (Sprint 13A ; Sprint 14B : CashEntry.contractNumber)/ExpenseCategory (Sprint 13A), VehicleTransfer/VehicleTrip (Sprint 14C, nouveaux), Account, Session, VerificationToken
 │   └── migrations/
 │       ├── migration_lock.toml
 │       ├── 20260811133155_init_tenant_agency_user/
@@ -38,7 +38,9 @@ xrent-manager/
 │       │   └── migration.sql
 │       ├── 20260813112824_add_sprint14a_vehicle_price_optional/
 │       │   └── migration.sql
-│       └── 20260813150025_add_sprint14b_contract_numbering/
+│       ├── 20260813150025_add_sprint14b_contract_numbering/
+│       │   └── migration.sql
+│       └── 20260813143449_add_sprint14c_transfers_trips/
 │           └── migration.sql
 ├── components.json          # Config shadcn/ui (style base-nova, alias @/components, @/lib, @/hooks)
 ├── src/
@@ -100,10 +102,16 @@ xrent-manager/
 │   │   │   │   ├── page.tsx, ClientsTable.tsx, loading.tsx, DuplicateCheck.tsx
 │   │   │   │   ├── new/page.tsx
 │   │   │   │   └── [id]/page.tsx, EditClientForm.tsx
-│   │   │   ├── maintenances/       # (Sprint 7) CRUD, machine à états, historique conservé
-│   │   │   │   ├── page.tsx, MaintenancesTable.tsx, loading.tsx
+│   │   │   ├── vehicle-transfers/  # (Sprint 14C, nouveau) Transfert d'un véhicule entre agences — création lance (IN_TRANSIT), validation reçoit et met à jour l'agence
+│   │   │   │   ├── page.tsx, VehicleTransfersTable.tsx
 │   │   │   │   └── new/page.tsx
-│   │   │   ├── alerts/             # (Sprint 7) Liste triée priorité+date, acknowledge/resolve
+│   │   │   ├── vehicle-trips/      # (Sprint 14C, nouveau) Bon de déplacement interne — départ auto, retour exige kilométrage > départ
+│   │   │   │   ├── page.tsx, VehicleTripsTable.tsx
+│   │   │   │   └── new/page.tsx
+│   │   │   ├── maintenances/       # (Sprint 7) CRUD, machine à états, historique conservé ; (Sprint 14C) vue "État des véhicules" (VehicleStatusOverviewTable.tsx, nouveau) en plus de l'historique — immatriculation/état réel/date de retour si loué/disponibilité, filtres en en-têtes
+│   │   │   │   ├── page.tsx, MaintenancesTable.tsx, VehicleStatusOverviewTable.tsx, loading.tsx
+│   │   │   │   └── new/page.tsx
+│   │   │   ├── alerts/             # (Sprint 7) Liste triée priorité+date, acknowledge/resolve ; (Sprint 14C) 6 nouveaux types (CONTRACT_AT_RISK/PAYMENT_DUE/VEHICLE_UNAVAILABLE/RETURN_OVERDUE/DOCUMENT_EXPIRED/STOCK_INCONSISTENCY)
 │   │   │   │   ├── page.tsx, AlertsList.tsx, loading.tsx
 │   │   │   ├── invoices/           # (Sprint 6) CRUD, machine à états, PDF, paiements
 │   │   │   │   ├── page.tsx, InvoicesTable.tsx, loading.tsx
@@ -134,6 +142,7 @@ xrent-manager/
 │   │       │   └── [id]/route.ts           # GET/PATCH/DELETE — scopé tenant + agence (UserAgency)
 │   │       ├── users/
 │   │       │   ├── route.ts                # GET — liste du tenant, ADMIN uniquement (Sprint 4)
+│   │       │   ├── directory/route.ts      # (Sprint 14C, nouveau) GET — annuaire minimal (id+name), ouvert à tout user du tenant (choix d'un responsable/employé transfert/déplacement)
 │   │       │   ├── [id]/
 │   │       │   │   ├── route.ts            # (Sprint 9) GET/PATCH (rôle, réinitialisation mot de passe)/DELETE — ADMIN uniquement, garde "dernier ADMIN"
 │   │       │   │   └── permissions/route.ts # (Sprint 12C) GET/PATCH — groupe + permissions individuelles, ADMIN uniquement
@@ -162,13 +171,25 @@ xrent-manager/
 │   │       ├── maintenances/               # (Sprint 7)
 │   │       │   ├── route.ts                # GET (liste, filtres)/POST — agencyId/currency dérivés du véhicule
 │   │       │   └── [id]/route.ts           # GET/PATCH (statut/dates/coût/notes)/DELETE (si SCHEDULED)
+│   │       ├── vehicle-transfers/          # (Sprint 14C, nouveau)
+│   │       │   ├── route.ts                # GET (liste, filtres)/POST — lance le transfert (IN_TRANSIT), fromAgencyId dérivé du véhicule, véhicule → TRANSFERRING
+│   │       │   └── [id]/
+│   │       │       ├── route.ts            # GET
+│   │       │       ├── validate/route.ts   # PATCH — réception à l'agence d'arrivée : véhicule rattaché + AVAILABLE
+│   │       │       └── cancel/route.ts     # PATCH — annulation, véhicule → AVAILABLE (reste à l'agence de départ)
+│   │       ├── vehicle-trips/              # (Sprint 14C, nouveau)
+│   │       │   ├── route.ts                # GET (liste, filtres)/POST — départ auto (ON_TRIP), agencyId dérivé du véhicule
+│   │       │   └── [id]/
+│   │       │       ├── route.ts            # GET
+│   │       │       ├── return/route.ts     # PATCH — retour, exige endOdometer > startOdometer, véhicule → AVAILABLE
+│   │       │       └── cancel/route.ts     # PATCH — annulation, véhicule → AVAILABLE
 │   │       ├── alerts/                     # (Sprint 7)
-│   │       │   ├── route.ts                # GET (liste, filtres type/priority/status)
+│   │       │   ├── route.ts                # GET (liste, filtres type/priority/status) ; (Sprint 14C) 6 nouveaux AlertType
 │   │       │   └── [id]/
 │   │       │       ├── acknowledge/route.ts   # PATCH — PENDING → ACKNOWLEDGED
 │   │       │       └── resolve/route.ts       # PATCH — PENDING|ACKNOWLEDGED → RESOLVED
 │   │       ├── tasks/
-│   │       │   └── check-alerts/route.ts   # (Sprint 7) POST — déclenche les 3 vérifications, réservé ADMIN, scopé au tenant connecté
+│   │       │   └── check-alerts/route.ts   # (Sprint 7) POST — déclenche les vérifications, réservé ADMIN, scopé au tenant connecté ; (Sprint 14C) 6 vérifications supplémentaires (9 au total)
 │   │       ├── invoices/                   # (Sprint 6)
 │   │       │   ├── route.ts                # GET (liste, filtres)/POST — dérive agencyId/clientId/currency de la Location
 │   │       │   └── [id]/
@@ -194,7 +215,7 @@ xrent-manager/
 │   ├── proxy.ts              # Redirige vers /login sur /dashboard*, /settings* si non authentifié (middleware.ts est déprécié dans cette version de Next.js)
 │   ├── components/
 │   │   ├── ui/               # Composants shadcn/ui (générés) + index.ts (ré-export) ; (Sprint 12A) phone-input.tsx — composant interne (pas de dépendance npm), indicatif pays + numéro ; (Sprint 12C) checkbox.tsx (grille de permissions) ; (Sprint 13B) StatusBadge.tsx — badge de statut coloré partagé Reservation/Location ; (Sprint 13C) phone-input.tsx étendu — 20 indicatifs (Maroc en tête), recherche, dernier pays mémorisé en localStorage via useSyncExternalStore ; (Sprint 13E) button.tsx/card.tsx étendus (animations de clic/survol, `rounded-2xl`/`border-slate-100`, prop `hoverable` sur Card) — pas de nouveaux composants, voir HANDOFF.md ; (Sprint 14A) label.tsx étendu — prop `required` (astérisque rouge décoratif)
-│   │   ├── layout/            # Sidebar.tsx, Header.tsx (Sprint 12B : DropdownMenuLabel enveloppé dans DropdownMenuGroup, correctif bug déconnexion Base UI), DashboardLayout.tsx, DataTable.tsx (TanStack Table v9) ; (Sprint 13E) BottomNav.tsx — navigation rapide mobile (4 entrées, `md:hidden`), complète Sidebar.tsx (tiroir hamburger, 18 entrées) sans le remplacer ; Sidebar.tsx/Header.tsx : cibles tactiles mobiles ≥48px ; (Sprint 14A) Sidebar.tsx — entrées alignées sur la vérification réellement appliquée par leur page/route cible (`adminOnly` pour les modules role-only, `permission` réservé à Réservations, seul module réellement gated par `can()`), correctif d'un sur/sous-masquage ; DataTable.tsx — retour à la ligne des en-têtes + largeur de colonne optionnelle (`columnDef.size`, `columnSizingFeature` enregistrée), réutilisable par toute table
+│   │   ├── layout/            # Sidebar.tsx, Header.tsx (Sprint 12B : DropdownMenuLabel enveloppé dans DropdownMenuGroup, correctif bug déconnexion Base UI), DashboardLayout.tsx, DataTable.tsx (TanStack Table v9) ; (Sprint 13E) BottomNav.tsx — navigation rapide mobile (4 entrées, `md:hidden`), complète Sidebar.tsx (tiroir hamburger, 18 entrées) sans le remplacer ; Sidebar.tsx/Header.tsx : cibles tactiles mobiles ≥48px ; (Sprint 14A) Sidebar.tsx — entrées alignées sur la vérification réellement appliquée par leur page/route cible (`adminOnly` pour les modules role-only, `permission` réservé à Réservations, seul module réellement gated par `can()`), correctif d'un sur/sous-masquage ; (Sprint 14C) Sidebar.tsx — entrées « Transferts »/« Déplacements » ajoutées (aucune restriction, comme Maintenances/Alertes/Caisse) ; DataTable.tsx — retour à la ligne des en-têtes + largeur de colonne optionnelle (`columnDef.size`, `columnSizingFeature` enregistrée), réutilisable par toute table
 │   │   ├── invoices/          # (Sprint 6) InvoicePdf.tsx — template @react-pdf/renderer (pas de logo, aucun asset de marque) ; (Sprint 14B) InvoicePdfPage extraite (contenu de la page sans <Document>, réutilisable dans un PDF de lot), affiche désormais le numéro de contrat
 │   │   └── contracts/         # (Sprint 14B, nouveau) ContractPdf.tsx/ContractPdfPage — template PDF du contrat (même style qu'InvoicePdf, pas de logo)
 │   ├── hooks/
@@ -214,8 +235,10 @@ xrent-manager/
 │   │   ├── payments.ts      # (Sprint 6) CRUD + recomputeInvoiceStatus (recalcule toujours amountPaid/status de la facture depuis les paiements réels) ; (Sprint 14B) PaymentExceedsRemainingBalanceError toujours formatée en devise (jamais un entier brut de centimes)
 │   │   ├── reports.ts       # (Sprint 6) getRevenueReport, getVehicleUtilizationReport, getTopVehicles ; (Sprint 12C) getLocationsByMonth, getRevenueByAgency, getOverallOccupancyRate, getReservationsByStatus — tenant-scopé
 │   │   ├── maintenances.ts  # (Sprint 7) CRUD + machine à états + getDueMaintenances + createMaintenanceFromSchedule
+│   │   ├── vehicle-transfers.ts # (Sprint 14C, nouveau) createVehicleTransfer/validateVehicleTransfer/cancelVehicleTransfer — machine à états IN_TRANSIT→COMPLETED|CANCELLED, met à jour Vehicle.status/agencyId en transaction
+│   │   ├── vehicle-trips.ts     # (Sprint 14C, nouveau) createVehicleTrip/returnVehicleTrip/cancelVehicleTrip — machine à états IN_PROGRESS→COMPLETED|CANCELLED, retour exige endOdometer > startOdometer
 │   │   ├── alerts.ts        # (Sprint 7) CRUD (sans delete) + machine à états (acknowledge/resolve) + getPendingAlerts
-│   │   ├── scheduled-tasks.ts # (Sprint 7) checkDueMaintenances/checkReturnsToday/checkOverdueInvoices — génération idempotente d'alertes
+│   │   ├── scheduled-tasks.ts # (Sprint 7) checkDueMaintenances/checkReturnsToday/checkOverdueInvoices — génération idempotente d'alertes ; (Sprint 14C) +checkContractsAtRisk/checkPaymentsDue/checkVehiclesUnavailable/checkOverdueReturns/checkExpiredDocuments/checkStockInconsistencies
 │   │   ├── users.ts         # (Sprint 9) updateUserRole/resetUserPassword/deleteUser — garde "dernier ADMIN", nettoyage UserAgency/Alert ; (Sprint 10) updateUserProfile (nom/email/mot de passe, vérifie l'ancien) ; (Sprint 12C) + phone/avatar ; (Sprint 13C) getUserAgencyIds/setUserAgencies — corrige le bug MEMBER sans véhicules visibles (aucun code ne créait jamais de UserAgency avant ce sprint)
 │   │   ├── invitations.ts   # (Sprint 9) createInvitation/acceptInvitation/declineInvitation/revokeInvitation — email/rôle toujours dérivés de l'invitation
 │   │   ├── audit.ts         # (Sprint 9) logAction/getAuditLogs — n'échoue jamais l'action métier appelante ; (Sprint 10) filtre action, câblé sur tout le CRUD métier (vehicles/locations/clients/invoices/payments/maintenances/alerts, voir routes API correspondantes) ; (Sprint 12C) filtres from/to
@@ -249,6 +272,9 @@ xrent-manager/
 │       ├── permissions.test.ts  # (Sprint 12C) CRUD groupes de permissions, assignation par user, application réelle sur une route gated (reservations.*)
 │       ├── cash-register.test.ts    # (Sprint 13A) CRUD écritures/catégories, recalcul du solde (previousBalance/monthEntries/monthExpenses/finalBalance), isolation multi-tenant
 │       ├── location-payment.test.ts # (Sprint 13A) Paiement intégré à POST /api/locations : simple/partiel/mixte/au retour, impact sur le statut de facture et sur le solde de caisse
+│       ├── vehicle-transfers.test.ts # (Sprint 14C, nouveau) Lancement, dérivation fromAgencyId, exclusion des sélecteurs AVAILABLE, blocage transfert incohérent/concurrent, validation + mise à jour agence, blocage kilométrage/date incohérents, annulation, isolation multi-tenant
+│       ├── vehicle-trips.test.ts     # (Sprint 14C, nouveau) Départ automatique, exclusion des sélecteurs AVAILABLE, blocage déplacement concurrent, retour (blocage kilométrage ≤ départ, retour valide), annulation, isolation multi-tenant
+│       ├── vehicle-mobility-alerts.test.ts # (Sprint 14C, nouveau) Génération STOCK_INCONSISTENCY/RETURN_OVERDUE + consultation/traitement ; rendu de la vue "État des véhicules" (/dashboard/maintenances)
 │       └── helpers/          # testServer.ts (port/URL), http.ts (fetch + cookies), fixtures.ts (register/login de test)
 ├── vitest.global-setup.ts    # Démarre/arrête un vrai serveur `next dev` de test (requis par NextAuth, voir TESTREPORT.md)
 ├── AGENTS.md                # Règles agent Next.js, régénéré automatiquement par `next dev`
@@ -363,8 +389,9 @@ D'après les principes produit de démarrage :
 - Paiements (modèle `Payment` implémenté Sprint 6 — enregistrement manuel uniquement, pas d'intégration Stripe/PayPal ; voir HANDOFF.md section 8 pour les points encore ouverts ; **Sprint 13A** intègre l'enregistrement du paiement directement dans le formulaire de création de location — simple/partiel/mixte/au retour)
 - Caisse (modèles `CashRegister`/`CashEntry`/`ExpenseCategory` implémentés Sprint 13A — solde toujours recalculé depuis les écritures réelles, jamais un compteur incrémenté ; `/dashboard/cash-register*` ; chaque paiement encaissé à la création d'une location alimente automatiquement une entrée de caisse)
 - Rapports (implémentés Sprint 6 — revenu par mois, utilisation véhicule, classement véhicules, export CSV ; réservés ADMIN)
-- Maintenance véhicules (modèle `Maintenance` implémenté Sprint 7 — CRUD, machine à états, historique conservé, `/dashboard/maintenances`)
-- Alertes / notifications (modèle `Alert` implémenté Sprint 7 — in-app uniquement, pas d'email ; badge header, `/dashboard/alerts`, génération automatique via `src/lib/scheduled-tasks.ts`/`POST /api/tasks/check-alerts`)
+- Maintenance véhicules (modèle `Maintenance` implémenté Sprint 7 — CRUD, machine à états, historique conservé, `/dashboard/maintenances` ; **Sprint 14C** : la page gagne une vue "État des véhicules" — immatriculation/état réel/date de retour/disponibilité, filtres en en-têtes, voir DOMAINRULES.md section 30)
+- Alertes / notifications (modèle `Alert` implémenté Sprint 7 — in-app uniquement, pas d'email ; badge header, `/dashboard/alerts`, génération automatique via `src/lib/scheduled-tasks.ts`/`POST /api/tasks/check-alerts` ; **Sprint 14C** : 6 nouveaux types — contrat à risque, paiement restant dû, véhicule indisponible, retour en retard, document expiré, incohérence de stock, voir DOMAINRULES.md section 30)
+- Transferts entre agences et bons de déplacement interne (modèles `VehicleTransfer`/`VehicleTrip` implémentés Sprint 14C — flux distincts de `Location`/`Reservation`, sans client ni facturation ; `/dashboard/vehicle-transfers`, `/dashboard/vehicle-trips`, voir DOMAINRULES.md section 30)
 - Cautions
 - Incidents (véhicule/location)
 - Audit (modèle `AuditLog` implémenté Sprint 9 — `/dashboard/audit`, réservé ADMIN ; étendu Sprint 10 à tout le CRUD métier — véhicules, locations, clients, factures, paiements, maintenances, alertes — en plus des actions Sprint 9, avec filtres ressource/action/utilisateur)

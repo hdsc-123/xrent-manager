@@ -4,7 +4,17 @@ import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/a
 import { getVehicles, createVehicle, type VehicleFilters } from "@/lib/vehicles";
 import { logAction } from "@/lib/audit";
 
-const VEHICLE_STATUSES: VehicleStatus[] = ["AVAILABLE", "RENTED", "MAINTENANCE", "INACTIVE"];
+const VEHICLE_STATUSES: VehicleStatus[] = [
+  "AVAILABLE",
+  "RENTED",
+  "MAINTENANCE",
+  "INACTIVE",
+  "TRANSFERRING",
+  "ON_TRIP",
+];
+// TRANSFERRING/ON_TRIP sont gérés automatiquement par les modules Transfert/Bon de déplacement
+// (Sprint 14C) — jamais assignables manuellement à la création d'un véhicule.
+const MANUALLY_ASSIGNABLE_STATUSES: VehicleStatus[] = ["AVAILABLE", "RENTED", "MAINTENANCE", "INACTIVE"];
 const TRANSMISSION_TYPES: TransmissionType[] = ["MANUELLE", "AUTOMATIQUE"];
 const FUEL_TYPES: FuelType[] = ["ESSENCE", "DIESEL", "HYBRIDE", "ELECTRIQUE"];
 
@@ -123,6 +133,12 @@ export async function POST(request: Request) {
 
   if (body.status && !VEHICLE_STATUSES.includes(body.status)) {
     return NextResponse.json({ error: "status invalide." }, { status: 400 });
+  }
+  if (body.status && !MANUALLY_ASSIGNABLE_STATUSES.includes(body.status)) {
+    return NextResponse.json(
+      { error: "TRANSFERRING/ON_TRIP sont gérés automatiquement par un transfert/bon de déplacement en cours, non assignables manuellement." },
+      { status: 400 }
+    );
   }
 
   if (body.transmission && !TRANSMISSION_TYPES.includes(body.transmission)) {

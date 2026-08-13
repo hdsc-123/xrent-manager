@@ -11,6 +11,8 @@ const STATUS_OPTIONS: { value: VehicleStatus; label: string }[] = [
   { value: "RENTED", label: "Loué" },
   { value: "MAINTENANCE", label: "Maintenance" },
   { value: "INACTIVE", label: "Inactif" },
+  { value: "TRANSFERRING", label: "En transfert" },
+  { value: "ON_TRIP", label: "En déplacement" },
 ];
 
 interface PageProps {

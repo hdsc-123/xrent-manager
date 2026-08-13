@@ -3,7 +3,18 @@ import type { AlertPriority, AlertStatus, AlertType } from "@prisma/client";
 import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/authz";
 import { getAlerts, type AlertFilters } from "@/lib/alerts";
 
-const ALERT_TYPES: AlertType[] = ["MAINTENANCE_DUE", "RETURN_TODAY", "INVOICE_OVERDUE", "OTHER"];
+const ALERT_TYPES: AlertType[] = [
+  "MAINTENANCE_DUE",
+  "RETURN_TODAY",
+  "INVOICE_OVERDUE",
+  "CONTRACT_AT_RISK",
+  "PAYMENT_DUE",
+  "VEHICLE_UNAVAILABLE",
+  "RETURN_OVERDUE",
+  "DOCUMENT_EXPIRED",
+  "STOCK_INCONSISTENCY",
+  "OTHER",
+];
 const ALERT_PRIORITIES: AlertPriority[] = ["LOW", "MEDIUM", "HIGH", "URGENT"];
 const ALERT_STATUSES: AlertStatus[] = ["PENDING", "ACKNOWLEDGED", "RESOLVED"];
 
