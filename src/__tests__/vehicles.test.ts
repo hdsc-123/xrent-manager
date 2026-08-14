@@ -372,6 +372,59 @@ describe("GET /api/vehicles/[id]/availability", () => {
     const freeBody = await free.json();
     expect(freeBody.available).toBe(true);
   });
+
+  // Sprint 16 (audit sécurité) : findConflictingLocations (src/lib/vehicles.ts) renvoyait
+  // jusqu'ici l'enregistrement Location complet (prix, caution, notes, clientId) dans
+  // VehicleNotAvailableError.conflictingLocations — exposé sans vérifier locations.view sur
+  // POST/PATCH /api/locations et POST /api/reservations/[id]/convert. Seuls id/dates/statut
+  // sont désormais sélectionnés.
+  it("Sprint 16 — un conflit de disponibilité n'expose que id/dates/statut, jamais prix/caution/notes/clientId", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await createResponse.json()).vehicle.id;
+
+    const clientResponse = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Client Sensible Conflict Test" }),
+    });
+    const clientId = (await clientResponse.json()).client.id;
+
+    await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId,
+        clientId,
+        startDate: "2027-04-10",
+        endDate: "2027-04-15",
+        deposit: 500000,
+        notes: "Note confidentielle sur ce contrat.",
+      }),
+    });
+
+    // Une seconde création en conflit déclenche VehicleNotAvailableError (409), le chemin
+    // effectivement exposé au client — pas seulement GET availability (lecture pure).
+    const conflictResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId,
+        clientId,
+        startDate: "2027-04-12",
+        endDate: "2027-04-20",
+      }),
+    });
+    expect(conflictResponse.status).toBe(409);
+    const body = await conflictResponse.json();
+    expect(body.conflictingLocations).toHaveLength(1);
+    const conflict = body.conflictingLocations[0];
+    expect(Object.keys(conflict).sort()).toEqual(["endDate", "id", "startDate", "status"]);
+    expect(conflict).not.toHaveProperty("deposit");
+    expect(conflict).not.toHaveProperty("notes");
+    expect(conflict).not.toHaveProperty("clientId");
+    expect(conflict).not.toHaveProperty("pricePerDay");
+    expect(conflict).not.toHaveProperty("totalPrice");
+  });
 });
 
 describe("Sprint 15 — permissions granulaires (vehicles.create)", () => {

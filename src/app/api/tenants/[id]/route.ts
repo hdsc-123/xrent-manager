@@ -110,6 +110,15 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Accès réservé aux administrateurs." }, { status: 403 });
   }
 
+  // Sprint 16 (audit sécurité) : DELETE n'émet volontairement pas de logAction("tenant.deleted"),
+  // contrairement à PATCH (tenant.updated) ci-dessus — AuditLog.tenantId a une FK obligatoire
+  // vers Tenant.id sans onDelete: Cascade (prisma/schema.prisma), donc écrire ce log APRÈS le
+  // delete violerait systématiquement cette contrainte (échec silencieux, logAction n'échoue
+  // jamais l'action métier appelante) ; l'écrire AVANT donnerait un log "supprimé" pour une
+  // suppression qui peut encore échouer (409 ci-dessous). En pratique, cette route ne peut de
+  // toute façon quasiment jamais réussir : un tenant a toujours au moins un User (créé par
+  // /api/auth/register) et User.tenantId n'a pas non plus de cascade — le 409 FK est atteint
+  // avant même d'envisager la suppression. Non revu comme un vrai gap d'audit.
   try {
     await prisma.tenant.delete({ where: { id } });
   } catch (error) {

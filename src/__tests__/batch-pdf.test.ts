@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -261,5 +261,46 @@ describe("POST /api/documents/batch-pdf", () => {
       body: JSON.stringify({ type: "CONTRACT", ids: [locationId1, locationId2] }),
     });
     expect(response.status).toBe(404);
+  });
+
+  // Sprint 16 (audit sécurité) : cette route ne vérifiait jusqu'ici aucune permission
+  // granulaire (commentaire obsolète, voir route.tsx), contrairement à GET /api/locations et
+  // GET /api/invoices — un MEMBER sans locations.view/invoices.view pouvait donc contourner ce
+  // gate simplement en passant par le PDF de lot.
+  describe("Sprint 16 — permissions granulaires (locations.view/invoices.view)", () => {
+    it("refuse un MEMBER sans locations.view (groupe personnalisé vide) sur un lot de contrats", async () => {
+      const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+        method: "POST",
+        headers: { Cookie: admin.sessionCookie },
+        body: JSON.stringify({ name: `Empty-BatchPdf-${runId}`, permissions: [] }),
+      });
+      const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+
+      const noPerms = await createAndLoginMember({
+        tenantId: admin.tenantId,
+        name: "No Perms Batch PDF",
+        email: `no-perms-batch-${runId}@test.local`,
+        password: "Correct-Horse-Battery-Staple9!",
+      });
+      await apiFetch(`/api/users/${noPerms.userId}/permissions`, {
+        method: "PATCH",
+        headers: { Cookie: admin.sessionCookie },
+        body: JSON.stringify({ permissionGroupId: emptyGroupId }),
+      });
+
+      const contractResponse = await apiFetch("/api/documents/batch-pdf", {
+        method: "POST",
+        headers: { Cookie: noPerms.sessionCookie },
+        body: JSON.stringify({ type: "CONTRACT", ids: [locationId1] }),
+      });
+      expect(contractResponse.status).toBe(403);
+
+      const invoiceResponse = await apiFetch("/api/documents/batch-pdf", {
+        method: "POST",
+        headers: { Cookie: noPerms.sessionCookie },
+        body: JSON.stringify({ type: "INVOICE", ids: [invoiceId1] }),
+      });
+      expect(invoiceResponse.status).toBe(403);
+    });
   });
 });

@@ -25,9 +25,9 @@ export class ClientNotFoundError extends Error {
 }
 
 export class VehicleNotAvailableError extends Error {
-  conflictingLocations: Location[];
+  conflictingLocations: Pick<Location, "id" | "startDate" | "endDate" | "status">[];
 
-  constructor(conflictingLocations: Location[]) {
+  constructor(conflictingLocations: Pick<Location, "id" | "startDate" | "endDate" | "status">[]) {
     super("Le véhicule n'est pas disponible sur cette période.");
     this.name = "VehicleNotAvailableError";
     this.conflictingLocations = conflictingLocations;

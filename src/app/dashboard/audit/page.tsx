@@ -63,11 +63,15 @@ const ACTION_LABELS: Record<string, string> = {
   "vehicle_trip.returned": "Retour de déplacement enregistré",
   "vehicle_trip.cancelled": "Bon de déplacement annulé",
   "data.reset": "Réinitialisation de données",
+  "data.reset_failed": "Tentative de réinitialisation refusée (confirmation invalide)",
   "agency.created": "Agence créée",
   "agency.updated": "Agence modifiée",
   "agency.deleted": "Agence supprimée",
   "user.created": "Utilisateur créé",
   "tenant.updated": "Tenant modifié",
+  // Sprint 16 (audit sécurité) : action sensible jusqu'ici non journalisée (voir
+  // src/app/api/users/[id]/route.ts, PATCH).
+  "user.password_reset": "Mot de passe réinitialisé (par un administrateur)",
 };
 
 const RESOURCE_LABELS: Record<string, string> = {

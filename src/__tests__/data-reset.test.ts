@@ -271,6 +271,15 @@ describe("POST /api/data-reset", () => {
       body: JSON.stringify({ confirmTenantName: "Nom incorrect" }),
     });
     expect(response.status).toBe(400);
+
+    // Sprint 16 (audit sécurité) : une tentative refusée doit désormais laisser une trace
+    // (auparavant, seul un reset réussi était journalisé — aucune visibilité sur les tentatives
+    // répétées de deviner le nom exact du tenant).
+    const failedLog = await prisma.auditLog.findFirst({
+      where: { tenantId: admin.tenantId, action: "data.reset_failed" },
+    });
+    expect(failedLog).not.toBeNull();
+    expect(failedLog?.userId).toBe(admin.userId);
   });
 
   it("vide les données métier du tenant, conserve la config, préserve les autres tenants", async () => {

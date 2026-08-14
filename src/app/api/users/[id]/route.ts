@@ -104,6 +104,13 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
     if (body.password !== undefined) {
       await resetUserPassword(user.tenantId, target.id, body.password);
+      await logAction({
+        tenantId: user.tenantId,
+        userId: user.id,
+        action: "user.password_reset",
+        resource: "User",
+        resourceId: target.id,
+      });
     }
 
     if (body.agencyIds !== undefined) {

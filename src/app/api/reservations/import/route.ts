@@ -45,6 +45,17 @@ export async function POST(request: Request) {
   if (!file.name.toLowerCase().endsWith(".xlsx")) {
     return NextResponse.json({ error: "Seuls les fichiers .xlsx sont acceptés." }, { status: 400 });
   }
+  // Sprint 16 (audit sécurité) : aucune limite n'existait jusqu'ici — un fichier disproportionné
+  // était entièrement bufferisé en mémoire (arrayBuffer) puis parsé (exceljs), consommation
+  // CPU/mémoire non bornée. 20 Mo est largement suffisant pour un fichier de réservations broker
+  // réaliste (quelques dizaines de milliers de lignes, texte uniquement, pas d'images/macros).
+  const MAX_IMPORT_FILE_SIZE = 20 * 1024 * 1024;
+  if (file.size > MAX_IMPORT_FILE_SIZE) {
+    return NextResponse.json(
+      { error: `Le fichier dépasse la taille maximale autorisée (${MAX_IMPORT_FILE_SIZE / (1024 * 1024)} Mo).` },
+      { status: 400 }
+    );
+  }
 
   // mode=preview : parse/valide sans rien persister (aperçu avant import, voir
   // /dashboard/reservations/import) ; mode=commit (défaut) : persiste réellement.

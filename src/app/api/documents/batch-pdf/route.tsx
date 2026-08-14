@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { Document, renderToBuffer } from "@react-pdf/renderer";
 import { getSessionUser, getAccessibleAgencyIds, canAccessAgency } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { ContractPdfPage } from "@/components/contracts/ContractPdf";
 import { InvoicePdfPage } from "@/components/invoices/InvoicePdf";
@@ -27,8 +28,14 @@ interface BatchPdfBody {
  * Chaque document est une simple page @react-pdf/renderer (ContractPdfPage/InvoicePdfPage,
  * extraites de leur <Document> habituel) assemblée dans un seul <Document> — même rendu que
  * le PDF unitaire, juste concaténé. Portée : mêmes règles de visibilité que les pages de liste
- * /dashboard/locations et /dashboard/invoices (aucune permission granulaire sur ces modules,
- * voir DOMAINRULES.md section 22) — un MEMBER ne voit que les documents de ses agences.
+ * /dashboard/locations et /dashboard/invoices — un MEMBER ne voit que les documents de ses
+ * agences accessibles (`getAccessibleAgencyIds`/`canAccessAgency`).
+ * Correctif Sprint 16 (audit sécurité) : `can(user, "locations.view")`/`can(user,
+ * "invoices.view")` est désormais vérifié comme sur toutes les autres routes de ces modules
+ * (`GET /api/locations`, `GET /api/invoices`, `GET /api/locations/[id]/pdf`, `GET
+ * /api/invoices/[id]/pdf`) — ce commentaire affirmait auparavant à tort qu'aucune permission
+ * granulaire ne s'appliquait à ces modules, une justification obsolète antérieure au retrofit
+ * de portée du Sprint 15 (DOMAINRULES.md section 22), jamais mise à jour pour cette route.
  */
 export async function POST(request: Request) {
   const user = await getSessionUser();
@@ -47,9 +54,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "type doit être CONTRACT ou INVOICE." }, { status: 400 });
   }
 
+  const requiredPermission = body.type === "CONTRACT" ? "locations.view" : "invoices.view";
+  if (!(await can(user, requiredPermission))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
+  }
+
+  // Sprint 16 (audit sécurité) : plafond partagé avec MAX_NUMBER_RANGE ci-dessous — les modes
+  // "identifiants" et "plage de dates" n'avaient jusqu'ici aucune limite, contrairement au mode
+  // "plage de numéros" (déjà plafonné), ouvrant un risque de génération PDF disproportionnée
+  // (CPU/mémoire) par un seul appelant authentifié.
+  const MAX_BATCH_SIZE = 500;
+
   const hasIds = Array.isArray(body.ids) && body.ids.length > 0;
   const hasDateRange = Boolean(body.from || body.to);
   const hasNumberRange = body.contractNumberFrom !== undefined || body.contractNumberTo !== undefined;
+
+  if (hasIds && body.ids!.length > MAX_BATCH_SIZE) {
+    return NextResponse.json(
+      { error: `La sélection par identifiants ne peut pas dépasser ${MAX_BATCH_SIZE} documents.` },
+      { status: 400 }
+    );
+  }
 
   if (hasNumberRange && body.type !== "CONTRACT") {
     return NextResponse.json(
@@ -90,10 +115,9 @@ export async function POST(request: Request) {
       { status: 400 }
     );
   }
-  const MAX_NUMBER_RANGE = 500;
-  if (hasNumberRange && body.contractNumberTo! - body.contractNumberFrom! + 1 > MAX_NUMBER_RANGE) {
+  if (hasNumberRange && body.contractNumberTo! - body.contractNumberFrom! + 1 > MAX_BATCH_SIZE) {
     return NextResponse.json(
-      { error: `La plage de numéros ne peut pas dépasser ${MAX_NUMBER_RANGE} contrats.` },
+      { error: `La plage de numéros ne peut pas dépasser ${MAX_BATCH_SIZE} contrats.` },
       { status: 400 }
     );
   }
@@ -161,10 +185,17 @@ export async function POST(request: Request) {
       },
       include: { vehicle: true, client: true },
       orderBy: { contractNumber: "asc" },
+      take: MAX_BATCH_SIZE + 1,
     });
 
     if (locations.length === 0) {
       return NextResponse.json({ error: "Aucun contrat ne correspond à cette sélection." }, { status: 404 });
+    }
+    if (locations.length > MAX_BATCH_SIZE) {
+      return NextResponse.json(
+        { error: `Cette sélection dépasse ${MAX_BATCH_SIZE} contrats — affinez la plage de dates.` },
+        { status: 400 }
+      );
     }
 
     const agencies = await prisma.agency.findMany({
@@ -226,10 +257,17 @@ export async function POST(request: Request) {
     },
     include: { client: true, location: { include: { vehicle: true } } },
     orderBy: { number: "asc" },
+    take: MAX_BATCH_SIZE + 1,
   });
 
   if (invoices.length === 0) {
     return NextResponse.json({ error: "Aucune facture ne correspond à cette sélection." }, { status: 404 });
+  }
+  if (invoices.length > MAX_BATCH_SIZE) {
+    return NextResponse.json(
+      { error: `Cette sélection dépasse ${MAX_BATCH_SIZE} factures — affinez la plage de dates.` },
+      { status: 400 }
+    );
   }
 
   const agencies = await prisma.agency.findMany({

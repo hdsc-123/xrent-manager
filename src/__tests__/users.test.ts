@@ -155,6 +155,31 @@ describe("PATCH /api/users/[id]", () => {
     });
     expect(loginResponse.status).toBe(200);
   });
+
+  // Sprint 16 (audit sécurité) : cette action (prise de contrôle d'un compte par un ADMIN)
+  // n'était jusqu'ici jamais journalisée, contrairement au changement de rôle/d'agences dans
+  // le même handler (voir src/app/api/users/[id]/route.ts).
+  it("Sprint 16 — journalise la réinitialisation de mot de passe par un ADMIN (audit trail)", async () => {
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Pw Reset Audit Target",
+      email: `pw-reset-audit-${runId}@test.local`,
+      password,
+    });
+
+    const response = await apiFetch(`/api/users/${member.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ password: "Another-Correct-Horse9!" }),
+    });
+    expect(response.status).toBe(200);
+
+    const log = await prisma.auditLog.findFirst({
+      where: { tenantId: adminA.tenantId, action: "user.password_reset", resourceId: member.userId },
+    });
+    expect(log).not.toBeNull();
+    expect(log?.userId).toBe(adminA.userId);
+  });
 });
 
 describe("Rafraîchissement du rôle sans reconnexion (Sprint 14A)", () => {

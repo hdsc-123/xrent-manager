@@ -585,6 +585,22 @@ describe("POST /api/reservations/import", () => {
     expect(response.status).toBe(400);
   });
 
+  it("Sprint 16 (audit sécurité) — refuse un fichier .xlsx dépassant la taille maximale autorisée", async () => {
+    // Le contenu n'a pas besoin d'être un .xlsx valide : la vérification de taille intervient
+    // avant tout parsing exceljs (src/app/api/reservations/import/route.ts).
+    const oversized = new Uint8Array(20 * 1024 * 1024 + 1);
+    const formData = new FormData();
+    formData.append("file", new File([oversized], "reservations.xlsx"));
+    const response = await fetch(`${TEST_BASE_URL}/api/reservations/import`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: formData,
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/taille maximale/);
+  });
+
   describe("robustesse dates/heures/villes (Sprint 14A)", () => {
     it("convertit un numéro de série Excel en date (cellule ayant perdu son format date)", async () => {
       const voucherNumber = `V-SERIAL-${runId}`;

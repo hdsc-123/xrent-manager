@@ -136,6 +136,14 @@ export interface AvailabilityResult {
   conflictingLocations: Awaited<ReturnType<typeof findConflictingLocations>>;
 }
 
+/**
+ * Sprint 16 (audit sécurité) : sélection explicite de champs non sensibles uniquement
+ * (id/dates/statut) — ce résultat est renvoyé tel quel au client par VehicleNotAvailableError
+ * (src/lib/locations.ts) dès qu'une création/modification de location échoue faute de
+ * disponibilité, y compris à un appelant n'ayant que locations.create/edit sans
+ * locations.view. Avant ce correctif, le enregistrement Location complet (prix, caution,
+ * notes, clientId) fuitait dans ce cas, contournant de fait le gate locations.view.
+ */
 function findConflictingLocations(
   vehicleId: string,
   start: Date,
@@ -150,6 +158,7 @@ function findConflictingLocations(
       endDate: { gt: start },
       ...(excludeLocationId ? { id: { not: excludeLocationId } } : {}),
     },
+    select: { id: true, startDate: true, endDate: true, status: true },
     orderBy: { startDate: "asc" },
   });
 }

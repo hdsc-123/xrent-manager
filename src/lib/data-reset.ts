@@ -183,6 +183,19 @@ export async function resetTenantData(input: ResetTenantDataInput): Promise<Data
     const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: input.tenantId }, select: { name: true } });
 
     if (input.confirmTenantName !== tenant.name) {
+      // Sprint 16 (audit sécurité) : jusqu'ici, seul un reset réussi était journalisé — une
+      // tentative avec un nom de confirmation incorrect (y compris répétée, ex. essai de
+      // deviner le nom exact du tenant) ne laissait aucune trace. Le nom réellement saisi
+      // n'est pas journalisé (pas nécessaire au diagnostic, SECURITY.md section 12) : seul le
+      // fait qu'une tentative a échoué compte pour la traçabilité.
+      await logAction({
+        tenantId: input.tenantId,
+        userId: input.userId,
+        action: "data.reset_failed",
+        resource: "Tenant",
+        resourceId: input.tenantId,
+        metadata: { reason: "invalid_confirmation" } as unknown as Prisma.InputJsonValue,
+      });
       throw new InvalidResetConfirmationError();
     }
 
