@@ -2,7 +2,7 @@
 
 Ce document trace les incidents **techniques/projet** (bugs, pannes, régressions) rencontrés au cours du développement de XRent Manager. Il ne concerne pas les incidents métier liés à une location (dommage véhicule, accident, litige client) — ceux-ci relèveront d'un module métier dédié, dont les règles sont à définir dans [DOMAINRULES.md](./DOMAINRULES.md).
 
-Un premier incident (technique/process, environnement de développement) est enregistré ci-dessous depuis le Sprint 15 — voir INC-1.
+Deux incidents sont enregistrés ci-dessous : INC-1 (technique/process, environnement de développement, Sprint 15) et INC-2 (bug applicatif de stabilité, hydration mismatch, Sprint 21).
 
 ## Structure d'un incident
 
@@ -24,6 +24,19 @@ Chaque incident futur devra être consigné ci-dessous en suivant ce gabarit :
 ```
 
 ## Journal des incidents
+
+## INC-2 — Hydration mismatch sur les icônes SVG du dashboard (extension navigateur Dark Reader)
+
+- **Date** : 2026-08-14
+- **Environnement** : développement/préproduction (signalé lors d'un test de reset du SaaS)
+- **Gravité** : mineure (avertissement console uniquement, aucune donnée ni fonctionnalité affectée — même famille qu'INC précédent traité au Sprint 20, non numéroté à l'époque)
+- **Description** : après le correctif Sprint 20 (hydration mismatch sur `<html>` dû à Dark Reader), un nouveau hydration mismatch de même origine est apparu, cette fois sur les icônes SVG (`lucide-react`) du chrome de tableau de bord (Sidebar/Header/BottomNav) — attributs `data-darkreader-inline-stroke` et `style={{ "--darkreader-inline-stroke": "currentColor" }}` injectés par l'extension avant l'hydratation React.
+- **Impact** : avertissement console React pour tout visiteur utilisant Dark Reader (ou extension similaire modifiant le DOM avant hydratation) sur toute page `/dashboard/*` — aucune casse fonctionnelle observée (React tolère les mismatchs d'attributs sans démonter le sous-arbre concerné), mais bruit console gênant lors des tests réels et signal potentiellement trompeur lors d'un futur diagnostic.
+- **Cause** : `lucide-react` (`node_modules/lucide-react/dist/esm/Icon.mjs`) positionne les attributs `stroke`/`fill` uniquement sur l'élément `<svg>` racine de chaque icône (jamais sur ses enfants `<path>`) — exactement la classe d'élément que l'overrider de style inline de Dark Reader cible. Le correctif Sprint 20 (`suppressHydrationWarning` sur `<html>`) ne couvre que cet élément précis, la prop n'étant pas récursive — les icônes du dashboard restaient donc exposées au même mécanisme.
+- **Correction** : `suppressHydrationWarning` ajouté sur les icônes rendues sans condition dans le HTML du premier chargement de toute page `/dashboard/*` (`Sidebar.tsx`, `Header.tsx`, `BottomNav.tsx`) — voir HANDOFF.md Sprint 21 pour le détail complet, y compris le risque résiduel documenté (mais non corrigé, hors périmètre) sur les icônes des tableaux de contenu par page.
+- **Test de non-régression** : aucun test automatisé dédié (bug de rendu DOM/hydratation sans surface HTTP testable en Vitest, même nature qu'INC Sprint 20/14E) — vérifié avec un navigateur réel (Chromium/Playwright), voir TESTREPORT.md section 1 « Vérification manuelle (Sprint 21) », y compris la limite documentée sur la fiabilité de la reproduction synthétique en environnement `next dev` local.
+- **Statut** : corrigé (pour le chrome persistant du dashboard ; risque résiduel documenté mais non corrigé pour les icônes de contenu par page, voir HANDOFF.md Sprint 21)
+- **Validation finale** : `npm run lint` / `npx tsc --noEmit` / `npm run test` (480/480) / `npm run build` verts + vérification navigateur réel, 2026-08-14.
 
 ## INC-1 — Agent de développement ayant exécuté `git stash` sans le restaurer avant expiration de son budget de session
 

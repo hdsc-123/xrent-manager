@@ -31,7 +31,7 @@ import { Button } from "@/components/ui";
 interface NavItem {
   href: string;
   label: string;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: React.ComponentType<{ className?: string; suppressHydrationWarning?: boolean }>;
   /** Clé de permission requise pour afficher l'entrée (voir src/lib/permissions.ts). Sprint 15 :
    * le retrofit de permissions granulaires côté serveur couvre désormais (quasiment) tous les
    * modules métier (DOMAINRULES.md section 22) — chaque entrée ci-dessous reflète la clé
@@ -110,7 +110,7 @@ export function Sidebar({ isOpen, onClose, permissions, role }: SidebarProps) {
                 : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
             )}
           >
-            <Icon className="size-4 shrink-0" />
+            <Icon className="size-4 shrink-0" suppressHydrationWarning />
             {item.label}
           </Link>
         );
@@ -146,7 +146,7 @@ export function Sidebar({ isOpen, onClose, permissions, role }: SidebarProps) {
             onClick={onClose}
             aria-label="Fermer le menu"
           >
-            <X className="size-4" />
+            <X className="size-4" suppressHydrationWarning />
           </Button>
         </div>
         {nav}

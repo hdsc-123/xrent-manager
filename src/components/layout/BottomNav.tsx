@@ -47,7 +47,7 @@ export function BottomNav() {
                 active ? "text-blue-600" : "text-slate-400"
               )}
             >
-              <Icon className="size-5 shrink-0" />
+              <Icon className="size-5 shrink-0" suppressHydrationWarning />
               {item.label}
             </Link>
           );
