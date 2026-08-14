@@ -15,6 +15,14 @@ export class InvalidAlertStatusTransitionError extends Error {
   }
 }
 
+/** Sprint 22 — resolutionCost, comme tout montant financier (DOMAINRULES.md section 14). */
+export class InvalidAlertResolutionCostError extends Error {
+  constructor() {
+    super("resolutionCost doit être un entier positif ou nul (plus petite unité monétaire).");
+    this.name = "InvalidAlertResolutionCostError";
+  }
+}
+
 /**
  * Machine à états explicite (même principe que Location/Invoice/Maintenance).
  * RESOLVED est terminal : une alerte résolue ne peut pas être rouverte. Une alerte ne
@@ -108,7 +116,23 @@ export async function acknowledgeAlert(tenantId: string, alertId: string, userId
   });
 }
 
-export async function resolveAlert(tenantId: string, alertId: string, userId: string): Promise<Alert> {
+export interface ResolveAlertInput {
+  /** Sprint 22 — formulaire de suivi (voir le commentaire du modèle Alert,
+   * prisma/schema.prisma) : tous optionnels, une alerte "simple" reste résolvable sans détail. */
+  resolutionAction?: string;
+  resolutionDate?: Date;
+  resolutionIntervenant?: string;
+  resolutionCost?: number;
+  resolutionCurrency?: string;
+  nextDueDate?: Date;
+}
+
+export async function resolveAlert(
+  tenantId: string,
+  alertId: string,
+  userId: string,
+  followUp: ResolveAlertInput = {}
+): Promise<Alert> {
   const existing = await getAlertById(tenantId, alertId);
   if (!existing) {
     throw new AlertNotFoundError();
@@ -118,9 +142,26 @@ export async function resolveAlert(tenantId: string, alertId: string, userId: st
     throw new InvalidAlertStatusTransitionError(existing.status, "RESOLVED");
   }
 
+  if (
+    followUp.resolutionCost !== undefined &&
+    (!Number.isInteger(followUp.resolutionCost) || followUp.resolutionCost < 0)
+  ) {
+    throw new InvalidAlertResolutionCostError();
+  }
+
   return prisma.alert.update({
     where: { id: alertId },
-    data: { status: "RESOLVED", resolvedAt: new Date(), resolvedByUserId: userId },
+    data: {
+      status: "RESOLVED",
+      resolvedAt: new Date(),
+      resolvedByUserId: userId,
+      resolutionAction: followUp.resolutionAction,
+      resolutionDate: followUp.resolutionDate,
+      resolutionIntervenant: followUp.resolutionIntervenant,
+      resolutionCost: followUp.resolutionCost,
+      resolutionCurrency: followUp.resolutionCurrency,
+      nextDueDate: followUp.nextDueDate,
+    },
   });
 }
 

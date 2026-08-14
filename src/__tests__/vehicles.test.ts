@@ -551,3 +551,45 @@ describe("Sprint 15 — permissions granulaires (vehicles.create)", () => {
     }
   });
 });
+
+describe("Sprint 22 — GET /dashboard/vehicles/[id] : fiche complète en lecture seule sans vehicles.edit", () => {
+  it("affiche les données du véhicule (immatriculation, couleur) à un user ayant vehicles.view sans vehicles.edit", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id, {
+      licensePlate: `RO-${Math.floor(Math.random() * 1_000_000)}-RO`,
+      color: "Bleu Marine Sprint22",
+    });
+    const vehicle = (await createResponse.json()).vehicle;
+
+    const viewOnlyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `ViewOnlyVehicles-${runId}`, permissions: ["vehicles.view", "agencies.view"] }),
+    });
+    const viewOnlyGroupId = (await viewOnlyGroupResponse.json()).group.id;
+
+    const readOnlyMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Read Only Vehicles Member",
+      email: `ro-vehicles-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: readOnlyMember.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${readOnlyMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: viewOnlyGroupId }),
+    });
+
+    const response = await apiFetch(`/dashboard/vehicles/${vehicle.id}`, {
+      headers: { Cookie: readOnlyMember.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    // La fiche complète reste visible (pas seulement le message de refus) — voir
+    // VehicleReadOnlyDetails.tsx.
+    expect(html).toContain(vehicle.licensePlate);
+    expect(html).toContain("Bleu Marine Sprint22");
+    expect(html).toContain("permission de modifier ce véhicule");
+    expect(html).not.toContain("Modifier le véhicule");
+  });
+});

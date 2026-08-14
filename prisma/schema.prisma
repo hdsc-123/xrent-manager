@@ -78,6 +78,7 @@ model Agency {
   vehicleTrips        VehicleTrip[]
   reservationsPickup  Reservation[]     @relation("ReservationPickupAgency")
   reservationsDropoff Reservation[]     @relation("ReservationDropoffAgency")
+  cashEntries         CashEntry[]
 
   @@unique([tenantId, slug])
   @@index([tenantId])
@@ -478,6 +479,11 @@ model VehicleTransfer {
   startFuelLevel    Int?
   endFuelLevel      Int?
   responsibleUserId String
+  // Sprint 22 : nom du chauffeur effectif à l'arrivée (texte libre — peut différer du
+  // responsibleUserId, choisi à la création parmi les users du tenant ; le chauffeur réel
+  // n'est pas nécessairement un compte User, ex. chauffeur externe) — renseigné à la
+  // validation (voir validateVehicleTransfer, src/lib/vehicle-transfers.ts).
+  arrivalDriverName String?
   reason            String?
   status            VehicleTransferStatus @default(IN_TRANSIT)
   notes             String?
@@ -559,6 +565,11 @@ enum AlertType {
   VIGNETTE_EXPIRING
   TECHNICAL_INSPECTION_DUE
   OIL_CHANGE_DUE
+  // Sprint 22 : alerte envoyée à l'agence d'arrivée dès le lancement d'un transfert entre
+  // agences (voir createVehicleTransfer, src/lib/vehicle-transfers.ts) — distincte des
+  // vérifications planifiées existantes ci-dessus, créée immédiatement (pas via
+  // scheduled-tasks.ts).
+  VEHICLE_TRANSFER_INCOMING
   OTHER
 }
 
@@ -583,22 +594,32 @@ enum AlertStatus {
 // pour rester simple sans figer un modèle polymorphe non validé. Jamais supprimable
 // (seulement acknowledge/resolve) : pas de fonction deleteAlert.
 model Alert {
-  id                   String        @id @default(cuid())
-  tenantId             String
-  agencyId             String?
-  userId               String?
-  type                 AlertType
-  priority             AlertPriority @default(MEDIUM)
-  status               AlertStatus   @default(PENDING)
-  message              String
-  entityType           String?
-  entityId             String?
-  acknowledgedAt       DateTime?
-  acknowledgedByUserId String?
-  resolvedAt           DateTime?
-  resolvedByUserId     String?
-  createdAt            DateTime      @default(now())
-  updatedAt            DateTime      @updatedAt
+  id                    String        @id @default(cuid())
+  tenantId              String
+  agencyId              String?
+  userId                String?
+  type                  AlertType
+  priority              AlertPriority @default(MEDIUM)
+  status                AlertStatus   @default(PENDING)
+  message               String
+  entityType            String?
+  entityId              String?
+  acknowledgedAt        DateTime?
+  acknowledgedByUserId  String?
+  resolvedAt            DateTime?
+  resolvedByUserId      String?
+  // Sprint 22 : formulaire de suivi renseigné à la résolution (voir resolveAlert,
+  // src/lib/alerts.ts) — trace l'action effectuée sur l'échéance/le document concerné,
+  // jusqu'à clôture, et reste consultable sur la fiche véhicule (entityId) une fois résolue.
+  // Tous optionnels : une alerte "simple" (ex. retour du jour) peut être résolue sans ce détail.
+  resolutionAction      String?
+  resolutionDate        DateTime?
+  resolutionIntervenant String?
+  resolutionCost        Int?
+  resolutionCurrency    String?
+  nextDueDate           DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
 
   tenant Tenant  @relation(fields: [tenantId], references: [id])
   agency Agency? @relation(fields: [agencyId], references: [id])
@@ -836,6 +857,16 @@ model CashEntry {
   amount         Int
   currency       String         @default("MAD")
   description    String?
+  // Sprint 22 : agence d'origine de l'écriture — nullable (une caisse reste un singleton par
+  // tenant, DOMAINRULES.md section 23, décision reconduite ; ce champ ne restructure pas
+  // CashRegister, il permet seulement de dériver un solde/CA *par agence* en plus du solde
+  // global). Dérivé automatiquement de Location.agencyId pour une écriture issue d'un paiement
+  // (recordPaymentCashEntry, src/lib/payments.ts) ; choisi explicitement pour une écriture
+  // manuelle. FK réelle (contrairement à contractId, volontairement sans contrainte pour ne
+  // jamais dépendre de l'existence continue d'une Location) : une agence n'est jamais purgée
+  // en pratique (bloquée tant que des véhicules/locations y sont rattachés), donc conserver
+  // l'intégrité référentielle ici est sans risque pour l'historique de caisse.
+  agencyId       String?
   contractId     String?
   // Numéro de contrat au moment de l'écriture (Sprint 14B) — dénormalisé pour l'affichage
   // (même principe que clientName ci-dessous) : évite une jointure vers Location, qui peut
@@ -847,11 +878,13 @@ model CashEntry {
 
   tenant       Tenant       @relation(fields: [tenantId], references: [id])
   cashRegister CashRegister @relation(fields: [cashRegisterId], references: [id])
+  agency       Agency?      @relation(fields: [agencyId], references: [id])
 
   @@index([tenantId])
   @@index([cashRegisterId])
   @@index([type])
   @@index([createdAt])
+  @@index([agencyId])
 }
 
 model ExpenseCategory {

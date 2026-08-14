@@ -3,6 +3,7 @@ import { SessionProvider } from "next-auth/react";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { getTenantById } from "@/lib/db";
 import { getPendingAlerts } from "@/lib/alerts";
+import { maybeRunScheduledAlertChecks } from "@/lib/scheduled-tasks";
 import { can, getEffectivePermissions } from "@/lib/permissions";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 
@@ -16,6 +17,12 @@ export default async function DashboardRootLayout({
   if (!user) {
     redirect("/login");
   }
+
+  // Sprint 22 : déclenchement best-effort des vérifications d'alertes planifiées — voir le
+  // commentaire de maybeRunScheduledAlertChecks (src/lib/scheduled-tasks.ts). Attendu avant le
+  // Promise.all ci-dessous pour que les alertes fraîchement créées apparaissent dès ce
+  // chargement de page (throttlé, donc sans coût sur la majorité des requêtes).
+  await maybeRunScheduledAlertChecks(user.tenantId);
 
   const [tenant, accessibleAgencyIds, pendingAlerts, effectivePermissions, canViewAlerts] = await Promise.all([
     getTenantById(user.tenantId),

@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
 import { Badge } from "@/components/ui";
 import { EditVehicleForm } from "./EditVehicleForm";
+import { VehicleReadOnlyDetails } from "./VehicleReadOnlyDetails";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -45,6 +46,28 @@ const MOVEMENT_STATUS_LABELS: Record<string, string> = {
   CANCELLED: "Annulé",
 };
 
+// Sprint 22 : historique des alertes de ce véhicule (voir la requête `alerts` ci-dessous).
+const ALERT_TYPE_LABELS: Record<string, string> = {
+  MAINTENANCE_DUE: "Maintenance à venir",
+  RETURN_TODAY: "Retour aujourd'hui",
+  RETURN_OVERDUE: "Retour en retard",
+  CONTRACT_AT_RISK: "Contrat à risque",
+  VEHICLE_UNAVAILABLE: "Véhicule indisponible",
+  STOCK_INCONSISTENCY: "Incohérence de stock",
+  INSURANCE_EXPIRING: "Assurance à renouveler",
+  VIGNETTE_EXPIRING: "Vignette à renouveler",
+  TECHNICAL_INSPECTION_DUE: "Contrôle technique",
+  OIL_CHANGE_DUE: "Vidange à prévoir",
+  VEHICLE_TRANSFER_INCOMING: "Véhicule entrant (transfert)",
+  OTHER: "Autre",
+};
+
+const ALERT_STATUS_LABELS: Record<string, string> = {
+  PENDING: "En attente",
+  ACKNOWLEDGED: "Vue",
+  RESOLVED: "Résolue",
+};
+
 export default async function VehicleDetailPage({ params }: PageProps) {
   const { id } = await params;
   const user = await getSessionUser();
@@ -56,13 +79,14 @@ export default async function VehicleDetailPage({ params }: PageProps) {
   }
 
   const canEdit = await can(user, "vehicles.edit");
-  const [canViewMaintenances, canViewTransfers, canViewTrips] = await Promise.all([
+  const [canViewMaintenances, canViewTransfers, canViewTrips, canViewAlerts] = await Promise.all([
     can(user, "maintenances.view"),
     can(user, "vehicle_transfers.view"),
     can(user, "vehicle_trips.view"),
+    can(user, "alerts.view"),
   ]);
 
-  const [agency, locations, maintenances, transfers, trips] = await Promise.all([
+  const [agency, locations, maintenances, transfers, trips, alerts] = await Promise.all([
     prisma.agency.findUnique({ where: { id: vehicle.agencyId }, select: { name: true } }),
     prisma.location.findMany({
       where: { vehicleId: vehicle.id },
@@ -78,7 +102,11 @@ export default async function VehicleDetailPage({ params }: PageProps) {
     canViewTransfers
       ? prisma.vehicleTransfer.findMany({
           where: { vehicleId: vehicle.id },
-          include: { fromAgency: { select: { name: true } }, toAgency: { select: { name: true } } },
+          include: {
+            fromAgency: { select: { name: true } },
+            toAgency: { select: { name: true } },
+            responsibleUser: { select: { name: true } },
+          },
           orderBy: { departureDate: "desc" },
         })
       : [],
@@ -87,6 +115,17 @@ export default async function VehicleDetailPage({ params }: PageProps) {
           where: { vehicleId: vehicle.id },
           include: { employeeUser: { select: { name: true } } },
           orderBy: { departureDate: "desc" },
+        })
+      : [],
+    // Sprint 22 : historique des alertes de ce véhicule (documents/échéances/mobilité — voir
+    // src/lib/scheduled-tasks.ts, ces vérifications utilisent toutes vehicle.id comme entityId).
+    // Les cuid() étant globalement uniques, filtrer par entityId seul (sans restreindre
+    // entityType) ne risque aucune collision avec une alerte liée à une autre ressource
+    // (Maintenance/Location/Invoice ont leurs propres id).
+    canViewAlerts
+      ? prisma.alert.findMany({
+          where: { tenantId: user.tenantId, entityId: vehicle.id },
+          orderBy: { createdAt: "desc" },
         })
       : [],
   ]);
@@ -98,8 +137,10 @@ export default async function VehicleDetailPage({ params }: PageProps) {
       id: transfer.id,
       kind: "Transfert" as const,
       date: transfer.departureDate,
-      detail: `${transfer.fromAgency.name} → ${transfer.toAgency.name}`,
-      responsible: null as string | null,
+      detail: transfer.arrivalDriverName
+        ? `${transfer.fromAgency.name} → ${transfer.toAgency.name} (chauffeur : ${transfer.arrivalDriverName})`
+        : `${transfer.fromAgency.name} → ${transfer.toAgency.name}`,
+      responsible: transfer.responsibleUser.name as string | null,
       status: transfer.status as string,
     })),
     ...trips.map((trip) => ({
@@ -151,9 +192,36 @@ export default async function VehicleDetailPage({ params }: PageProps) {
           initialNextOilChangeKm={vehicle.nextOilChangeKm}
         />
       ) : (
-        <p className="text-sm text-muted-foreground">
-          Vous n&apos;avez pas la permission de modifier ce véhicule.
-        </p>
+        // Sprint 22 : la fiche complète reste visible en lecture seule (vehicles.view) —
+        // auparavant seul un message de refus s'affichait ici, masquant toutes les données
+        // du véhicule à un rôle pourtant autorisé à les consulter.
+        <VehicleReadOnlyDetails
+          category={vehicle.category}
+          status={vehicle.status}
+          pricePerDay={vehicle.pricePerDay}
+          currency={vehicle.currency}
+          licensePlate={vehicle.licensePlate}
+          ww={vehicle.ww}
+          chassisNumber={vehicle.chassisNumber}
+          color={vehicle.color}
+          doors={vehicle.doors}
+          seats={vehicle.seats}
+          transmission={vehicle.transmission}
+          fuel={vehicle.fuel}
+          horsepower={vehicle.horsepower}
+          powerKW={vehicle.powerKW}
+          engineSize={vehicle.engineSize}
+          ac={vehicle.ac}
+          gps={vehicle.gps}
+          imageUrl={vehicle.imageUrl}
+          insuranceExpiryDate={vehicle.insuranceExpiryDate ? vehicle.insuranceExpiryDate.toISOString().slice(0, 10) : null}
+          vignetteExpiryDate={vehicle.vignetteExpiryDate ? vehicle.vignetteExpiryDate.toISOString().slice(0, 10) : null}
+          technicalInspectionExpiryDate={
+            vehicle.technicalInspectionExpiryDate ? vehicle.technicalInspectionExpiryDate.toISOString().slice(0, 10) : null
+          }
+          nextOilChangeDate={vehicle.nextOilChangeDate ? vehicle.nextOilChangeDate.toISOString().slice(0, 10) : null}
+          nextOilChangeKm={vehicle.nextOilChangeKm}
+        />
       )}
 
       <div>
@@ -266,6 +334,60 @@ export default async function VehicleDetailPage({ params }: PageProps) {
                       <td className="px-3 py-2">{movement.responsible ?? "—"}</td>
                       <td className="px-3 py-2">
                         <Badge variant="outline">{MOVEMENT_STATUS_LABELS[movement.status] ?? movement.status}</Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {canViewAlerts && (
+        <div>
+          <h2 className="mb-2 font-heading text-lg font-semibold">Alertes</h2>
+          {alerts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Aucune alerte pour ce véhicule.</p>
+          ) : (
+            <div className="overflow-x-auto rounded-md border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Type</th>
+                    <th className="px-3 py-2 font-medium">Message</th>
+                    <th className="px-3 py-2 font-medium">Statut</th>
+                    <th className="px-3 py-2 font-medium">Suivi</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {alerts.map((alert) => (
+                    <tr key={alert.id} className="border-t border-border align-top">
+                      <td className="px-3 py-2">{ALERT_TYPE_LABELS[alert.type] ?? alert.type}</td>
+                      <td className="px-3 py-2">{alert.message}</td>
+                      <td className="px-3 py-2">
+                        <Badge variant="outline">{ALERT_STATUS_LABELS[alert.status] ?? alert.status}</Badge>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">
+                        {alert.status === "RESOLVED" ? (
+                          <div className="flex flex-col gap-0.5">
+                            {alert.resolutionAction && <span>Action : {alert.resolutionAction}</span>}
+                            {alert.resolutionIntervenant && <span>Intervenant : {alert.resolutionIntervenant}</span>}
+                            {alert.resolutionCost !== null && (
+                              <span>Coût : {formatMoney(alert.resolutionCost, alert.resolutionCurrency ?? "MAD")}</span>
+                            )}
+                            {alert.nextDueDate && (
+                              <span>Prochaine échéance : {alert.nextDueDate.toLocaleDateString("fr-FR")}</span>
+                            )}
+                            {!alert.resolutionAction &&
+                              !alert.resolutionIntervenant &&
+                              alert.resolutionCost === null &&
+                              !alert.nextDueDate &&
+                              "—"}
+                          </div>
+                        ) : (
+                          "—"
+                        )}
                       </td>
                     </tr>
                   ))}

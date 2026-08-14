@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
+import { getCashBalanceByAgency } from "@/lib/cash-register";
 import { apiFetch } from "./helpers/http";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
 
@@ -30,10 +31,20 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Sprint 22 : agences/véhicules/clients/locations/factures/paiements ajoutés par les
+  // nouveaux tests de solde par agence — purgés dans l'ordre des clés étrangères, comme le
+  // reste du dépôt (jamais un deleteMany global).
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.expenseCategory.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
+  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
@@ -432,5 +443,124 @@ describe("GET/POST /api/cash-register/categories", () => {
       body: JSON.stringify({ name }),
     });
     expect(second.status).toBe(409);
+  });
+});
+
+describe("Sprint 22 — solde par agence (DOMAINRULES.md section 23, révisée)", () => {
+  it("intègre le solde de départ de l'agence au calcul réel du solde (startingBalance + entrées - dépenses)", async () => {
+    const agencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Agence Solde ${runId}`, slug: `solde-agence-${runId}` }),
+    });
+    const agencyId = (await agencyResponse.json()).agency.id;
+
+    // Solde de départ (Sprint 19, jusqu'ici purement informatif) — désormais intégré.
+    await apiFetch(`/api/agencies/${agencyId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ cashStartingBalance: 100_000 }),
+    });
+
+    await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 50_000, agencyId }),
+    });
+    await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "EXPENSE", category: "Fournitures", amount: 20_000, agencyId }),
+    });
+
+    const balances = await getCashBalanceByAgency(adminA.tenantId, null);
+    const agencyBalance = balances.find((b) => b.agencyId === agencyId);
+    expect(agencyBalance).toBeDefined();
+    expect(agencyBalance!.startingBalance).toBe(100_000);
+    expect(agencyBalance!.entries).toBe(50_000);
+    expect(agencyBalance!.expenses).toBe(20_000);
+    expect(agencyBalance!.balance).toBe(130_000); // 100 000 + 50 000 - 20 000
+  });
+
+  it("restreint le calcul aux agences accessibles fournies (scope MEMBER)", async () => {
+    const agency1Response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Agence Scope 1 ${runId}`, slug: `scope-agence-1-${runId}` }),
+    });
+    const agency1Id = (await agency1Response.json()).agency.id;
+
+    const agency2Response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Agence Scope 2 ${runId}`, slug: `scope-agence-2-${runId}` }),
+    });
+    const agency2Id = (await agency2Response.json()).agency.id;
+
+    const balances = await getCashBalanceByAgency(adminA.tenantId, [agency1Id]);
+    expect(balances.map((b) => b.agencyId)).toContain(agency1Id);
+    expect(balances.map((b) => b.agencyId)).not.toContain(agency2Id);
+  });
+
+  it("un paiement de contrat alimente automatiquement le solde de l'agence du véhicule loué", async () => {
+    const agencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Agence Paiement ${runId}`, slug: `paiement-agence-${runId}` }),
+    });
+    const agencyId = (await agencyResponse.json()).agency.id;
+
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId,
+        name: "Clio",
+        licensePlate: `CR-${Math.floor(Math.random() * 1_000_000)}-CR`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 5000,
+      }),
+    });
+    const vehicle = (await vehicleResponse.json()).vehicle;
+
+    const clientResponse = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Client Solde Agence", email: `client-solde-${runId}@test.local` }),
+    });
+    const client = (await clientResponse.json()).client;
+
+    const locationResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: vehicle.id,
+        clientId: client.id,
+        startDate: "2031-01-01",
+        endDate: "2031-01-03",
+      }),
+    });
+    const location = (await locationResponse.json()).location;
+
+    const invoiceResponse = await apiFetch("/api/invoices", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ locationId: location.id }),
+    });
+    const invoice = (await invoiceResponse.json()).invoice;
+
+    await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ invoiceId: invoice.id, amount: 10_000, method: "CASH" }),
+    });
+
+    const balances = await getCashBalanceByAgency(adminA.tenantId, null);
+    const agencyBalance = balances.find((b) => b.agencyId === agencyId);
+    expect(agencyBalance).toBeDefined();
+    expect(agencyBalance!.entries).toBeGreaterThanOrEqual(10_000);
   });
 });

@@ -138,6 +138,28 @@ describe("acknowledgeAlert / resolveAlert (src/lib/alerts.ts)", () => {
     const pendingAfter = await getPendingAlerts(adminA.tenantId);
     expect(pendingAfter.map((a) => a.id)).not.toContain(alert.id);
   });
+
+  it("Sprint 22 : enregistre le formulaire de suivi (action, intervenant, coût, prochaine échéance) à la résolution", async () => {
+    const alert = await createAlert({ tenantId: adminA.tenantId, type: "OTHER", message: "Suivi complet" });
+    const resolved = await resolveAlert(adminA.tenantId, alert.id, adminA.userId, {
+      resolutionAction: "Assurance renouvelée",
+      resolutionIntervenant: "Agence Axa",
+      resolutionCost: 150000,
+      resolutionCurrency: "MAD",
+      nextDueDate: new Date("2031-01-01"),
+    });
+    expect(resolved.resolutionAction).toBe("Assurance renouvelée");
+    expect(resolved.resolutionIntervenant).toBe("Agence Axa");
+    expect(resolved.resolutionCost).toBe(150000);
+    expect(resolved.nextDueDate?.toISOString().slice(0, 10)).toBe("2031-01-01");
+  });
+
+  it("Sprint 22 : refuse un resolutionCost négatif ou non entier", async () => {
+    const alert = await createAlert({ tenantId: adminA.tenantId, type: "OTHER", message: "Coût invalide" });
+    await expect(
+      resolveAlert(adminA.tenantId, alert.id, adminA.userId, { resolutionCost: -100 })
+    ).rejects.toThrow();
+  });
 });
 
 describe("PATCH /api/alerts/[id]/acknowledge et /resolve", () => {
@@ -186,6 +208,28 @@ describe("PATCH /api/alerts/[id]/acknowledge et /resolve", () => {
     });
     expect(resolveResponse.status).toBe(200);
     expect((await resolveResponse.json()).alert.status).toBe("RESOLVED");
+  });
+
+  it("Sprint 22 : accepte le formulaire de suivi dans le corps de la requête de résolution", async () => {
+    const alert = await createAlert({ tenantId: adminA.tenantId, type: "OTHER", message: "Suivi HTTP" });
+
+    const response = await apiFetch(`/api/alerts/${alert.id}/resolve`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        resolutionAction: "Contrôle technique effectué",
+        resolutionDate: "2026-08-20",
+        resolutionIntervenant: "Garage Central",
+        resolutionCost: 40000,
+        nextDueDate: "2027-08-20",
+      }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.alert.status).toBe("RESOLVED");
+    expect(body.alert.resolutionAction).toBe("Contrôle technique effectué");
+    expect(body.alert.resolutionIntervenant).toBe("Garage Central");
+    expect(body.alert.resolutionCost).toBe(40000);
   });
 
   it("refuse de résoudre une alerte déjà résolue", async () => {

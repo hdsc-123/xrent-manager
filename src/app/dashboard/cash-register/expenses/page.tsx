@@ -1,6 +1,7 @@
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getCashEntries, getExpenseCategories } from "@/lib/cash-register";
+import { prisma } from "@/lib/prisma";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { ExpensesTable, type ExpenseRow } from "./ExpensesTable";
 import { NewExpenseForm } from "./NewExpenseForm";
@@ -29,13 +30,19 @@ export default async function CashExpensesPage({ searchParams }: PageProps) {
   const canEdit = await can(user, "cash_register.edit");
   const canDelete = await can(user, "cash_register.delete");
   const params = await searchParams;
-  const [expenses, categories] = await Promise.all([
+  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+  const [expenses, categories, agencies] = await Promise.all([
     getCashEntries(user.tenantId, {
       type: "EXPENSE",
       from: params.from ? new Date(params.from) : undefined,
       to: params.to ? new Date(params.to) : undefined,
     }),
     getExpenseCategories(user.tenantId),
+    prisma.agency.findMany({
+      where: { tenantId: user.tenantId, ...(accessibleAgencyIds ? { id: { in: accessibleAgencyIds } } : {}) },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    }),
   ]);
 
   const rows: ExpenseRow[] = expenses.map((entry) => ({
@@ -59,6 +66,7 @@ export default async function CashExpensesPage({ searchParams }: PageProps) {
         <NewExpenseForm
           categories={categories.map((category) => ({ id: category.id, name: category.name }))}
           canManageCategories={canManageCategories}
+          agencies={agencies}
         />
       )}
 

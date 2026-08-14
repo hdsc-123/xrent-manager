@@ -67,6 +67,7 @@ export function VehicleTransfersTable({
   const [validating, setValidating] = useState<VehicleTransferRow | null>(null);
   const [arrivalOdometer, setArrivalOdometer] = useState("");
   const [arrivalFuelLevel, setArrivalFuelLevel] = useState("");
+  const [arrivalDriverName, setArrivalDriverName] = useState("");
   const [pendingCancel, setPendingCancel] = useState<VehicleTransferRow | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +76,7 @@ export function VehicleTransfersTable({
     setError(null);
     setArrivalOdometer("");
     setArrivalFuelLevel("");
+    setArrivalDriverName("");
     setValidating(row);
   }
 
@@ -98,6 +100,7 @@ export function VehicleTransfersTable({
       await apiPatch(`/api/vehicle-transfers/${validating.id}/validate`, {
         endOdometer,
         endFuelLevel,
+        arrivalDriverName: arrivalDriverName.trim() || undefined,
       });
       toast.success("Transfert validé — véhicule rattaché à l'agence d'arrivée.");
       setValidating(null);
@@ -230,6 +233,15 @@ export function VehicleTransfersTable({
                 placeholder="optionnel"
                 value={arrivalFuelLevel}
                 onChange={(e) => setArrivalFuelLevel(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="arrivalDriverName">Nom du chauffeur à l&apos;arrivée</Label>
+              <Input
+                id="arrivalDriverName"
+                placeholder="optionnel"
+                value={arrivalDriverName}
+                onChange={(e) => setArrivalDriverName(e.target.value)}
               />
             </div>
             {error && (

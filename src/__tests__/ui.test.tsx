@@ -38,6 +38,13 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  // Sprint 22 : /dashboard/reports appelle désormais getCashBalanceByAgency (pilotage
+  // financier par agence), qui crée paresseusement le CashRegister singleton du tenant s'il
+  // n'existe pas encore (getOrCreateCashRegister) — jusqu'ici seule la page /dashboard/cash-
+  // register le faisait. CashEntry purgé par précaution même si aucun test de ce fichier n'en
+  // crée, pour rester dans le même ordre que les autres fichiers de test.
+  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });

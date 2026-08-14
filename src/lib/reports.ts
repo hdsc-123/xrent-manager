@@ -187,14 +187,22 @@ export interface RevenueByAgency {
   currency: string;
 }
 
-/** Revenu facturé (Location.totalPrice, ACTIVE/COMPLETED) réparti par agence sur la période. */
+/**
+ * Revenu facturé (Location.totalPrice, ACTIVE/COMPLETED) réparti par agence sur la période.
+ * Sprint 22 : `agencyIds` restreint le résultat aux agences accessibles à l'appelant (voir
+ * getAccessibleAgencyIds, src/lib/authz.ts) — null = toutes les agences du tenant (ADMIN).
+ * Jusqu'ici cette fonction retournait toujours toutes les agences du tenant sans restriction :
+ * un MEMBER restreint à une agence voyait quand même le CA de toutes les autres via ce graphique
+ * (reports.view n'a jamais été scopé par agence).
+ */
 export async function getRevenueByAgency(
   tenantId: string,
   startDate: Date,
-  endDate: Date
+  endDate: Date,
+  agencyIds: string[] | null = null
 ): Promise<RevenueByAgency[]> {
   const agencies = await prisma.agency.findMany({
-    where: { tenantId },
+    where: { tenantId, ...(agencyIds ? { id: { in: agencyIds } } : {}) },
     select: {
       id: true,
       name: true,

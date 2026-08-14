@@ -1166,4 +1166,58 @@ describe("POST /api/reservations/[id]/convert", () => {
     const retryBody = await retryResponse.json();
     expect(retryBody.location.clientId).toBe(body.duplicate.client.id);
   });
+
+  it("Sprint 22 : reservations.convert est indépendante de reservations.edit — un user n'ayant que .convert peut convertir une réservation PENDING sans jamais passer par .edit", async () => {
+    const convertOnlyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        name: `ConvertOnly-${runId}`,
+        permissions: ["reservations.view", "reservations.convert", "vehicles.view", "agencies.view"],
+      }),
+    });
+    const convertOnlyGroupId = (await convertOnlyGroupResponse.json()).group.id;
+
+    const convertOnlyMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Convert Only Member",
+      email: `convert-only-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: convertOnlyMember.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${convertOnlyMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: convertOnlyGroupId }),
+    });
+
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "ConvertOnly",
+      clientLastName: `Client-${runId}`,
+      startDate: "2030-09-25",
+      endDate: "2030-09-27",
+      pickupAgency: "Agence A1",
+    });
+    const reservation = (await createResponse.json()).reservation;
+    expect(reservation.status).toBe("PENDING");
+
+    // Un PATCH de statut (Confirmer) échoue pour ce user — reservations.edit manquant.
+    const patchResponse = await apiFetch(`/api/reservations/${reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: convertOnlyMember.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    expect(patchResponse.status).toBe(403);
+
+    // La conversion réussit directement depuis PENDING (canTransition l'autorise, voir
+    // src/lib/reservations.ts) sans jamais être passée par CONFIRMED.
+    const convertResponse = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: convertOnlyMember.sessionCookie },
+      body: JSON.stringify(convertBody(reservation)),
+    });
+    expect(convertResponse.status).toBe(201);
+    const convertJson = await convertResponse.json();
+    expect(convertJson.reservation.status).toBe("CONVERTED");
+  });
 });

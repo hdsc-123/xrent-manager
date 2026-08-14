@@ -338,6 +338,73 @@ describe("PATCH /api/vehicle-transfers/[id]/cancel", () => {
     expect(vehicleBody.vehicle.status).toBe("AVAILABLE");
     expect(vehicleBody.vehicle.agencyId).toBe(agencyA1Id);
   });
+
+  it("Sprint 22 : deux validations/annulations concurrentes sur le même transfert — une seule réussit (409 pour l'autre)", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const createResponse = await createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId);
+    const transferId = (await createResponse.json()).transfer.id;
+
+    const [validateResponse, cancelResponse] = await Promise.all([
+      apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({}),
+      }),
+      apiFetch(`/api/vehicle-transfers/${transferId}/cancel`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+      }),
+    ]);
+
+    const statuses = [validateResponse.status, cancelResponse.status].sort();
+    // L'un des deux réussit (200), l'autre échoue (409) — jamais les deux à 200 (ce qui
+    // trahirait la race condition documentée depuis le Sprint 17, corrigée ce sprint via
+    // updateMany conditionné sur status: "IN_TRANSIT").
+    expect(statuses).toEqual([200, 409]);
+
+    const finalCheck = await apiFetch(`/api/vehicle-transfers/${transferId}`, { headers: { Cookie: adminA.sessionCookie } });
+    const finalTransfer = (await finalCheck.json()).transfer;
+    expect(["COMPLETED", "CANCELLED"]).toContain(finalTransfer.status);
+  });
+
+  it("Sprint 22 : enregistre le nom du chauffeur à l'arrivée", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const createResponse = await createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId);
+    const transferId = (await createResponse.json()).transfer.id;
+
+    const response = await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ arrivalDriverName: "Karim Chauffeur" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.transfer.arrivalDriverName).toBe("Karim Chauffeur");
+  });
+});
+
+describe("Sprint 22 — alerte à l'agence d'arrivée au lancement d'un transfert", () => {
+  it("crée une alerte VEHICLE_TRANSFER_INCOMING scopée à l'agence d'arrivée", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const createResponse = await createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId);
+    const transfer = (await createResponse.json()).transfer;
+
+    const alertsResponse = await apiFetch(`/api/alerts?type=VEHICLE_TRANSFER_INCOMING`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(alertsResponse.status).toBe(200);
+    const { alerts } = await alertsResponse.json();
+    const alert = alerts.find((a: { entityId: string }) => a.entityId === transfer.id);
+    expect(alert).toBeDefined();
+    expect(alert.agencyId).toBe(agencyA2Id);
+    expect(alert.status).toBe("PENDING");
+  });
 });
 
 describe("Sprint 15 — permissions granulaires (vehicle_transfers.create)", () => {

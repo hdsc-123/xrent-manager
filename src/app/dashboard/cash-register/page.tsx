@@ -1,8 +1,13 @@
 import Link from "next/link";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
-import { recomputeCashRegisterBalance, getDailyBreakdown, getCashEntries } from "@/lib/cash-register";
-import { prisma } from "@/lib/prisma";
+import {
+  recomputeCashRegisterBalance,
+  getDailyBreakdown,
+  getCashEntries,
+  getCashBalanceByAgency,
+  getUnattributedCashAmount,
+} from "@/lib/cash-register";
 import { formatMoney } from "@/lib/format";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { DailyBreakdownChart, CashVsCardChart } from "./CashRegisterCharts";
@@ -28,22 +33,20 @@ export default async function CashRegisterPage() {
   const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
 
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
-  const [summary, dailyBreakdown, recentOperations, agencies] = await Promise.all([
+  // Sprint 22 (DOMAINRULES.md section 23, révisée) : "Caisse" devient aussi un centre de
+  // pilotage financier multi-agence — le solde de départ par agence est désormais intégré au
+  // calcul réel d'un solde *par agence* (getCashBalanceByAgency), en plus du solde global
+  // ci-dessus (CashRegister reste un singleton par tenant, décision reconduite). Scopé aux
+  // agences accessibles à l'appelant (null = toutes, ADMIN) — un MEMBER restreint à une agence
+  // ne voit que son bloc, l'admin principal voit tout.
+  const [summary, dailyBreakdown, recentOperations, agencyBalances, unattributed] = await Promise.all([
     recomputeCashRegisterBalance(user.tenantId),
     getDailyBreakdown(user.tenantId, from, to),
     getCashEntries(user.tenantId, { take: 10 }),
-    // Sprint 19 (DOMAINRULES.md section 37) : soldes de départ informatifs par agence — la
-    // caisse elle-même reste un singleton par tenant (summary ci-dessus), jamais restructurée ;
-    // ce tableau n'affiche qu'une référence, aucun calcul ne s'appuie dessus.
-    prisma.agency.findMany({
-      where: {
-        tenantId: user.tenantId,
-        ...(accessibleAgencyIds ? { id: { in: accessibleAgencyIds } } : {}),
-        cashStartingBalance: { gt: 0 },
-      },
-      select: { id: true, name: true, cashStartingBalance: true },
-    }),
+    getCashBalanceByAgency(user.tenantId, accessibleAgencyIds),
+    getUnattributedCashAmount(user.tenantId),
   ]);
+  const hasUnattributed = unattributed.entries > 0 || unattributed.expenses > 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -69,22 +72,47 @@ export default async function CashRegisterPage() {
         </CardHeader>
       </Card>
 
-      {agencies.length > 0 && (
+      {agencyBalances.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Soldes de départ par agence</CardTitle>
+            <CardTitle>Pilotage financier par agence</CardTitle>
             <CardDescription>
-              Informatif uniquement (solde physique constaté à l&apos;ouverture) — la caisse reste
-              commune à tout le tenant, ces montants ne sont pas inclus dans le solde ci-dessus.
+              Solde de départ + entrées − dépenses de chaque agence (la caisse reste commune à tout
+              le tenant pour le solde global ci-dessus — voir DOMAINRULES.md section 23).
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col gap-1 text-sm">
-            {agencies.map((agency) => (
-              <div key={agency.id} className="flex justify-between">
-                <span>{agency.name}</span>
-                <span className="font-medium">{formatMoney(agency.cashStartingBalance, summary.currency)}</span>
-              </div>
-            ))}
+          <CardContent>
+            <div className="overflow-x-auto rounded-md border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Agence</th>
+                    <th className="px-3 py-2 font-medium">Solde de départ</th>
+                    <th className="px-3 py-2 font-medium">Entrées</th>
+                    <th className="px-3 py-2 font-medium">Dépenses</th>
+                    <th className="px-3 py-2 font-medium">Solde</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {agencyBalances.map((agency) => (
+                    <tr key={agency.agencyId} className="border-t border-border">
+                      <td className="px-3 py-2">{agency.agencyName}</td>
+                      <td className="px-3 py-2">{formatMoney(agency.startingBalance, agency.currency)}</td>
+                      <td className="px-3 py-2 text-chart-2">+{formatMoney(agency.entries, agency.currency)}</td>
+                      <td className="px-3 py-2 text-destructive">-{formatMoney(agency.expenses, agency.currency)}</td>
+                      <td className="px-3 py-2 font-medium">{formatMoney(agency.balance, agency.currency)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {hasUnattributed && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Écart avec le solde global : {formatMoney(unattributed.entries, unattributed.currency)} d&apos;entrées
+                et {formatMoney(unattributed.expenses, unattributed.currency)} de dépenses ne sont rattachées à
+                aucune agence (écritures manuelles sans agence choisie).
+              </p>
+            )}
           </CardContent>
         </Card>
       )}

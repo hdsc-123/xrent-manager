@@ -202,3 +202,69 @@ describe("Sprint 19 — fiche véhicule : historique maintenance + mouvements (D
     expect(html).toContain("Agence Historique 2");
   });
 });
+
+describe("Sprint 22 — déclenchement automatique des vérifications d'alertes (maybeRunScheduledAlertChecks)", () => {
+  it("une maintenance planifiée du jour génère réellement une alerte MAINTENANCE_DUE au simple chargement du dashboard, sans jamais appeler POST /api/tasks/check-alerts", async () => {
+    // Tenant dédié (pas le tenant partagé `admin` de ce fichier) : le throttle en mémoire de
+    // maybeRunScheduledAlertChecks (une exécution par heure et par tenant) aurait sinon déjà
+    // été "chauffé" par les tests précédents de ce fichier qui chargent aussi des pages
+    // /dashboard/* du même tenant, rendant ce test non déterministe.
+    const freshAdmin = await registerTenantAdmin({
+      tenantName: "Mobility Alerts Auto-Trigger",
+      tenantSlug: `mobility-alerts-auto-${runId}`,
+      name: "Admin Auto",
+      email: `admin-auto-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    createdTenantIds.push(freshAdmin.tenantId);
+
+    const agencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: freshAdmin.sessionCookie },
+      body: JSON.stringify({ name: "Agence Auto-Trigger", slug: `at-agence-${runId}` }),
+    });
+    const freshAgencyId = (await agencyResponse.json()).agency.id;
+
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: freshAdmin.sessionCookie },
+      body: JSON.stringify({
+        agencyId: freshAgencyId,
+        name: "Clio",
+        licensePlate: `AT-${Math.floor(Math.random() * 1_000_000)}-AT`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 4500,
+      }),
+    });
+    const vehicle = (await vehicleResponse.json()).vehicle;
+
+    await apiFetch("/api/maintenances", {
+      method: "POST",
+      headers: { Cookie: freshAdmin.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: vehicle.id,
+        type: "OIL_CHANGE",
+        scheduledDate: new Date().toISOString().slice(0, 10),
+      }),
+    });
+
+    // Avant ce sprint, rien ne générait jamais cette alerte en usage réel (seul un POST
+    // ADMIN manuel sur /api/tasks/check-alerts, jamais exposé par aucune UI, le faisait) —
+    // voir src/lib/scheduled-tasks.ts, maybeRunScheduledAlertChecks. Le simple chargement
+    // d'une page du dashboard (ici /dashboard/vehicles/[id]) doit désormais suffire.
+    const pageResponse = await apiFetch(`/dashboard/vehicles/${vehicle.id}`, {
+      headers: { Cookie: freshAdmin.sessionCookie },
+    });
+    expect(pageResponse.status).toBe(200);
+
+    const alertsResponse = await apiFetch("/api/alerts?type=MAINTENANCE_DUE", {
+      headers: { Cookie: freshAdmin.sessionCookie },
+    });
+    const { alerts } = await alertsResponse.json();
+    const alert = alerts.find((a: { entityType: string | null }) => a.entityType === "Maintenance");
+    expect(alert).toBeDefined();
+  });
+});

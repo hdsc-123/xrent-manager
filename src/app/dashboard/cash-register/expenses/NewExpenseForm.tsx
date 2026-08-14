@@ -12,15 +12,18 @@ interface NewExpenseFormProps {
    * la création d'une nouvelle catégorie depuis ce formulaire est masquée ; seule la sélection
    * d'une catégorie existante reste possible, calculé côté serveur par la page appelante. */
   canManageCategories?: boolean;
+  /** Sprint 22 — voir le même prop sur NewEntryForm.tsx. */
+  agencies?: { id: string; name: string }[];
 }
 
-export function NewExpenseForm({ categories, canManageCategories = false }: NewExpenseFormProps) {
+export function NewExpenseForm({ categories, canManageCategories = false, agencies = [] }: NewExpenseFormProps) {
   const router = useRouter();
   const [category, setCategory] = useState(categories[0]?.name ?? "");
   const [newCategoryName, setNewCategoryName] = useState("");
   const [showNewCategory, setShowNewCategory] = useState(canManageCategories && categories.length === 0);
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
+  const [agencyId, setAgencyId] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,6 +62,7 @@ export function NewExpenseForm({ categories, canManageCategories = false }: NewE
         category: effectiveCategory,
         amount: Math.round(amountMad * 100),
         description: description || undefined,
+        agencyId: agencyId || undefined,
       });
       toast.success("Dépense enregistrée.");
       setAmount("");
@@ -127,6 +131,25 @@ export function NewExpenseForm({ categories, canManageCategories = false }: NewE
               className="w-32"
             />
           </div>
+
+          {agencies.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="expense-agency">Agence (optionnel)</Label>
+              <select
+                id="expense-agency"
+                value={agencyId}
+                onChange={(e) => setAgencyId(e.target.value)}
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+              >
+                <option value="">—</option>
+                {agencies.map((agency) => (
+                  <option key={agency.id} value={agency.id}>
+                    {agency.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="expense-description">Description (optionnel)</Label>

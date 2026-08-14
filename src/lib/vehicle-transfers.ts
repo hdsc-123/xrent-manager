@@ -182,6 +182,21 @@ export async function createVehicleTransfer(data: CreateVehicleTransferInput): P
 
     await tx.vehicle.update({ where: { id: vehicle.id }, data: { status: "TRANSFERRING" } });
 
+    // Sprint 22 : alerte immédiate à l'agence d'arrivée — jusqu'ici rien ne signalait à un
+    // véhicule entrant, l'agence de destination ne le découvrait qu'en consultant la liste des
+    // transferts. Créée dans la même transaction que le transfert (jamais un transfert "muet").
+    await tx.alert.create({
+      data: {
+        tenantId: data.tenantId,
+        agencyId: toAgency.id,
+        type: "VEHICLE_TRANSFER_INCOMING",
+        priority: "MEDIUM",
+        message: `Véhicule en transit vers votre agence : ${vehicle.name} (${vehicle.licensePlate}), en provenance de ${data.fromCity ?? "l'agence de départ"}.`,
+        entityType: "VehicleTransferIncoming",
+        entityId: transfer.id,
+      },
+    });
+
     return transfer;
   });
 }
@@ -190,12 +205,24 @@ export interface ValidateVehicleTransferInput {
   arrivalDate?: Date;
   endOdometer?: number;
   endFuelLevel?: number;
+  /** Sprint 22 — chauffeur effectif à l'arrivée, texte libre (voir le commentaire du champ
+   * dans prisma/schema.prisma). */
+  arrivalDriverName?: string;
   notes?: string;
 }
 
 /**
  * Valide la réception du véhicule à l'agence d'arrivée : rattache le véhicule à sa nouvelle
  * agence et le repasse AVAILABLE (DOMAINRULES.md section 30).
+ *
+ * Sprint 22 (correctif d'une race condition documentée depuis le Sprint 17, DOMAINRULES.md
+ * section 35) : la transition de statut elle-même passe désormais par un `updateMany` conditionné
+ * sur `status: "IN_TRANSIT"`, une seule instruction UPDATE atomique côté base — si un autre appel
+ * concurrent (ex. `cancelVehicleTransfer` sur le même transfert) a déjà fait passer le statut
+ * hors de IN_TRANSIT entre la lecture ci-dessous et l'écriture, `count` vaut 0 et l'opération est
+ * refusée plutôt que d'écraser silencieusement un état déjà terminal. La lecture initiale
+ * (`existing`) ne sert plus qu'à produire un message d'erreur utile et à valider les champs
+ * fournis (kilométrage/dates) avant d'entrer en transaction.
  */
 export async function validateVehicleTransfer(
   tenantId: string,
@@ -229,16 +256,22 @@ export async function validateVehicleTransfer(
   validateFuelLevel(data.endFuelLevel);
 
   return prisma.$transaction(async (tx) => {
-    const transfer = await tx.vehicleTransfer.update({
-      where: { id: existing.id },
+    const { count } = await tx.vehicleTransfer.updateMany({
+      where: { id: existing.id, status: "IN_TRANSIT" },
       data: {
         status: "COMPLETED",
         arrivalDate,
         endOdometer: data.endOdometer,
         endFuelLevel: data.endFuelLevel,
+        arrivalDriverName: data.arrivalDriverName,
         notes: data.notes !== undefined ? data.notes : existing.notes,
       },
     });
+    if (count === 0) {
+      throw new VehicleTransferNotEditableError();
+    }
+
+    const transfer = await tx.vehicleTransfer.findUniqueOrThrow({ where: { id: existing.id } });
 
     await tx.vehicle.update({
       where: { id: existing.vehicleId },
@@ -249,6 +282,10 @@ export async function validateVehicleTransfer(
   });
 }
 
+/**
+ * Sprint 22 : même correctif de race condition que validateVehicleTransfer ci-dessus —
+ * updateMany conditionné sur status: "IN_TRANSIT", atomique.
+ */
 export async function cancelVehicleTransfer(
   tenantId: string,
   transferId: string
@@ -263,10 +300,15 @@ export async function cancelVehicleTransfer(
   }
 
   return prisma.$transaction(async (tx) => {
-    const transfer = await tx.vehicleTransfer.update({
-      where: { id: existing.id },
+    const { count } = await tx.vehicleTransfer.updateMany({
+      where: { id: existing.id, status: "IN_TRANSIT" },
       data: { status: "CANCELLED" },
     });
+    if (count === 0) {
+      throw new VehicleTransferNotEditableError();
+    }
+
+    const transfer = await tx.vehicleTransfer.findUniqueOrThrow({ where: { id: existing.id } });
 
     // Le véhicule reste à son agence de départ (jamais déplacé pour un transfert annulé) —
     // simplement repassé AVAILABLE.

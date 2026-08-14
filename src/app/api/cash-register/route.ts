@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { CashEntryType, PaymentMethod } from "@prisma/client";
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import {
   getOrCreateCashRegister,
@@ -48,6 +48,9 @@ interface CreateCashEntryBody {
   category?: string;
   amount?: number;
   description?: string;
+  /** Sprint 22 — agence d'origine de l'écriture manuelle (optionnel), voir
+   * src/lib/cash-register.ts. */
+  agencyId?: string;
   contractId?: string;
   clientName?: string;
   paymentMethod?: PaymentMethod;
@@ -85,6 +88,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "paymentMethod invalide." }, { status: 400 });
   }
 
+  if (body.agencyId && !(await canAccessAgency(user, body.agencyId))) {
+    return NextResponse.json({ error: "Accès refusé à cette agence." }, { status: 403 });
+  }
+
   try {
     const entry = await createCashEntry({
       tenantId: user.tenantId,
@@ -92,6 +99,7 @@ export async function POST(request: Request) {
       category: body.category,
       amount,
       description: body.description,
+      agencyId: body.agencyId,
       contractId: body.contractId,
       clientName: body.clientName,
       paymentMethod: body.paymentMethod,

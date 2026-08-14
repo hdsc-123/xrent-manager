@@ -1,6 +1,7 @@
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getCashEntries } from "@/lib/cash-register";
+import { prisma } from "@/lib/prisma";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { EntriesTable, type EntryRow } from "./EntriesTable";
 import { NewEntryForm } from "./NewEntryForm";
@@ -28,11 +29,19 @@ export default async function CashEntriesPage({ searchParams }: PageProps) {
   const canEdit = await can(user, "cash_register.edit");
   const canDelete = await can(user, "cash_register.delete");
   const params = await searchParams;
-  const entries = await getCashEntries(user.tenantId, {
-    type: "ENTRY",
-    from: params.from ? new Date(params.from) : undefined,
-    to: params.to ? new Date(params.to) : undefined,
-  });
+  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+  const [entries, agencies] = await Promise.all([
+    getCashEntries(user.tenantId, {
+      type: "ENTRY",
+      from: params.from ? new Date(params.from) : undefined,
+      to: params.to ? new Date(params.to) : undefined,
+    }),
+    prisma.agency.findMany({
+      where: { tenantId: user.tenantId, ...(accessibleAgencyIds ? { id: { in: accessibleAgencyIds } } : {}) },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    }),
+  ]);
 
   const rows: EntryRow[] = entries.map((entry) => ({
     id: entry.id,
@@ -54,7 +63,7 @@ export default async function CashEntriesPage({ searchParams }: PageProps) {
         <p className="text-sm text-muted-foreground">Versements, commissions et virements encaissés.</p>
       </div>
 
-      {canCreateEntry && <NewEntryForm />}
+      {canCreateEntry && <NewEntryForm agencies={agencies} />}
 
       <EntriesTable entries={rows} canEdit={canEdit} canDelete={canDelete} />
     </div>

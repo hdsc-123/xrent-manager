@@ -21,6 +21,9 @@ const ALERT_TYPES: AlertType[] = [
   "VIGNETTE_EXPIRING",
   "TECHNICAL_INSPECTION_DUE",
   "OIL_CHANGE_DUE",
+  // Sprint 22 — même classe de bug que ci-dessus, corrigée immédiatement cette fois (ajoutée
+  // au whitelist dans le même commit que l'extension de l'enum, voir prisma/schema.prisma).
+  "VEHICLE_TRANSFER_INCOMING",
   "OTHER",
 ];
 const ALERT_PRIORITIES: AlertPriority[] = ["LOW", "MEDIUM", "HIGH", "URGENT"];

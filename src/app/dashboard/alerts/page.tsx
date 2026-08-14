@@ -20,6 +20,7 @@ const TYPE_OPTIONS: { value: AlertType; label: string }[] = [
   { value: "VIGNETTE_EXPIRING", label: "Vignette à renouveler" },
   { value: "TECHNICAL_INSPECTION_DUE", label: "Contrôle technique" },
   { value: "OIL_CHANGE_DUE", label: "Vidange à prévoir" },
+  { value: "VEHICLE_TRANSFER_INCOMING", label: "Véhicule entrant (transfert)" },
   { value: "OTHER", label: "Autre" },
 ];
 

@@ -19,6 +19,8 @@ interface ValidateBody {
   arrivalDate?: string;
   endOdometer?: number;
   endFuelLevel?: number;
+  /** Sprint 22 — chauffeur effectif à l'arrivée (texte libre). */
+  arrivalDriverName?: string;
   notes?: string;
 }
 
@@ -61,6 +63,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       arrivalDate,
       endOdometer: body.endOdometer,
       endFuelLevel: body.endFuelLevel,
+      arrivalDriverName: body.arrivalDriverName,
       notes: body.notes,
     });
 

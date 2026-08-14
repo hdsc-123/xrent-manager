@@ -146,6 +146,10 @@ export interface CreateCashEntryInput {
   category?: string;
   amount: number;
   description?: string;
+  /** Sprint 22 — agence d'origine (voir le commentaire du champ dans prisma/schema.prisma) :
+   * dérivée automatiquement pour une écriture issue d'un paiement (recordPaymentCashEntry,
+   * src/lib/payments.ts), choisie explicitement pour une écriture manuelle. */
+  agencyId?: string;
   contractId?: string;
   /** Numéro de contrat (Sprint 14B) — dénormalisé, voir CashEntry.contractNumber. */
   contractNumber?: string | null;
@@ -171,6 +175,7 @@ export async function createCashEntry(data: CreateCashEntryInput): Promise<CashE
       amount: data.amount,
       currency: register.currency,
       description: data.description,
+      agencyId: data.agencyId,
       contractId: data.contractId,
       contractNumber: data.contractNumber,
       clientName: data.clientName,
@@ -300,6 +305,98 @@ export async function getDailyBreakdown(tenantId: string, from: Date, to: Date):
   }
 
   return Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export interface AgencyCashBalance {
+  agencyId: string;
+  agencyName: string;
+  /** Agency.cashStartingBalance — informatif jusqu'au Sprint 19, désormais intégré ci-dessous. */
+  startingBalance: number;
+  entries: number;
+  expenses: number;
+  /** startingBalance + entries - expenses — solde réel dérivé pour cette agence. */
+  balance: number;
+  currency: string;
+}
+
+/**
+ * Sprint 22 (DOMAINRULES.md section 23, révisée) : solde réel par agence, calculé sans
+ * restructurer CashRegister (qui reste un singleton par tenant, décision reconduite au
+ * Sprint 19) — startingBalance + Σ CashEntry.amount (ENTRY) - Σ CashEntry.amount (EXPENSE),
+ * filtrées par CashEntry.agencyId. `agencyIds` restreint le calcul aux agences accessibles à
+ * l'appelant (voir getAccessibleAgencyIds, src/lib/authz.ts) — null = toutes les agences du
+ * tenant (ADMIN).
+ */
+export async function getCashBalanceByAgency(
+  tenantId: string,
+  agencyIds: string[] | null
+): Promise<AgencyCashBalance[]> {
+  const register = await getOrCreateCashRegister(tenantId);
+
+  const agencies = await prisma.agency.findMany({
+    where: { tenantId, ...(agencyIds ? { id: { in: agencyIds } } : {}) },
+    select: { id: true, name: true, cashStartingBalance: true },
+    orderBy: { name: "asc" },
+  });
+
+  const [entriesByAgency, expensesByAgency] = await Promise.all([
+    prisma.cashEntry.groupBy({
+      by: ["agencyId"],
+      where: { tenantId, type: "ENTRY", agencyId: { not: null } },
+      _sum: { amount: true },
+    }),
+    prisma.cashEntry.groupBy({
+      by: ["agencyId"],
+      where: { tenantId, type: "EXPENSE", agencyId: { not: null } },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  const entriesMap = new Map(entriesByAgency.map((entry) => [entry.agencyId, entry._sum.amount ?? 0]));
+  const expensesMap = new Map(expensesByAgency.map((entry) => [entry.agencyId, entry._sum.amount ?? 0]));
+
+  return agencies.map((agency) => {
+    const entries = entriesMap.get(agency.id) ?? 0;
+    const expenses = expensesMap.get(agency.id) ?? 0;
+    return {
+      agencyId: agency.id,
+      agencyName: agency.name,
+      startingBalance: agency.cashStartingBalance,
+      entries,
+      expenses,
+      balance: agency.cashStartingBalance + entries - expenses,
+      currency: register.currency,
+    };
+  });
+}
+
+/**
+ * Sprint 22 : part des entrées/dépenses jamais attribuée à une agence (écritures manuelles
+ * créées avant ce sprint, ou saisies sans agence choisie) — l'écart entre le solde global
+ * (recomputeCashRegisterBalance) et la somme des soldes par agence ci-dessus vient
+ * nécessairement de là, jamais d'une erreur de calcul (les deux dérivent des mêmes CashEntry).
+ * Affiché tel quel plutôt que masqué, pour que l'écart reste explicable.
+ */
+export async function getUnattributedCashAmount(
+  tenantId: string
+): Promise<{ entries: number; expenses: number; currency: string }> {
+  const register = await getOrCreateCashRegister(tenantId);
+  const [entriesAgg, expensesAgg] = await Promise.all([
+    prisma.cashEntry.aggregate({
+      where: { tenantId, type: "ENTRY", agencyId: null },
+      _sum: { amount: true },
+    }),
+    prisma.cashEntry.aggregate({
+      where: { tenantId, type: "EXPENSE", agencyId: null },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  return {
+    entries: entriesAgg._sum.amount ?? 0,
+    expenses: expensesAgg._sum.amount ?? 0,
+    currency: register.currency,
+  };
 }
 
 export async function getExpenseCategories(tenantId: string): Promise<ExpenseCategory[]> {

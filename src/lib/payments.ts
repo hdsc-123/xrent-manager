@@ -172,6 +172,9 @@ async function recordPaymentCashEntry(tenantId: string, locationId: string, paym
     contractNumber,
     clientName,
     paymentMethod: payment.method,
+    // Sprint 22 : agence d'origine de l'écriture, dérivée de la Location réglée — permet de
+    // calculer un solde/CA par agence en plus du solde global (voir src/lib/cash-register.ts).
+    agencyId: location?.agencyId,
   });
 }
 

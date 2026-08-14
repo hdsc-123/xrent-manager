@@ -15,13 +15,21 @@ const METHOD_OPTIONS = [
   { value: "OTHER", label: "Autre" },
 ];
 
-export function NewEntryForm() {
+interface NewEntryFormProps {
+  /** Sprint 22 — agences accessibles à l'appelant, pour attribuer l'écriture manuelle à une
+   * agence (optionnel) et permettre le calcul d'un solde par agence, voir
+   * src/lib/cash-register.ts (getCashBalanceByAgency). */
+  agencies?: { id: string; name: string }[];
+}
+
+export function NewEntryForm({ agencies = [] }: NewEntryFormProps) {
   const router = useRouter();
   const [category, setCategory] = useState(CATEGORY_OPTIONS[0]);
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
   const [clientName, setClientName] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("CASH");
+  const [agencyId, setAgencyId] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,6 +52,7 @@ export function NewEntryForm() {
         description: description || undefined,
         clientName: clientName || undefined,
         paymentMethod,
+        agencyId: agencyId || undefined,
       });
       toast.success("Entrée enregistrée.");
       setAmount("");
@@ -107,6 +116,25 @@ export function NewEntryForm() {
               ))}
             </select>
           </div>
+
+          {agencies.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="entry-agency">Agence (optionnel)</Label>
+              <select
+                id="entry-agency"
+                value={agencyId}
+                onChange={(e) => setAgencyId(e.target.value)}
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+              >
+                <option value="">—</option>
+                {agencies.map((agency) => (
+                  <option key={agency.id} value={agency.id}>
+                    {agency.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="entry-client">Client (optionnel)</Label>

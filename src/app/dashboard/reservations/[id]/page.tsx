@@ -3,7 +3,7 @@ import Link from "next/link";
 import { FileText } from "lucide-react";
 import { getSessionUser, canAccessReservationAgencies, canEditReservationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
-import { getReservationById } from "@/lib/reservations";
+import { getReservationById, canTransition } from "@/lib/reservations";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
@@ -57,8 +57,14 @@ export default async function ReservationDetailPage({ params }: PageProps) {
   const canEditThisAgency = await canEditReservationAgency(user, reservation);
   const canEdit = (await can(user, "reservations.edit")) && reservation.status !== "CONVERTED" && canEditThisAgency;
   const canEditReservation = canEdit && EDITABLE_STATUSES.has(reservation.status);
+  // Sprint 22 : reservations.convert est une permission distincte de reservations.edit (déjà
+  // séparée dans le catalogue, src/lib/permissions.ts) — le bouton doit suivre exactement la
+  // machine à états (canTransition, qui autorise PENDING → CONVERTED directement, pas seulement
+  // depuis CONFIRMED) plutôt qu'un statut figé en dur, sinon un user n'ayant que .convert (pas
+  // .edit) ne peut jamais faire passer une réservation PENDING à CONFIRMED pour débloquer le
+  // bouton — la conversion se retrouvait de fait liée à la permission de modification.
   const canConvert =
-    (await can(user, "reservations.convert")) && reservation.status === "CONFIRMED" && canEditThisAgency;
+    (await can(user, "reservations.convert")) && canTransition(reservation.status, "CONVERTED") && canEditThisAgency;
 
   const optionsSum =
     (reservation.gpsPrice ?? 0) + (reservation.babySeatPrice ?? 0) + (reservation.extraDriverPrice ?? 0);

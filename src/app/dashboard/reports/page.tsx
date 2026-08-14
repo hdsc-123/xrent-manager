@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import {
@@ -10,6 +10,7 @@ import {
   getOverallOccupancyRate,
   getReservationsByStatus,
 } from "@/lib/reports";
+import { getCashBalanceByAgency } from "@/lib/cash-register";
 import { formatMoney } from "@/lib/format";
 import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import {
@@ -63,6 +64,8 @@ export default async function ReportsPage({ searchParams }: PageProps) {
 
   const monthStart = startOfMonth(now);
   const nextMonthStart = startOfNextMonth(now);
+  // Sprint 22 : scope agence — voir getRevenueByAgency/getCashBalanceByAgency ci-dessous.
+  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
 
   const [
     revenue,
@@ -73,6 +76,7 @@ export default async function ReportsPage({ searchParams }: PageProps) {
     revenueByAgency,
     occupancyRate,
     reservationsByStatus,
+    cashBalanceByAgency,
   ] = await Promise.all([
     getRevenueReport(user.tenantId, from, to),
     getTopVehicles(user.tenantId, 5),
@@ -85,9 +89,12 @@ export default async function ReportsPage({ searchParams }: PageProps) {
       _count: { _all: true },
     }),
     getLocationsByMonth(user.tenantId, from, to),
-    getRevenueByAgency(user.tenantId, from, to),
+    getRevenueByAgency(user.tenantId, from, to, accessibleAgencyIds),
     getOverallOccupancyRate(user.tenantId, from, to),
     getReservationsByStatus(user.tenantId, from, to),
+    // Sprint 22 (DOMAINRULES.md section 23) : soldes de départ par ville/agence intégrés au
+    // calcul réel du solde, désormais aussi visibles depuis Rapports (pas seulement Caisse).
+    getCashBalanceByAgency(user.tenantId, accessibleAgencyIds),
   ]);
 
   const countByStatus = new Map(locationsByStatusRaw.map((entry) => [entry.status, entry._count._all]));
@@ -215,6 +222,40 @@ export default async function ReportsPage({ searchParams }: PageProps) {
           </CardContent>
         </Card>
       </div>
+
+      {cashBalanceByAgency.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Soldes de caisse par ville / agence</CardTitle>
+            <CardDescription>
+              Solde de départ intégré au calcul réel du solde de chaque agence (voir aussi l&apos;onglet
+              Caisse pour le détail entrées/dépenses).
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto rounded-md border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Agence</th>
+                    <th className="px-3 py-2 font-medium">Solde de départ</th>
+                    <th className="px-3 py-2 font-medium">Solde actuel</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cashBalanceByAgency.map((agency) => (
+                    <tr key={agency.agencyId} className="border-t border-border">
+                      <td className="px-3 py-2">{agency.agencyName}</td>
+                      <td className="px-3 py-2">{formatMoney(agency.startingBalance, agency.currency)}</td>
+                      <td className="px-3 py-2 font-medium">{formatMoney(agency.balance, agency.currency)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
