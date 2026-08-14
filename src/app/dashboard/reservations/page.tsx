@@ -101,7 +101,11 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-4">
+      {/* Sprint 18 : flex-wrap ajouté — seule page de liste avec 2 boutons d'en-tête (les
+          autres n'en ont qu'un), le groupe droit ("Importer (Excel)" + "Créer une réservation")
+          était rogné en dur sur un viewport mobile (390px, aucun scroll possible) plutôt que
+          de passer sur une seconde ligne. */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="font-heading text-2xl font-semibold">Réservations</h1>
           <p className="text-sm text-muted-foreground">

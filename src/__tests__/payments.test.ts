@@ -38,7 +38,7 @@ async function createFreshInvoice(admin: AuthenticatedTestUser, vehicleId: strin
     body: JSON.stringify({ locationId: location.id }),
   });
   const invoice = (await invoiceResponse.json()).invoice;
-  return invoice as { id: string; totalAmount: number };
+  return invoice as { id: string; totalAmount: number; locationId: string };
 }
 
 let agencyAId: string;
@@ -142,6 +142,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -480,5 +482,43 @@ describe("Sprint 17 — POST /api/payments avec lines (paiement mixte atomique d
     });
     // Toujours un seul paiement (celui simulé ci-dessus) — le paiement mixte refusé n'a rien écrit.
     expect((await paymentsResponse.json()).payments).toHaveLength(1);
+  });
+});
+
+describe("Sprint 18 — paiement enregistré depuis la fiche facture alimente la caisse", () => {
+  it("crée une écriture de caisse pour un paiement simple", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    const response = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ invoiceId: invoice.id, amount: 5000, method: "CASH" }),
+    });
+    expect(response.status).toBe(201);
+
+    const cashEntries = await prisma.cashEntry.findMany({ where: { contractId: invoice.locationId } });
+    expect(cashEntries).toHaveLength(1);
+    expect(cashEntries[0].amount).toBe(5000);
+    expect(cashEntries[0].type).toBe("ENTRY");
+    expect(cashEntries[0].paymentMethod).toBe("CASH");
+  });
+
+  it("crée une écriture de caisse par ligne pour un paiement mixte", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    const response = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        invoiceId: invoice.id,
+        lines: [
+          { amount: 10000, method: "CASH" },
+          { amount: 5000, method: "CARD" },
+        ],
+      }),
+    });
+    expect(response.status).toBe(201);
+
+    const cashEntries = await prisma.cashEntry.findMany({ where: { contractId: invoice.locationId } });
+    expect(cashEntries).toHaveLength(2);
+    expect(cashEntries.map((entry) => entry.amount).sort((a, b) => a - b)).toEqual([5000, 10000]);
   });
 });

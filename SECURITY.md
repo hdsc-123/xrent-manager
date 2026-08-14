@@ -221,3 +221,17 @@ Sprint de tests de bout en bout (aucun nouveau module métier, voir DOMAINRULES.
 Les deux autres bugs corrigés ce sprint (paiement mixte non atomique sur la fiche facture, prix d'option non effacé) sont des bugs de correction métier, pas des failles de sécurité — voir DOMAINRULES.md section 35 pour le détail complet, y compris le gap de concurrence identifié sur les transferts/déplacements de véhicule et documenté plutôt que corrigé ce sprint (hors périmètre proportionné, pattern préexistant ailleurs dans le projet).
 
 Aucune nouvelle faille d'isolation tenant/agence ni IDOR trouvée par ailleurs — les 4 revues en parallèle de ce sprint (voir HANDOFF.md section 1) confirment une nouvelle fois la solidité du modèle (section 1) après les audits Sprint 10/11/15/16.
+
+## 27. Pilote réel et validation terrain (Sprint 18)
+
+Sprint de validation d'usage réel (aucun nouveau module métier ; ce n'est pas un audit de sécurité — déjà fait Sprint 16 — mais 3 des 14 bugs trouvés ont une dimension fuite d'information/accès, reportés ici par cohérence avec le format des sections 23-26 ; voir DOMAINRULES.md section 36 pour le détail complet) :
+
+| # | Faille/incohérence | Sévérité | Correctif |
+|---|---|---|---|
+| 1 | Carte « Alertes récentes » du dashboard et cloche/badge du `Header` (visible sur toutes les pages) affichaient le message réel de chaque alerte et un compteur à tout user authentifié, sans vérifier `alerts.view` — un groupe `COMPTABILITÉ` (sans cette clé) voyait le contenu d'un module auquel `/dashboard/alerts` lui refuse pourtant explicitement l'accès | Faible | `can(user, "alerts.view")` ajouté aux deux endroits |
+| 2 | `/dashboard/reports/page.tsx` restée en contrôle `role === "ADMIN"` strict alors que `/api/reports/*` avait été retrofité au Sprint 15 pour `can(user, "reports.view")` — incohérence de contrôle d'accès entre deux couches de la même fonctionnalité (pas une fuite en soi, la page bloquait *plus* que l'API, mais un défaut de cohérence du modèle de permission qui aurait pu évoluer dans le mauvais sens) | Faible | Page alignée sur la même vérification que l'API |
+| 3 | Assignation d'un groupe de permissions à un utilisateur (`PATCH /api/users/[id]/permissions`, action sensible modifiant les droits d'accès) signalée non auditée par un agent de walkthrough navigateur — **vérifié directement en base après investigation, la journalisation (`user.permissions_changed`) existe déjà et fonctionne** ; signalement non confirmé, verrouillé par un test de régression plutôt que corrigé | N/A (faux positif) | Aucun correctif nécessaire — test ajouté pour garder la preuve |
+
+Les autres bugs corrigés ce sprint (caisse non alimentée, facture à 0 jamais `PAID`, kilométrage retour perdu, bouton Annuler non gated, `reservations.import` manquant, champs obligatoires non appliqués, CSV sans BOM, mobile rogné, groupe ADMIN sans avertissement, formulaire tenant, année véhicule) sont des bugs de correction métier/UX, pas des failles de sécurité au sens strict — voir DOMAINRULES.md section 36 pour le détail complet.
+
+Aucune nouvelle faille d'isolation tenant/agence ni IDOR trouvée — les 4 revues en parallèle de ce sprint (voir HANDOFF.md section 1) confirment une nouvelle fois la solidité du modèle (section 1) après les audits Sprint 10/11/15/16.

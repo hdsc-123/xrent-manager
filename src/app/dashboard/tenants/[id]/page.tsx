@@ -26,7 +26,16 @@ export default async function TenantDetailPage({ params }: PageProps) {
   return (
     <div className="mx-auto flex max-w-md flex-col gap-4">
       <h1 className="font-heading text-2xl font-semibold">{tenant.name}</h1>
-      <EditTenantForm id={tenant.id} initialName={tenant.name} slug={tenant.slug} />
+      {/* Sprint 18 : PATCH /api/tenants/[id] est réservé ADMIN — un MEMBER voyait jusqu'ici le
+          formulaire d'édition normalement rempli/soumissible, rejeté seulement après coup par
+          le serveur (403). Même principe que canEdit sur LocationActions/ReservationActions. */}
+      {user.role === "ADMIN" ? (
+        <EditTenantForm id={tenant.id} initialName={tenant.name} slug={tenant.slug} />
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          Seul un administrateur peut modifier les informations du tenant.
+        </p>
+      )}
     </div>
   );
 }

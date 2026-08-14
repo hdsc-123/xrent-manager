@@ -356,7 +356,11 @@ export function ReservationsTable({
                     Modifier
                   </DropdownMenuItem>
                 )}
-                {CANCELLABLE_STATUSES.has(row.original.status) && (
+                {/* Sprint 18 : gatée par canEdit, comme "Modifier" — PATCH /api/reservations/[id]
+                    (utilisé par cette action, status: "CANCELLED") exige reservations.edit ;
+                    sans cette garde, un rôle en lecture seule (ex. COMPTABILITÉ) voyait "Annuler"
+                    cliquable dans le menu, systématiquement rejeté par l'API après confirmation. */}
+                {canEdit && CANCELLABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingCancel(row.original)}>
                     <Ban className="size-4" />
                     Annuler

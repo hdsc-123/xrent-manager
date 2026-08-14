@@ -1,7 +1,6 @@
 import type { Invoice, Payment, PaymentMethod } from "@prisma/client";
 import { createPayment } from "@/lib/payments";
 import { getInvoiceById } from "@/lib/invoices";
-import { createCashEntry } from "@/lib/cash-register";
 import { logAction } from "@/lib/audit";
 import { formatMoney } from "@/lib/format";
 
@@ -68,11 +67,7 @@ export function validatePaymentInput(payment: PaymentInput | undefined): string 
 export interface ProcessLocationPaymentInput {
   tenantId: string;
   userId: string;
-  locationId: string;
-  /** Numéro de contrat (Sprint 14B) — dénormalisé sur l'écriture de caisse, voir CashEntry.contractNumber. */
-  contractNumber?: string | null;
   invoice: Invoice;
-  clientName?: string;
   payment: PaymentInput | undefined;
 }
 
@@ -84,11 +79,12 @@ export interface ProcessLocationPaymentResult {
 
 /**
  * Encaisse le paiement intégré (formulaire location/conversion) : chaque montant réellement
- * réglé passe par createPayment (src/lib/payments.ts, inchangé) — le calcul du statut de
- * facture (SENT/PARTIALLY_PAID/PAID) reste entièrement dérivé de la somme réelle des
- * paiements. Chaque Payment réussi alimente aussi la Caisse (createCashEntry). Résilient par
- * choix, même principe que la génération automatique de facture (Sprint 12B) : un échec ne
- * doit jamais faire échouer la création de la location/du contrat elle-même.
+ * réglé passe par createPayment (src/lib/payments.ts) — le calcul du statut de facture
+ * (SENT/PARTIALLY_PAID/PAID) reste entièrement dérivé de la somme réelle des paiements, et
+ * l'écriture de caisse correspondante (Sprint 18 : centralisée dans createPayment lui-même,
+ * pour que tout paiement en alimente une, quel que soit son point d'entrée) est créée avec.
+ * Résilient par choix, même principe que la génération automatique de facture (Sprint 12B) :
+ * un échec ne doit jamais faire échouer la création de la location/du contrat elle-même.
  *
  * Correctif Sprint 14B (paiement mixte) : le total des lignes est validé contre le solde
  * restant dû *avant* d'écrire quoi que ce soit — auparavant, un paiement mixte dont la somme
@@ -100,7 +96,7 @@ export interface ProcessLocationPaymentResult {
 export async function processLocationPayment(
   input: ProcessLocationPaymentInput
 ): Promise<ProcessLocationPaymentResult> {
-  const { tenantId, userId, locationId, contractNumber, payment, clientName } = input;
+  const { tenantId, userId, payment } = input;
   let invoice = input.invoice;
   const payments: Payment[] = [];
   let paymentError: string | null = null;
@@ -154,26 +150,6 @@ export async function processLocationPayment(
         resource: "Payment",
         resourceId: created.id,
         metadata: { invoiceId: created.invoiceId, amount: created.amount, method: created.method, auto: true },
-      });
-
-      const cashEntry = await createCashEntry({
-        tenantId,
-        type: "ENTRY",
-        category: "VERSEMENT",
-        amount: created.amount,
-        description: `Paiement location ${contractNumber ?? `#${locationId.slice(-8)}`}`,
-        contractId: locationId,
-        contractNumber,
-        clientName,
-        paymentMethod: created.method,
-      });
-      await logAction({
-        tenantId,
-        userId,
-        action: "cashEntry.created",
-        resource: "CashEntry",
-        resourceId: cashEntry.id,
-        metadata: { type: cashEntry.type, amount: cashEntry.amount, contractId: locationId, auto: true },
       });
     }
   } catch (error) {

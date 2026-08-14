@@ -142,6 +142,7 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "reservations.view",
       "reservations.create",
       "reservations.edit",
+      "reservations.import",
       "reservations.convert",
       "invoices.view",
       "invoices.create",
@@ -265,6 +266,11 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
  */
 const SPRINT15_BACKFILL_PERMISSIONS: Record<string, string[]> = {
   MEMBER: [
+    // Sprint 18 : reservations.import — gap antérieur à Sprint 15 (jamais accordé à MEMBER
+    // depuis la création du module Réservations, Sprint 12C), contredisant DOMAINRULES.md
+    // section 22 (« réservations (hors suppression) »). Réutilise ce même mécanisme générique
+    // de backfill par union (skipDuplicates), pas seulement les clés nées au Sprint 15.
+    "reservations.import",
     "vehicles.delete",
     "clients.delete",
     "locations.delete",

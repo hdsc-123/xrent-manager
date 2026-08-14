@@ -120,7 +120,11 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     );
   }
 
-  if (body.year !== undefined && (!Number.isInteger(body.year) || body.year < 1900)) {
+  // Sprint 18 : même plafond haut qu'à la création (POST /api/vehicles).
+  if (
+    body.year !== undefined &&
+    (!Number.isInteger(body.year) || body.year < 1900 || body.year > new Date().getFullYear() + 1)
+  ) {
     return NextResponse.json({ error: "year invalide." }, { status: 400 });
   }
 

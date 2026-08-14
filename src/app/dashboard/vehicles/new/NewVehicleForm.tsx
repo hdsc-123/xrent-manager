@@ -77,6 +77,18 @@ export function NewVehicleForm() {
     event.preventDefault();
     setError(null);
 
+    // Sprint 18 : validation JS ajoutée pour les champs marqués obligatoires (astérisque
+    // rouge) — jusqu'ici ni le client (form en noValidate, comme le reste de l'app) ni le
+    // serveur (POST /api/vehicles ne requiert que agencyId/name/licensePlate/make/model/
+    // year/category) ne les vérifiaient réellement : un véhicule pouvait être créé sans
+    // aucune fiche technique malgré l'UI qui présentait ces 7 champs comme requis.
+    if (!chassisNumber || !color || !doors || !seats || !horsepower || !powerKW || !engineSize) {
+      setError(
+        "Numéro de châssis, couleur, portes, places, chevaux, kW et cylindrée sont requis."
+      );
+      return;
+    }
+
     // Prix/jour optionnel depuis le Sprint 14A — purement informatif, jamais la source de
     // vérité de la facturation (voir DOMAINRULES.md section 5/7). Validé uniquement s'il est
     // renseigné.

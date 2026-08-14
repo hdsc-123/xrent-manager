@@ -230,10 +230,18 @@ export async function updateInvoice(
     ? computeInvoiceTotals(existing.subtotal, taxRate, discountAmount)
     : { taxAmount: existing.taxAmount, totalAmount: existing.totalAmount };
 
+  // Une facture à 0 (remise à 100 %) n'a par construction jamais de Payment (createPayment
+  // refuse tout montant contre un solde restant nul) : recomputeInvoiceStatus
+  // (src/lib/payments.ts) ne s'exécute donc jamais pour elle, et elle resterait sinon
+  // indéfiniment SENT malgré un solde déjà nul (bug réel, Sprint 18 — pilote terrain :
+  // location offerte/remise commerciale intégrale). Au moment où elle est effectivement
+  // finalisée (DRAFT → SENT), un total nul la fait donc atterrir directement en PAID.
+  const resolvedStatus = data.status === "SENT" && totalAmount === 0 ? "PAID" : data.status;
+
   return prisma.invoice.update({
     where: { id: invoiceId },
     data: {
-      ...(data.status ? { status: data.status } : {}),
+      ...(resolvedStatus ? { status: resolvedStatus } : {}),
       taxRate,
       discountAmount,
       taxAmount,

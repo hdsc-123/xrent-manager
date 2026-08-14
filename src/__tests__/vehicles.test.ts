@@ -136,6 +136,11 @@ describe("POST /api/vehicles", () => {
     expect(second.status).toBe(409);
   });
 
+  it("Sprint 18 — refuse une année manifestement absurde (plafond haut)", async () => {
+    const response = await createVehicle(adminA, agencyA1Id, { year: 9999 });
+    expect(response.status).toBe(400);
+  });
+
   it("autorise un MEMBER une fois explicitement rattaché à l'agence", async () => {
     await prisma.userAgency.create({ data: { userId: memberA.userId, agencyId: agencyA1Id } });
 

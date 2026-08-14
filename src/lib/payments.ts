@@ -1,6 +1,9 @@
 import type { Payment, PaymentMethod } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getInvoiceById } from "@/lib/invoices";
+import { getLocationById } from "@/lib/locations";
+import { getClientById } from "@/lib/clients";
+import { createCashEntry } from "@/lib/cash-register";
 import { formatMoney } from "@/lib/format";
 
 export class PaymentInvoiceNotFoundError extends Error {
@@ -141,7 +144,35 @@ export async function createPayment(data: CreatePaymentInput): Promise<Payment> 
   });
 
   await recomputeInvoiceStatus(data.invoiceId);
+  await recordPaymentCashEntry(data.tenantId, invoice.locationId, payment);
   return payment;
+}
+
+/**
+ * Toute écriture de paiement encaissée doit se refléter en caisse — corrige un bug réel
+ * (Sprint 18, pilote terrain) : seul le paiement intégré à la création d'une location
+ * (processLocationPayment) alimentait la caisse ; un paiement enregistré plus tard depuis la
+ * fiche facture (createPayment/createMixedPayments, POST /api/payments) n'y apparaissait
+ * jamais, alors que c'est le flux normal documenté (paiement « au retour » réglé après coup).
+ * Centralisé ici (plutôt que dupliqué par chaque appelant) pour que tout paiement, quel que
+ * soit son point d'entrée, ait la même garantie.
+ */
+async function recordPaymentCashEntry(tenantId: string, locationId: string, payment: Payment): Promise<void> {
+  const location = await getLocationById(tenantId, locationId);
+  const contractNumber = location?.contractNumber ?? null;
+  const clientName = location ? (await getClientById(tenantId, location.clientId))?.name : undefined;
+
+  await createCashEntry({
+    tenantId,
+    type: "ENTRY",
+    category: "VERSEMENT",
+    amount: payment.amount,
+    description: `Paiement location ${contractNumber ?? `#${locationId.slice(-8)}`}`,
+    contractId: locationId,
+    contractNumber,
+    clientName,
+    paymentMethod: payment.method,
+  });
 }
 
 export interface UpdatePaymentInput {

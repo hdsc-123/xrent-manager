@@ -283,6 +283,30 @@ describe("GET/PATCH /api/users/[id]/permissions", () => {
     expect(deleteResponse.status).toBe(403);
   });
 
+  it("Sprint 18 — journalise l'assignation d'un groupe de permissions (user.permissions_changed)", async () => {
+    const groupsResponse = await apiFetch("/api/permission-groups", { headers: { Cookie: adminA.sessionCookie } });
+    const memberGroup = (await groupsResponse.json()).groups.find((g: { name: string }) => g.name === "MEMBER");
+
+    const target = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Audited Member",
+      email: `audited-${runId}@test.local`,
+      password,
+    });
+
+    const patchResponse = await apiFetch(`/api/users/${target.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: memberGroup.id }),
+    });
+    expect(patchResponse.status).toBe(200);
+
+    const logs = await prisma.auditLog.findMany({
+      where: { tenantId: adminA.tenantId, action: "user.permissions_changed", resourceId: target.userId },
+    });
+    expect(logs).toHaveLength(1);
+  });
+
   it("une permission individuelle s'ajoute à celles du groupe (additif, jamais un retrait)", async () => {
     // Sprint 15 : le groupe utilisé ici doit être explicitement vide (pas l'absence totale de
     // groupe, qui retombe désormais sur les permissions du groupe par défaut MEMBER — voir le

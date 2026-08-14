@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import {
   getRevenueReport,
@@ -39,12 +40,16 @@ export default async function ReportsPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
-  if (user.role !== "ADMIN") {
+  // Sprint 18 : alignée sur GET /api/reports/{revenue,vehicles} (can(user, "reports.view"),
+  // retrofité Sprint 15) — cette page était restée en contrôle de rôle strict, alors que la
+  // sidebar affiche déjà "Rapports" pour tout groupe ayant reports.view par défaut (MEMBER,
+  // COMPTABILITÉ) : lien mort réel (visible, cliquable, mais bloqué) pour ces deux groupes.
+  if (!(await can(user, "reports.view"))) {
     return (
       <Card>
         <CardHeader>
           <CardTitle>Rapports</CardTitle>
-          <CardDescription>Cette section est réservée aux administrateurs du tenant.</CardDescription>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter les rapports.</CardDescription>
         </CardHeader>
       </Card>
     );

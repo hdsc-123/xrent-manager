@@ -278,14 +278,10 @@ export async function POST(request: Request, { params }: RouteParams) {
     let payments: Awaited<ReturnType<typeof processLocationPayment>>["payments"] = [];
     let paymentSaveError: string | null = null;
     if (invoice && body.payment && !body.payment.deferred) {
-      const client = await getClientById(user.tenantId, clientId);
       const result = await processLocationPayment({
         tenantId: user.tenantId,
         userId: user.id,
-        locationId: location.id,
-        contractNumber: location.contractNumber,
         invoice,
-        clientName: client?.name,
         payment: body.payment,
       });
       invoice = result.invoice;

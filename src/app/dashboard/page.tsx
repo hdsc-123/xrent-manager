@@ -46,6 +46,7 @@ export default async function DashboardPage() {
     canViewLocations,
     canViewMaintenances,
     canViewInvoices,
+    canViewAlerts,
   ] = await Promise.all([
     can(user, "reservations.view"),
     can(user, "vehicles.view"),
@@ -54,6 +55,7 @@ export default async function DashboardPage() {
     can(user, "locations.view"),
     can(user, "maintenances.view"),
     can(user, "invoices.view"),
+    can(user, "alerts.view"),
   ]);
 
   const [
@@ -93,7 +95,11 @@ export default async function DashboardPage() {
           },
         })
       : 0,
-    getAlerts(user.tenantId, {}),
+    // Sprint 18 : gated par alerts.view (pilote terrain — cette carte affichait jusqu'ici le
+    // message réel de chaque alerte à tout user authentifié, même un groupe COMPTABILITÉ sans
+    // accès au module Alertes, dont /dashboard/alerts refuse pourtant l'accès — même schéma que
+    // le bug "À faire aujourd'hui" corrigé Sprint 17 ci-dessus).
+    canViewAlerts ? getAlerts(user.tenantId, {}) : [],
     // Sprint 15 : Reservation n'a pas d'agencyId (DOMAINRULES.md section 21 — aucune agence
     // réelle n'est associée à une réservation avant sa conversion en contrat) : ce widget
     // reste donc tenant-wide, pas de scoping par agence possible ici (contrairement aux
@@ -182,8 +188,11 @@ export default async function DashboardPage() {
         )}
         <Card>
           <CardHeader>
+            {/* Sprint 18 : cette carte affiche le nom du tenant (Reservation/le dashboard sont
+                tenant-wide, voir plus haut) — labellisée "Organisation", jamais "Agence", pour
+                ne pas laisser croire qu'elle représente l'une des agences réelles du tenant. */}
             <CardDescription className="flex items-center gap-2">
-              <Store className="size-4" /> Agence
+              <Store className="size-4" /> Organisation
             </CardDescription>
             <CardTitle className="truncate text-3xl">{tenant?.name ?? "—"}</CardTitle>
           </CardHeader>
@@ -233,33 +242,35 @@ export default async function DashboardPage() {
         </Card>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Bell className="size-4" /> Alertes récentes
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          {visibleRecentAlerts.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Aucune alerte.</p>
-          ) : (
-            visibleRecentAlerts.map((alert) => (
-              <div key={alert.id} className="flex items-center justify-between gap-3 rounded-md border border-border p-2.5">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Badge variant={PRIORITY_VARIANTS[alert.priority] ?? "outline"}>{alert.priority}</Badge>
-                  <span className="truncate text-sm">{alert.message}</span>
+      {canViewAlerts && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Bell className="size-4" /> Alertes récentes
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {visibleRecentAlerts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Aucune alerte.</p>
+            ) : (
+              visibleRecentAlerts.map((alert) => (
+                <div key={alert.id} className="flex items-center justify-between gap-3 rounded-md border border-border p-2.5">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Badge variant={PRIORITY_VARIANTS[alert.priority] ?? "outline"}>{alert.priority}</Badge>
+                    <span className="truncate text-sm">{alert.message}</span>
+                  </div>
+                  <Badge variant="outline" className="shrink-0">
+                    {alert.status === "PENDING" ? "En attente" : alert.status === "ACKNOWLEDGED" ? "Vue" : "Résolue"}
+                  </Badge>
                 </div>
-                <Badge variant="outline" className="shrink-0">
-                  {alert.status === "PENDING" ? "En attente" : alert.status === "ACKNOWLEDGED" ? "Vue" : "Résolue"}
-                </Badge>
-              </div>
-            ))
-          )}
-          <Button variant="outline" size="sm" className="w-fit" render={<Link href="/dashboard/alerts" />}>
-            Voir toutes les alertes
-          </Button>
-        </CardContent>
-      </Card>
+              ))
+            )}
+            <Button variant="outline" size="sm" className="w-fit" render={<Link href="/dashboard/alerts" />}>
+              Voir toutes les alertes
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {(canCreateAgencies || canViewAgencies || user.role === "ADMIN") && (
         <Card>

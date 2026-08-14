@@ -284,6 +284,24 @@ describe("PATCH /api/invoices/[id]", () => {
     });
     expect(response.status).toBe(409);
   });
+
+  it("Sprint 18 — une facture à 0 (remise intégrale) passe directement PAID à l'envoi, sans paiement", async () => {
+    // subtotal 15000, discountAmount 15000, taxRate par défaut 0 => totalAmount 0.
+    const createResponse = await createInvoice(adminA, { discountAmount: 15000 });
+    expect(createResponse.status).toBe(201);
+    const invoiceId = (await createResponse.json()).invoice.id;
+
+    const response = await apiFetch(`/api/invoices/${invoiceId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "SENT" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.invoice.totalAmount).toBe(0);
+    expect(body.invoice.amountPaid).toBe(0);
+    expect(body.invoice.status).toBe("PAID");
+  });
 });
 
 describe("DELETE /api/invoices/[id]", () => {

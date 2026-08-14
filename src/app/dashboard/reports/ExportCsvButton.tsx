@@ -28,10 +28,20 @@ function sanitizeCsvRows(
   );
 }
 
+/**
+ * Sprint 18 : BOM UTF-8 (U+FEFF) en tête du fichier — sans lui, Excel ouvert en double-clic
+ * (le geste le plus probable pour un utilisateur non technique) suppose l'encodage de la
+ * locale système (souvent Windows-1252) plutôt que l'UTF-8 réel du fichier, et affiche les
+ * caractères accentués (noms de clients/agences) de façon illisible (mojibake). Exportée
+ * (même principe que sanitizeCsvCell) pour être testée unitairement sans DOM.
+ */
+export function buildCsvFileContent(rows: Record<string, string | number>[]): string {
+  return "﻿" + Papa.unparse(sanitizeCsvRows(rows));
+}
+
 export function ExportCsvButton({ filename, rows }: ExportCsvButtonProps) {
   function handleExport() {
-    const csv = Papa.unparse(sanitizeCsvRows(rows));
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const blob = new Blob([buildCsvFileContent(rows)], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;

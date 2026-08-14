@@ -134,7 +134,10 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!Number.isInteger(year) || year < 1900) {
+  // Sprint 18 : plafond haut ajouté (aucune borne supérieure jusqu'ici — une faute de frappe
+  // plausible, ex. "2205" au lieu de "2025", passait sans erreur). +1 an tolère un millésime
+  // commercial déjà annoncé avant le changement d'année civile.
+  if (!Number.isInteger(year) || year < 1900 || year > new Date().getFullYear() + 1) {
     return NextResponse.json({ error: "year invalide." }, { status: 400 });
   }
 

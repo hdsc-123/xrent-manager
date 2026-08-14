@@ -32,6 +32,17 @@ export function NewAgencyForm() {
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
+
+    // Sprint 18 : validation JS ajoutée pour les champs marqués obligatoires (astérisque
+    // rouge) — jusqu'ici ni le client (form en noValidate, comme le reste de l'app) ni le
+    // serveur (POST /api/agencies ne requiert que name) ne les vérifiaient réellement : une
+    // agence pouvait être créée sans aucune coordonnée malgré l'UI qui les présentait comme
+    // requises. Même convention que NewClientForm.tsx (noValidate + vérification JS ciblée).
+    if (!city || !address || !phone || !email || !managerName || !managerPhone) {
+      setError("Ville, adresse, téléphone, email, nom et téléphone du responsable sont requis.");
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {

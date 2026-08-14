@@ -54,7 +54,16 @@ export function LocationActions({
   async function handleTransition(next: LocationStatus) {
     setIsChangingStatus(true);
     try {
-      await apiPatch(`/api/locations/${id}`, { status: next });
+      // Sprint 18 : inclut le kilométrage retour déjà saisi dans le champ juste en dessous —
+      // jusqu'ici seul le bouton "Enregistrer" des Notes l'envoyait, alors que le geste naturel
+      // pour clôturer un retour est de saisir le kilométrage puis de cliquer directement sur
+      // "Terminée" : la valeur tapée était silencieusement perdue (aucun message d'erreur), le
+      // contrat passait COMPLETED sans kilométrage de retour enregistré. Un champ inchangé
+      // renvoie sa valeur déjà en base (no-op), jamais un effacement accidentel.
+      await apiPatch(`/api/locations/${id}`, {
+        status: next,
+        endOdometer: endOdometer ? Number(endOdometer) : null,
+      });
       toast.success(`Statut mis à jour : ${STATUS_LABELS[next]}.`);
       router.refresh();
     } catch (err) {
