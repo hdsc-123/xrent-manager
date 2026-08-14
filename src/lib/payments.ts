@@ -194,6 +194,71 @@ export async function updatePayment(
   return updated;
 }
 
+export interface MixedPaymentLine {
+  amount: number;
+  method: PaymentMethod;
+}
+
+export interface CreateMixedPaymentsInput {
+  tenantId: string;
+  invoiceId: string;
+  lines: MixedPaymentLine[];
+  paidAt?: Date;
+  reference?: string;
+  notes?: string;
+}
+
+/**
+ * Paiement mixte (plusieurs lignes méthode+montant) depuis la fiche facture existante
+ * (`InvoiceActions.tsx`) — même garantie que `processLocationPayment`
+ * (src/lib/location-payment.ts, Sprint 14B) : le total des lignes est validé contre le solde
+ * restant *relu au moment de l'appel* avant d'écrire quoi que ce soit, pour ne jamais laisser
+ * un paiement partiel orphelin si le solde a changé depuis l'ouverture du formulaire (Sprint 17
+ * — jusqu'ici `InvoiceActions.tsx` revalidait côté client contre un solde figé au chargement de
+ * la page, puis postait chaque ligne séparément : une baisse du solde réel entre l'ouverture du
+ * dialogue et la soumission pouvait laisser la première ligne écrite avant que la seconde échoue).
+ */
+export async function createMixedPayments(data: CreateMixedPaymentsInput): Promise<Payment[]> {
+  if (data.lines.length === 0) {
+    throw new InvalidPaymentAmountError("Le paiement mixte nécessite au moins une ligne.");
+  }
+  for (const line of data.lines) {
+    if (!Number.isInteger(line.amount) || line.amount <= 0) {
+      throw new InvalidPaymentAmountError("Chaque montant du paiement mixte doit être un entier positif.");
+    }
+  }
+
+  const invoice = await getInvoiceById(data.tenantId, data.invoiceId);
+  if (!invoice) {
+    throw new PaymentInvoiceNotFoundError();
+  }
+  if (invoice.status === "CANCELLED") {
+    throw new InvoiceCancelledError();
+  }
+
+  const remainingBalance = invoice.totalAmount - invoice.amountPaid;
+  const linesTotal = data.lines.reduce((sum, line) => sum + line.amount, 0);
+  if (linesTotal > remainingBalance) {
+    throw new PaymentExceedsRemainingBalanceError(remainingBalance, invoice.currency);
+  }
+
+  const payments: Payment[] = [];
+  for (const line of data.lines) {
+    payments.push(
+      await createPayment({
+        tenantId: data.tenantId,
+        invoiceId: data.invoiceId,
+        amount: line.amount,
+        method: line.method,
+        paidAt: data.paidAt,
+        reference: data.reference,
+        notes: data.notes,
+      })
+    );
+  }
+  return payments;
+}
+
 export async function deletePayment(tenantId: string, paymentId: string): Promise<boolean> {
   const existing = await getPaymentById(tenantId, paymentId);
   if (!existing) {

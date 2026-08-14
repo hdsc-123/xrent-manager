@@ -195,8 +195,15 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
     // opérationnels d'agence, cohérents avec la vocation de ce groupe) ; invoices.view/
     // create/edit et payments.view/create ajoutés pour préserver la capacité de facturer/
     // encaisser un contrat de son agence, déjà possible sans restriction avant le retrofit.
+    // Sprint 17 : agencies.view et cash_register.* ajoutés — omis à tort du retrofit Sprint 15
+    // (régression réelle : sans agencies.view, GET /api/agencies renvoie 403 pour ce groupe,
+    // ce qui vide le sélecteur d'agence de "Créer un véhicule"/"Lancer un transfert"/"Créer une
+    // réservation" et empêche de fait toute soumission de ces formulaires malgré des permissions
+    // *.create par ailleurs accordées ; cash_register.* était possible sans restriction avant le
+    // retrofit, comme pour MEMBER — même principe de préservation du comportement antérieur).
     name: "AGENCE",
     permissions: [
+      "agencies.view",
       "vehicles.view",
       "vehicles.create",
       "vehicles.edit",
@@ -226,6 +233,10 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "alerts.view",
       "alerts.acknowledge",
       "alerts.resolve",
+      "cash_register.view",
+      "cash_register.create_entry",
+      "cash_register.create_expense",
+      "cash_register.manage_categories",
       "vehicle_transfers.view",
       "vehicle_transfers.create",
       "vehicle_transfers.validate",
@@ -280,6 +291,14 @@ const SPRINT15_BACKFILL_PERMISSIONS: Record<string, string[]> = {
     "vehicle_trips.cancel",
   ],
   AGENCE: [
+    // Sprint 17 : agencies.view/cash_register.* — voir le commentaire sur DEFAULT_GROUPS
+    // (régression Sprint 15 : ce groupe n'avait jamais reçu ces clés, ni à sa création dans
+    // DEFAULT_GROUPS ni dans ce backfill, contrairement à MEMBER qui les avait toutes les deux).
+    "agencies.view",
+    "cash_register.view",
+    "cash_register.create_entry",
+    "cash_register.create_expense",
+    "cash_register.manage_categories",
     "invoices.view",
     "invoices.create",
     "invoices.edit",

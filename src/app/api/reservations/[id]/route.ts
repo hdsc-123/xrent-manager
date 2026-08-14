@@ -6,8 +6,10 @@ import {
   getReservationById,
   updateReservation,
   deleteReservation,
+  getKnownAgencyNames,
   InvalidReservationDateRangeError,
   InvalidReservationStatusTransitionError,
+  ReservationLockedError,
   ReservationNotDeletableError,
 } from "@/lib/reservations";
 import { logAction } from "@/lib/audit";
@@ -119,6 +121,27 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "receivedAt doit être une date ISO valide." }, { status: 400 });
   }
 
+  // Villes/agences (Sprint 17) : même règle que POST /api/reservations, jusqu'ici absente de
+  // PATCH — une valeur qui serait refusée à la création pouvait être écrite silencieusement
+  // via l'édition. Voir src/lib/reservations.ts getKnownAgencyNames.
+  if (body.pickupAgency || body.dropoffAgency) {
+    const knownAgencyNames = await getKnownAgencyNames(user.tenantId);
+    if (knownAgencyNames.size > 0) {
+      if (body.pickupAgency && !knownAgencyNames.has(body.pickupAgency.trim().toLowerCase())) {
+        return NextResponse.json(
+          { error: `Ville de départ inconnue : "${body.pickupAgency}" (aucune agence correspondante)` },
+          { status: 400 }
+        );
+      }
+      if (body.dropoffAgency && !knownAgencyNames.has(body.dropoffAgency.trim().toLowerCase())) {
+        return NextResponse.json(
+          { error: `Ville de retour inconnue : "${body.dropoffAgency}" (aucune agence correspondante)` },
+          { status: 400 }
+        );
+      }
+    }
+  }
+
   try {
     const reservation = await updateReservation(user.tenantId, id, {
       voucherNumber: body.voucherNumber,
@@ -172,6 +195,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof InvalidReservationStatusTransitionError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof ReservationLockedError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     console.error("Erreur lors de la modification de la réservation :", error);

@@ -376,6 +376,14 @@ describe("Sprint 15 — nouvelles clés de permission (maintenances/alerts/cash_
     }
 
     const agenceKeys = [
+      // Sprint 17 : agencies.view/cash_register.* — régression Sprint 15 corrigée (ce groupe
+      // n'avait jamais reçu ces clés, ce qui bloquait GET /api/agencies pour ce groupe malgré
+      // des permissions *.create par ailleurs accordées, voir src/lib/permissions.ts).
+      "agencies.view",
+      "cash_register.view",
+      "cash_register.create_entry",
+      "cash_register.create_expense",
+      "cash_register.manage_categories",
       "maintenances.view",
       "maintenances.create",
       "maintenances.edit",

@@ -444,6 +444,81 @@ describe("PATCH /api/reservations/[id]", () => {
     });
     expect(response.status).toBe(403);
   });
+
+  it("refuse une ville de départ/retour inconnue (Sprint 17 — même validation que POST, absente de PATCH jusqu'ici)", async () => {
+    const createResponse = await createReservation(adminA);
+    const id = (await createResponse.json()).reservation.id;
+
+    const pickupResponse = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ pickupAgency: "Ville Inexistante" }),
+    });
+    expect(pickupResponse.status).toBe(400);
+    expect((await pickupResponse.json()).error).toContain("Ville de départ inconnue");
+
+    const dropoffResponse = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ pickupAgency: "Agence A1", dropoffAgency: "Ville Inexistante" }),
+    });
+    expect(dropoffResponse.status).toBe(400);
+    expect((await dropoffResponse.json()).error).toContain("Ville de retour inconnue");
+
+    const validResponse = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ pickupAgency: "Agence A1" }),
+    });
+    expect(validResponse.status).toBe(200);
+  });
+
+  it("verrouille une réservation CONVERTED/CANCELLED : refuse tout champ hors notes (Sprint 17)", async () => {
+    const createResponse = await createReservation(adminA, { pricePerDay: 5000, totalPrice: 10000 });
+    const id = (await createResponse.json()).reservation.id;
+    await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+
+    const blockedResponse = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ totalPrice: 1 }),
+    });
+    expect(blockedResponse.status).toBe(409);
+
+    // Les notes restent modifiables même sur une réservation terminale (ReservationActions.tsx
+    // les édite indépendamment du statut).
+    const notesResponse = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ notes: "Note ajoutée après annulation" }),
+    });
+    expect(notesResponse.status).toBe(200);
+    expect((await notesResponse.json()).reservation.notes).toBe("Note ajoutée après annulation");
+  });
+
+  it("efface le prix d'une option décochée plutôt que de le laisser en base (Sprint 17)", async () => {
+    const createResponse = await createReservation(adminA, {
+      hasGps: true,
+      gpsPrice: 5000,
+      optionsCurrency: "MAD",
+    });
+    const id = (await createResponse.json()).reservation.id;
+    expect((await (await apiFetch(`/api/reservations/${id}`, { headers: { Cookie: adminA.sessionCookie } })).json()).reservation.gpsPrice).toBe(5000);
+
+    const response = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ hasGps: false }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.reservation.hasGps).toBe(false);
+    expect(body.reservation.gpsPrice).toBeNull();
+  });
 });
 
 describe("DELETE /api/reservations/[id]", () => {

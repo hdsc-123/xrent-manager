@@ -109,10 +109,7 @@ export function InvoiceActions({
     event.preventDefault();
     setPaymentError(null);
 
-    // Paiement mixte (Sprint 14B) : plusieurs lignes méthode+montant dans la même opération,
-    // même logique que le paiement intégré à la création de location (src/lib/location-payment.ts)
-    // — le total est validé contre le solde restant *avant* d'écrire quoi que ce soit, pour ne
-    // jamais laisser un paiement partiel orphelin derrière un message d'erreur technique.
+    // Paiement mixte (Sprint 14B) : plusieurs lignes méthode+montant dans la même opération.
     const lines = mixed
       ? [
           { method: method1, amount: amount1 ? Math.round(Number(amount1.replace(",", ".")) * 100) : 0 },
@@ -129,6 +126,10 @@ export function InvoiceActions({
       return;
     }
 
+    // Pré-vérification rapide côté client (feedback immédiat) contre le solde connu au
+    // chargement de la page — non autoritaire : le serveur revalide contre le solde réel juste
+    // avant d'écrire quoi que ce soit (createMixedPayments/createPayment), donc un solde
+    // devenu obsolète pendant que ce dialogue était ouvert est rattrapé sans écriture partielle.
     const linesTotal = lines.reduce((sum, line) => sum + line.amount, 0);
     if (linesTotal > remainingBalance) {
       setPaymentError(
@@ -140,20 +141,22 @@ export function InvoiceActions({
 
     setIsSubmittingPayment(true);
     try {
-      for (const line of lines) {
-        await apiPost("/api/payments", {
-          invoiceId: id,
-          amount: line.amount,
-          method: line.method,
-          reference: reference || undefined,
-          notes: notes || undefined,
-        });
-      }
+      // Une seule requête, même en paiement mixte (Sprint 17) : le solde restant est revalidé
+      // côté serveur juste avant l'écriture (createMixedPayments, src/lib/payments.ts), pas
+      // contre `remainingBalance` figé au chargement de la page ci-dessus — évite qu'une ligne
+      // soit écrite avant qu'une seconde échoue si le solde réel a changé entretemps.
+      await apiPost("/api/payments", {
+        invoiceId: id,
+        ...(mixed ? { lines } : { amount: lines[0].amount, method: lines[0].method }),
+        reference: reference || undefined,
+        notes: notes || undefined,
+      });
       toast.success(lines.length > 1 ? "Paiements enregistrés." : "Paiement enregistré.");
       setShowPaymentDialog(false);
       router.refresh();
     } catch (err) {
       setPaymentError(err instanceof ApiError ? err.message : "Erreur lors de l'enregistrement du paiement.");
+      router.refresh();
     } finally {
       setIsSubmittingPayment(false);
     }

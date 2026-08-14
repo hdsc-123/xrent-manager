@@ -38,11 +38,22 @@ export default async function DashboardPage() {
   const endOfToday = new Date(now);
   endOfToday.setHours(23, 59, 59, 999);
 
-  const [canViewReservations, canViewVehicles, canViewAgencies, canCreateAgencies] = await Promise.all([
+  const [
+    canViewReservations,
+    canViewVehicles,
+    canViewAgencies,
+    canCreateAgencies,
+    canViewLocations,
+    canViewMaintenances,
+    canViewInvoices,
+  ] = await Promise.all([
     can(user, "reservations.view"),
     can(user, "vehicles.view"),
     can(user, "agencies.view"),
     can(user, "agencies.create"),
+    can(user, "locations.view"),
+    can(user, "maintenances.view"),
+    can(user, "invoices.view"),
   ]);
 
   const [
@@ -57,20 +68,31 @@ export default async function DashboardPage() {
     availableVehiclesSample,
   ] = await Promise.all([
     getTenantById(user.tenantId),
-    prisma.location.count({
-      where: { tenantId: user.tenantId, ...agencyScope, status: "ACTIVE", endDate: { lte: endOfToday } },
-    }),
-    prisma.maintenance.count({
-      where: { tenantId: user.tenantId, ...agencyScope, status: "SCHEDULED", scheduledDate: { lte: endOfToday } },
-    }),
-    prisma.invoice.count({
-      where: {
-        tenantId: user.tenantId,
-        ...agencyScope,
-        status: { in: ["SENT", "PARTIALLY_PAID"] },
-        dueDate: { lt: now },
-      },
-    }),
+    // Sprint 17 : ces trois comptages ("À faire aujourd'hui") sont désormais gated par la même
+    // permission *.view que leur module — un groupe sans accès (ex. COMPTABILITÉ, sans
+    // locations.view/maintenances.view) voyait jusqu'ici un compte agrégé réel malgré un accès
+    // par ailleurs bloqué au clic (403), même principe que les tuiles Réservations/Véhicules
+    // ci-dessous depuis le Sprint 15.
+    canViewLocations
+      ? prisma.location.count({
+          where: { tenantId: user.tenantId, ...agencyScope, status: "ACTIVE", endDate: { lte: endOfToday } },
+        })
+      : 0,
+    canViewMaintenances
+      ? prisma.maintenance.count({
+          where: { tenantId: user.tenantId, ...agencyScope, status: "SCHEDULED", scheduledDate: { lte: endOfToday } },
+        })
+      : 0,
+    canViewInvoices
+      ? prisma.invoice.count({
+          where: {
+            tenantId: user.tenantId,
+            ...agencyScope,
+            status: { in: ["SENT", "PARTIALLY_PAID"] },
+            dueDate: { lt: now },
+          },
+        })
+      : 0,
     getAlerts(user.tenantId, {}),
     // Sprint 15 : Reservation n'a pas d'agencyId (DOMAINRULES.md section 21 — aucune agence
     // réelle n'est associée à une réservation avant sa conversion en contrat) : ce widget
@@ -168,40 +190,48 @@ export default async function DashboardPage() {
         </Card>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>À faire aujourd&apos;hui</CardTitle>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Link
-            href="/dashboard/locations?status=ACTIVE"
-            className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-accent"
-          >
-            <span className="flex items-center gap-2 text-sm">
-              <CalendarClock className="size-4 text-muted-foreground" /> Retours
-            </span>
-            <span className="text-lg font-semibold">{returnsToday}</span>
-          </Link>
-          <Link
-            href="/dashboard/maintenances?status=SCHEDULED"
-            className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-accent"
-          >
-            <span className="flex items-center gap-2 text-sm">
-              <Wrench className="size-4 text-muted-foreground" /> Maintenances
-            </span>
-            <span className="text-lg font-semibold">{dueMaintenances}</span>
-          </Link>
-          <Link
-            href="/dashboard/invoices"
-            className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-accent"
-          >
-            <span className="flex items-center gap-2 text-sm">
-              <FileWarning className="size-4 text-muted-foreground" /> Factures en retard
-            </span>
-            <span className="text-lg font-semibold">{overdueInvoicesCount}</span>
-          </Link>
-        </CardContent>
-      </Card>
+      {(canViewLocations || canViewMaintenances || canViewInvoices) && (
+        <Card>
+          <CardHeader>
+            <CardTitle>À faire aujourd&apos;hui</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {canViewLocations && (
+              <Link
+                href="/dashboard/locations?status=ACTIVE"
+                className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-accent"
+              >
+                <span className="flex items-center gap-2 text-sm">
+                  <CalendarClock className="size-4 text-muted-foreground" /> Retours
+                </span>
+                <span className="text-lg font-semibold">{returnsToday}</span>
+              </Link>
+            )}
+            {canViewMaintenances && (
+              <Link
+                href="/dashboard/maintenances?status=SCHEDULED"
+                className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-accent"
+              >
+                <span className="flex items-center gap-2 text-sm">
+                  <Wrench className="size-4 text-muted-foreground" /> Maintenances
+                </span>
+                <span className="text-lg font-semibold">{dueMaintenances}</span>
+              </Link>
+            )}
+            {canViewInvoices && (
+              <Link
+                href="/dashboard/invoices"
+                className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-accent"
+              >
+                <span className="flex items-center gap-2 text-sm">
+                  <FileWarning className="size-4 text-muted-foreground" /> Factures en retard
+                </span>
+                <span className="text-lg font-semibold">{overdueInvoicesCount}</span>
+              </Link>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

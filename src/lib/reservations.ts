@@ -54,6 +54,16 @@ export class ReservationNotDeletableError extends Error {
   }
 }
 
+export class ReservationLockedError extends Error {
+  constructor() {
+    super(
+      "Cette réservation est terminale (CONVERTED/CANCELLED) : seules les notes restent " +
+        "modifiables. Le contrat déjà généré à la conversion n'est jamais mis à jour rétroactivement."
+    );
+    this.name = "ReservationLockedError";
+  }
+}
+
 /**
  * Machine à états explicite, même principe que Location (src/lib/locations.ts).
  * PENDING → CONVERTED directement est autorisé (une petite agence peut confirmer et
@@ -231,6 +241,22 @@ export async function updateReservation(
     return null;
   }
 
+  // Verrou de statut terminal (Sprint 17, même principe que LocationLockedError dans
+  // src/lib/locations.ts) : CONVERTED/CANCELLED sont des états terminaux (ALLOWED_TRANSITIONS
+  // ci-dessus) — jusqu'ici seule l'UI (page d'édition, bouton "Modifier") empêchait de les
+  // modifier, l'API acceptait silencieusement un PATCH direct sur n'importe quel champ. Les
+  // notes restent modifiables à tout statut (ReservationActions.tsx les édite indépendamment
+  // du statut, y compris déjà terminal).
+  const isTerminal = existing.status === "CONVERTED" || existing.status === "CANCELLED";
+  if (isTerminal) {
+    const touchesNonNotesField = (Object.keys(data) as (keyof UpdateReservationInput)[]).some(
+      (key) => key !== "notes" && data[key] !== undefined
+    );
+    if (touchesNonNotesField) {
+      throw new ReservationLockedError();
+    }
+  }
+
   const nextStart = data.startDate ?? existing.startDate;
   const nextEnd = data.endDate ?? existing.endDate;
   if (nextEnd < nextStart) {
@@ -240,6 +266,14 @@ export async function updateReservation(
   if (data.status && data.status !== existing.status && !canTransition(existing.status, data.status)) {
     throw new InvalidReservationStatusTransitionError(existing.status, data.status);
   }
+
+  // Une option décochée (Sprint 17) efface son prix associé plutôt que de le laisser en base
+  // — sans quoi "Prix final" (ReservationsTable.tsx, somme inconditionnelle des prix d'option)
+  // continue d'inclure un montant dont le badge affiche pourtant "Non". Ignoré si l'appelant
+  // fournit explicitement un nouveau prix dans la même requête (son intention prime).
+  const clearGpsPrice = data.hasGps === false && data.gpsPrice === undefined;
+  const clearBabySeatPrice = data.hasBabySeat === false && data.babySeatPrice === undefined;
+  const clearExtraDriverPrice = data.hasExtraDriver === false && data.extraDriverPrice === undefined;
 
   return prisma.reservation.update({
     where: { id: reservationId },
@@ -263,11 +297,19 @@ export async function updateReservation(
       ...(data.pickupAgency !== undefined ? { pickupAgency: data.pickupAgency } : {}),
       ...(data.dropoffAgency !== undefined ? { dropoffAgency: data.dropoffAgency } : {}),
       ...(data.hasGps !== undefined ? { hasGps: data.hasGps } : {}),
-      ...(data.gpsPrice !== undefined ? { gpsPrice: data.gpsPrice } : {}),
+      ...(data.gpsPrice !== undefined ? { gpsPrice: data.gpsPrice } : clearGpsPrice ? { gpsPrice: null } : {}),
       ...(data.hasBabySeat !== undefined ? { hasBabySeat: data.hasBabySeat } : {}),
-      ...(data.babySeatPrice !== undefined ? { babySeatPrice: data.babySeatPrice } : {}),
+      ...(data.babySeatPrice !== undefined
+        ? { babySeatPrice: data.babySeatPrice }
+        : clearBabySeatPrice
+          ? { babySeatPrice: null }
+          : {}),
       ...(data.hasExtraDriver !== undefined ? { hasExtraDriver: data.hasExtraDriver } : {}),
-      ...(data.extraDriverPrice !== undefined ? { extraDriverPrice: data.extraDriverPrice } : {}),
+      ...(data.extraDriverPrice !== undefined
+        ? { extraDriverPrice: data.extraDriverPrice }
+        : clearExtraDriverPrice
+          ? { extraDriverPrice: null }
+          : {}),
       ...(data.optionsCurrency !== undefined ? { optionsCurrency: data.optionsCurrency } : {}),
       ...(data.mileage !== undefined ? { mileage: data.mileage } : {}),
       ...(data.includedKm !== undefined ? { includedKm: data.includedKm } : {}),

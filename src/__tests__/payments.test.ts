@@ -393,3 +393,92 @@ describe("Sprint 15 — permissions granulaires (payments.create)", () => {
     }
   });
 });
+
+describe("Sprint 17 — POST /api/payments avec lines (paiement mixte atomique depuis la fiche facture)", () => {
+  it("crée les deux lignes en une seule requête et met à jour le statut de la facture", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+
+    const response = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        invoiceId: invoice.id,
+        lines: [
+          { amount: 10000, method: "CASH" },
+          { amount: 5000, method: "CARD" },
+        ],
+      }),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.payments).toHaveLength(2);
+    expect(body.payments[0].amount).toBe(10000);
+    expect(body.payments[1].amount).toBe(5000);
+
+    const invoiceResponse = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    const updatedInvoice = (await invoiceResponse.json()).invoice;
+    expect(updatedInvoice.status).toBe("PAID");
+    expect(updatedInvoice.amountPaid).toBe(invoice.totalAmount);
+  });
+
+  it("refuse un paiement mixte dont le total dépasse le solde restant sans écrire aucune ligne (même garantie que processLocationPayment)", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+
+    const response = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        invoiceId: invoice.id,
+        lines: [
+          { amount: invoice.totalAmount, method: "CASH" },
+          { amount: 1, method: "CARD" },
+        ],
+      }),
+    });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain("solde restant dû");
+
+    // Aucun paiement partiel orphelin — même si la première ligne à elle seule aurait été valide.
+    const paymentsResponse = await apiFetch(`/api/payments?invoiceId=${invoice.id}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const payments = (await paymentsResponse.json()).payments;
+    expect(payments).toHaveLength(0);
+
+    const invoiceResponse = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    const untouchedInvoice = (await invoiceResponse.json()).invoice;
+    expect(untouchedInvoice.status).toBe("DRAFT");
+    expect(untouchedInvoice.amountPaid).toBe(0);
+  });
+
+  it("revalide le solde au moment de l'appel, pas contre une valeur obsolète : refuse si le solde a déjà diminué depuis le chargement de la page", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+
+    // Simule un autre paiement déjà enregistré entretemps (ex. un autre onglet), qui aurait
+    // rendu obsolète un `remainingBalance` lu par le client avant l'ouverture du dialogue.
+    await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ invoiceId: invoice.id, amount: invoice.totalAmount - 100, method: "CASH" }),
+    });
+
+    const response = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        invoiceId: invoice.id,
+        lines: [
+          { amount: 60, method: "CASH" },
+          { amount: 60, method: "CARD" },
+        ],
+      }),
+    });
+    expect(response.status).toBe(409);
+
+    const paymentsResponse = await apiFetch(`/api/payments?invoiceId=${invoice.id}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    // Toujours un seul paiement (celui simulé ci-dessus) — le paiement mixte refusé n'a rien écrit.
+    expect((await paymentsResponse.json()).payments).toHaveLength(1);
+  });
+});

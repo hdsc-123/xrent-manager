@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { recomputeCashRegisterBalance } from "@/lib/cash-register";
+import { monthKey } from "@/lib/cash-register";
 import { logAction } from "@/lib/audit";
 
 /**
@@ -201,68 +201,71 @@ export async function resetTenantData(input: ResetTenantDataInput): Promise<Data
 
     const { tenantId } = input;
 
-    const [
-      paymentResult,
-      invoiceResult,
-      maintenanceResult,
-      vehicleTransferResult,
-      vehicleTripResult,
-      locationResult,
-      vehicleResult,
-      clientResult,
-      reservationResult,
-      alertResult,
-      invitationResult,
-      cashEntryResult,
-    ] = await prisma.$transaction([
-      prisma.payment.deleteMany({ where: { tenantId } }),
-      prisma.invoice.deleteMany({ where: { tenantId } }),
-      prisma.maintenance.deleteMany({ where: { tenantId } }),
-      prisma.vehicleTransfer.deleteMany({ where: { tenantId } }),
-      prisma.vehicleTrip.deleteMany({ where: { tenantId } }),
-      prisma.location.deleteMany({ where: { tenantId } }),
-      prisma.vehicle.deleteMany({ where: { tenantId } }),
-      prisma.client.deleteMany({ where: { tenantId } }),
-      prisma.reservation.deleteMany({ where: { tenantId } }),
-      prisma.alert.deleteMany({ where: { tenantId } }),
-      prisma.invitation.deleteMany({ where: { tenantId } }),
-      prisma.cashEntry.deleteMany({ where: { tenantId } }),
-      prisma.agency.updateMany({ where: { tenantId }, data: { lastContractNumber: 0 } }),
-    ]);
+    // Sprint 17 : transaction interactive (plutôt que la forme "array" utilisée jusqu'ici) pour
+    // que la purge, le recalcul du solde de caisse, la purge conditionnelle de l'AuditLog et
+    // l'entrée d'audit finale "data.reset" fassent tous partie de la même unité atomique —
+    // corrige un écart réel avec la garantie documentée (DOMAINRULES.md section 31, SECURITY.md
+    // section 17) : ces trois dernières étapes s'exécutaient jusqu'ici après la transaction
+    // principale, hors de toute atomicité. Un échec sur l'une d'elles laissait les données déjà
+    // purgées (le vrai wipe métier avait déjà commité) sans que l'entrée d'audit "reset réussi"
+    // ne soit jamais écrite — violation silencieuse du "toujours journalisée" promis. Le
+    // recalcul du solde de caisse est posé directement à 0 (previousBalance/currentBalance)
+    // plutôt que via recomputeCashRegisterBalance (src/lib/cash-register.ts, non transactionnelle
+    // — utilise le client Prisma global, pas `tx`) : après une purge complète des CashEntry du
+    // tenant, le résultat recalculé est de toute façon trivialement 0.
+    const deleted = await prisma.$transaction(async (tx) => {
+      const paymentResult = await tx.payment.deleteMany({ where: { tenantId } });
+      const invoiceResult = await tx.invoice.deleteMany({ where: { tenantId } });
+      const maintenanceResult = await tx.maintenance.deleteMany({ where: { tenantId } });
+      const vehicleTransferResult = await tx.vehicleTransfer.deleteMany({ where: { tenantId } });
+      const vehicleTripResult = await tx.vehicleTrip.deleteMany({ where: { tenantId } });
+      const locationResult = await tx.location.deleteMany({ where: { tenantId } });
+      const vehicleResult = await tx.vehicle.deleteMany({ where: { tenantId } });
+      const clientResult = await tx.client.deleteMany({ where: { tenantId } });
+      const reservationResult = await tx.reservation.deleteMany({ where: { tenantId } });
+      const alertResult = await tx.alert.deleteMany({ where: { tenantId } });
+      const invitationResult = await tx.invitation.deleteMany({ where: { tenantId } });
+      const cashEntryResult = await tx.cashEntry.deleteMany({ where: { tenantId } });
+      await tx.agency.updateMany({ where: { tenantId }, data: { lastContractNumber: 0 } });
+      await tx.cashRegister.updateMany({
+        where: { tenantId },
+        data: { previousBalance: 0, currentBalance: 0, currentMonth: monthKey(new Date()) },
+      });
 
-    const auditLogResult = input.includeAuditLog
-      ? await prisma.auditLog.deleteMany({ where: { tenantId } })
-      : { count: 0 };
+      const auditLogResult = input.includeAuditLog
+        ? await tx.auditLog.deleteMany({ where: { tenantId } })
+        : { count: 0 };
 
-    // CashEntry vient d'être vidée : le solde recalculé (recomputeCashRegisterBalance,
-    // src/lib/cash-register.ts) est nécessairement 0 — jamais mis à jour à la main pour
-    // rester cohérent avec le principe "solde toujours recalculé depuis les écritures
-    // réelles" (DOMAINRULES.md).
-    await recomputeCashRegisterBalance(tenantId);
+      const result: DataResetCounts = {
+        payment: paymentResult.count,
+        invoice: invoiceResult.count,
+        maintenance: maintenanceResult.count,
+        vehicleTransfer: vehicleTransferResult.count,
+        vehicleTrip: vehicleTripResult.count,
+        location: locationResult.count,
+        vehicle: vehicleResult.count,
+        client: clientResult.count,
+        reservation: reservationResult.count,
+        alert: alertResult.count,
+        invitation: invitationResult.count,
+        cashEntry: cashEntryResult.count,
+        auditLog: auditLogResult.count,
+      };
 
-    const deleted: DataResetCounts = {
-      payment: paymentResult.count,
-      invoice: invoiceResult.count,
-      maintenance: maintenanceResult.count,
-      vehicleTransfer: vehicleTransferResult.count,
-      vehicleTrip: vehicleTripResult.count,
-      location: locationResult.count,
-      vehicle: vehicleResult.count,
-      client: clientResult.count,
-      reservation: reservationResult.count,
-      alert: alertResult.count,
-      invitation: invitationResult.count,
-      cashEntry: cashEntryResult.count,
-      auditLog: auditLogResult.count,
-    };
+      // logAction (src/lib/audit.ts) n'est pas utilisée ici : elle passe par le client Prisma
+      // global plutôt que `tx`, ce qui l'exécuterait hors de cette transaction.
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId: input.userId,
+          action: "data.reset",
+          resource: "Tenant",
+          resourceId: tenantId,
+          metadata: { deleted: result, includeAuditLog: input.includeAuditLog } as unknown as Prisma.InputJsonValue,
+        },
+      });
 
-    await logAction({
-      tenantId,
-      userId: input.userId,
-      action: "data.reset",
-      resource: "Tenant",
-      resourceId: tenantId,
-      metadata: { deleted, includeAuditLog: input.includeAuditLog } as unknown as Prisma.InputJsonValue,
+      return result;
     });
 
     return deleted;

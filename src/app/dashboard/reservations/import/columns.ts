@@ -30,6 +30,7 @@ export const RESERVATION_IMPORT_COLUMNS_CLIENT = [
   "Prix siège bébé",
   "Conducteur supplémentaire",
   "Prix conducteur supplémentaire",
+  "Devise des options",
   "Kilométrage",
   "Km inclus",
   "Téléphone client",

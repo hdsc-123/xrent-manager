@@ -7,7 +7,9 @@ import { prisma } from "@/lib/prisma";
 import {
   getPayments,
   createPayment,
+  createMixedPayments,
   type PaymentFilters,
+  type MixedPaymentLine,
   PaymentInvoiceNotFoundError,
   InvoiceCancelledError,
   InvalidPaymentAmountError,
@@ -78,6 +80,9 @@ interface CreatePaymentBody {
   invoiceId?: string;
   amount?: number;
   method?: PaymentMethod;
+  /** Paiement mixte (Sprint 17) : plusieurs lignes méthode+montant validées atomiquement
+   * côté serveur contre le solde restant — remplace amount/method quand fourni. */
+  lines?: { amount?: number; method?: PaymentMethod }[];
   paidAt?: string;
   reference?: string;
   notes?: string;
@@ -100,13 +105,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
   }
 
-  const { invoiceId, amount, method } = body;
-  if (!invoiceId || amount === undefined || !method) {
-    return NextResponse.json({ error: "invoiceId, amount et method sont requis." }, { status: 400 });
-  }
-
-  if (!PAYMENT_METHODS.includes(method)) {
-    return NextResponse.json({ error: "method invalide." }, { status: 400 });
+  const { invoiceId } = body;
+  if (!invoiceId) {
+    return NextResponse.json({ error: "invoiceId est requis." }, { status: 400 });
   }
 
   let paidAt: Date | undefined;
@@ -124,6 +125,63 @@ export async function POST(request: Request) {
 
   if (!(await canAccessAgency(user, invoice.agencyId))) {
     return NextResponse.json({ error: "Accès refusé à cette agence." }, { status: 403 });
+  }
+
+  if (body.lines) {
+    const lines: MixedPaymentLine[] = [];
+    for (const line of body.lines) {
+      if (line.amount === undefined || !line.method) {
+        return NextResponse.json({ error: "Chaque ligne du paiement mixte requiert amount et method." }, { status: 400 });
+      }
+      if (!PAYMENT_METHODS.includes(line.method)) {
+        return NextResponse.json({ error: "method invalide dans le paiement mixte." }, { status: 400 });
+      }
+      lines.push({ amount: line.amount, method: line.method });
+    }
+
+    try {
+      const payments = await createMixedPayments({
+        tenantId: user.tenantId,
+        invoiceId,
+        lines,
+        paidAt,
+        reference: body.reference,
+        notes: body.notes,
+      });
+      for (const payment of payments) {
+        await logAction({
+          tenantId: user.tenantId,
+          userId: user.id,
+          action: "payment.created",
+          resource: "Payment",
+          resourceId: payment.id,
+          metadata: { invoiceId: payment.invoiceId, amount: payment.amount, method: payment.method, mixed: true },
+        });
+      }
+      return NextResponse.json({ payments }, { status: 201 });
+    } catch (error) {
+      if (error instanceof PaymentInvoiceNotFoundError) {
+        return NextResponse.json({ error: error.message }, { status: 404 });
+      }
+      if (error instanceof InvalidPaymentAmountError) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+      if (error instanceof InvoiceCancelledError || error instanceof PaymentExceedsRemainingBalanceError) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+
+      console.error("Erreur lors de la création du paiement mixte :", error);
+      return NextResponse.json({ error: "Erreur interne." }, { status: 500 });
+    }
+  }
+
+  const { amount, method } = body;
+  if (amount === undefined || !method) {
+    return NextResponse.json({ error: "invoiceId, amount et method sont requis." }, { status: 400 });
+  }
+
+  if (!PAYMENT_METHODS.includes(method)) {
+    return NextResponse.json({ error: "method invalide." }, { status: 400 });
   }
 
   try {

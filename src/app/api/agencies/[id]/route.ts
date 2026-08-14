@@ -65,6 +65,10 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Agence introuvable." }, { status: 404 });
   }
 
+  if (!(await canAccessAgency(user, agency.id))) {
+    return NextResponse.json({ error: "Agence introuvable." }, { status: 404 });
+  }
+
   let body: UpdateAgencyBody;
   try {
     body = await request.json();
@@ -142,6 +146,10 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
   const agency = await getAgencyById(user.tenantId, id);
 
   if (!agency) {
+    return NextResponse.json({ error: "Agence introuvable." }, { status: 404 });
+  }
+
+  if (!(await canAccessAgency(user, agency.id))) {
     return NextResponse.json({ error: "Agence introuvable." }, { status: 404 });
   }
 

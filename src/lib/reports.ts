@@ -256,14 +256,19 @@ export async function getReservationsByStatus(
 
   const ALL_STATUSES = ["PENDING", "CONFIRMED", "CONVERTED", "CANCELLED"] as const;
 
+  // Sprint 15 a transformé `source` en texte libre (normalizeSource) précisément pour ne plus
+  // perdre les codes broker réels (TJS/DCH/CT...) — un groupBy par valeur exacte de `source`
+  // ne doit donc plus jamais chercher la seule valeur "BROKER" (Sprint 17 : ce bucketing datait
+  // de l'ancien enum fermé BROKER/DIRECT et sous-comptait silencieusement tout autre code
+  // broker réel). Toute source non-DIRECT/non-nulle est par définition un broker.
   return ALL_STATUSES.map((status) => {
     const entriesForStatus = grouped.filter((entry) => entry.status === status);
-    return {
-      status,
-      broker: entriesForStatus.find((entry) => entry.source === "BROKER")?._count._all ?? 0,
-      direct:
-        (entriesForStatus.find((entry) => entry.source === "DIRECT")?._count._all ?? 0) +
-        (entriesForStatus.find((entry) => entry.source === null)?._count._all ?? 0),
-    };
+    const direct = entriesForStatus
+      .filter((entry) => entry.source === "DIRECT" || entry.source === null)
+      .reduce((sum, entry) => sum + entry._count._all, 0);
+    const broker = entriesForStatus
+      .filter((entry) => entry.source !== "DIRECT" && entry.source !== null)
+      .reduce((sum, entry) => sum + entry._count._all, 0);
+    return { status, broker, direct };
   });
 }

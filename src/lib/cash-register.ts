@@ -16,7 +16,11 @@ export class ExpenseCategoryNameInUseError extends Error {
   }
 }
 
-function monthKey(date: Date): string {
+/** Exportée (Sprint 17) pour src/lib/data-reset.ts — après une purge complète des CashEntry
+ * d'un tenant, le solde recalculé est trivialement 0 (previousBalance/currentBalance), ce qui
+ * permet de le poser directement dans la même transaction Prisma que la purge plutôt que
+ * d'appeler recomputeCashRegisterBalance (non transactionnelle) après coup. */
+export function monthKey(date: Date): string {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 

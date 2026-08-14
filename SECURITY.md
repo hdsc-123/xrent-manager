@@ -206,3 +206,18 @@ Sprint exclusivement dédié à la sécurité (aucun nouveau module métier) —
 Checklist de conformité MVP (section 23) : statut inchangé sur les points 10-14 (rate limiting, MFA, headers CSP, environnement de production, revue WSTG formelle — toujours hors périmètre MVP, **À DÉCIDER**). Les points 1-9 restent ✅, renforcés par cet audit (aucune régression, gaps additionnels corrigés).
 
 Voir DOMAINRULES.md section 34 pour le détail complet et TESTREPORT.md section 3 « Tests Sprint 16 » pour les tests ajoutés.
+
+## 26. Tests intensifs et régressions (Sprint 17)
+
+Sprint de tests de bout en bout (aucun nouveau module métier, voir DOMAINRULES.md section 35 pour le détail complet) — 4 des 10 bugs trouvés ont une dimension sécurité (contournement d'isolation par agence, contournement d'un verrou métier, régression de permission, intégrité de la traçabilité d'audit), reportés ici par cohérence avec le format des sections 23-25 :
+
+| # | Faille/incohérence | Sévérité | Correctif |
+|---|---|---|---|
+| 1 | `PATCH`/`DELETE /api/agencies/[id]` ne vérifiaient pas `canAccessAgency()` (seul `GET` le faisait) — un MEMBER avec un groupe personnalisé accordant `agencies.edit`/`agencies.delete` pouvait modifier/supprimer n'importe quelle agence du tenant, pas seulement celles auxquelles il a accès via `UserAgency` | Moyenne | `canAccessAgency()` ajouté sur `PATCH`/`DELETE`, même garde que `GET` |
+| 2 | `PATCH /api/reservations/[id]` acceptait sans erreur une modification de n'importe quel champ (prix, dates, identité client) sur une réservation déjà `CONVERTED`/`CANCELLED` — seule l'UI empêchait ce cas, le contrat déjà généré à la conversion n'est jamais mis à jour rétroactivement | Faible-Moyenne | Nouveau `ReservationLockedError` (409) sur toute réservation terminale, notes exceptées |
+| 3 | Régression fonctionnelle Sprint 15 (pas une faille de sécurité au sens strict, mais un déni de service applicatif pour le groupe concerné) : le groupe par défaut `AGENCE` n'avait jamais reçu `agencies.view`/`cash_register.*`, bloquant `GET /api/agencies` et donc plusieurs formulaires pour ce groupe | Faible | Clés ajoutées à `DEFAULT_GROUPS`/`SPRINT15_BACKFILL_PERMISSIONS` |
+| 4 | Reset de données (section 17) non pleinement atomique — la purge conditionnelle de l'`AuditLog`, le recalcul de caisse et l'entrée d'audit finale s'exécutaient hors de la transaction principale ; un échec entre les deux pouvait laisser des données purgées sans que l'entrée d'audit obligatoire ne soit jamais écrite | Faible | Transaction interactive unique englobant l'ensemble (`src/lib/data-reset.ts`) |
+
+Les deux autres bugs corrigés ce sprint (paiement mixte non atomique sur la fiche facture, prix d'option non effacé) sont des bugs de correction métier, pas des failles de sécurité — voir DOMAINRULES.md section 35 pour le détail complet, y compris le gap de concurrence identifié sur les transferts/déplacements de véhicule et documenté plutôt que corrigé ce sprint (hors périmètre proportionné, pattern préexistant ailleurs dans le projet).
+
+Aucune nouvelle faille d'isolation tenant/agence ni IDOR trouvée par ailleurs — les 4 revues en parallèle de ce sprint (voir HANDOFF.md section 1) confirment une nouvelle fois la solidité du modèle (section 1) après les audits Sprint 10/11/15/16.

@@ -459,3 +459,76 @@ describe("Sprint 15 — permissions granulaires (agencies.create)", () => {
     }
   });
 });
+
+describe("Sprint 17 — PATCH/DELETE /api/agencies/[id] scopées par canAccessAgency, pas seulement can()", () => {
+  it("un MEMBER dont le groupe personnalisé accorde agencies.edit/agencies.delete ne peut pas modifier/supprimer une agence à laquelle il n'a pas accès (UserAgency)", async () => {
+    const scopedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        name: `AgencyEditDelete-${runId}`,
+        permissions: ["agencies.view", "agencies.edit", "agencies.delete"],
+      }),
+    });
+    const scopedGroupId = (await scopedGroupResponse.json()).group.id;
+
+    const inScopeAgencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Agence dans le scope ${runId}`, slug: `in-scope-${runId}` }),
+    });
+    const inScopeAgencyId = (await inScopeAgencyResponse.json()).agency.id;
+
+    const outOfScopeAgencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Agence hors scope ${runId}`, slug: `out-of-scope-${runId}` }),
+    });
+    const outOfScopeAgencyId = (await outOfScopeAgencyResponse.json()).agency.id;
+
+    const scopedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Scoped Agency Member",
+      email: `scoped-agency-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await apiFetch(`/api/users/${scopedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: scopedGroupId }),
+    });
+    // Rattaché uniquement à inScopeAgencyId — jamais à outOfScopeAgencyId.
+    await apiFetch(`/api/users/${scopedMember.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ agencyIds: [inScopeAgencyId] }),
+    });
+
+    const patchInScope = await apiFetch(`/api/agencies/${inScopeAgencyId}`, {
+      method: "PATCH",
+      headers: { Cookie: scopedMember.sessionCookie },
+      body: JSON.stringify({ city: "Casablanca" }),
+    });
+    expect(patchInScope.status).toBe(200);
+
+    const patchOutOfScope = await apiFetch(`/api/agencies/${outOfScopeAgencyId}`, {
+      method: "PATCH",
+      headers: { Cookie: scopedMember.sessionCookie },
+      body: JSON.stringify({ city: "Tentative hors scope" }),
+    });
+    expect(patchOutOfScope.status).toBe(404);
+
+    const deleteOutOfScope = await apiFetch(`/api/agencies/${outOfScopeAgencyId}`, {
+      method: "DELETE",
+      headers: { Cookie: scopedMember.sessionCookie },
+    });
+    expect(deleteOutOfScope.status).toBe(404);
+
+    // Vérifie que l'agence hors scope n'a réellement pas été modifiée par la tentative refusée.
+    const stillIntact = await apiFetch(`/api/agencies/${outOfScopeAgencyId}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const stillIntactBody = await stillIntact.json();
+    expect(stillIntactBody.agency.city).not.toBe("Tentative hors scope");
+  });
+});
