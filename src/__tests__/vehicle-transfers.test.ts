@@ -194,6 +194,64 @@ describe("POST /api/vehicle-transfers", () => {
     const response = await createTransfer(memberA, vehicleId, agencyA1Id, memberA.userId);
     expect(response.status).toBe(403);
   });
+
+  it("Sprint 19 : autorise un MEMBER à lancer un transfert vers une agence d'arrivée à laquelle il n'est pas rattaché (bug réel corrigé)", async () => {
+    // memberA n'est rattaché qu'à agencyA1Id (voir beforeAll) — pas agencyA2Id.
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const response = await createTransfer(memberA, vehicleId, agencyA2Id, memberA.userId);
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.transfer.fromAgencyId).toBe(agencyA1Id);
+    expect(body.transfer.toAgencyId).toBe(agencyA2Id);
+  });
+
+  it("Sprint 19 : refuse toujours une agence d'arrivée d'un autre tenant", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const response = await createTransfer(adminA, vehicleId, agencyB1Id, adminA.userId);
+    expect(response.status).toBe(404);
+  });
+});
+
+describe("Sprint 19 — GET /api/vehicles/[id]/last-known-state", () => {
+  it("retourne null/null pour un véhicule sans historique de retour", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const response = await apiFetch(`/api/vehicles/${vehicleId}/last-known-state`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.odometer).toBeNull();
+    expect(body.fuelLevel).toBeNull();
+  });
+
+  it("reprend le kilométrage/carburant du dernier transfert validé", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const createResponse = await createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId, {
+      startOdometer: 1000,
+    });
+    const transferId = (await createResponse.json()).transfer.id;
+
+    await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ endOdometer: 1200, endFuelLevel: 75 }),
+    });
+
+    const response = await apiFetch(`/api/vehicles/${vehicleId}/last-known-state`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const body = await response.json();
+    expect(body.odometer).toBe(1200);
+    expect(body.fuelLevel).toBe(75);
+  });
 });
 
 describe("PATCH /api/vehicle-transfers/[id]/validate", () => {

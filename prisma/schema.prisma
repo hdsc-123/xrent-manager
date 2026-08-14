@@ -59,16 +59,25 @@ model Agency {
   contractNumberPrefix String @default("")
   lastContractNumber   Int    @default(0)
 
-  tenant        Tenant            @relation(fields: [tenantId], references: [id])
-  userAgencies  UserAgency[]
-  vehicles      Vehicle[]
-  locations     Location[]
-  invoices      Invoice[]
-  maintenances  Maintenance[]
-  alerts        Alert[]
-  transfersFrom VehicleTransfer[] @relation("VehicleTransferFromAgency")
-  transfersTo   VehicleTransfer[] @relation("VehicleTransferToAgency")
-  vehicleTrips  VehicleTrip[]
+  // Solde de départ de caisse (Sprint 19) — purement informatif/de référence : la caisse
+  // (CashRegister) reste un singleton par tenant (décision reconduite, voir son commentaire
+  // ci-dessous), ce champ n'est jamais intégré au calcul réel du solde. Utile pour qu'une
+  // agence garde trace du solde physique constaté à son ouverture, affiché sur la page Caisse.
+  cashStartingBalance Int @default(0)
+
+  tenant              Tenant            @relation(fields: [tenantId], references: [id])
+  userAgencies        UserAgency[]
+  vehicles            Vehicle[]
+  locations           Location[]        @relation("LocationAgency")
+  locationsDroppedOff Location[]        @relation("LocationDropoffAgency")
+  invoices            Invoice[]
+  maintenances        Maintenance[]
+  alerts              Alert[]
+  transfersFrom       VehicleTransfer[] @relation("VehicleTransferFromAgency")
+  transfersTo         VehicleTransfer[] @relation("VehicleTransferToAgency")
+  vehicleTrips        VehicleTrip[]
+  reservationsPickup  Reservation[]     @relation("ReservationPickupAgency")
+  reservationsDropoff Reservation[]     @relation("ReservationDropoffAgency")
 
   @@unique([tenantId, slug])
   @@index([tenantId])
@@ -150,9 +159,10 @@ model Client {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  tenant    Tenant     @relation(fields: [tenantId], references: [id])
-  locations Location[]
-  invoices  Invoice[]
+  tenant                   Tenant     @relation(fields: [tenantId], references: [id])
+  locations                Location[] @relation("LocationClient")
+  secondDriverForLocations Location[] @relation("LocationSecondDriver")
+  invoices                 Invoice[]
 
   @@index([tenantId])
 }
@@ -217,8 +227,22 @@ model Vehicle {
   // contrat (src/lib/locations.ts, createLocation).
   pricePerDay   Int?
   currency      String            @default("MAD")
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
+
+  // Champs proactifs pour les alertes métier (Sprint 19, DOMAINRULES section 37) : tous
+  // optionnels (véhicules déjà existants n'en ont pas, jamais backfillés — même principe que
+  // pricePerDay Sprint 14A) ; renseignés depuis la fiche véhicule, consultés par
+  // scheduled-tasks.ts pour générer les alertes INSURANCE_EXPIRING/VIGNETTE_EXPIRING/
+  // TECHNICAL_INSPECTION_DUE/OIL_CHANGE_DUE. Distinct de Maintenance (historique des
+  // interventions déjà réalisées/planifiées) : ces champs représentent la prochaine échéance
+  // connue, pas un événement en soi.
+  insuranceExpiryDate           DateTime?
+  vignetteExpiryDate            DateTime?
+  technicalInspectionExpiryDate DateTime?
+  nextOilChangeDate             DateTime?
+  nextOilChangeKm               Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   tenant       Tenant            @relation(fields: [tenantId], references: [id])
   agency       Agency            @relation(fields: [agencyId], references: [id])
@@ -242,40 +266,55 @@ enum LocationStatus {
 }
 
 model Location {
-  id             String         @id @default(cuid())
-  tenantId       String
-  agencyId       String
-  vehicleId      String
-  clientId       String
-  startDate      DateTime
-  endDate        DateTime
-  startOdometer  Int?
-  endOdometer    Int?
-  status         LocationStatus @default(PENDING)
-  pricePerDay    Int
-  totalPrice     Int
-  deposit        Int?
-  currency       String         @default("MAD")
-  notes          String?
+  id              String         @id @default(cuid())
+  tenantId        String
+  agencyId        String
+  // Agence de retour (Sprint 19, DOMAINRULES section 37) : nullable, renseignée uniquement
+  // quand une conversion de réservation a une dropoffAgency distincte de l'agence du véhicule
+  // choisi (sinon null = "même agence que agencyId", pas de duplication). Permet au widget
+  // "Retours" du dashboard et à la gestion de réception du véhicule d'être visibles à l'agence
+  // d'arrivée réelle, pas seulement à l'agence de départ/rattachement du véhicule.
+  dropoffAgencyId String?
+  vehicleId       String
+  clientId        String
+  // Second conducteur (Sprint 19, DOMAINRULES section 37) : réutilise entièrement le modèle
+  // Client existant (même flux de détection de doublon que le client principal) plutôt qu'un
+  // modèle dédié — un second conducteur est une identité, pas un concept métier différent.
+  // Nullable : la plupart des contrats n'en ont pas.
+  secondDriverId  String?
+  startDate       DateTime
+  endDate         DateTime
+  startOdometer   Int?
+  endOdometer     Int?
+  status          LocationStatus @default(PENDING)
+  pricePerDay     Int
+  totalPrice      Int
+  deposit         Int?
+  currency        String         @default("MAD")
+  notes           String?
   // Numéro de contrat séquentiel (Sprint 14B), ex. "RAK-00122" — voir generateContractNumber,
   // src/lib/locations.ts. Nullable : les Location déjà créées avant ce sprint n'en ont pas
   // (jamais backfillées rétroactivement, même principe que Vehicle.pricePerDay Sprint 14A) ;
   // toute nouvelle Location en reçoit un systématiquement, quel que soit son statut initial.
-  contractNumber String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  contractNumber  String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id])
-  agency   Agency    @relation(fields: [agencyId], references: [id])
-  vehicle  Vehicle   @relation(fields: [vehicleId], references: [id])
-  client   Client    @relation(fields: [clientId], references: [id])
-  invoices Invoice[]
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
+  agency        Agency    @relation("LocationAgency", fields: [agencyId], references: [id])
+  dropoffAgency Agency?   @relation("LocationDropoffAgency", fields: [dropoffAgencyId], references: [id])
+  vehicle       Vehicle   @relation(fields: [vehicleId], references: [id])
+  client        Client    @relation("LocationClient", fields: [clientId], references: [id])
+  secondDriver  Client?   @relation("LocationSecondDriver", fields: [secondDriverId], references: [id])
+  invoices      Invoice[]
 
   @@unique([tenantId, contractNumber])
   @@index([tenantId])
   @@index([agencyId])
+  @@index([dropoffAgencyId])
   @@index([vehicleId])
   @@index([clientId])
+  @@index([secondDriverId])
   @@index([status])
   @@index([startDate, endDate])
 }
@@ -516,6 +555,10 @@ enum AlertType {
   RETURN_OVERDUE
   DOCUMENT_EXPIRED
   STOCK_INCONSISTENCY
+  INSURANCE_EXPIRING
+  VIGNETTE_EXPIRING
+  TECHNICAL_INSPECTION_DUE
+  OIL_CHANGE_DUE
   OTHER
 }
 
@@ -661,6 +704,15 @@ model Reservation {
   vehicleCategory     String?
   pickupAgency        String?
   dropoffAgency       String?
+  // Résolution serveur de pickupAgency/dropoffAgency (texte libre ci-dessus, inchangé — un
+  // import broker peut désigner une ville qui ne correspond à aucune Agency réelle) vers une
+  // Agency réelle du tenant quand le texte correspond (Sprint 19, DOMAINRULES section 37) :
+  // sert uniquement à la visibilité/l'autorisation par agence (getAccessibleAgencyIds), jamais
+  // à l'affichage (qui reste basé sur le texte libre). Null si aucune correspondance — dans ce
+  // cas la réservation reste visible à quiconque a la permission reservations.view, comportement
+  // inchangé par rapport à avant ce sprint (pas de régression sur l'import Excel/broker).
+  pickupAgencyId      String?
+  dropoffAgencyId     String?
   hasGps              Boolean           @default(false)
   gpsPrice            Int?
   hasBabySeat         Boolean           @default(false)
@@ -677,11 +729,15 @@ model Reservation {
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
+  tenant           Tenant  @relation(fields: [tenantId], references: [id])
+  pickupAgencyRef  Agency? @relation("ReservationPickupAgency", fields: [pickupAgencyId], references: [id])
+  dropoffAgencyRef Agency? @relation("ReservationDropoffAgency", fields: [dropoffAgencyId], references: [id])
 
   @@index([tenantId])
   @@index([status])
   @@index([voucherNumber])
+  @@index([pickupAgencyId])
+  @@index([dropoffAgencyId])
 }
 
 // Système de permissions granulaires (Sprint 12C), en complément — pas en remplacement —

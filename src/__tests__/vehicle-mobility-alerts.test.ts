@@ -65,6 +65,9 @@ afterAll(async () => {
   await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.maintenance.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.vehicleTransfer.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.vehicleTrip.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -162,5 +165,40 @@ describe("GET /dashboard/maintenances — état réel des véhicules", () => {
     expect(html).toContain(maintenance.licensePlate);
     expect(html).toContain("Disponible");
     expect(html).toContain("Maintenance");
+  });
+});
+
+describe("Sprint 19 — fiche véhicule : historique maintenance + mouvements (DOMAINRULES.md section 37)", () => {
+  it("affiche l'historique maintenance et les mouvements (transferts/déplacements) du véhicule", async () => {
+    const vehicle = await createVehicle({ licensePlate: `HIST-${runId}` });
+
+    const agency2Response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ name: "Agence Historique 2", slug: `al-agence2-${runId}` }),
+    });
+    const agency2Id = (await agency2Response.json()).agency.id;
+
+    await apiFetch("/api/maintenances", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ vehicleId: vehicle.id, type: "OIL_CHANGE", scheduledDate: "2030-01-15" }),
+    });
+
+    await apiFetch("/api/vehicle-transfers", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ vehicleId: vehicle.id, toAgencyId: agency2Id, responsibleUserId: admin.userId }),
+    });
+
+    const response = await apiFetch(`/dashboard/vehicles/${vehicle.id}`, { headers: { Cookie: admin.sessionCookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+
+    expect(html).toContain("Historique maintenance");
+    expect(html).toContain("Vidange");
+    expect(html).toContain("Historique des mouvements");
+    expect(html).toContain("Transfert");
+    expect(html).toContain("Agence Historique 2");
   });
 });

@@ -212,6 +212,160 @@ describe("POST /api/cash-register", () => {
   });
 });
 
+describe("PATCH/DELETE /api/cash-register/[id] (Sprint 19 — écritures manuelles uniquement)", () => {
+  async function createManualEntry(overrides: Record<string, unknown> = {}) {
+    const response = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 5_000, ...overrides }),
+    });
+    return (await response.json()).entry as { id: string };
+  }
+
+  it("modifie une écriture manuelle et recalcule le solde", async () => {
+    const entry = await createManualEntry({ amount: 4_000 });
+
+    const before = await (
+      await apiFetch("/api/cash-register", { headers: { Cookie: adminA.sessionCookie } })
+    ).json();
+
+    const response = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ amount: 9_000, category: "COMMISSION", description: "Corrigé" }),
+    });
+    expect(response.status).toBe(200);
+    const { entry: updated } = await response.json();
+    expect(updated.amount).toBe(9_000);
+    expect(updated.category).toBe("COMMISSION");
+    expect(updated.description).toBe("Corrigé");
+
+    const after = await (
+      await apiFetch("/api/cash-register", { headers: { Cookie: adminA.sessionCookie } })
+    ).json();
+    expect(after.summary.currentBalance).toBe(before.summary.currentBalance + 5_000);
+  });
+
+  it("supprime une écriture manuelle et recalcule le solde", async () => {
+    const entry = await createManualEntry({ amount: 2_500 });
+
+    const before = await (
+      await apiFetch("/api/cash-register", { headers: { Cookie: adminA.sessionCookie } })
+    ).json();
+
+    const response = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+
+    const after = await (
+      await apiFetch("/api/cash-register", { headers: { Cookie: adminA.sessionCookie } })
+    ).json();
+    expect(after.summary.currentBalance).toBe(before.summary.currentBalance - 2_500);
+  });
+
+  it("refuse de modifier/supprimer une écriture liée à un paiement (contractId renseigné)", async () => {
+    const entry = await createManualEntry({ contractId: `fake-location-${runId}` });
+
+    const patchResponse = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ amount: 1_000 }),
+    });
+    expect(patchResponse.status).toBe(409);
+
+    const deleteResponse = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(409);
+  });
+
+  it("retourne 404 pour une écriture d'un autre tenant", async () => {
+    const entry = await createManualEntry();
+
+    const response = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminB.sessionCookie },
+      body: JSON.stringify({ amount: 1_000 }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("exige cash_register.edit/delete (un groupe personnalisé sans ces clés est refusé)", async () => {
+    const entry = await createManualEntry();
+
+    const restrictedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        name: `NoCashEditDelete-${runId}`,
+        permissions: ["cash_register.view", "cash_register.create_entry"],
+      }),
+    });
+    const restrictedGroupId = (await restrictedGroupResponse.json()).group.id;
+
+    const restrictedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Restricted Cash Edit Member",
+      email: `restricted-cash-edit-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: restrictedGroupId }),
+    });
+
+    const patchResponse = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "PATCH",
+      headers: { Cookie: restrictedMember.sessionCookie },
+      body: JSON.stringify({ amount: 1_000 }),
+    });
+    expect(patchResponse.status).toBe(403);
+
+    const deleteResponse = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "DELETE",
+      headers: { Cookie: restrictedMember.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(403);
+  });
+});
+
+describe("Sprint 19 — séparation espèces/carte des entrées (DOMAINRULES.md section 37)", () => {
+  it("monthCash/monthCard reflètent les entrées par mode de règlement, séparément de monthEntries", async () => {
+    const before = await (
+      await apiFetch("/api/cash-register", { headers: { Cookie: adminA.sessionCookie } })
+    ).json();
+
+    await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", amount: 4_000, paymentMethod: "CASH" }),
+    });
+    await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", amount: 6_000, paymentMethod: "CARD" }),
+    });
+    // Sans paymentMethod : compté dans monthEntries mais ni cash ni card.
+    await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", amount: 1_000 }),
+    });
+
+    const after = await (
+      await apiFetch("/api/cash-register", { headers: { Cookie: adminA.sessionCookie } })
+    ).json();
+
+    expect(after.summary.monthCash).toBe(before.summary.monthCash + 4_000);
+    expect(after.summary.monthCard).toBe(before.summary.monthCard + 6_000);
+    expect(after.summary.monthEntries).toBe(before.summary.monthEntries + 4_000 + 6_000 + 1_000);
+  });
+});
+
 describe("GET /api/cash-register/entries et /expenses", () => {
   it("ne retourne que le type demandé et scope par tenant", async () => {
     await apiFetch("/api/cash-register", {

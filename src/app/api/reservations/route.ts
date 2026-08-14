@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { ReservationStatus } from "@prisma/client";
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import {
   getReservations,
@@ -49,6 +49,9 @@ export async function GET(request: Request) {
     pickupAgency: pickupAgencyParam,
     dropoffAgency: dropoffAgencyParam,
     vehicleCategory: vehicleCategoryParam,
+    // Sprint 19 (DOMAINRULES.md section 37) : visibilité scopée par agence de départ/retour
+    // pour un MEMBER — voir getReservations, src/lib/reservations.ts.
+    accessibleAgencyIds: await getAccessibleAgencyIds(user),
   };
 
   const reservations = await getReservations(user.tenantId, filters);

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { apiGet, apiPost, ApiError } from "@/lib/api";
-import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, Label } from "@/components/ui";
+import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, FuelLevelSelect, Input, Label } from "@/components/ui";
 
 interface Vehicle {
   id: string;
@@ -41,6 +41,22 @@ export function NewVehicleTripForm() {
       .then((data) => setUsers(data.users))
       .catch(() => setUsers([]));
   }, []);
+
+  // Sprint 19 (DOMAINRULES.md section 37) : dernier kilométrage/carburant connus du véhicule
+  // choisi, pré-remplis automatiquement (modifiables ensuite) — même logique que les
+  // transferts entre agences, voir GET /api/vehicles/[id]/last-known-state.
+  useEffect(() => {
+    if (!vehicleId) return;
+    apiGet<{ odometer: number | null; fuelLevel: number | null }>(`/api/vehicles/${vehicleId}/last-known-state`)
+      .then((data) => {
+        setStartOdometer(data.odometer !== null ? String(data.odometer) : "");
+        setStartFuelLevel(data.fuelLevel !== null ? String(data.fuelLevel) : "");
+      })
+      .catch(() => {
+        setStartOdometer("");
+        setStartFuelLevel("");
+      });
+  }, [vehicleId]);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -154,7 +170,9 @@ export function NewVehicleTripForm() {
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="startOdometer" required>Kilométrage départ</Label>
+                <Label htmlFor="startOdometer" required>
+                  Kilométrage départ <span className="text-muted-foreground">— auto, modifiable</span>
+                </Label>
                 <Input
                   id="startOdometer"
                   required
@@ -164,13 +182,10 @@ export function NewVehicleTripForm() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="startFuelLevel">Carburant départ (%)</Label>
-                <Input
-                  id="startFuelLevel"
-                  inputMode="numeric"
-                  value={startFuelLevel}
-                  onChange={(e) => setStartFuelLevel(e.target.value)}
-                />
+                <Label htmlFor="startFuelLevel">
+                  Carburant départ <span className="text-muted-foreground">— auto, modifiable</span>
+                </Label>
+                <FuelLevelSelect id="startFuelLevel" value={startFuelLevel} onChange={setStartFuelLevel} />
               </div>
             </div>
 

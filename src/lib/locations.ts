@@ -24,6 +24,14 @@ export class ClientNotFoundError extends Error {
   }
 }
 
+/** Sprint 19 — second conducteur (voir Location.secondDriverId, réutilise Client). */
+export class SecondDriverNotFoundError extends Error {
+  constructor() {
+    super("Second conducteur introuvable.");
+    this.name = "SecondDriverNotFoundError";
+  }
+}
+
 export class VehicleNotAvailableError extends Error {
   conflictingLocations: Pick<Location, "id" | "startDate" | "endDate" | "status">[];
 
@@ -160,8 +168,15 @@ export async function getLocationById(tenantId: string, locationId: string): Pro
 export interface CreateLocationInput {
   tenantId: string;
   agencyId: string;
+  /** Sprint 19 — agence de retour, si distincte de `agencyId` (dérivée de
+   * reservation.dropoffAgencyId à la conversion, voir POST /api/reservations/[id]/convert) :
+   * permet à l'agence d'arrivée de voir/gérer la réception sans accès à `agencyId`, voir
+   * canAccessLocationAgency (src/lib/authz.ts) et le widget "Retours" du dashboard. */
+  dropoffAgencyId?: string | null;
   vehicleId: string;
   clientId: string;
+  /** Sprint 19 — second conducteur (réutilise Client, voir SecondDriverNotFoundError). */
+  secondDriverId?: string | null;
   startDate: Date;
   endDate: Date;
   status?: LocationStatus;
@@ -174,6 +189,11 @@ export interface CreateLocationInput {
    * sur `vehicle.pricePerDay` (valeur informative) ; si ni l'un ni l'autre n'est disponible,
    * `MissingPriceError` est levée plutôt que de créer une location à prix 0/indéfini. */
   pricePerDay?: number;
+  /** Sprint 19 — montant total explicite (centimes), prioritaire sur le calcul pricePerDay ×
+   * jours (calculateTotalPrice) : permet à la conversion d'une réservation de reprendre le
+   * vrai montant négocié (reservation.totalPrice + options) plutôt qu'un recalcul silencieux
+   * qui ignorait jusqu'ici toute remise ou option (GPS/siège bébé/conducteur suppl.). */
+  totalPrice?: number;
 }
 
 /**
@@ -197,6 +217,13 @@ export async function createLocation(data: CreateLocationInput): Promise<Locatio
     throw new ClientNotFoundError();
   }
 
+  if (data.secondDriverId) {
+    const secondDriver = await getClientById(data.tenantId, data.secondDriverId);
+    if (!secondDriver) {
+      throw new SecondDriverNotFoundError();
+    }
+  }
+
   const availability = await checkAvailability(data.tenantId, data.vehicleId, data.startDate, data.endDate);
   if (!availability?.available) {
     throw new VehicleNotAvailableError(availability?.conflictingLocations ?? []);
@@ -207,7 +234,7 @@ export async function createLocation(data: CreateLocationInput): Promise<Locatio
     throw new MissingPriceError();
   }
 
-  const totalPrice = calculateTotalPrice(pricePerDay, data.startDate, data.endDate);
+  const totalPrice = data.totalPrice ?? calculateTotalPrice(pricePerDay, data.startDate, data.endDate);
 
   const MAX_CONTRACT_NUMBER_ATTEMPTS = 5;
   for (let attempt = 0; attempt < MAX_CONTRACT_NUMBER_ATTEMPTS; attempt++) {
@@ -217,8 +244,10 @@ export async function createLocation(data: CreateLocationInput): Promise<Locatio
         data: {
           tenantId: data.tenantId,
           agencyId: data.agencyId,
+          dropoffAgencyId: data.dropoffAgencyId && data.dropoffAgencyId !== data.agencyId ? data.dropoffAgencyId : null,
           vehicleId: data.vehicleId,
           clientId: data.clientId,
+          secondDriverId: data.secondDriverId ?? null,
           startDate: data.startDate,
           endDate: data.endDate,
           status: data.status ?? "PENDING",
@@ -255,6 +284,13 @@ export interface UpdateLocationInput {
   startOdometer?: number | null;
   endOdometer?: number | null;
   deposit?: number | null;
+  /** Sprint 19 — second conducteur, ajoutable/modifiable à tout statut (n'affecte ni dates ni
+   * prix, jamais verrouillé par LocationLockedError). `null` retire le second conducteur. */
+  secondDriverId?: string | null;
+  /** Sprint 19 — bascule ADMIN uniquement (voir PATCH /api/locations/[id]) : contourne
+   * canTransition/LocationLockedError. Jamais un champ de corps de requête — toujours dérivé
+   * côté serveur de user.role, voir DOMAINRULES.md section 37. */
+  adminOverride?: boolean;
 }
 
 export async function updateLocation(
@@ -267,11 +303,20 @@ export async function updateLocation(
     return null;
   }
 
+  if (data.secondDriverId) {
+    const secondDriver = await getClientById(tenantId, data.secondDriverId);
+    if (!secondDriver) {
+      throw new SecondDriverNotFoundError();
+    }
+  }
+
   // Contrat verrouillé (Sprint 14B, DOMAINRULES.md section 29) : les dates ne sont plus
   // modifiables une fois la location sortie de PENDING (confirmée/active/terminée/annulée) —
   // un contrat déjà généré est une pièce métier figée. Toujours autorisé tant que PENDING
   // (simple brouillon), pour ne pas régresser sur le comportement déjà testé/validé du Sprint 5.
-  if ((data.startDate || data.endDate) && existing.status !== "PENDING") {
+  // Sprint 19 : un ADMIN passant adminOverride contourne ce verrou (voir DOMAINRULES.md
+  // section 37) — action journalisée systématiquement côté route, jamais silencieuse.
+  if ((data.startDate || data.endDate) && existing.status !== "PENDING" && !data.adminOverride) {
     throw new LocationLockedError();
   }
 
@@ -295,7 +340,12 @@ export async function updateLocation(
     }
   }
 
-  if (data.status && data.status !== existing.status && !canTransition(existing.status, data.status)) {
+  if (
+    data.status &&
+    data.status !== existing.status &&
+    !canTransition(existing.status, data.status) &&
+    !data.adminOverride
+  ) {
     throw new InvalidStatusTransitionError(existing.status, data.status);
   }
 
@@ -315,6 +365,7 @@ export async function updateLocation(
       ...(data.startOdometer !== undefined ? { startOdometer: data.startOdometer } : {}),
       ...(data.endOdometer !== undefined ? { endOdometer: data.endOdometer } : {}),
       ...(data.deposit !== undefined ? { deposit: data.deposit } : {}),
+      ...(data.secondDriverId !== undefined ? { secondDriverId: data.secondDriverId } : {}),
     },
   });
 }

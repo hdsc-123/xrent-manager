@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { FileText, Download } from "lucide-react";
-import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { getSessionUser, canAccessAgency, canAccessLocationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getLocationById } from "@/lib/locations";
 import { prisma } from "@/lib/prisma";
@@ -27,16 +27,26 @@ export default async function LocationDetailPage({ params }: PageProps) {
   if (!user) return null;
 
   const location = await getLocationById(user.tenantId, id);
-  if (!location || !(await canAccessAgency(user, location.agencyId))) {
+  // Sprint 19 (DOMAINRULES.md section 37) : visible aussi par l'agence de retour.
+  if (!location || !(await canAccessLocationAgency(user, location))) {
     notFound();
   }
 
   const canEdit = await can(user, "locations.edit");
+  // Sprint 19 : une agence de retour (dropoffAgencyId) sans accès à l'agence de rattachement
+  // du contrat ne peut que gérer la réception — voir PATCH /api/locations/[id] pour
+  // l'équivalent serveur de cette restriction.
+  const canManageFullEdit = canEdit && (await canAccessAgency(user, location.agencyId));
+  const canManageReturnOnly = canEdit && !canManageFullEdit;
 
-  const [vehicle, client, agency, invoice] = await Promise.all([
+  const [vehicle, client, secondDriver, agency, dropoffAgency, invoice] = await Promise.all([
     prisma.vehicle.findUnique({ where: { id: location.vehicleId } }),
     prisma.client.findUnique({ where: { id: location.clientId } }),
+    location.secondDriverId ? prisma.client.findUnique({ where: { id: location.secondDriverId } }) : null,
     prisma.agency.findUnique({ where: { id: location.agencyId }, select: { name: true } }),
+    location.dropoffAgencyId
+      ? prisma.agency.findUnique({ where: { id: location.dropoffAgencyId }, select: { name: true } })
+      : null,
     prisma.invoice.findFirst({ where: { locationId: location.id }, orderBy: { createdAt: "desc" } }),
   ]);
 
@@ -47,7 +57,10 @@ export default async function LocationDetailPage({ params }: PageProps) {
           <h1 className="font-heading text-2xl font-semibold">
             {location.contractNumber ?? `Location #${location.id.slice(-8)}`}
           </h1>
-          <p className="text-sm text-muted-foreground">Agence : {agency?.name ?? "—"}</p>
+          <p className="text-sm text-muted-foreground">
+            Agence : {agency?.name ?? "—"}
+            {dropoffAgency ? ` (retour : ${dropoffAgency.name})` : ""}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="outline">{STATUS_LABELS[location.status] ?? location.status}</Badge>
@@ -85,6 +98,12 @@ export default async function LocationDetailPage({ params }: PageProps) {
             <p className="text-xs font-medium text-muted-foreground">Client</p>
             <p>{client?.name ?? "—"}</p>
           </div>
+          {secondDriver && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">2e conducteur</p>
+              <p>{secondDriver.name}</p>
+            </div>
+          )}
           <div>
             <p className="text-xs font-medium text-muted-foreground">Véhicule</p>
             <p>
@@ -139,7 +158,12 @@ export default async function LocationDetailPage({ params }: PageProps) {
         status={location.status}
         notes={location.notes}
         endOdometer={location.endOdometer}
-        canEdit={canEdit}
+        startDate={location.startDate.toISOString().slice(0, 10)}
+        endDate={location.endDate.toISOString().slice(0, 10)}
+        secondDriver={secondDriver ? { id: secondDriver.id, name: secondDriver.name } : null}
+        canEdit={canManageFullEdit}
+        canManageReturnOnly={canManageReturnOnly}
+        isAdmin={user.role === "ADMIN"}
       />
     </div>
   );

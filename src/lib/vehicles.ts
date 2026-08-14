@@ -71,6 +71,12 @@ export interface CreateVehicleInput {
   ac?: boolean;
   gps?: boolean;
   imageUrl?: string;
+  /** Sprint 19 (DOMAINRULES.md section 37) — alertes proactives, tous optionnels. */
+  insuranceExpiryDate?: Date;
+  vignetteExpiryDate?: Date;
+  technicalInspectionExpiryDate?: Date;
+  nextOilChangeDate?: Date;
+  nextOilChangeKm?: number;
 }
 
 export async function createVehicle(data: CreateVehicleInput): Promise<Vehicle> {
@@ -101,6 +107,12 @@ export interface UpdateVehicleInput {
   ac?: boolean;
   gps?: boolean;
   imageUrl?: string | null;
+  /** Sprint 19 (DOMAINRULES.md section 37) — alertes proactives, tous optionnels. */
+  insuranceExpiryDate?: Date | null;
+  vignetteExpiryDate?: Date | null;
+  technicalInspectionExpiryDate?: Date | null;
+  nextOilChangeDate?: Date | null;
+  nextOilChangeKm?: number | null;
 }
 
 export async function updateVehicle(
@@ -184,4 +196,54 @@ export async function checkAvailability(
   const conflictingLocations = await findConflictingLocations(vehicleId, start, end, excludeLocationId);
 
   return { available: conflictingLocations.length === 0, conflictingLocations };
+}
+
+export interface VehicleLastKnownState {
+  odometer: number | null;
+  fuelLevel: number | null;
+}
+
+/**
+ * Sprint 19 (DOMAINRULES.md section 37) : dernier kilométrage/niveau de carburant connus d'un
+ * véhicule, pour pré-remplir automatiquement le départ d'un transfert/bon de déplacement
+ * (au lieu de champs toujours vides jusqu'ici) — le plus récent parmi le retour de sa dernière
+ * Location (kilométrage uniquement, Location ne suit pas le carburant), son dernier
+ * VehicleTransfer ou son dernier VehicleTrip. `null` si aucune donnée de retour n'existe encore
+ * pour ce véhicule (jamais loué/transféré/déplacé) — les champs restent alors vides et
+ * modifiables normalement, aucune valeur inventée.
+ */
+export async function getVehicleLastKnownState(
+  tenantId: string,
+  vehicleId: string
+): Promise<VehicleLastKnownState> {
+  const [lastLocation, lastTransfer, lastTrip] = await Promise.all([
+    prisma.location.findFirst({
+      where: { tenantId, vehicleId, endOdometer: { not: null } },
+      orderBy: { updatedAt: "desc" },
+      select: { endOdometer: true, updatedAt: true },
+    }),
+    prisma.vehicleTransfer.findFirst({
+      where: { tenantId, vehicleId, endOdometer: { not: null } },
+      orderBy: { updatedAt: "desc" },
+      select: { endOdometer: true, endFuelLevel: true, updatedAt: true },
+    }),
+    prisma.vehicleTrip.findFirst({
+      where: { tenantId, vehicleId, endOdometer: { not: null } },
+      orderBy: { updatedAt: "desc" },
+      select: { endOdometer: true, endFuelLevel: true, updatedAt: true },
+    }),
+  ]);
+
+  const candidates: { odometer: number | null; fuelLevel: number | null; at: Date }[] = [];
+  if (lastLocation) candidates.push({ odometer: lastLocation.endOdometer, fuelLevel: null, at: lastLocation.updatedAt });
+  if (lastTransfer)
+    candidates.push({ odometer: lastTransfer.endOdometer, fuelLevel: lastTransfer.endFuelLevel, at: lastTransfer.updatedAt });
+  if (lastTrip) candidates.push({ odometer: lastTrip.endOdometer, fuelLevel: lastTrip.endFuelLevel, at: lastTrip.updatedAt });
+
+  if (candidates.length === 0) {
+    return { odometer: null, fuelLevel: null };
+  }
+
+  const latest = candidates.reduce((a, b) => (b.at > a.at ? b : a));
+  return { odometer: latest.odometer, fuelLevel: latest.fuelLevel };
 }

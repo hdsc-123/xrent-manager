@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { FileText } from "lucide-react";
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, canAccessReservationAgencies, canEditReservationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getReservationById } from "@/lib/reservations";
 import { prisma } from "@/lib/prisma";
@@ -47,13 +47,18 @@ export default async function ReservationDetailPage({ params }: PageProps) {
   }
 
   const reservation = await getReservationById(user.tenantId, id);
-  if (!reservation) {
+  if (!reservation || !(await canAccessReservationAgencies(user, reservation))) {
     notFound();
   }
 
-  const canEdit = (await can(user, "reservations.edit")) && reservation.status !== "CONVERTED";
+  // Sprint 19 (DOMAINRULES.md section 37) : seule l'agence de départ peut modifier/convertir/
+  // annuler — une agence qui ne voit cette réservation que via dropoffAgencyId (ci-dessus) ne
+  // peut que la consulter.
+  const canEditThisAgency = await canEditReservationAgency(user, reservation);
+  const canEdit = (await can(user, "reservations.edit")) && reservation.status !== "CONVERTED" && canEditThisAgency;
   const canEditReservation = canEdit && EDITABLE_STATUSES.has(reservation.status);
-  const canConvert = (await can(user, "reservations.convert")) && reservation.status === "CONFIRMED";
+  const canConvert =
+    (await can(user, "reservations.convert")) && reservation.status === "CONFIRMED" && canEditThisAgency;
 
   const optionsSum =
     (reservation.gpsPrice ?? 0) + (reservation.babySeatPrice ?? 0) + (reservation.extraDriverPrice ?? 0);

@@ -53,6 +53,10 @@ export interface ReservationRow {
   optionsCurrency: string;
   notes: string | null;
   status: string;
+  /** Sprint 19 (DOMAINRULES.md section 37) : seule l'agence de départ peut modifier/annuler
+   * cette réservation — calculé par ligne côté serveur (page.tsx), `true` par défaut pour
+   * ADMIN ou une agence de départ non résolue (comportement antérieur conservé). */
+  canEditAgency: boolean;
 }
 
 const CANCELLABLE_STATUSES = new Set(["PENDING", "CONFIRMED"]);
@@ -116,7 +120,10 @@ export function ReservationsTable({
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   const deletableReservations = useMemo(
-    () => reservations.filter((reservation) => DELETABLE_STATUSES.has(reservation.status)),
+    () =>
+      reservations.filter(
+        (reservation) => DELETABLE_STATUSES.has(reservation.status) && reservation.canEditAgency
+      ),
     [reservations]
   );
   const allDeletableSelected =
@@ -210,7 +217,7 @@ export function ReservationsTable({
                 />
               ),
               cell: ({ row }: { row: { original: ReservationRow } }) =>
-                DELETABLE_STATUSES.has(row.original.status) ? (
+                DELETABLE_STATUSES.has(row.original.status) && row.original.canEditAgency ? (
                   <Checkbox
                     checked={selectedIds.has(row.original.id)}
                     onCheckedChange={(checked: boolean) => toggleSelected(row.original.id, checked === true)}
@@ -350,7 +357,7 @@ export function ReservationsTable({
                   <Eye className="size-4" />
                   Détails
                 </DropdownMenuItem>
-                {canEdit && EDITABLE_STATUSES.has(row.original.status) && (
+                {canEdit && row.original.canEditAgency && EDITABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem render={<Link href={`/dashboard/reservations/${row.original.id}/edit`} />}>
                     <Pencil className="size-4" />
                     Modifier
@@ -359,14 +366,16 @@ export function ReservationsTable({
                 {/* Sprint 18 : gatée par canEdit, comme "Modifier" — PATCH /api/reservations/[id]
                     (utilisé par cette action, status: "CANCELLED") exige reservations.edit ;
                     sans cette garde, un rôle en lecture seule (ex. COMPTABILITÉ) voyait "Annuler"
-                    cliquable dans le menu, systématiquement rejeté par l'API après confirmation. */}
-                {canEdit && CANCELLABLE_STATUSES.has(row.original.status) && (
+                    cliquable dans le menu, systématiquement rejeté par l'API après confirmation.
+                    Sprint 19 : + canEditAgency — seule l'agence de départ peut annuler, voir
+                    DOMAINRULES.md section 37. */}
+                {canEdit && row.original.canEditAgency && CANCELLABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingCancel(row.original)}>
                     <Ban className="size-4" />
                     Annuler
                   </DropdownMenuItem>
                 )}
-                {canDelete && DELETABLE_STATUSES.has(row.original.status) && (
+                {canDelete && row.original.canEditAgency && DELETABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingDelete(row.original)}>
                     <Trash2 className="size-4" />
                     Supprimer

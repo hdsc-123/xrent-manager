@@ -118,18 +118,18 @@ export async function POST(request: Request) {
   }
 
   // fromAgencyId est dérivé du véhicule (jamais fourni par le client, voir createVehicleTransfer)
-  // mais l'accès du MEMBER appelant doit être vérifié aux DEUX agences *avant* toute écriture —
-  // sinon un MEMBER sans accès à l'agence de départ pourrait lancer un transfert sur un véhicule
-  // qu'il ne devrait pas voir (SECURITY.md section 4).
+  // — seul l'accès à l'agence de DÉPART est exigé pour lancer un transfert (SECURITY.md
+  // section 4). Correctif Sprint 19 (DOMAINRULES.md section 37, bug réel) : exiger aussi
+  // l'accès à l'agence d'ARRIVÉE ici empêchait un employé d'une agence satellite d'envoyer un
+  // véhicule vers une agence à laquelle il n'est pas rattaché (ex. le siège) — alors que c'est
+  // précisément le cas d'usage du module. L'agence d'arrivée reste vérifiée à la réception
+  // (PATCH .../validate, réservé à un user ayant accès à toAgencyId — voir ce fichier).
   const vehicle = await getVehicleById(user.tenantId, vehicleId);
   if (!vehicle) {
     return NextResponse.json({ error: "Véhicule introuvable." }, { status: 404 });
   }
   if (!(await canAccessAgency(user, vehicle.agencyId))) {
     return NextResponse.json({ error: "Accès refusé à l'agence de départ." }, { status: 403 });
-  }
-  if (!(await canAccessAgency(user, toAgencyId))) {
-    return NextResponse.json({ error: "Accès refusé à l'agence d'arrivée." }, { status: 403 });
   }
 
   try {

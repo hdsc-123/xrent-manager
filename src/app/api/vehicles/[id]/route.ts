@@ -83,7 +83,20 @@ interface UpdateVehicleBody {
   ac?: boolean;
   gps?: boolean;
   imageUrl?: string | null;
+  /** Sprint 19 (DOMAINRULES.md section 37) — alertes proactives, dates ISO (voir parseOptionalDate ci-dessous). */
+  insuranceExpiryDate?: string | null;
+  vignetteExpiryDate?: string | null;
+  technicalInspectionExpiryDate?: string | null;
+  nextOilChangeDate?: string | null;
+  nextOilChangeKm?: number | null;
 }
+
+const OPTIONAL_DATE_FIELDS = [
+  "insuranceExpiryDate",
+  "vignetteExpiryDate",
+  "technicalInspectionExpiryDate",
+  "nextOilChangeDate",
+] as const;
 
 export async function PATCH(request: Request, { params }: RouteParams) {
   const user = await getSessionUser();
@@ -161,12 +174,50 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "engineSize doit être un nombre positif." }, { status: 400 });
   }
 
+  if (
+    body.nextOilChangeKm !== undefined &&
+    body.nextOilChangeKm !== null &&
+    (!Number.isInteger(body.nextOilChangeKm) || body.nextOilChangeKm < 0)
+  ) {
+    return NextResponse.json({ error: "nextOilChangeKm doit être un entier positif ou nul." }, { status: 400 });
+  }
+
+  // Sprint 19 (DOMAINRULES.md section 37) : dates optionnelles/nullables des alertes proactives —
+  // même convention que receivedAt (POST /api/reservations) : chaîne ISO parsée, `null` explicite
+  // efface le champ, absence de clé le laisse inchangé.
+  const parsedDates: Partial<Record<(typeof OPTIONAL_DATE_FIELDS)[number], Date | null>> = {};
+  for (const field of OPTIONAL_DATE_FIELDS) {
+    const value = body[field];
+    if (value === undefined) continue;
+    if (value === null) {
+      parsedDates[field] = null;
+      continue;
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return NextResponse.json({ error: `${field} doit être une date ISO valide.` }, { status: 400 });
+    }
+    parsedDates[field] = parsed;
+  }
+
   if (body.agencyId && !(await canAccessAgency(user, body.agencyId))) {
     return NextResponse.json({ error: "Accès refusé à cette agence." }, { status: 403 });
   }
 
+  // Champs date bruts (chaînes ISO) retirés avant l'appel à updateVehicle — remplacés par
+  // parsedDates (Date réelles) ci-dessous, voir OPTIONAL_DATE_FIELDS.
+  /* eslint-disable @typescript-eslint/no-unused-vars */
+  const {
+    insuranceExpiryDate,
+    vignetteExpiryDate,
+    technicalInspectionExpiryDate,
+    nextOilChangeDate,
+    ...bodyWithoutDates
+  } = body;
+  /* eslint-enable @typescript-eslint/no-unused-vars */
+
   try {
-    const updated = await updateVehicle(user.tenantId, vehicle.id, body);
+    const updated = await updateVehicle(user.tenantId, vehicle.id, { ...bodyWithoutDates, ...parsedDates });
     await logAction({
       tenantId: user.tenantId,
       userId: user.id,

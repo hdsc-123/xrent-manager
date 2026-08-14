@@ -281,6 +281,47 @@ describe("PATCH /api/vehicles/[id]", () => {
     expect(clearResponse.status).toBe(200);
     expect((await clearResponse.json()).vehicle.color).toBeNull();
   });
+
+  it("Sprint 19 : persiste puis efface les champs d'alertes proactives (assurance/vignette/contrôle technique/vidange)", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await createResponse.json()).vehicle.id;
+
+    const setResponse = await apiFetch(`/api/vehicles/${vehicleId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        insuranceExpiryDate: "2031-01-01",
+        vignetteExpiryDate: "2031-02-01",
+        technicalInspectionExpiryDate: "2031-03-01",
+        nextOilChangeDate: "2031-04-01",
+        nextOilChangeKm: 50000,
+      }),
+    });
+    expect(setResponse.status).toBe(200);
+    const setBody = await setResponse.json();
+    expect(setBody.vehicle.insuranceExpiryDate).toContain("2031-01-01");
+    expect(setBody.vehicle.vignetteExpiryDate).toContain("2031-02-01");
+    expect(setBody.vehicle.technicalInspectionExpiryDate).toContain("2031-03-01");
+    expect(setBody.vehicle.nextOilChangeDate).toContain("2031-04-01");
+    expect(setBody.vehicle.nextOilChangeKm).toBe(50000);
+
+    const invalidDate = await apiFetch(`/api/vehicles/${vehicleId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ insuranceExpiryDate: "not-a-date" }),
+    });
+    expect(invalidDate.status).toBe(400);
+
+    const clearResponse = await apiFetch(`/api/vehicles/${vehicleId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ insuranceExpiryDate: null, nextOilChangeKm: null }),
+    });
+    expect(clearResponse.status).toBe(200);
+    const clearBody = await clearResponse.json();
+    expect(clearBody.vehicle.insuranceExpiryDate).toBeNull();
+    expect(clearBody.vehicle.nextOilChangeKm).toBeNull();
+  });
 });
 
 describe("DELETE /api/vehicles/[id]", () => {

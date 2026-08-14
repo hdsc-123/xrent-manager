@@ -10,15 +10,19 @@ import {
   checkOverdueReturns,
   checkExpiredDocuments,
   checkStockInconsistencies,
+  checkInsuranceExpiring,
+  checkVignetteExpiring,
+  checkTechnicalInspectionDue,
+  checkOilChangeDue,
 } from "@/lib/scheduled-tasks";
 
 /**
- * Déclenche les neuf vérifications (3 initiales + 6 ajoutées Sprint 14C, DOMAINRULES.md
- * section 30) pour le tenant de l'ADMIN connecté (aucun rôle "superadmin" transverse n'existe —
- * HANDOFF.md section 8 point 16 — donc pas de scan multi-tenant global ici ; un vrai cron
- * devrait itérer les tenants avec un mécanisme d'authentification dédié, hors périmètre de ce
- * sprint). Réservé ADMIN, même justification pragmatique que pour /api/reports/* (HANDOFF.md,
- * décision Sprint 6).
+ * Déclenche les treize vérifications (3 initiales + 6 ajoutées Sprint 14C + 4 ajoutées
+ * Sprint 19, DOMAINRULES.md sections 30/37) pour le tenant de l'ADMIN connecté (aucun rôle
+ * "superadmin" transverse n'existe — HANDOFF.md section 8 point 16 — donc pas de scan
+ * multi-tenant global ici ; un vrai cron devrait itérer les tenants avec un mécanisme
+ * d'authentification dédié, hors périmètre de ce sprint). Réservé ADMIN, même justification
+ * pragmatique que pour /api/reports/* (HANDOFF.md, décision Sprint 6).
  */
 export async function POST() {
   const user = await getSessionUser();
@@ -41,6 +45,10 @@ export async function POST() {
     overdueReturns,
     expiredDocuments,
     stockInconsistencies,
+    insuranceExpiring,
+    vignetteExpiring,
+    technicalInspectionDue,
+    oilChangeDue,
   ] = await Promise.all([
     checkDueMaintenances(user.tenantId),
     checkReturnsToday(user.tenantId),
@@ -51,6 +59,10 @@ export async function POST() {
     checkOverdueReturns(user.tenantId),
     checkExpiredDocuments(user.tenantId),
     checkStockInconsistencies(user.tenantId),
+    checkInsuranceExpiring(user.tenantId),
+    checkVignetteExpiring(user.tenantId),
+    checkTechnicalInspectionDue(user.tenantId),
+    checkOilChangeDue(user.tenantId),
   ]);
 
   return NextResponse.json({
@@ -64,6 +76,10 @@ export async function POST() {
       overdueReturns: overdueReturns.length,
       expiredDocuments: expiredDocuments.length,
       stockInconsistencies: stockInconsistencies.length,
+      insuranceExpiring: insuranceExpiring.length,
+      vignetteExpiring: vignetteExpiring.length,
+      technicalInspectionDue: technicalInspectionDue.length,
+      oilChangeDue: oilChangeDue.length,
     },
   });
 }

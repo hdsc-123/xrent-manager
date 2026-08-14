@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { Prisma, ReservationStatus } from "@prisma/client";
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, canAccessReservationAgencies, canEditReservationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import {
   getReservationById,
@@ -33,7 +33,7 @@ export async function GET(_request: Request, { params }: RouteParams) {
 
   const { id } = await params;
   const reservation = await getReservationById(user.tenantId, id);
-  if (!reservation) {
+  if (!reservation || !(await canAccessReservationAgencies(user, reservation))) {
     return NextResponse.json({ error: "Réservation introuvable." }, { status: 404 });
   }
 
@@ -83,6 +83,17 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   }
 
   const { id } = await params;
+
+  const existingReservation = await getReservationById(user.tenantId, id);
+  if (!existingReservation || !(await canAccessReservationAgencies(user, existingReservation))) {
+    return NextResponse.json({ error: "Réservation introuvable." }, { status: 404 });
+  }
+  // Sprint 19 (DOMAINRULES.md section 37) : seule l'agence de départ peut modifier/convertir
+  // une réservation — l'agence d'arrivée (visible ci-dessus via canAccessReservationAgencies)
+  // ne peut que la consulter.
+  if (!(await canEditReservationAgency(user, existingReservation))) {
+    return NextResponse.json({ error: "Seule l'agence de départ peut modifier cette réservation." }, { status: 403 });
+  }
 
   let body: PatchReservationBody;
   try {
@@ -215,6 +226,14 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
   }
 
   const { id } = await params;
+
+  const existingReservation = await getReservationById(user.tenantId, id);
+  if (!existingReservation || !(await canAccessReservationAgencies(user, existingReservation))) {
+    return NextResponse.json({ error: "Réservation introuvable." }, { status: 404 });
+  }
+  if (!(await canEditReservationAgency(user, existingReservation))) {
+    return NextResponse.json({ error: "Seule l'agence de départ peut supprimer cette réservation." }, { status: 403 });
+  }
 
   try {
     const deleted = await deleteReservation(user.tenantId, id);

@@ -1,6 +1,7 @@
 export { Button, buttonVariants } from "./button";
 export { Input } from "./input";
 export { PhoneInput } from "./phone-input";
+export { FuelLevelSelect } from "./fuel-level-select";
 export { Label } from "./label";
 export { Checkbox } from "./checkbox";
 export {

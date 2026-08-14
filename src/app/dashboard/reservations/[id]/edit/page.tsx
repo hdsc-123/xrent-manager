@@ -1,5 +1,5 @@
 import { notFound, redirect } from "next/navigation";
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, canAccessReservationAgencies, canEditReservationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getReservationById, getKnownAgencyNames } from "@/lib/reservations";
 import { prisma } from "@/lib/prisma";
@@ -29,7 +29,13 @@ export default async function EditReservationPage({ params }: PageProps) {
   }
 
   const reservation = await getReservationById(user.tenantId, id);
-  if (!reservation) {
+  if (!reservation || !(await canAccessReservationAgencies(user, reservation))) {
+    notFound();
+  }
+
+  // Sprint 19 (DOMAINRULES.md section 37) : seule l'agence de départ peut modifier — une
+  // agence qui ne voit cette réservation que via dropoffAgencyId n'a pas accès à ce formulaire.
+  if (!(await canEditReservationAgency(user, reservation))) {
     notFound();
   }
 

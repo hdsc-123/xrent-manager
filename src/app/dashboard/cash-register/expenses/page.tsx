@@ -26,6 +26,8 @@ export default async function CashExpensesPage({ searchParams }: PageProps) {
 
   const canCreateExpense = await can(user, "cash_register.create_expense");
   const canManageCategories = await can(user, "cash_register.manage_categories");
+  const canEdit = await can(user, "cash_register.edit");
+  const canDelete = await can(user, "cash_register.delete");
   const params = await searchParams;
   const [expenses, categories] = await Promise.all([
     getCashEntries(user.tenantId, {
@@ -43,6 +45,7 @@ export default async function CashExpensesPage({ searchParams }: PageProps) {
     currency: entry.currency,
     description: entry.description,
     createdAt: entry.createdAt.toISOString(),
+    contractId: entry.contractId,
   }));
 
   return (
@@ -59,7 +62,12 @@ export default async function CashExpensesPage({ searchParams }: PageProps) {
         />
       )}
 
-      <ExpensesTable expenses={rows} />
+      <ExpensesTable
+        expenses={rows}
+        categories={categories.map((category) => ({ id: category.id, name: category.name }))}
+        canEdit={canEdit}
+        canDelete={canDelete}
+      />
     </div>
   );
 }

@@ -7,6 +7,7 @@ import {
   createReservation,
   parseReservationImportRow,
   getKnownAgencyNames,
+  buildAgencyLookupMap,
   RESERVATION_IMPORT_COLUMN_MAP,
   RESERVATION_IMPORT_COLUMNS,
 } from "@/lib/reservations";
@@ -109,6 +110,9 @@ export async function POST(request: Request) {
   // Villes/agences connues du tenant (Sprint 14A) — voir parseReservationImportRow, refuse
   // désormais pickupAgency/dropoffAgency qui ne correspond à aucune agence réelle.
   const knownAgencyNames = await getKnownAgencyNames(user.tenantId);
+  // Sprint 19 : résolu une seule fois pour tout le fichier plutôt qu'à chaque ligne (voir
+  // createReservation, src/lib/reservations.ts).
+  const agencyLookup = await buildAgencyLookupMap(user.tenantId);
 
   const errors: { row: number; error: string }[] = [];
   const duplicates: { row: number; voucherNumber: string }[] = [];
@@ -154,7 +158,7 @@ export async function POST(request: Request) {
         });
       }
     } else {
-      await createReservation({ tenantId: user.tenantId, ...parsed.data });
+      await createReservation({ tenantId: user.tenantId, ...parsed.data }, agencyLookup);
     }
     existingVouchers.add(parsed.data.voucherNumber);
     imported += 1;

@@ -25,6 +25,8 @@ export default async function CashEntriesPage({ searchParams }: PageProps) {
   }
 
   const canCreateEntry = await can(user, "cash_register.create_entry");
+  const canEdit = await can(user, "cash_register.edit");
+  const canDelete = await can(user, "cash_register.delete");
   const params = await searchParams;
   const entries = await getCashEntries(user.tenantId, {
     type: "ENTRY",
@@ -42,6 +44,7 @@ export default async function CashEntriesPage({ searchParams }: PageProps) {
     clientName: entry.clientName,
     paymentMethod: entry.paymentMethod,
     createdAt: entry.createdAt.toISOString(),
+    contractId: entry.contractId,
   }));
 
   return (
@@ -53,7 +56,7 @@ export default async function CashEntriesPage({ searchParams }: PageProps) {
 
       {canCreateEntry && <NewEntryForm />}
 
-      <EntriesTable entries={rows} />
+      <EntriesTable entries={rows} canEdit={canEdit} canDelete={canDelete} />
     </div>
   );
 }

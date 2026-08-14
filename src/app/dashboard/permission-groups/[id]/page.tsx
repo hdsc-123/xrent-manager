@@ -36,6 +36,16 @@ export default async function PermissionGroupDetailPage({ params }: PageProps) {
           un compte, changez son rôle en Membre puis assignez-lui un groupe personnalisé.
         </p>
       )}
+      {/* Sprint 19 : comportement additif existant depuis le Sprint 12C (UserPermission
+          individuelle, jamais consultée/retirée par cette page), mais jamais signalé —
+          un ADMIN décochant une permission ici sans savoir qu'un user de ce groupe a en plus
+          une permission individuelle pour cette même clé constatait qu'elle restait accordée,
+          sans explication (gérée depuis /dashboard/users/[id]/permissions). */}
+      <p className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
+        Une permission accordée individuellement à un utilisateur (depuis sa fiche) reste
+        active même si elle est décochée ici pour son groupe — les permissions individuelles
+        s&apos;ajoutent toujours à celles du groupe, elles ne les remplacent jamais.
+      </p>
       <EditPermissionGroupForm
         groupId={group.id}
         initialName={group.name}

@@ -19,6 +19,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  FuelLevelSelect,
   Input,
   Label,
 } from "@/components/ui";
@@ -90,8 +91,13 @@ export function VehicleTripsTable({
       setError(`Le kilométrage de retour doit être strictement supérieur à ${returning.startOdometer}.`);
       return;
     }
-    const endFuelLevelValue = endFuelLevel.trim() === "" ? undefined : Number(endFuelLevel);
-    if (endFuelLevelValue !== undefined && (!Number.isInteger(endFuelLevelValue) || endFuelLevelValue < 0 || endFuelLevelValue > 100)) {
+    // Sprint 19 (DOMAINRULES.md section 37) : désormais obligatoire au retour.
+    if (endFuelLevel.trim() === "") {
+      setError("Le niveau de carburant de retour est requis.");
+      return;
+    }
+    const endFuelLevelValue = Number(endFuelLevel);
+    if (!Number.isInteger(endFuelLevelValue) || endFuelLevelValue < 0 || endFuelLevelValue > 100) {
       setError("Le niveau de carburant doit être un entier entre 0 et 100.");
       return;
     }
@@ -212,14 +218,8 @@ export function VehicleTripsTable({
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="endFuelLevel">Carburant retour (%)</Label>
-              <Input
-                id="endFuelLevel"
-                inputMode="numeric"
-                placeholder="optionnel"
-                value={endFuelLevel}
-                onChange={(e) => setEndFuelLevel(e.target.value)}
-              />
+              <Label htmlFor="endFuelLevel" required>Carburant retour</Label>
+              <FuelLevelSelect id="endFuelLevel" value={endFuelLevel} onChange={setEndFuelLevel} required />
             </div>
             {error && (
               <p role="alert" className="text-sm text-destructive">

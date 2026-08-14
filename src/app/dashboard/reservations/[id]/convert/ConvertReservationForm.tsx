@@ -35,6 +35,15 @@ interface ReservationSummary {
   currency: string;
   vehicleCategory: string | null;
   notes: string | null;
+  /** Sprint 19 — options (voir Reservation.hasGps/gpsPrice etc.), reprises dans le total du
+   * contrat au lieu d'être silencieusement perdues à la conversion. */
+  hasGps: boolean;
+  gpsPrice: number | null;
+  hasBabySeat: boolean;
+  babySeatPrice: number | null;
+  hasExtraDriver: boolean;
+  extraDriverPrice: number | null;
+  optionsCurrency: string;
 }
 
 interface Agency {
@@ -47,6 +56,7 @@ interface Vehicle {
   name: string;
   licensePlate: string;
   agencyId: string;
+  category: string;
   /** Optionnel (Sprint 14A) — informatif, jamais la source de vérité de la facturation. */
   pricePerDay: number | null;
   currency: string;
@@ -114,6 +124,36 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
   const [pricePerDay, setPricePerDay] = useState(
     reservation.pricePerDay != null ? (reservation.pricePerDay / 100).toFixed(2) : ""
   );
+  // Surclassement (Sprint 19, DOMAINRULES.md section 37) : le filtre catégorie reste actif
+  // par défaut (comportement antérieur), "allCategories" le désactive pour permettre de
+  // choisir une catégorie supérieure.
+  const [allCategories, setAllCategories] = useState(false);
+  const [upgradeSupplement, setUpgradeSupplement] = useState("");
+  const [upgradeFree, setUpgradeFree] = useState(false);
+
+  // Prix total du contrat (Sprint 19) : reprend le vrai montant réservation + options plutôt
+  // que de laisser le serveur recalculer silencieusement pricePerDay × jours (bug corrigé ce
+  // sprint) — vide si la réservation n'a pas de totalPrice connu, retombe alors sur l'ancien
+  // comportement calculé côté serveur.
+  const optionsSum =
+    (reservation.hasGps ? (reservation.gpsPrice ?? 0) : 0) +
+    (reservation.hasBabySeat ? (reservation.babySeatPrice ?? 0) : 0) +
+    (reservation.hasExtraDriver ? (reservation.extraDriverPrice ?? 0) : 0);
+  const optionsSameCurrency = reservation.optionsCurrency === reservation.currency;
+  const [totalPriceOverride, setTotalPriceOverride] = useState(
+    reservation.totalPrice != null
+      ? ((reservation.totalPrice + (optionsSameCurrency ? optionsSum : 0)) / 100).toFixed(2)
+      : ""
+  );
+
+  // Second conducteur (Sprint 19) : optionnel, réutilise Client (Location.secondDriverId) —
+  // section repliée par défaut, mêmes champs d'identité que le client principal (allégés).
+  const [hasSecondDriver, setHasSecondDriver] = useState(false);
+  const [secondDriverFirstName, setSecondDriverFirstName] = useState("");
+  const [secondDriverLastName, setSecondDriverLastName] = useState("");
+  const [secondDriverPhone, setSecondDriverPhone] = useState("");
+  const [secondDriverIdNumber, setSecondDriverIdNumber] = useState("");
+  const [secondDriverLicenseNumber, setSecondDriverLicenseNumber] = useState("");
 
   // Paiement — même formulaire que /dashboard/locations/new (Sprint 13A).
   const [paymentDeferred, setPaymentDeferred] = useState(false);
@@ -137,11 +177,13 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
   useEffect(() => {
     const query = new URLSearchParams({ status: "AVAILABLE" });
     if (agencyId) query.set("agencyId", agencyId);
-    if (reservation.vehicleCategory) query.set("category", reservation.vehicleCategory);
+    // Sprint 19 : filtre catégorie désactivable ("allCategories") pour permettre un
+    // surclassement — voir DOMAINRULES.md section 37.
+    if (reservation.vehicleCategory && !allCategories) query.set("category", reservation.vehicleCategory);
     apiGet<{ vehicles: Vehicle[] }>(`/api/vehicles?${query.toString()}`)
       .then((data) => setVehicles(data.vehicles))
       .catch(() => setVehicles([]));
-  }, [agencyId, reservation.vehicleCategory]);
+  }, [agencyId, reservation.vehicleCategory, allCategories]);
 
   const selectedVehicle = useMemo(
     () => vehicles.find((vehicle) => vehicle.id === vehicleId) ?? null,
@@ -185,8 +227,43 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
 
   const estimatedTotal = pricePerDayCentimes && days > 0 ? pricePerDayCentimes * days : 0;
 
+  // Sprint 19 : surclassement détecté quand la catégorie du véhicule choisi diffère de celle
+  // de la réservation — voir DOMAINRULES.md section 37.
+  const isUpgrade = Boolean(
+    selectedVehicle && reservation.vehicleCategory && selectedVehicle.category !== reservation.vehicleCategory
+  );
+  const upgradeSupplementCentimes = upgradeSupplement
+    ? Math.round(Number(upgradeSupplement.replace(",", ".")) * 100)
+    : 0;
+
   function buildPayload(overrides?: { useExistingClientId?: string; forceCreateClient?: boolean }) {
     const depositMad = deposit ? Number(deposit.replace(",", ".")) : undefined;
+
+    const totalPriceCentimes = totalPriceOverride
+      ? Math.round(Number(totalPriceOverride.replace(",", ".")) * 100)
+      : undefined;
+    const finalTotalPrice =
+      totalPriceCentimes !== undefined && Number.isFinite(totalPriceCentimes)
+        ? totalPriceCentimes + (isUpgrade && !upgradeFree ? upgradeSupplementCentimes : 0)
+        : undefined;
+
+    const upgradeNote = isUpgrade
+      ? `Surclassement : ${reservation.vehicleCategory} → ${selectedVehicle?.category} (${
+          upgradeFree ? "gratuit" : `supplément ${upgradeSupplement || "0"} MAD`
+        }).`
+      : null;
+    const finalNotes = [notes || null, upgradeNote].filter(Boolean).join(" ") || undefined;
+
+    const secondDriver =
+      hasSecondDriver && secondDriverFirstName && secondDriverLastName
+        ? {
+            firstName: secondDriverFirstName,
+            lastName: secondDriverLastName,
+            phone: secondDriverPhone || undefined,
+            idNumber: secondDriverIdNumber || undefined,
+            licenseNumber: secondDriverLicenseNumber || undefined,
+          }
+        : undefined;
 
     let payment: Record<string, unknown> | undefined;
     if (paymentDeferred) {
@@ -212,7 +289,8 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
       endDate: endDateTime?.toISOString(),
       deposit: depositMad !== undefined && Number.isFinite(depositMad) ? Math.round(depositMad * 100) : undefined,
       pricePerDay: pricePerDayCentimes ?? undefined,
-      notes: notes || undefined,
+      totalPrice: finalTotalPrice,
+      notes: finalNotes,
       client: {
         firstName,
         lastName,
@@ -227,6 +305,7 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
         licenseIssueDate: licenseIssueDate || undefined,
         licenseExpiryDate: licenseExpiryDate || undefined,
       },
+      secondDriver,
       payment,
       ...overrides,
     };
@@ -276,8 +355,22 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
       setError("Le prénom et le nom du client sont requis.");
       return;
     }
+    // Sprint 19 (DOMAINRULES.md section 37) : obligatoires à la conversion (contrat) — ces
+    // champs restent optionnels sur la réservation elle-même (import broker sans ces
+    // informations, voir CLAUDE.md/DOMAINRULES.md), mais un contrat ne doit jamais être généré
+    // sans identité complète du client.
+    if (!address || !city || !country || !idNumber || !licenseNumber || !licenseIssueDate || !licenseExpiryDate) {
+      setError(
+        "Adresse, ville, pays, n° de pièce, n° de permis et dates d'obtention/expiration du permis sont requis pour générer le contrat."
+      );
+      return;
+    }
     if (!startDateTime || !endDateTime || endDateTime <= startDateTime) {
       setError("Dates/heures de départ et de retour invalides.");
+      return;
+    }
+    if (hasSecondDriver && (!secondDriverFirstName || !secondDriverLastName)) {
+      setError("Le prénom et le nom du second conducteur sont requis.");
       return;
     }
     if (!pricePerDayCentimes) {
@@ -336,24 +429,18 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="address">
-                Adresse <span className="text-muted-foreground">— optionnel</span>
-              </Label>
-              <Input id="address" value={address} onChange={(e) => setAddress(e.target.value)} />
+              <Label htmlFor="address" required>Adresse</Label>
+              <Input id="address" required value={address} onChange={(e) => setAddress(e.target.value)} />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="city">
-                  Ville <span className="text-muted-foreground">— optionnel</span>
-                </Label>
-                <Input id="city" value={city} onChange={(e) => setCity(e.target.value)} />
+                <Label htmlFor="city" required>Ville</Label>
+                <Input id="city" required value={city} onChange={(e) => setCity(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="country">
-                  Pays <span className="text-muted-foreground">— optionnel</span>
-                </Label>
-                <Input id="country" value={country} onChange={(e) => setCountry(e.target.value)} />
+                <Label htmlFor="country" required>Pays</Label>
+                <Input id="country" required value={country} onChange={(e) => setCountry(e.target.value)} />
               </div>
             </div>
 
@@ -374,39 +461,33 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
                 </select>
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="idNumber">
-                  N° de pièce <span className="text-muted-foreground">— optionnel</span>
-                </Label>
-                <Input id="idNumber" value={idNumber} onChange={(e) => setIdNumber(e.target.value)} />
+                <Label htmlFor="idNumber" required>N° de pièce</Label>
+                <Input id="idNumber" required value={idNumber} onChange={(e) => setIdNumber(e.target.value)} />
               </div>
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="licenseNumber">
-                Numéro de permis <span className="text-muted-foreground">— optionnel</span>
-              </Label>
-              <Input id="licenseNumber" value={licenseNumber} onChange={(e) => setLicenseNumber(e.target.value)} />
+              <Label htmlFor="licenseNumber" required>Numéro de permis</Label>
+              <Input id="licenseNumber" required value={licenseNumber} onChange={(e) => setLicenseNumber(e.target.value)} />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="licenseIssueDate">
-                  Date d&apos;obtention <span className="text-muted-foreground">— optionnel</span>
-                </Label>
+                <Label htmlFor="licenseIssueDate" required>Date d&apos;obtention</Label>
                 <Input
                   id="licenseIssueDate"
                   type="date"
+                  required
                   value={licenseIssueDate}
                   onChange={(e) => setLicenseIssueDate(e.target.value)}
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="licenseExpiryDate">
-                  Date d&apos;expiration <span className="text-muted-foreground">— optionnel</span>
-                </Label>
+                <Label htmlFor="licenseExpiryDate" required>Date d&apos;expiration</Label>
                 <Input
                   id="licenseExpiryDate"
                   type="date"
+                  required
                   value={licenseExpiryDate}
                   onChange={(e) => setLicenseExpiryDate(e.target.value)}
                 />
@@ -459,7 +540,7 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
                 </option>
                 {vehicles.map((vehicle) => (
                   <option key={vehicle.id} value={vehicle.id}>
-                    {vehicle.name} ({vehicle.licensePlate})
+                    {vehicle.name} ({vehicle.licensePlate}) — {vehicle.category}
                     {vehicle.pricePerDay !== null
                       ? ` — ${formatMoney(vehicle.pricePerDay, vehicle.currency)}/jour (indicatif)`
                       : ""}
@@ -469,7 +550,40 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
               {vehicles.length === 0 && (
                 <p className="text-xs text-muted-foreground">Aucun véhicule disponible pour ces critères.</p>
               )}
+              {reservation.vehicleCategory && (
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Checkbox
+                    checked={allCategories}
+                    onCheckedChange={(checked) => setAllCategories(checked === true)}
+                  />
+                  Autoriser un surclassement (toutes catégories, pas seulement {reservation.vehicleCategory})
+                </label>
+              )}
             </div>
+
+            {isUpgrade && (
+              <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+                <p>
+                  Surclassement : {reservation.vehicleCategory} → {selectedVehicle?.category}.
+                </p>
+                <label className="flex items-center gap-2">
+                  <Checkbox checked={upgradeFree} onCheckedChange={(checked) => setUpgradeFree(checked === true)} />
+                  Surclassement gratuit
+                </label>
+                {!upgradeFree && (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="upgradeSupplement">Supplément (MAD)</Label>
+                    <Input
+                      id="upgradeSupplement"
+                      inputMode="decimal"
+                      className="w-32"
+                      value={upgradeSupplement}
+                      onChange={(e) => setUpgradeSupplement(e.target.value)}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
@@ -523,6 +637,27 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
             )}
 
             <div className="flex flex-col gap-1.5">
+              <Label htmlFor="totalPriceOverride">
+                Prix total du contrat <span className="text-muted-foreground">— optionnel, sinon calculé (prix/jour × jours)</span>
+              </Label>
+              <Input
+                id="totalPriceOverride"
+                inputMode="decimal"
+                value={totalPriceOverride}
+                onChange={(e) => setTotalPriceOverride(e.target.value)}
+              />
+              {reservation.totalPrice !== null && (
+                <p className="text-xs text-muted-foreground">
+                  Pré-rempli depuis la réservation
+                  {optionsSum > 0 && optionsSameCurrency ? " (options incluses)" : ""}.
+                  {optionsSum > 0 && !optionsSameCurrency
+                    ? ` Options non incluses (devise différente : ${formatMoney(optionsSum, reservation.optionsCurrency)}).`
+                    : ""}
+                </p>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-1.5">
               <Label htmlFor="deposit">
                 Caution (MAD) <span className="text-muted-foreground">— optionnel</span>
               </Label>
@@ -535,6 +670,71 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
               </Label>
               <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
             </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Second conducteur</CardTitle>
+            <CardDescription>Optionnel — informations d&apos;identité minimales.</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox checked={hasSecondDriver} onCheckedChange={(checked) => setHasSecondDriver(checked === true)} />
+              Ajouter un second conducteur
+            </label>
+            {hasSecondDriver && (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="secondDriverFirstName" required>Prénom</Label>
+                    <Input
+                      id="secondDriverFirstName"
+                      required
+                      value={secondDriverFirstName}
+                      onChange={(e) => setSecondDriverFirstName(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="secondDriverLastName" required>Nom</Label>
+                    <Input
+                      id="secondDriverLastName"
+                      required
+                      value={secondDriverLastName}
+                      onChange={(e) => setSecondDriverLastName(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="secondDriverPhone">
+                    Téléphone <span className="text-muted-foreground">— optionnel</span>
+                  </Label>
+                  <PhoneInput id="secondDriverPhone" value={secondDriverPhone} onChange={setSecondDriverPhone} />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="secondDriverIdNumber">
+                      N° de pièce <span className="text-muted-foreground">— optionnel</span>
+                    </Label>
+                    <Input
+                      id="secondDriverIdNumber"
+                      value={secondDriverIdNumber}
+                      onChange={(e) => setSecondDriverIdNumber(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="secondDriverLicenseNumber">
+                      N° de permis <span className="text-muted-foreground">— optionnel</span>
+                    </Label>
+                    <Input
+                      id="secondDriverLicenseNumber"
+                      value={secondDriverLicenseNumber}
+                      onChange={(e) => setSecondDriverLicenseNumber(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
 

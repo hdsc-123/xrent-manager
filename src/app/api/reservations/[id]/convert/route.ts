@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { IdType } from "@prisma/client";
-import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { getSessionUser, canAccessAgency, canAccessReservationAgencies, canEditReservationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getVehicleById } from "@/lib/vehicles";
 import { getClientById, createClient, updateClient, findDuplicateClient } from "@/lib/clients";
@@ -43,6 +43,14 @@ interface ConvertClientInput {
   licenseExpiryDate?: string;
 }
 
+interface ConvertSecondDriverInput {
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+  idNumber?: string;
+  licenseNumber?: string;
+}
+
 interface ConvertBody {
   vehicleId?: string;
   startDate?: string;
@@ -51,10 +59,16 @@ interface ConvertBody {
   /** Prix/jour réel (centimes) — voir DOMAINRULES.md section 5/7. Optionnel : retombe sur le
    * prix informatif du véhicule choisi s'il en a un ; sinon 400 (voir MissingPriceError). */
   pricePerDay?: number;
+  /** Sprint 19 : montant total explicite (centimes), prioritaire sur pricePerDay × jours —
+   * voir CreateLocationInput.totalPrice, src/lib/locations.ts. */
+  totalPrice?: number;
   notes?: string;
   client?: ConvertClientInput;
   useExistingClientId?: string;
   forceCreateClient?: boolean;
+  /** Sprint 19 — second conducteur (voir Location.secondDriverId), toujours créé comme un
+   * nouveau Client (pas de détection de doublon, moindre enjeu qu'un client principal). */
+  secondDriver?: ConvertSecondDriverInput;
   payment?: PaymentInput;
 }
 
@@ -78,8 +92,13 @@ export async function POST(request: Request, { params }: RouteParams) {
 
   const { id } = await params;
   const reservation = await getReservationById(user.tenantId, id);
-  if (!reservation) {
+  if (!reservation || !(await canAccessReservationAgencies(user, reservation))) {
     return NextResponse.json({ error: "Réservation introuvable." }, { status: 404 });
+  }
+  // Sprint 19 (DOMAINRULES.md section 37) : seule l'agence de départ peut convertir une
+  // réservation en contrat — même restriction que PATCH /api/reservations/[id].
+  if (!(await canEditReservationAgency(user, reservation))) {
+    return NextResponse.json({ error: "Seule l'agence de départ peut convertir cette réservation." }, { status: 403 });
   }
 
   // Vérifiée ici, avant toute création de Location, pour éviter de créer une Location
@@ -118,13 +137,44 @@ export async function POST(request: Request, { params }: RouteParams) {
   if (body.pricePerDay !== undefined && (!Number.isInteger(body.pricePerDay) || body.pricePerDay <= 0)) {
     return NextResponse.json({ error: "pricePerDay doit être un entier positif (centimes)." }, { status: 400 });
   }
+  if (body.totalPrice !== undefined && (!Number.isInteger(body.totalPrice) || body.totalPrice <= 0)) {
+    return NextResponse.json({ error: "totalPrice doit être un entier positif (centimes)." }, { status: 400 });
+  }
 
   const clientInput = body.client ?? {};
   if (!body.useExistingClientId && (!clientInput.firstName || !clientInput.lastName)) {
     return NextResponse.json({ error: "client.firstName et client.lastName sont requis." }, { status: 400 });
   }
+  // Sprint 19 (DOMAINRULES.md section 37) : obligatoires pour générer un contrat — ces champs
+  // restent optionnels sur Reservation elle-même (import broker), voir le commentaire du
+  // modèle Reservation. Un useExistingClientId retombe sur l'identité déjà connue du client.
+  if (!body.useExistingClientId) {
+    const missingRequiredField =
+      !clientInput.address ||
+      !clientInput.city ||
+      !clientInput.country ||
+      !clientInput.idNumber ||
+      !clientInput.licenseNumber ||
+      !clientInput.licenseIssueDate ||
+      !clientInput.licenseExpiryDate;
+    if (missingRequiredField) {
+      return NextResponse.json(
+        {
+          error:
+            "client.address, city, country, idNumber, licenseNumber, licenseIssueDate et licenseExpiryDate sont requis pour générer un contrat.",
+        },
+        { status: 400 }
+      );
+    }
+  }
   if (clientInput.idType && !ID_TYPES.includes(clientInput.idType)) {
     return NextResponse.json({ error: "client.idType invalide." }, { status: 400 });
+  }
+  if (body.secondDriver && (!body.secondDriver.firstName || !body.secondDriver.lastName)) {
+    return NextResponse.json(
+      { error: "secondDriver.firstName et secondDriver.lastName sont requis si secondDriver est fourni." },
+      { status: 400 }
+    );
   }
 
   const paymentError = validatePaymentInput(body.payment);
@@ -220,6 +270,23 @@ export async function POST(request: Request, { params }: RouteParams) {
     clientId = newClient.id;
   }
 
+  // Sprint 19 — second conducteur : toujours un nouveau Client, pas de détection de doublon
+  // (moindre enjeu qu'un client principal — voir ConvertSecondDriverInput ci-dessus).
+  let secondDriverId: string | undefined;
+  if (body.secondDriver?.firstName && body.secondDriver?.lastName) {
+    const secondDriverClient = await createClient({
+      tenantId: user.tenantId,
+      name: `${body.secondDriver.firstName} ${body.secondDriver.lastName}`.trim(),
+      firstName: body.secondDriver.firstName,
+      lastName: body.secondDriver.lastName,
+      phone: body.secondDriver.phone,
+      idNumber: body.secondDriver.idNumber,
+      licenseNumber: body.secondDriver.licenseNumber,
+      notes: `Second conducteur (conversion de la réservation ${reservation.voucherNumber}).`,
+    });
+    secondDriverId = secondDriverClient.id;
+  }
+
   try {
     // L'agence du contrat est dérivée du véhicule choisi côté serveur, jamais d'un champ
     // agencyId fourni par le client — même règle que POST /api/locations (SECURITY.md
@@ -228,6 +295,12 @@ export async function POST(request: Request, { params }: RouteParams) {
     const location = await createLocation({
       tenantId: user.tenantId,
       agencyId: vehicle.agencyId,
+      secondDriverId,
+      totalPrice: body.totalPrice,
+      // Sprint 19 : reprend l'agence de retour résolue de la réservation (dropoffAgencyId,
+      // voir src/lib/reservations.ts) — ignorée par createLocation si égale à agencyId, voir
+      // DOMAINRULES.md section 37.
+      dropoffAgencyId: reservation.dropoffAgencyId,
       vehicleId: vehicle.id,
       clientId,
       startDate,

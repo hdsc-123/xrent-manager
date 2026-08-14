@@ -54,6 +54,12 @@ interface EditVehicleFormProps {
   initialAc: boolean;
   initialGps: boolean;
   initialImageUrl: string | null;
+  /** Sprint 19 (DOMAINRULES.md section 37) — alertes proactives, tous optionnels. */
+  initialInsuranceExpiryDate: string | null;
+  initialVignetteExpiryDate: string | null;
+  initialTechnicalInspectionExpiryDate: string | null;
+  initialNextOilChangeDate: string | null;
+  initialNextOilChangeKm: number | null;
 }
 
 export function EditVehicleForm({
@@ -76,6 +82,11 @@ export function EditVehicleForm({
   initialAc,
   initialGps,
   initialImageUrl,
+  initialInsuranceExpiryDate,
+  initialVignetteExpiryDate,
+  initialTechnicalInspectionExpiryDate,
+  initialNextOilChangeDate,
+  initialNextOilChangeKm,
 }: EditVehicleFormProps) {
   const router = useRouter();
   const [name, setName] = useState(initialName);
@@ -101,6 +112,15 @@ export function EditVehicleForm({
   const [ac, setAc] = useState(initialAc);
   const [gps, setGps] = useState(initialGps);
   const [imageUrl, setImageUrl] = useState(initialImageUrl ?? "");
+  const [insuranceExpiryDate, setInsuranceExpiryDate] = useState(initialInsuranceExpiryDate ?? "");
+  const [vignetteExpiryDate, setVignetteExpiryDate] = useState(initialVignetteExpiryDate ?? "");
+  const [technicalInspectionExpiryDate, setTechnicalInspectionExpiryDate] = useState(
+    initialTechnicalInspectionExpiryDate ?? ""
+  );
+  const [nextOilChangeDate, setNextOilChangeDate] = useState(initialNextOilChangeDate ?? "");
+  const [nextOilChangeKm, setNextOilChangeKm] = useState(
+    initialNextOilChangeKm !== null ? String(initialNextOilChangeKm) : ""
+  );
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -138,6 +158,11 @@ export function EditVehicleForm({
         ac,
         gps,
         imageUrl: imageUrl || null,
+        insuranceExpiryDate: insuranceExpiryDate || null,
+        vignetteExpiryDate: vignetteExpiryDate || null,
+        technicalInspectionExpiryDate: technicalInspectionExpiryDate || null,
+        nextOilChangeDate: nextOilChangeDate || null,
+        nextOilChangeKm: nextOilChangeKm ? Number(nextOilChangeKm) : null,
       });
       toast.success("Véhicule mis à jour.");
       router.push("/dashboard/vehicles");
@@ -320,6 +345,62 @@ export function EditVehicleForm({
               value={imageUrl}
               onChange={(e) => setImageUrl(e.target.value)}
             />
+          </div>
+
+          <div className="flex flex-col gap-3 rounded-md border border-border p-3">
+            <span className="text-sm font-medium">Alertes proactives</span>
+            <p className="text-xs text-muted-foreground">
+              Toutes optionnelles — génèrent une alerte à l&apos;approche de l&apos;échéance
+              (voir /dashboard/alerts). Laissez vide si non suivi.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="insuranceExpiryDate">Expiration assurance</Label>
+                <Input
+                  id="insuranceExpiryDate"
+                  type="date"
+                  value={insuranceExpiryDate}
+                  onChange={(e) => setInsuranceExpiryDate(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="vignetteExpiryDate">Expiration vignette</Label>
+                <Input
+                  id="vignetteExpiryDate"
+                  type="date"
+                  value={vignetteExpiryDate}
+                  onChange={(e) => setVignetteExpiryDate(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="technicalInspectionExpiryDate">Expiration contrôle technique</Label>
+                <Input
+                  id="technicalInspectionExpiryDate"
+                  type="date"
+                  value={technicalInspectionExpiryDate}
+                  onChange={(e) => setTechnicalInspectionExpiryDate(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="nextOilChangeDate">Prochaine vidange (date)</Label>
+                <Input
+                  id="nextOilChangeDate"
+                  type="date"
+                  value={nextOilChangeDate}
+                  onChange={(e) => setNextOilChangeDate(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="nextOilChangeKm">Prochaine vidange (km)</Label>
+              <Input
+                id="nextOilChangeKm"
+                type="number"
+                className="max-w-40"
+                value={nextOilChangeKm}
+                onChange={(e) => setNextOilChangeKm(e.target.value)}
+              />
+            </div>
           </div>
 
           {error && (

@@ -16,6 +16,10 @@ const TYPE_OPTIONS: { value: AlertType; label: string }[] = [
   { value: "VEHICLE_UNAVAILABLE", label: "Véhicule indisponible" },
   { value: "DOCUMENT_EXPIRED", label: "Document expiré" },
   { value: "STOCK_INCONSISTENCY", label: "Incohérence de stock" },
+  { value: "INSURANCE_EXPIRING", label: "Assurance à renouveler" },
+  { value: "VIGNETTE_EXPIRING", label: "Vignette à renouveler" },
+  { value: "TECHNICAL_INSPECTION_DUE", label: "Contrôle technique" },
+  { value: "OIL_CHANGE_DUE", label: "Vidange à prévoir" },
   { value: "OTHER", label: "Autre" },
 ];
 

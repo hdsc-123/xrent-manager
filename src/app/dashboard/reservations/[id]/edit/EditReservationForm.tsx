@@ -116,19 +116,25 @@ export function EditReservationForm({
     try {
       await apiPatch(`/api/reservations/${reservation.id}`, {
         voucherNumber,
-        confirmationNumber: confirmationNumber || undefined,
-        source: source || undefined,
+        // Champs texte optionnels : toujours envoyer la valeur courante (y compris vide),
+        // jamais `|| undefined` — le serveur (updateReservation) n'écrit un champ que si sa clé
+        // est présente dans le corps (`!== undefined`), donc `|| undefined` sur un champ effacé
+        // faisait disparaître la clé et laissait silencieusement l'ancienne valeur en base
+        // (bug réel constaté sur "Remarques", même motif ici sur tous les champs texte
+        // optionnels — Sprint 19).
+        confirmationNumber,
+        source,
         clientFirstName,
         clientLastName,
-        clientPhone: clientPhone || undefined,
+        clientPhone,
         startDate,
-        startTime: startTime || undefined,
+        startTime,
         endDate,
-        endTime: endTime || undefined,
-        flightNumber: flightNumber || undefined,
-        vehicleCategory: vehicleCategory || undefined,
-        pickupAgency: pickupAgency || undefined,
-        dropoffAgency: dropoffAgency || undefined,
+        endTime,
+        flightNumber,
+        vehicleCategory,
+        pickupAgency,
+        dropoffAgency,
         currency,
         totalPrice: toCentimes(totalPrice),
         pricePerDay: toCentimes(pricePerDay),
@@ -141,7 +147,7 @@ export function EditReservationForm({
         optionsCurrency,
         mileage: mileage ? Number(mileage) : undefined,
         includedKm: includedKm ? Number(includedKm) : undefined,
-        notes: notes || undefined,
+        notes,
       });
       toast.success("Réservation mise à jour.");
       router.push(`/dashboard/reservations/${reservation.id}`);

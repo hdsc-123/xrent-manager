@@ -2,6 +2,7 @@ import type { Alert } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createAlert } from "@/lib/alerts";
 import { formatMoney } from "@/lib/format";
+import { getVehicleLastKnownState } from "@/lib/vehicles";
 
 /**
  * Nombre de jours par défaut pour anticiper une maintenance à venir (checkDueMaintenances).
@@ -378,6 +379,174 @@ export async function checkStockInconsistencies(tenantId: string): Promise<Alert
       priority: "MEDIUM",
       message: `Incohérence de stock : ${vehicle.name} (${vehicle.licensePlate}) ${detail}.`,
       entityType: "VehicleStockInconsistency",
+      entityId: vehicle.id,
+    });
+    created.push(alert);
+  }
+
+  return created;
+}
+
+/**
+ * Sprint 19 (DOMAINRULES.md section 37) : quatre vérifications proactives fondées sur les
+ * nouveaux champs `Vehicle` (insuranceExpiryDate/vignetteExpiryDate/
+ * technicalInspectionExpiryDate/nextOilChangeDate/nextOilChangeKm) — tous optionnels, jamais
+ * renseignés rétroactivement (même principe que pricePerDay, Sprint 14A) : un véhicule sans
+ * ces champs ne génère simplement aucune alerte, aucune valeur inventée. Fenêtre d'anticipation
+ * commune aux échéances documentaires (30 jours, cohérente avec DOCUMENT_EXPIRED déjà existant
+ * pour le permis client). entityType distinct de chaque vérification existante, même principe
+ * que les six vérifications Sprint 14C ci-dessus.
+ */
+const DOCUMENT_EXPIRY_LOOKAHEAD_DAYS = 30;
+/** Marge kilométrique (Sprint 19) avant le seuil nextOilChangeKm pour déclencher l'alerte —
+ * évite d'attendre le kilomètre exact (le véhicule peut ne pas repasser par un module de
+ * mobilité avant de le dépasser réellement). */
+const OIL_CHANGE_KM_LOOKAHEAD = 500;
+
+/** Assurance expirant dans les DOCUMENT_EXPIRY_LOOKAHEAD_DAYS prochains jours, ou déjà expirée
+ * — Vehicle.insuranceExpiryDate. */
+export async function checkInsuranceExpiring(tenantId: string): Promise<Alert[]> {
+  const now = new Date();
+  const threshold = new Date(now.getTime() + DOCUMENT_EXPIRY_LOOKAHEAD_DAYS * ONE_DAY_MS);
+
+  const vehicles = await prisma.vehicle.findMany({
+    where: { tenantId, insuranceExpiryDate: { lte: threshold } },
+  });
+
+  const created: Alert[] = [];
+  for (const vehicle of vehicles) {
+    if (await hasUnresolvedAlert(tenantId, "VehicleInsuranceExpiring", vehicle.id)) {
+      continue;
+    }
+
+    const overdue = vehicle.insuranceExpiryDate!.getTime() <= now.getTime();
+    const alert = await createAlert({
+      tenantId,
+      agencyId: vehicle.agencyId,
+      type: "INSURANCE_EXPIRING",
+      priority: overdue ? "URGENT" : "HIGH",
+      message: `Assurance ${overdue ? "expirée" : "à renouveler"} : ${vehicle.name} (${vehicle.licensePlate}) — ${overdue ? "expirée" : "expire"} le ${vehicle.insuranceExpiryDate!.toLocaleDateString("fr-FR")}.`,
+      entityType: "VehicleInsuranceExpiring",
+      entityId: vehicle.id,
+    });
+    created.push(alert);
+  }
+
+  return created;
+}
+
+/** Vignette (taxe annuelle) expirant dans les DOCUMENT_EXPIRY_LOOKAHEAD_DAYS prochains jours,
+ * ou déjà expirée — Vehicle.vignetteExpiryDate. */
+export async function checkVignetteExpiring(tenantId: string): Promise<Alert[]> {
+  const now = new Date();
+  const threshold = new Date(now.getTime() + DOCUMENT_EXPIRY_LOOKAHEAD_DAYS * ONE_DAY_MS);
+
+  const vehicles = await prisma.vehicle.findMany({
+    where: { tenantId, vignetteExpiryDate: { lte: threshold } },
+  });
+
+  const created: Alert[] = [];
+  for (const vehicle of vehicles) {
+    if (await hasUnresolvedAlert(tenantId, "VehicleVignetteExpiring", vehicle.id)) {
+      continue;
+    }
+
+    const overdue = vehicle.vignetteExpiryDate!.getTime() <= now.getTime();
+    const alert = await createAlert({
+      tenantId,
+      agencyId: vehicle.agencyId,
+      type: "VIGNETTE_EXPIRING",
+      priority: overdue ? "URGENT" : "HIGH",
+      message: `Vignette ${overdue ? "expirée" : "à renouveler"} : ${vehicle.name} (${vehicle.licensePlate}) — ${overdue ? "expirée" : "expire"} le ${vehicle.vignetteExpiryDate!.toLocaleDateString("fr-FR")}.`,
+      entityType: "VehicleVignetteExpiring",
+      entityId: vehicle.id,
+    });
+    created.push(alert);
+  }
+
+  return created;
+}
+
+/** Visite/contrôle technique arrivant à échéance dans les DOCUMENT_EXPIRY_LOOKAHEAD_DAYS
+ * prochains jours, ou déjà dépassée — Vehicle.technicalInspectionExpiryDate. Distinct du type
+ * de Maintenance "INSPECTION" (MAINTENANCE_DUE) : ce champ suit l'échéance réglementaire du
+ * véhicule lui-même, pas une intervention planifiée manuellement. */
+export async function checkTechnicalInspectionDue(tenantId: string): Promise<Alert[]> {
+  const now = new Date();
+  const threshold = new Date(now.getTime() + DOCUMENT_EXPIRY_LOOKAHEAD_DAYS * ONE_DAY_MS);
+
+  const vehicles = await prisma.vehicle.findMany({
+    where: { tenantId, technicalInspectionExpiryDate: { lte: threshold } },
+  });
+
+  const created: Alert[] = [];
+  for (const vehicle of vehicles) {
+    if (await hasUnresolvedAlert(tenantId, "VehicleTechnicalInspectionDue", vehicle.id)) {
+      continue;
+    }
+
+    const overdue = vehicle.technicalInspectionExpiryDate!.getTime() <= now.getTime();
+    const alert = await createAlert({
+      tenantId,
+      agencyId: vehicle.agencyId,
+      type: "TECHNICAL_INSPECTION_DUE",
+      priority: overdue ? "URGENT" : "HIGH",
+      message: `Contrôle technique ${overdue ? "dépassé" : "à prévoir"} : ${vehicle.name} (${vehicle.licensePlate}) — ${overdue ? "échéance dépassée le" : "échéance"} ${vehicle.technicalInspectionExpiryDate!.toLocaleDateString("fr-FR")}.`,
+      entityType: "VehicleTechnicalInspectionDue",
+      entityId: vehicle.id,
+    });
+    created.push(alert);
+  }
+
+  return created;
+}
+
+/** Vidange à prévoir — soit par date (nextOilChangeDate, même fenêtre que les autres échéances
+ * documentaires), soit par kilométrage (nextOilChangeKm comparé au dernier kilométrage connu du
+ * véhicule, voir getVehicleLastKnownState, src/lib/vehicles.ts — la même donnée que le
+ * pré-remplissage des transferts/bons de déplacement, Sprint 19). Un véhicule sans historique de
+ * retour (odometer null) n'est jamais évalué sur le critère kilométrage, faute de donnée. */
+export async function checkOilChangeDue(tenantId: string): Promise<Alert[]> {
+  const now = new Date();
+  const dateThreshold = new Date(now.getTime() + DOCUMENT_EXPIRY_LOOKAHEAD_DAYS * ONE_DAY_MS);
+
+  const vehicles = await prisma.vehicle.findMany({
+    where: {
+      tenantId,
+      OR: [{ nextOilChangeDate: { lte: dateThreshold } }, { nextOilChangeKm: { not: null } }],
+    },
+  });
+
+  const created: Alert[] = [];
+  for (const vehicle of vehicles) {
+    let detail: string | null = null;
+
+    if (vehicle.nextOilChangeDate && vehicle.nextOilChangeDate.getTime() <= dateThreshold.getTime()) {
+      const overdue = vehicle.nextOilChangeDate.getTime() <= now.getTime();
+      detail = `échéance ${overdue ? "dépassée" : "prévue"} le ${vehicle.nextOilChangeDate.toLocaleDateString("fr-FR")}`;
+    }
+
+    if (!detail && vehicle.nextOilChangeKm !== null) {
+      const { odometer } = await getVehicleLastKnownState(tenantId, vehicle.id);
+      if (odometer !== null && odometer >= vehicle.nextOilChangeKm - OIL_CHANGE_KM_LOOKAHEAD) {
+        detail = `kilométrage actuel ${odometer} km, seuil ${vehicle.nextOilChangeKm} km`;
+      }
+    }
+
+    if (!detail) {
+      continue;
+    }
+    if (await hasUnresolvedAlert(tenantId, "VehicleOilChangeDue", vehicle.id)) {
+      continue;
+    }
+
+    const alert = await createAlert({
+      tenantId,
+      agencyId: vehicle.agencyId,
+      type: "OIL_CHANGE_DUE",
+      priority: "MEDIUM",
+      message: `Vidange à prévoir : ${vehicle.name} (${vehicle.licensePlate}) — ${detail}.`,
+      entityType: "VehicleOilChangeDue",
       entityId: vehicle.id,
     });
     created.push(alert);

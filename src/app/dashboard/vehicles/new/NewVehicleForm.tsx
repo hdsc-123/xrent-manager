@@ -64,6 +64,11 @@ export function NewVehicleForm() {
   const [status, setStatus] = useState("AVAILABLE");
   const [pricePerDay, setPricePerDay] = useState("");
   const [imageUrl, setImageUrl] = useState("");
+  const [insuranceExpiryDate, setInsuranceExpiryDate] = useState("");
+  const [vignetteExpiryDate, setVignetteExpiryDate] = useState("");
+  const [technicalInspectionExpiryDate, setTechnicalInspectionExpiryDate] = useState("");
+  const [nextOilChangeDate, setNextOilChangeDate] = useState("");
+  const [nextOilChangeKm, setNextOilChangeKm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -127,6 +132,11 @@ export function NewVehicleForm() {
         ac,
         gps,
         imageUrl: imageUrl || undefined,
+        insuranceExpiryDate: insuranceExpiryDate || undefined,
+        vignetteExpiryDate: vignetteExpiryDate || undefined,
+        technicalInspectionExpiryDate: technicalInspectionExpiryDate || undefined,
+        nextOilChangeDate: nextOilChangeDate || undefined,
+        nextOilChangeKm: nextOilChangeKm ? Number(nextOilChangeKm) : undefined,
       });
       toast.success("Véhicule créé.");
       router.push("/dashboard/vehicles");
@@ -394,6 +404,62 @@ export function NewVehicleForm() {
                 value={imageUrl}
                 onChange={(e) => setImageUrl(e.target.value)}
               />
+            </div>
+
+            <div className="flex flex-col gap-3 rounded-md border border-border p-3">
+              <span className="text-sm font-medium">Alertes proactives</span>
+              <p className="text-xs text-muted-foreground">
+                Toutes optionnelles — génèrent une alerte à l&apos;approche de l&apos;échéance.
+                Modifiable depuis la fiche véhicule.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="insuranceExpiryDate">Expiration assurance</Label>
+                  <Input
+                    id="insuranceExpiryDate"
+                    type="date"
+                    value={insuranceExpiryDate}
+                    onChange={(e) => setInsuranceExpiryDate(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="vignetteExpiryDate">Expiration vignette</Label>
+                  <Input
+                    id="vignetteExpiryDate"
+                    type="date"
+                    value={vignetteExpiryDate}
+                    onChange={(e) => setVignetteExpiryDate(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="technicalInspectionExpiryDate">Expiration contrôle technique</Label>
+                  <Input
+                    id="technicalInspectionExpiryDate"
+                    type="date"
+                    value={technicalInspectionExpiryDate}
+                    onChange={(e) => setTechnicalInspectionExpiryDate(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="nextOilChangeDate">Prochaine vidange (date)</Label>
+                  <Input
+                    id="nextOilChangeDate"
+                    type="date"
+                    value={nextOilChangeDate}
+                    onChange={(e) => setNextOilChangeDate(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="nextOilChangeKm">Prochaine vidange (km)</Label>
+                <Input
+                  id="nextOilChangeKm"
+                  type="number"
+                  className="max-w-40"
+                  value={nextOilChangeKm}
+                  onChange={(e) => setNextOilChangeKm(e.target.value)}
+                />
+              </div>
             </div>
 
             {error && (

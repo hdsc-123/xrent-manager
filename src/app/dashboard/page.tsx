@@ -32,6 +32,14 @@ export default async function DashboardPage() {
 
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
   const agencyScope = accessibleAgencyIds ? { agencyId: { in: accessibleAgencyIds } } : {};
+  // Sprint 19 (DOMAINRULES.md section 37) : le widget "Retours" doit aussi remonter les
+  // contrats dont l'agence de RETOUR (dropoffAgencyId, distincte de l'agence de rattachement
+  // pour une conversion de réservation avec ville de retour différente) est accessible — pas
+  // seulement agencyId, contrairement aux autres comptages ci-dessous (Maintenance/Invoice,
+  // qui n'ont pas cette notion). Scope dédié, ne remplace pas agencyScope.
+  const locationReturnsAgencyScope = accessibleAgencyIds
+    ? { OR: [{ agencyId: { in: accessibleAgencyIds } }, { dropoffAgencyId: { in: accessibleAgencyIds } }] }
+    : {};
   const now = new Date();
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);
@@ -77,7 +85,7 @@ export default async function DashboardPage() {
     // ci-dessous depuis le Sprint 15.
     canViewLocations
       ? prisma.location.count({
-          where: { tenantId: user.tenantId, ...agencyScope, status: "ACTIVE", endDate: { lte: endOfToday } },
+          where: { tenantId: user.tenantId, ...locationReturnsAgencyScope, status: "ACTIVE", endDate: { lte: endOfToday } },
         })
       : 0,
     canViewMaintenances

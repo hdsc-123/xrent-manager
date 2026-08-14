@@ -1,17 +1,19 @@
 import { NextResponse } from "next/server";
 import type { LocationStatus, Prisma } from "@prisma/client";
-import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { getSessionUser, canAccessAgency, canAccessLocationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import {
   getLocationById,
   updateLocation,
   deleteLocation,
+  canTransition,
   InvalidDateRangeError,
   VehicleNotAvailableError,
   InvalidStatusTransitionError,
   LocationNotDeletableError,
   LocationHasInvoiceError,
   LocationLockedError,
+  SecondDriverNotFoundError,
 } from "@/lib/locations";
 import { logAction } from "@/lib/audit";
 
@@ -34,7 +36,9 @@ export async function GET(_request: Request, { params }: RouteParams) {
   const { id } = await params;
   const location = await getLocationById(user.tenantId, id);
 
-  if (!location || !(await canAccessAgency(user, location.agencyId))) {
+  // Sprint 19 (DOMAINRULES.md section 37) : visible aussi par l'agence de retour
+  // (dropoffAgencyId), pas seulement l'agence de rattachement du contrat.
+  if (!location || !(await canAccessLocationAgency(user, location))) {
     return NextResponse.json({ error: "Location introuvable." }, { status: 404 });
   }
 
@@ -49,6 +53,8 @@ interface UpdateLocationBody {
   startOdometer?: number | null;
   endOdometer?: number | null;
   deposit?: number | null;
+  /** Sprint 19 — second conducteur (voir Location.secondDriverId). */
+  secondDriverId?: string | null;
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
@@ -64,7 +70,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   const { id } = await params;
   const location = await getLocationById(user.tenantId, id);
 
-  if (!location || !(await canAccessAgency(user, location.agencyId))) {
+  // Sprint 19 (DOMAINRULES.md section 37) : accessible aussi à l'agence de retour
+  // (dropoffAgencyId), pas seulement l'agence de rattachement du contrat.
+  if (!location || !(await canAccessLocationAgency(user, location))) {
     return NextResponse.json({ error: "Location introuvable." }, { status: 404 });
   }
 
@@ -73,6 +81,24 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
+  }
+
+  // Sprint 19 : une agence de retour (dropoffAgencyId) qui n'a pas accès à l'agence de
+  // rattachement du contrat ne peut que "gérer la réception" — statut vers COMPLETED et
+  // kilométrage de retour, rien d'autre (dates/prix/notes/second conducteur restent réservés
+  // à l'agence de départ, voir DOMAINRULES.md section 37).
+  const hasPickupAccess = await canAccessAgency(user, location.agencyId);
+  if (!hasPickupAccess) {
+    const allowedKeys = new Set(["status", "endOdometer"]);
+    const touchesDisallowedField = (Object.keys(body) as (keyof UpdateLocationBody)[]).some(
+      (key) => !allowedKeys.has(key) && body[key] !== undefined
+    );
+    if (touchesDisallowedField || (body.status && body.status !== "COMPLETED")) {
+      return NextResponse.json(
+        { error: "L'agence de retour ne peut que gérer la réception du véhicule (statut Terminée, kilométrage retour)." },
+        { status: 403 }
+      );
+    }
   }
 
   if (body.status && !LOCATION_STATUSES.includes(body.status)) {
@@ -93,6 +119,17 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     }
   }
 
+  // Sprint 19 (DOMAINRULES.md section 37) : un ADMIN peut forcer une transition de statut ou
+  // modifier les dates d'un contrat verrouillé — jamais un champ de corps de requête, toujours
+  // dérivé de user.role. `wouldOverride` détecte si le contournement est réellement exercé,
+  // pour ne journaliser location.admin_override que lorsqu'il change effectivement le
+  // comportement normal (jamais pour une modification qui aurait de toute façon été acceptée).
+  const isAdmin = user.role === "ADMIN";
+  const wouldOverride =
+    isAdmin &&
+    ((body.status !== undefined && body.status !== location.status && !canTransition(location.status, body.status)) ||
+      ((startDate || endDate) && location.status !== "PENDING"));
+
   try {
     const updated = await updateLocation(user.tenantId, location.id, {
       status: body.status,
@@ -102,7 +139,19 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       startOdometer: body.startOdometer,
       endOdometer: body.endOdometer,
       deposit: body.deposit,
+      secondDriverId: body.secondDriverId,
+      adminOverride: isAdmin,
     });
+    if (wouldOverride) {
+      await logAction({
+        tenantId: user.tenantId,
+        userId: user.id,
+        action: "location.admin_override",
+        resource: "Location",
+        resourceId: location.id,
+        metadata: { from: location.status, changes: body } as unknown as Prisma.InputJsonValue,
+      });
+    }
     await logAction({
       tenantId: user.tenantId,
       userId: user.id,
@@ -113,6 +162,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     });
     return NextResponse.json({ location: updated });
   } catch (error) {
+    if (error instanceof SecondDriverNotFoundError) {
+      return NextResponse.json({ error: error.message }, { status: 404 });
+    }
     if (error instanceof InvalidDateRangeError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }

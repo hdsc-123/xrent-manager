@@ -410,6 +410,32 @@ describe("PATCH /api/reservations/[id]", () => {
     expect(body.reservation.source).toBe("DCH");
   });
 
+  it("efface réellement les remarques quand une chaîne vide est envoyée (Sprint 19)", async () => {
+    const createResponse = await createReservation(adminA, { notes: "Remarque initiale" });
+    const id = (await createResponse.json()).reservation.id;
+
+    const cleared = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ notes: "" }),
+    });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json()).reservation.notes).toBe("");
+  });
+
+  it("efface réellement la source quand une chaîne vide est envoyée (Sprint 19 — normalizeSource(\"\") ne doit pas laisser Prisma ignorer le champ)", async () => {
+    const createResponse = await createReservation(adminA, { source: "DCH" });
+    const id = (await createResponse.json()).reservation.id;
+
+    const cleared = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ source: "" }),
+    });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json()).reservation.source).toBeNull();
+  });
+
   it("exige la permission reservations.edit (retrofit permissions Sprint 15)", async () => {
     // Sprint 15 : un MEMBER sans groupe assigné retombe désormais sur les permissions du
     // groupe par défaut MEMBER (qui inclut reservations.edit) — voir src/lib/permissions.ts,
@@ -547,6 +573,92 @@ describe("DELETE /api/reservations/[id]", () => {
       headers: { Cookie: adminA.sessionCookie },
     });
     expect(deleteResponse.status).toBe(409);
+  });
+});
+
+describe("Sprint 19 — visibilité des réservations par agence de départ/retour (DOMAINRULES.md section 37)", () => {
+  let agencyA2Id: string;
+  let memberAgencyA1: AuthenticatedTestUser;
+  let memberAgencyA2: AuthenticatedTestUser;
+
+  beforeAll(async () => {
+    const agencyA2Response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence A2", slug: `agence-a2-${runId}` }),
+    });
+    agencyA2Id = (await agencyA2Response.json()).agency.id;
+
+    memberAgencyA1 = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Member Agency A1",
+      email: `member-agency-a1-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: memberAgencyA1.userId, agencyId: agencyA1Id } });
+
+    memberAgencyA2 = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Member Agency A2",
+      email: `member-agency-a2-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: memberAgencyA2.userId, agencyId: agencyA2Id } });
+  });
+
+  it("un MEMBER voit une réservation dont l'agence de départ lui est accessible", async () => {
+    const createResponse = await createReservation(adminA, { pickupAgency: "Agence A1" });
+    const id = (await createResponse.json()).reservation.id;
+
+    const response = await apiFetch(`/api/reservations/${id}`, { headers: { Cookie: memberAgencyA1.sessionCookie } });
+    expect(response.status).toBe(200);
+  });
+
+  it("un MEMBER ne voit pas une réservation dont ni l'agence de départ ni de retour ne lui sont accessibles", async () => {
+    const createResponse = await createReservation(adminA, { pickupAgency: "Agence A1" });
+    const id = (await createResponse.json()).reservation.id;
+
+    const response = await apiFetch(`/api/reservations/${id}`, { headers: { Cookie: memberAgencyA2.sessionCookie } });
+    expect(response.status).toBe(404);
+  });
+
+  it("un MEMBER voit une réservation via l'agence de retour même sans accès à l'agence de départ", async () => {
+    const createResponse = await createReservation(adminA, { pickupAgency: "Agence A1", dropoffAgency: "Agence A2" });
+    const id = (await createResponse.json()).reservation.id;
+
+    const response = await apiFetch(`/api/reservations/${id}`, { headers: { Cookie: memberAgencyA2.sessionCookie } });
+    expect(response.status).toBe(200);
+  });
+
+  it("seule l'agence de départ peut modifier une réservation — l'agence de retour reçoit 403", async () => {
+    const createResponse = await createReservation(adminA, {
+      pickupAgency: "Agence A1",
+      dropoffAgency: "Agence A2",
+      status: "CONFIRMED",
+    });
+    const id = (await createResponse.json()).reservation.id;
+
+    const patchResponse = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: memberAgencyA2.sessionCookie },
+      body: JSON.stringify({ notes: "tentative" }),
+    });
+    expect(patchResponse.status).toBe(403);
+  });
+
+  it("la liste des réservations est scopée par agence pour un MEMBER", async () => {
+    // Pickup uniquement (pas de dropoff) — ne doit être visible qu'à l'agence de départ,
+    // contrairement à la réservation pickup+dropoff du test précédent (visible aux deux).
+    const createResponse = await createReservation(adminA, { pickupAgency: "Agence A1" });
+    const id = (await createResponse.json()).reservation.id;
+
+    const listResponse = await apiFetch("/api/reservations", { headers: { Cookie: memberAgencyA2.sessionCookie } });
+    const { reservations } = await listResponse.json();
+    expect((reservations as { id: string }[]).some((r) => r.id === id)).toBe(false);
+
+    const listResponseA1 = await apiFetch("/api/reservations", { headers: { Cookie: memberAgencyA1.sessionCookie } });
+    const { reservations: reservationsA1 } = await listResponseA1.json();
+    expect((reservationsA1 as { id: string }[]).some((r) => r.id === id)).toBe(true);
   });
 });
 
@@ -834,10 +946,16 @@ describe("POST /api/reservations/[id]/convert", () => {
   /** Corps minimal valide (véhicule + dates + identité client) — Sprint 13D, nouveau
    * contrat de POST /api/reservations/[id]/convert (formulaire de conversion pré-rempli,
    * voir DOMAINRULES.md section 26). */
+  let convertBodyCounter = 0;
+
   function convertBody(
     reservation: { startDate: string; endDate: string; clientFirstName: string; clientLastName: string; clientPhone?: string | null },
     overrides: Record<string, unknown> = {}
   ) {
+    // Compteur local (Sprint 19) : idNumber/licenseNumber doivent être uniques par appel — sinon
+    // findDuplicateClient (détection de doublon) rejette (409) tout appel après le premier au
+    // sein de ce même tenant de test.
+    convertBodyCounter += 1;
     return {
       vehicleId: vehicleAId,
       startDate: reservation.startDate,
@@ -846,6 +964,14 @@ describe("POST /api/reservations/[id]/convert", () => {
         firstName: reservation.clientFirstName,
         lastName: reservation.clientLastName,
         phone: reservation.clientPhone ?? undefined,
+        // Sprint 19 (DOMAINRULES.md section 37) : désormais requis pour générer un contrat.
+        address: "12 rue des Fleurs",
+        city: "Casablanca",
+        country: "Maroc",
+        idNumber: `AB-${runId}-${convertBodyCounter}`,
+        licenseNumber: `P-${runId}-${convertBodyCounter}`,
+        licenseIssueDate: "2020-01-01",
+        licenseExpiryDate: "2030-01-01",
       },
       ...overrides,
     };
@@ -916,6 +1042,53 @@ describe("POST /api/reservations/[id]/convert", () => {
     const body = await response.json();
     expect(body.location.pricePerDay).toBe(9000);
     expect(body.location.totalPrice).toBe(18000); // 2 jours × 9000
+  });
+
+  it("Sprint 19 : un totalPrice explicite à la conversion prime sur le calcul pricePerDay × jours", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "TotalExplicite",
+      clientLastName: `Client-${runId}`,
+      startDate: "2030-09-15",
+      endDate: "2030-09-17",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBody(reservation, { pricePerDay: 9000, totalPrice: 15000 })),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    // 2 jours × 9000 = 18000 normalement, mais totalPrice explicite (15000, ex. remise) prévaut.
+    expect(body.location.totalPrice).toBe(15000);
+  });
+
+  it("Sprint 19 : ajoute un second conducteur au contrat à la conversion", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "AvecSecondConducteur",
+      clientLastName: `Client-${runId}`,
+      startDate: "2030-10-20",
+      endDate: "2030-10-22",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          secondDriver: { firstName: "Second", lastName: "Conducteur", phone: "+212600000000" },
+        })
+      ),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.location.secondDriverId).toBeTruthy();
+
+    const secondDriverClient = await prisma.client.findUnique({ where: { id: body.location.secondDriverId } });
+    expect(secondDriverClient?.firstName).toBe("Second");
+    expect(secondDriverClient?.lastName).toBe("Conducteur");
   });
 
   it("convertit avec paiement intégré (mode simple) et alimente la Caisse", async () => {

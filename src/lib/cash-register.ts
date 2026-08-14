@@ -16,6 +16,17 @@ export class ExpenseCategoryNameInUseError extends Error {
   }
 }
 
+/** Sprint 19 : une écriture issue d'un paiement (contractId renseigné, voir
+ * recordPaymentCashEntry dans src/lib/payments.ts) reste définitivement append-only —
+ * seules les écritures manuelles (contractId absent, créées directement via ce module)
+ * peuvent être modifiées/supprimées, voir updateCashEntry/deleteCashEntry ci-dessous. */
+export class CashEntryNotEditableError extends Error {
+  constructor() {
+    super("Cette écriture est liée à un paiement et ne peut pas être modifiée ni supprimée.");
+    this.name = "CashEntryNotEditableError";
+  }
+}
+
 /** Exportée (Sprint 17) pour src/lib/data-reset.ts — après une purge complète des CashEntry
  * d'un tenant, le solde recalculé est trivialement 0 (previousBalance/currentBalance), ce qui
  * permet de le poser directement dans la même transaction Prisma que la purge plutôt que
@@ -55,6 +66,14 @@ export interface CashRegisterSummary {
   monthExpenses: number;
   finalBalance: number;
   currency: string;
+  /** Sprint 19 (DOMAINRULES.md section 37) : répartition espèces/carte des entrées du mois —
+   * paymentMethod est déjà stocké par écriture (voir createPayment → recordPaymentCashEntry,
+   * src/lib/payments.ts, qui crée une CashEntry par ligne de paiement, y compris pour un
+   * paiement mixte) ; seule l'agrégation manquait jusqu'ici. Ignore les entrées sans
+   * paymentMethod (versements manuels sans mode renseigné) et tout mode autre que CASH/CARD
+   * (virement/chèque/autre) — non comptés dans ni l'un ni l'autre. */
+  monthCash: number;
+  monthCard: number;
 }
 
 /**
@@ -69,24 +88,33 @@ export async function recomputeCashRegisterBalance(tenantId: string): Promise<Ca
   const now = new Date();
   const monthStart = startOfMonthUtc(now);
 
-  const [priorEntries, priorExpenses, monthEntriesAgg, monthExpensesAgg] = await Promise.all([
-    prisma.cashEntry.aggregate({
-      where: { tenantId, type: "ENTRY", createdAt: { lt: monthStart } },
-      _sum: { amount: true },
-    }),
-    prisma.cashEntry.aggregate({
-      where: { tenantId, type: "EXPENSE", createdAt: { lt: monthStart } },
-      _sum: { amount: true },
-    }),
-    prisma.cashEntry.aggregate({
-      where: { tenantId, type: "ENTRY", createdAt: { gte: monthStart } },
-      _sum: { amount: true },
-    }),
-    prisma.cashEntry.aggregate({
-      where: { tenantId, type: "EXPENSE", createdAt: { gte: monthStart } },
-      _sum: { amount: true },
-    }),
-  ]);
+  const [priorEntries, priorExpenses, monthEntriesAgg, monthExpensesAgg, monthCashAgg, monthCardAgg] =
+    await Promise.all([
+      prisma.cashEntry.aggregate({
+        where: { tenantId, type: "ENTRY", createdAt: { lt: monthStart } },
+        _sum: { amount: true },
+      }),
+      prisma.cashEntry.aggregate({
+        where: { tenantId, type: "EXPENSE", createdAt: { lt: monthStart } },
+        _sum: { amount: true },
+      }),
+      prisma.cashEntry.aggregate({
+        where: { tenantId, type: "ENTRY", createdAt: { gte: monthStart } },
+        _sum: { amount: true },
+      }),
+      prisma.cashEntry.aggregate({
+        where: { tenantId, type: "EXPENSE", createdAt: { gte: monthStart } },
+        _sum: { amount: true },
+      }),
+      prisma.cashEntry.aggregate({
+        where: { tenantId, type: "ENTRY", paymentMethod: "CASH", createdAt: { gte: monthStart } },
+        _sum: { amount: true },
+      }),
+      prisma.cashEntry.aggregate({
+        where: { tenantId, type: "ENTRY", paymentMethod: "CARD", createdAt: { gte: monthStart } },
+        _sum: { amount: true },
+      }),
+    ]);
 
   const previousBalance = (priorEntries._sum.amount ?? 0) - (priorExpenses._sum.amount ?? 0);
   const monthEntries = monthEntriesAgg._sum.amount ?? 0;
@@ -107,6 +135,8 @@ export async function recomputeCashRegisterBalance(tenantId: string): Promise<Ca
     monthExpenses,
     finalBalance: currentBalance,
     currency: register.currency,
+    monthCash: monthCashAgg._sum.amount ?? 0,
+    monthCard: monthCardAgg._sum.amount ?? 0,
   };
 }
 
@@ -153,6 +183,61 @@ export async function createCashEntry(data: CreateCashEntryInput): Promise<CashE
   return entry;
 }
 
+export interface UpdateCashEntryInput {
+  category?: string;
+  amount?: number;
+  description?: string;
+}
+
+/** Sprint 19 : modifie une écriture manuelle (contractId absent) — 404 (null) si introuvable
+ * dans le tenant, CashEntryNotEditableError (409, voir la route) si elle est liée à un
+ * paiement. Recalcule toujours le solde après coup, même principe que createCashEntry. */
+export async function updateCashEntry(
+  tenantId: string,
+  entryId: string,
+  data: UpdateCashEntryInput
+): Promise<CashEntry | null> {
+  const existing = await prisma.cashEntry.findFirst({ where: { id: entryId, tenantId } });
+  if (!existing) {
+    return null;
+  }
+  if (existing.contractId) {
+    throw new CashEntryNotEditableError();
+  }
+  if (data.amount !== undefined && (!Number.isInteger(data.amount) || data.amount <= 0)) {
+    throw new InvalidCashEntryAmountError("amount doit être un entier positif (plus petite unité monétaire).");
+  }
+
+  const updated = await prisma.cashEntry.update({
+    where: { id: entryId },
+    data: {
+      ...(data.category !== undefined ? { category: data.category } : {}),
+      ...(data.amount !== undefined ? { amount: data.amount } : {}),
+      ...(data.description !== undefined ? { description: data.description } : {}),
+    },
+  });
+
+  await recomputeCashRegisterBalance(tenantId);
+  return updated;
+}
+
+/** Sprint 19 : supprime une écriture manuelle (contractId absent) — mêmes garanties que
+ * updateCashEntry ci-dessus (false si introuvable, CashEntryNotEditableError si liée à un
+ * paiement). Recalcule toujours le solde après coup. */
+export async function deleteCashEntry(tenantId: string, entryId: string): Promise<boolean> {
+  const existing = await prisma.cashEntry.findFirst({ where: { id: entryId, tenantId } });
+  if (!existing) {
+    return false;
+  }
+  if (existing.contractId) {
+    throw new CashEntryNotEditableError();
+  }
+
+  await prisma.cashEntry.delete({ where: { id: entryId } });
+  await recomputeCashRegisterBalance(tenantId);
+  return true;
+}
+
 export interface CashEntryFilters {
   type?: CashEntryType;
   category?: string;
@@ -185,21 +270,29 @@ export interface DailyBreakdownEntry {
   date: string;
   entries: number;
   expenses: number;
+  /** Sprint 19 (DOMAINRULES.md section 37) : sous-répartition des entrées (type ENTRY
+   * uniquement) par mode de règlement — espèces/carte, pour un rapprochement de caisse
+   * physique cohérent jour par jour. Un mode autre que CASH/CARD (virement/chèque/autre/absent)
+   * n'est compté dans aucun des deux, mais reste inclus dans `entries` ci-dessus. */
+  cash: number;
+  card: number;
 }
 
 /** Répartition entrées/dépenses par jour, sur la période demandée (par défaut les 30 derniers jours) — pour le graphique du tableau de bord Caisse. */
 export async function getDailyBreakdown(tenantId: string, from: Date, to: Date): Promise<DailyBreakdownEntry[]> {
   const entries = await prisma.cashEntry.findMany({
     where: { tenantId, createdAt: { gte: from, lte: to } },
-    select: { type: true, amount: true, createdAt: true },
+    select: { type: true, amount: true, createdAt: true, paymentMethod: true },
   });
 
   const byDay = new Map<string, DailyBreakdownEntry>();
   for (const entry of entries) {
     const date = entry.createdAt.toISOString().slice(0, 10);
-    const bucket = byDay.get(date) ?? { date, entries: 0, expenses: 0 };
+    const bucket = byDay.get(date) ?? { date, entries: 0, expenses: 0, cash: 0, card: 0 };
     if (entry.type === "ENTRY") {
       bucket.entries += entry.amount;
+      if (entry.paymentMethod === "CASH") bucket.cash += entry.amount;
+      else if (entry.paymentMethod === "CARD") bucket.card += entry.amount;
     } else {
       bucket.expenses += entry.amount;
     }

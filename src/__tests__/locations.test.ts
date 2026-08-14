@@ -9,6 +9,10 @@ const createdTenantIds: string[] = [];
 let adminA: AuthenticatedTestUser;
 let adminB: AuthenticatedTestUser;
 let memberA: AuthenticatedTestUser;
+/** Sprint 19 — MEMBER rattaché à agencyA1Id (contrairement à memberA), pour tester que la
+ * machine à états/le verrou de dates s'applique toujours à un MEMBER (contrairement à
+ * l'override ADMIN, voir DOMAINRULES.md section 37). */
+let linkedMemberA: AuthenticatedTestUser;
 let agencyA1Id: string;
 let agencyB1Id: string;
 let vehicleAId: string; // pricePerDay = 5000 (50,00 MAD)
@@ -118,6 +122,14 @@ beforeAll(async () => {
     body: JSON.stringify({ name: "Client B", email: `client-b-${runId}@test.local` }),
   });
   clientBId = (await clientBResponse.json()).client.id;
+
+  linkedMemberA = await createAndLoginMember({
+    tenantId: adminA.tenantId,
+    name: "Linked Member A",
+    email: `linked-member-a-${runId}@test.local`,
+    password: "Correct-Horse-Battery-Staple9!",
+  });
+  await prisma.userAgency.create({ data: { userId: linkedMemberA.userId, agencyId: agencyA1Id } });
 });
 
 afterAll(async () => {
@@ -370,7 +382,7 @@ describe("PATCH /api/locations/[id]", () => {
     expect(body.location.status).toBe("CONFIRMED");
   });
 
-  it("refuse une transition de statut invalide (PENDING → COMPLETED)", async () => {
+  it("refuse une transition de statut invalide (PENDING → COMPLETED) pour un MEMBER", async () => {
     const createResponse = await createLocation(adminA, {
       startDate: "2028-09-10",
       endDate: "2028-09-13",
@@ -379,10 +391,33 @@ describe("PATCH /api/locations/[id]", () => {
 
     const response = await apiFetch(`/api/locations/${locationId}`, {
       method: "PATCH",
-      headers: { Cookie: adminA.sessionCookie },
+      headers: { Cookie: linkedMemberA.sessionCookie },
       body: JSON.stringify({ status: "COMPLETED" }),
     });
     expect(response.status).toBe(409);
+  });
+
+  it("Sprint 19 : un ADMIN peut forcer une transition de statut invalide (override, journalisé)", async () => {
+    const createResponse = await createLocation(adminA, {
+      startDate: "2028-09-15",
+      endDate: "2028-09-18",
+    });
+    const locationId = (await createResponse.json()).location.id;
+
+    const response = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED" }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).location.status).toBe("COMPLETED");
+
+    const auditResponse = await apiFetch(
+      `/api/audit?resource=Location&action=location.admin_override`,
+      { headers: { Cookie: adminA.sessionCookie } }
+    );
+    const auditLogs = (await auditResponse.json()).logs as { resourceId: string }[];
+    expect(auditLogs.some((log) => log.resourceId === locationId)).toBe(true);
   });
 
   it("recalcule totalPrice quand les dates changent", async () => {
@@ -520,7 +555,7 @@ describe("Sprint 14B — numérotation de contrat", () => {
     expect(existing?.contractNumber).toBe(firstBody.location.contractNumber);
   });
 
-  it("verrouille les dates une fois le contrat sorti de PENDING (CONFIRMED)", async () => {
+  it("verrouille les dates une fois le contrat sorti de PENDING (CONFIRMED) pour un MEMBER", async () => {
     const createResponse = await createLocation(adminA, { startDate: "2029-08-01", endDate: "2029-08-03" });
     const locationId = (await createResponse.json()).location.id;
 
@@ -532,7 +567,7 @@ describe("Sprint 14B — numérotation de contrat", () => {
 
     const response = await apiFetch(`/api/locations/${locationId}`, {
       method: "PATCH",
-      headers: { Cookie: adminA.sessionCookie },
+      headers: { Cookie: linkedMemberA.sessionCookie },
       body: JSON.stringify({ startDate: "2029-08-02", endDate: "2029-08-04" }),
     });
     expect(response.status).toBe(409);
@@ -540,10 +575,37 @@ describe("Sprint 14B — numérotation de contrat", () => {
     // Le statut, lui, reste modifiable (seules les dates sont verrouillées).
     const notesResponse = await apiFetch(`/api/locations/${locationId}`, {
       method: "PATCH",
-      headers: { Cookie: adminA.sessionCookie },
+      headers: { Cookie: linkedMemberA.sessionCookie },
       body: JSON.stringify({ notes: "toujours modifiable" }),
     });
     expect(notesResponse.status).toBe(200);
+  });
+
+  it("Sprint 19 : un ADMIN peut modifier les dates d'un contrat verrouillé (override, journalisé)", async () => {
+    const createResponse = await createLocation(adminA, { startDate: "2029-08-10", endDate: "2029-08-12" });
+    const locationId = (await createResponse.json()).location.id;
+
+    await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+
+    const response = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ startDate: "2029-08-11", endDate: "2029-08-13" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.location.startDate).toContain("2029-08-11");
+
+    const auditResponse = await apiFetch(
+      `/api/audit?resource=Location&action=location.admin_override`,
+      { headers: { Cookie: adminA.sessionCookie } }
+    );
+    const auditLogs = (await auditResponse.json()).logs as { resourceId: string }[];
+    expect(auditLogs.some((log) => log.resourceId === locationId)).toBe(true);
   });
 
   it("permet toujours de modifier les dates tant que le contrat est PENDING", async () => {

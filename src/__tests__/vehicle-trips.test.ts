@@ -233,6 +233,22 @@ describe("PATCH /api/vehicle-trips/[id]/return", () => {
     const vehicleBody = await vehicleCheck.json();
     expect(vehicleBody.vehicle.status).toBe("AVAILABLE");
   });
+
+  it("Sprint 19 : refuse un retour sans carburant retour (désormais obligatoire)", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const createResponse = await createTrip(adminA, vehicleId, adminA.userId, { startOdometer: 40000 });
+    const tripId = (await createResponse.json()).trip.id;
+
+    const response = await apiFetch(`/api/vehicle-trips/${tripId}/return`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ endOdometer: 40100 }),
+    });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain("endFuelLevel");
+  });
 });
 
 describe("PATCH /api/vehicle-trips/[id]/cancel", () => {

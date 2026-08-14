@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Plus, Upload } from "lucide-react";
 import type { ReservationStatus } from "@prisma/client";
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getReservations } from "@/lib/reservations";
 import { prisma } from "@/lib/prisma";
@@ -54,6 +54,7 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
   const canDelete = await can(user, "reservations.delete");
   const canEdit = await can(user, "reservations.edit");
 
+  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
   const reservations = await getReservations(user.tenantId, {
     ...(params.status ? { status: params.status as ReservationStatus } : {}),
     ...(params.source ? { source: params.source } : {}),
@@ -63,6 +64,8 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
     ...(params.pickupAgency ? { pickupAgency: params.pickupAgency } : {}),
     ...(params.dropoffAgency ? { dropoffAgency: params.dropoffAgency } : {}),
     ...(params.vehicleCategory ? { vehicleCategory: params.vehicleCategory } : {}),
+    // Sprint 19 (DOMAINRULES.md section 37) : visibilité scopée par agence de départ/retour.
+    accessibleAgencyIds,
   });
 
   // Villes/agences (Sprint 14A) : mêmes options que le formulaire de création (ville si
@@ -72,9 +75,15 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
     (a, b) => a.localeCompare(b)
   );
 
+  // Sprint 19 (DOMAINRULES.md section 37) : seule l'agence de départ peut modifier/annuler —
+  // calculé par ligne plutôt qu'un booléen global unique, `null` (ADMIN) = aucune restriction.
+  const canEditRow = (pickupAgencyId: string | null) =>
+    accessibleAgencyIds === null || pickupAgencyId === null || accessibleAgencyIds.includes(pickupAgencyId);
+
   const rows: ReservationRow[] = reservations.map((reservation) => ({
     id: reservation.id,
     voucherNumber: reservation.voucherNumber,
+    canEditAgency: canEditRow(reservation.pickupAgencyId),
     source: reservation.source,
     optionsCurrency: reservation.optionsCurrency,
     flightNumber: reservation.flightNumber,

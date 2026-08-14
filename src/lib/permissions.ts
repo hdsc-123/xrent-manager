@@ -89,6 +89,11 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: "cash_register.view", label: "Voir la caisse", category: "Caisse" },
   { key: "cash_register.create_entry", label: "Enregistrer une entrée de caisse", category: "Caisse" },
   { key: "cash_register.create_expense", label: "Enregistrer une dépense de caisse", category: "Caisse" },
+  // Sprint 19 : édition/suppression d'une écriture MANUELLE uniquement (sans lien vers un
+  // paiement, voir CashEntry.contractId et src/lib/cash-register.ts) — une écriture issue
+  // d'un paiement reste immuable quel que soit le porteur de ces permissions.
+  { key: "cash_register.edit", label: "Modifier une écriture de caisse manuelle", category: "Caisse" },
+  { key: "cash_register.delete", label: "Supprimer une écriture de caisse manuelle", category: "Caisse" },
   { key: "cash_register.manage_categories", label: "Gérer les catégories de dépense", category: "Caisse" },
 
   { key: "vehicle_transfers.view", label: "Voir les transferts de véhicules", category: "Transferts" },
@@ -162,6 +167,8 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "cash_register.view",
       "cash_register.create_entry",
       "cash_register.create_expense",
+      "cash_register.edit",
+      "cash_register.delete",
       "cash_register.manage_categories",
       "vehicle_transfers.view",
       "vehicle_transfers.create",
@@ -237,6 +244,8 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "cash_register.view",
       "cash_register.create_entry",
       "cash_register.create_expense",
+      "cash_register.edit",
+      "cash_register.delete",
       "cash_register.manage_categories",
       "vehicle_transfers.view",
       "vehicle_transfers.create",
@@ -251,20 +260,25 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
 ];
 
 /**
- * Sprint 15 : clés nouvellement introduites par le retrofit de permissions (nouveaux
- * modules maintenances/alerts/cash_register/vehicle_transfers/vehicle_trips, plus les
- * suppressions/factures/paiements ajoutées à MEMBER/AGENCE pour préserver leur comportement
- * actuel — voir le commentaire sur DEFAULT_GROUPS ci-dessus). Un tenant déjà existant a déjà
- * ses groupes MEMBER/COMPTABILITÉ/AGENCE en base (créés par un Sprint antérieur) :
- * `ensureDefaultGroups` ci-dessous ne les recrée jamais (idempotent par nom), donc ces
- * nouvelles clés ne leur seraient jamais ajoutées sans ce backfill explicite — laissant un
- * MEMBER déjà en poste soudainement bloqué sur des actions qu'il pouvait faire sans
- * restriction avant ce sprint (aucune vérification de permission n'existait). Seules les
- * clés listées ici sont fusionnées (union, jamais de retrait) dans les groupes déjà
- * existants portant ces noms — les clés antérieures à ce sprint, potentiellement déjà
- * personnalisées par un ADMIN, ne sont jamais touchées.
+ * Historique des clés introduites par les retrofits de permissions successifs (Sprint 15 :
+ * nouveaux modules maintenances/alerts/cash_register/vehicle_transfers/vehicle_trips, plus
+ * les suppressions/factures/paiements ajoutées à MEMBER/AGENCE pour préserver leur
+ * comportement d'alors ; Sprint 18 : reservations.import ; Sprint 19 : cash_register.edit/
+ * delete). `DEFAULT_GROUPS` ci-dessus inclut déjà ces clés pour tout tenant créé après le
+ * sprint qui les a introduites — ce dictionnaire ne sert plus qu'à documenter/rejouer,
+ * ponctuellement et manuellement (voir scripts/backfill-permissions.ts et son commentaire),
+ * le rattrapage nécessaire pour les tenants déjà existants au moment de chaque sprint.
+ *
+ * IMPORTANT (correctif Sprint 19, bug réel corrigé) : ce dictionnaire n'est plus jamais
+ * invoqué automatiquement par `ensureDefaultGroups` — il l'était auparavant à chaque
+ * `GET /api/permission-groups`, ce qui réinjectait silencieusement ces clés précises dans
+ * un groupe MEMBER/AGENCE à chaque chargement de la page, même après qu'un ADMIN les ait
+ * explicitement décochées (aucun moyen de distinguer « jamais eu cette clé » de « clé
+ * retirée intentionnellement »). Un tenant déjà existant au moment d'un sprint qui introduit
+ * une nouvelle clé doit désormais être rattrapé une seule fois, explicitement, via le script
+ * dédié — jamais de façon récurrente depuis une route consultée par un utilisateur normal.
  */
-const SPRINT15_BACKFILL_PERMISSIONS: Record<string, string[]> = {
+export const PAST_PERMISSION_BACKFILLS: Record<string, string[]> = {
   MEMBER: [
     // Sprint 18 : reservations.import — gap antérieur à Sprint 15 (jamais accordé à MEMBER
     // depuis la création du module Réservations, Sprint 12C), contredisant DOMAINRULES.md
@@ -286,6 +300,10 @@ const SPRINT15_BACKFILL_PERMISSIONS: Record<string, string[]> = {
     "cash_register.view",
     "cash_register.create_entry",
     "cash_register.create_expense",
+    // Sprint 19 : nouvelles clés (édition/suppression d'écriture manuelle, voir
+    // src/lib/cash-register.ts) — mêmes groupes que create_entry/create_expense.
+    "cash_register.edit",
+    "cash_register.delete",
     "cash_register.manage_categories",
     "vehicle_transfers.view",
     "vehicle_transfers.create",
@@ -304,6 +322,8 @@ const SPRINT15_BACKFILL_PERMISSIONS: Record<string, string[]> = {
     "cash_register.view",
     "cash_register.create_entry",
     "cash_register.create_expense",
+    "cash_register.edit",
+    "cash_register.delete",
     "cash_register.manage_categories",
     "invoices.view",
     "invoices.create",
@@ -331,46 +351,48 @@ const SPRINT15_BACKFILL_PERMISSIONS: Record<string, string[]> = {
 /**
  * Crée les groupes par défaut pour un tenant s'il n'en a aucun encore — idempotent,
  * appelée à l'inscription (nouveaux tenants) et paresseusement depuis les pages de
- * gestion des permissions (backfill des tenants existants, sans script de migration
- * séparé). Ignore silencieusement une violation de contrainte unique (P2002) en cas
- * d'appels concurrents. Pour un groupe par défaut déjà existant, fusionne en plus les
- * nouvelles clés Sprint 15 manquantes (voir SPRINT15_BACKFILL_PERMISSIONS ci-dessus).
+ * gestion des permissions (création différée pour un tenant existant qui n'aurait
+ * jamais eu ces groupes). Ignore silencieusement une violation de contrainte unique
+ * (P2002) en cas d'appels concurrents.
+ *
+ * Correctif Sprint 19 (bug réel corrigé, DOMAINRULES.md section 37) : cette fonction ne
+ * touche plus jamais un groupe déjà existant. Avant ce sprint, elle fusionnait en plus
+ * (skipDuplicates) les clés de PAST_PERMISSION_BACKFILLS dans les groupes MEMBER/AGENCE déjà
+ * présents, à *chaque* appel — donc à chaque `GET /api/permission-groups`. Un ADMIN qui
+ * décochait explicitement une de ces clés précises (ex. `cash_register.manage_categories`
+ * sur AGENCE) la voyait silencieusement réapparaître au chargement suivant de la page,
+ * sans aucun moyen de la retirer durablement : rien ne distingue en base « cette clé n'a
+ * jamais été accordée » de « cette clé a été retirée intentionnellement ». Le rattrapage
+ * ponctuel nécessaire pour des tenants déjà existants au moment d'un sprint qui introduit
+ * une nouvelle clé (ex. cash_register.edit/delete ce sprint) doit désormais être fait une
+ * seule fois, explicitement, hors de ce chemin récurrent (voir scripts/backfill-permissions.ts).
  */
 export async function ensureDefaultGroups(tenantId: string): Promise<void> {
   const existingGroups = await prisma.permissionGroup.findMany({
     where: { tenantId },
-    select: { id: true, name: true },
+    select: { name: true },
   });
-  const existingByName = new Map(existingGroups.map((group) => [group.name, group.id]));
+  const existingNames = new Set(existingGroups.map((group) => group.name));
 
   for (const def of DEFAULT_GROUPS) {
-    const existingGroupId = existingByName.get(def.name);
-
-    if (existingGroupId === undefined) {
-      try {
-        await prisma.permissionGroup.create({
-          data: {
-            tenantId,
-            name: def.name,
-            groupPermissions: {
-              createMany: { data: def.permissions.map((permissionKey) => ({ permissionKey })) },
-            },
-          },
-        });
-      } catch (error) {
-        if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) {
-          throw error;
-        }
-      }
+    if (existingNames.has(def.name)) {
       continue;
     }
 
-    const backfill = SPRINT15_BACKFILL_PERMISSIONS[def.name];
-    if (backfill && backfill.length > 0) {
-      await prisma.groupPermission.createMany({
-        data: backfill.map((permissionKey) => ({ groupId: existingGroupId, permissionKey })),
-        skipDuplicates: true,
+    try {
+      await prisma.permissionGroup.create({
+        data: {
+          tenantId,
+          name: def.name,
+          groupPermissions: {
+            createMany: { data: def.permissions.map((permissionKey) => ({ permissionKey })) },
+          },
+        },
       });
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) {
+        throw error;
+      }
     }
   }
 }

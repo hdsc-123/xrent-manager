@@ -81,3 +81,67 @@ export async function getAccessibleAgencyIds(user: SessionUser): Promise<string[
 
   return links.map((link) => link.agencyId);
 }
+
+/**
+ * Sprint 19 (DOMAINRULES.md section 37) : visibilité d'une réservation par agence de
+ * départ/retour (pickupAgencyId/dropoffAgencyId, résolus côté serveur depuis le texte libre
+ * pickupAgency/dropoffAgency — voir src/lib/reservations.ts, buildAgencyLookupMap). Un ADMIN
+ * voit tout. Un MEMBER voit la réservation si l'une des deux agences résolues lui est
+ * accessible. Si aucune des deux villes ne correspond à une agence réelle du tenant (texte
+ * broker non reconnu, ou ambiguïté entre plusieurs agences), comportement antérieur à ce
+ * sprint conservé : visible dès que reservations.view est accordé, pour ne pas régresser
+ * l'import Excel/broker existant.
+ */
+export async function canAccessReservationAgencies(
+  user: SessionUser,
+  reservation: { pickupAgencyId: string | null; dropoffAgencyId: string | null }
+): Promise<boolean> {
+  if (reservation.pickupAgencyId === null && reservation.dropoffAgencyId === null) {
+    return true;
+  }
+
+  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+  if (accessibleAgencyIds === null) {
+    return true;
+  }
+
+  const accessible = new Set(accessibleAgencyIds);
+  return (
+    (reservation.pickupAgencyId !== null && accessible.has(reservation.pickupAgencyId)) ||
+    (reservation.dropoffAgencyId !== null && accessible.has(reservation.dropoffAgencyId))
+  );
+}
+
+/**
+ * Sprint 19 : seule l'agence de départ (pickupAgencyId) peut modifier/convertir/supprimer une
+ * réservation — l'agence d'arrivée ne peut que la consulter (canAccessReservationAgencies
+ * ci-dessus). Si pickupAgencyId n'est pas résolu (texte broker non reconnu), comportement
+ * antérieur conservé : n'importe quel titulaire de reservations.edit/convert peut agir.
+ */
+export async function canEditReservationAgency(
+  user: SessionUser,
+  reservation: { pickupAgencyId: string | null }
+): Promise<boolean> {
+  if (reservation.pickupAgencyId === null) {
+    return true;
+  }
+  return canAccessAgency(user, reservation.pickupAgencyId);
+}
+
+/**
+ * Sprint 19 : un contrat (Location) reste visible/gérable par son agence de rattachement
+ * (agencyId, dérivée du véhicule) comme avant ce sprint, mais aussi par son agence de retour
+ * (dropoffAgencyId, voir Location.dropoffAgencyId) quand elle diffère — permet à l'agence
+ * d'arrivée de consulter le contrat et d'enregistrer la réception du véhicule (kilométrage/
+ * statut) sans accès à l'agence de départ. Alimente aussi le widget "Retours" du dashboard
+ * pour cette agence, voir src/app/dashboard/page.tsx.
+ */
+export async function canAccessLocationAgency(
+  user: SessionUser,
+  location: { agencyId: string; dropoffAgencyId: string | null }
+): Promise<boolean> {
+  if (await canAccessAgency(user, location.agencyId)) {
+    return true;
+  }
+  return location.dropoffAgencyId !== null && canAccessAgency(user, location.dropoffAgencyId);
+}

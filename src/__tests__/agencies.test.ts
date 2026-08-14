@@ -355,6 +355,28 @@ describe("Sprint 15 — numérotation de contrat par agence (déplacée depuis T
   });
 });
 
+describe("Sprint 19 — solde de départ de caisse par agence (informatif)", () => {
+  it("accepte et persiste cashStartingBalance", async () => {
+    const response = await apiFetch(`/api/agencies/${agencyA1Id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ cashStartingBalance: 500_00 }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.agency.cashStartingBalance).toBe(500_00);
+  });
+
+  it("refuse un cashStartingBalance négatif ou non entier", async () => {
+    const response = await apiFetch(`/api/agencies/${agencyA1Id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ cashStartingBalance: -100 }),
+    });
+    expect(response.status).toBe(400);
+  });
+});
+
 describe("DELETE /api/agencies/[id]", () => {
   it("retourne 404 pour une agence d'un autre tenant", async () => {
     const response = await apiFetch(`/api/agencies/${agencyB1Id}`, {

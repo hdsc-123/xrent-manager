@@ -30,6 +30,9 @@ interface EditAgencyFormProps {
    * chaque agence a désormais son propre préfixe et sa propre séquence indépendante). */
   initialContractNumberPrefix: string;
   initialLastContractNumber: number;
+  /** Sprint 19 — solde de départ de caisse (centimes), purement informatif : la caisse reste
+   * un singleton par tenant (DOMAINRULES.md section 37), jamais intégré au calcul réel. */
+  initialCashStartingBalance: number;
 }
 
 export function EditAgencyForm({
@@ -44,6 +47,7 @@ export function EditAgencyForm({
   initialManagerPhone,
   initialContractNumberPrefix,
   initialLastContractNumber,
+  initialCashStartingBalance,
 }: EditAgencyFormProps) {
   const router = useRouter();
   const [name, setName] = useState(initialName);
@@ -55,6 +59,7 @@ export function EditAgencyForm({
   const [managerPhone, setManagerPhone] = useState(initialManagerPhone ?? "");
   const [contractNumberPrefix, setContractNumberPrefix] = useState(initialContractNumberPrefix);
   const [lastContractNumber, setLastContractNumber] = useState(String(initialLastContractNumber));
+  const [cashStartingBalance, setCashStartingBalance] = useState(String(initialCashStartingBalance / 100));
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -65,6 +70,12 @@ export function EditAgencyForm({
     const lastContractNumberValue = Number(lastContractNumber);
     if (!Number.isInteger(lastContractNumberValue) || lastContractNumberValue < 0) {
       setError("Le dernier numéro de contrat utilisé doit être un entier positif ou nul.");
+      return;
+    }
+
+    const cashStartingBalanceMad = Number(cashStartingBalance.replace(",", "."));
+    if (!Number.isFinite(cashStartingBalanceMad) || cashStartingBalanceMad < 0) {
+      setError("Le solde de départ de caisse doit être un nombre positif ou nul.");
       return;
     }
 
@@ -81,6 +92,7 @@ export function EditAgencyForm({
         managerPhone,
         contractNumberPrefix: contractNumberPrefix.trim(),
         lastContractNumber: lastContractNumberValue,
+        cashStartingBalance: Math.round(cashStartingBalanceMad * 100),
       });
       toast.success("Agence mise à jour.");
       router.push("/dashboard/agencies");
@@ -202,6 +214,24 @@ export function EditAgencyForm({
               <span className="font-medium">{previewNumber}</span>. Ne modifiez le dernier numéro
               utilisé que pour reprendre une numérotation existante (ex. migration depuis un autre
               système).
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="cashStartingBalance">
+              Solde de départ de caisse (MAD) <span className="text-muted-foreground">— informatif</span>
+            </Label>
+            <Input
+              id="cashStartingBalance"
+              inputMode="decimal"
+              value={cashStartingBalance}
+              onChange={(e) => setCashStartingBalance(e.target.value)}
+              className="max-w-40"
+            />
+            <p className="text-xs text-muted-foreground">
+              Solde physique constaté à l&apos;ouverture de cette agence, affiché pour référence sur
+              la page Caisse — la caisse reste commune à tout le tenant, ce montant n&apos;est jamais
+              intégré au calcul du solde réel.
             </p>
           </div>
 

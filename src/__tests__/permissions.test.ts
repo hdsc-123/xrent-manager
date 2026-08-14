@@ -179,6 +179,43 @@ describe("PATCH/DELETE /api/permission-groups/[id]", () => {
   });
 });
 
+describe("Sprint 19 — persistance des permissions de groupe (correctif du backfill récurrent)", () => {
+  it("un retrait explicite sur MEMBER/AGENCE ne réapparaît plus après un nouveau GET (bug réel corrigé)", async () => {
+    const listResponse = await apiFetch("/api/permission-groups", { headers: { Cookie: adminA.sessionCookie } });
+    const groups = (await listResponse.json()).groups as { id: string; name: string; permissions: string[] }[];
+    const memberGroup = groups.find((g) => g.name === "MEMBER");
+    expect(memberGroup).toBeDefined();
+    // cash_register.edit/delete (Sprint 19) font partie des clés historiquement backfillées —
+    // exactement le type de clé que l'ancien mécanisme réinjectait silencieusement.
+    expect(memberGroup!.permissions).toContain("cash_register.edit");
+
+    const remainingPermissions = memberGroup!.permissions.filter((key) => key !== "cash_register.edit");
+    const patchResponse = await apiFetch(`/api/permission-groups/${memberGroup!.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissions: remainingPermissions }),
+    });
+    expect(patchResponse.status).toBe(200);
+    expect((await patchResponse.json()).group.permissions).not.toContain("cash_register.edit");
+
+    // Avant le correctif Sprint 19, ce second GET (qui invoque ensureDefaultGroups) réinjectait
+    // silencieusement cash_register.edit dans le groupe MEMBER déjà existant — annulant le
+    // retrait explicite ci-dessus sans qu'aucun ADMIN ne l'ait demandé.
+    const secondListResponse = await apiFetch("/api/permission-groups", { headers: { Cookie: adminA.sessionCookie } });
+    const secondGroups = (await secondListResponse.json()).groups as { id: string; name: string; permissions: string[] }[];
+    const memberGroupAfter = secondGroups.find((g) => g.name === "MEMBER");
+    expect(memberGroupAfter!.permissions).not.toContain("cash_register.edit");
+
+    // Restaure l'état initial pour ne pas affecter les autres tests de ce fichier qui
+    // s'appuient sur le groupe MEMBER par défaut.
+    await apiFetch(`/api/permission-groups/${memberGroup!.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissions: memberGroup!.permissions }),
+    });
+  });
+});
+
 describe("GET/PATCH /api/users/[id]/permissions", () => {
   // Sprint 15 : décision explicite — un MEMBER n'ayant jamais été rattaché à un groupe (aucun
   // code de l'application ne le fait automatiquement à sa création) retombe désormais sur les

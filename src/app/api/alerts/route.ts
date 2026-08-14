@@ -14,6 +14,13 @@ const ALERT_TYPES: AlertType[] = [
   "RETURN_OVERDUE",
   "DOCUMENT_EXPIRED",
   "STOCK_INCONSISTENCY",
+  // Sprint 19 (DOMAINRULES.md section 37) : 4 types ajoutés — oubliés ici lors de l'extension
+  // de l'enum AlertType (bug réel trouvé en testant le filtre GET /api/alerts?type=..., qui
+  // rejetait ces valeurs pourtant valides en base).
+  "INSURANCE_EXPIRING",
+  "VIGNETTE_EXPIRING",
+  "TECHNICAL_INSPECTION_DUE",
+  "OIL_CHANGE_DUE",
   "OTHER",
 ];
 const ALERT_PRIORITIES: AlertPriority[] = ["LOW", "MEDIUM", "HIGH", "URGENT"];

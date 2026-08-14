@@ -97,7 +97,20 @@ interface CreateVehicleBody {
   ac?: boolean;
   gps?: boolean;
   imageUrl?: string;
+  /** Sprint 19 (DOMAINRULES.md section 37) — alertes proactives, dates ISO. */
+  insuranceExpiryDate?: string;
+  vignetteExpiryDate?: string;
+  technicalInspectionExpiryDate?: string;
+  nextOilChangeDate?: string;
+  nextOilChangeKm?: number;
 }
+
+const OPTIONAL_DATE_FIELDS = [
+  "insuranceExpiryDate",
+  "vignetteExpiryDate",
+  "technicalInspectionExpiryDate",
+  "nextOilChangeDate",
+] as const;
 
 export async function POST(request: Request) {
   const user = await getSessionUser();
@@ -170,6 +183,25 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "engineSize doit être un nombre positif." }, { status: 400 });
   }
 
+  if (
+    body.nextOilChangeKm !== undefined &&
+    (!Number.isInteger(body.nextOilChangeKm) || body.nextOilChangeKm < 0)
+  ) {
+    return NextResponse.json({ error: "nextOilChangeKm doit être un entier positif ou nul." }, { status: 400 });
+  }
+
+  // Sprint 19 (DOMAINRULES.md section 37) : dates optionnelles des alertes proactives.
+  const parsedDates: Partial<Record<(typeof OPTIONAL_DATE_FIELDS)[number], Date>> = {};
+  for (const field of OPTIONAL_DATE_FIELDS) {
+    const value = body[field];
+    if (value === undefined) continue;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return NextResponse.json({ error: `${field} doit être une date ISO valide.` }, { status: 400 });
+    }
+    parsedDates[field] = parsed;
+  }
+
   if (!(await canAccessAgency(user, agencyId))) {
     return NextResponse.json({ error: "Accès refusé à cette agence." }, { status: 403 });
   }
@@ -200,6 +232,8 @@ export async function POST(request: Request) {
       ac: body.ac,
       gps: body.gps,
       imageUrl: body.imageUrl,
+      nextOilChangeKm: body.nextOilChangeKm,
+      ...parsedDates,
     });
     await logAction({
       tenantId: user.tenantId,

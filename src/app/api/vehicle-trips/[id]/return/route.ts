@@ -7,6 +7,7 @@ import {
   VehicleTripNotEditableError,
   InvalidVehicleTripOdometerError,
   InvalidFuelLevelError,
+  MissingFuelLevelError,
 } from "@/lib/vehicle-trips";
 import { logAction } from "@/lib/audit";
 
@@ -46,6 +47,11 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   if (body.endOdometer === undefined) {
     return NextResponse.json({ error: "endOdometer est requis." }, { status: 400 });
   }
+  // Sprint 19 (DOMAINRULES.md section 37) : carburant retour désormais obligatoire, même
+  // logique que le transfert entre agences.
+  if (body.endFuelLevel === undefined) {
+    return NextResponse.json({ error: "endFuelLevel est requis." }, { status: 400 });
+  }
 
   const returnDate = body.returnDate ? new Date(body.returnDate) : undefined;
   if (returnDate && Number.isNaN(returnDate.getTime())) {
@@ -78,6 +84,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof InvalidFuelLevelError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof MissingFuelLevelError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
 

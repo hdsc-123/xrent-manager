@@ -112,6 +112,7 @@ afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.maintenance.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.vehicleTransfer.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -306,6 +307,79 @@ describe("POST /api/tasks/check-alerts (génération d'alertes de maintenance)",
     );
     expect(matchingAlerts).toHaveLength(1);
     expect(secondBody.created.dueMaintenances).toBe(0);
+  });
+});
+
+describe("Sprint 19 — alertes véhicule proactives (assurance/vignette/contrôle technique/vidange)", () => {
+  it("crée INSURANCE_EXPIRING/VIGNETTE_EXPIRING/TECHNICAL_INSPECTION_DUE pour un véhicule dont les échéances sont dépassées", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id, {
+      insuranceExpiryDate: "2020-01-01",
+      vignetteExpiryDate: "2020-01-01",
+      technicalInspectionExpiryDate: "2020-01-01",
+    });
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const response = await apiFetch("/api/tasks/check-alerts", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.created.insuranceExpiring).toBeGreaterThanOrEqual(1);
+    expect(body.created.vignetteExpiring).toBeGreaterThanOrEqual(1);
+    expect(body.created.technicalInspectionDue).toBeGreaterThanOrEqual(1);
+
+    const alertsResponse = await apiFetch("/api/alerts", { headers: { Cookie: adminA.sessionCookie } });
+    const alertsBody = await alertsResponse.json();
+    const vehicleAlerts = alertsBody.alerts.filter((alert: { entityId: string }) => alert.entityId === vehicleId);
+    const types = vehicleAlerts.map((alert: { type: string }) => alert.type);
+    expect(types).toEqual(
+      expect.arrayContaining(["INSURANCE_EXPIRING", "VIGNETTE_EXPIRING", "TECHNICAL_INSPECTION_DUE"])
+    );
+  });
+
+  it("crée OIL_CHANGE_DUE par date, et par kilométrage via le dernier retour connu (transfert)", async () => {
+    // Par date.
+    const byDateResponse = await createVehicle(adminA, agencyA1Id, { nextOilChangeDate: "2020-01-01" });
+    const byDateVehicleId = (await byDateResponse.json()).vehicle.id;
+
+    // Par kilométrage : nextOilChangeKm bas, dernier kilométrage connu (via un transfert validé)
+    // au-dessus du seuil.
+    const byKmResponse = await createVehicle(adminA, agencyA1Id, { nextOilChangeKm: 1000 });
+    const byKmVehicleId = (await byKmResponse.json()).vehicle.id;
+
+    const agency2Response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence Vidange 2", slug: `mt-agence2-${runId}` }),
+    });
+    const agency2Id = (await agency2Response.json()).agency.id;
+
+    const transferResponse = await apiFetch("/api/vehicle-transfers", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ vehicleId: byKmVehicleId, toAgencyId: agency2Id, responsibleUserId: adminA.userId }),
+    });
+    const transferId = (await transferResponse.json()).transfer.id;
+    await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ endOdometer: 1200 }),
+    });
+
+    const response = await apiFetch("/api/tasks/check-alerts", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.created.oilChangeDue).toBeGreaterThanOrEqual(2);
+
+    const alertsResponse = await apiFetch("/api/alerts?type=OIL_CHANGE_DUE", { headers: { Cookie: adminA.sessionCookie } });
+    const alertsBody = await alertsResponse.json();
+    const entityIds = alertsBody.alerts.map((alert: { entityId: string }) => alert.entityId);
+    expect(entityIds).toContain(byDateVehicleId);
+    expect(entityIds).toContain(byKmVehicleId);
   });
 });
 

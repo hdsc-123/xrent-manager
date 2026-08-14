@@ -1,5 +1,5 @@
 import { notFound, redirect } from "next/navigation";
-import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { getSessionUser, getAccessibleAgencyIds, canAccessReservationAgencies, canEditReservationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getReservationById } from "@/lib/reservations";
 import { prisma } from "@/lib/prisma";
@@ -26,7 +26,12 @@ export default async function ConvertReservationPage({ params }: PageProps) {
   }
 
   const reservation = await getReservationById(user.tenantId, id);
-  if (!reservation) {
+  if (!reservation || !(await canAccessReservationAgencies(user, reservation))) {
+    notFound();
+  }
+
+  // Sprint 19 (DOMAINRULES.md section 37) : seule l'agence de départ peut convertir.
+  if (!(await canEditReservationAgency(user, reservation))) {
     notFound();
   }
 
@@ -70,6 +75,15 @@ export default async function ConvertReservationPage({ params }: PageProps) {
           currency: reservation.currency,
           vehicleCategory: reservation.vehicleCategory,
           notes: reservation.notes,
+          // Sprint 19 (DOMAINRULES.md section 37) : nécessaires pour reprendre le vrai montant
+          // réservation + options au lieu d'un recalcul silencieux pricePerDay × jours.
+          hasGps: reservation.hasGps,
+          gpsPrice: reservation.gpsPrice,
+          hasBabySeat: reservation.hasBabySeat,
+          babySeatPrice: reservation.babySeatPrice,
+          hasExtraDriver: reservation.hasExtraDriver,
+          extraDriverPrice: reservation.extraDriverPrice,
+          optionsCurrency: reservation.optionsCurrency,
         }}
         agencies={agencies.map((agency) => ({ id: agency.id, name: agency.name }))}
       />

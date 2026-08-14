@@ -45,6 +45,9 @@ interface UpdateAgencyBody {
   managerPhone?: string;
   contractNumberPrefix?: string;
   lastContractNumber?: number;
+  /** Sprint 19 — solde de départ de caisse (centimes), purement informatif (voir
+   * prisma/schema.prisma, Agency.cashStartingBalance et DOMAINRULES.md section 37). */
+  cashStartingBalance?: number;
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
@@ -90,6 +93,16 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     );
   }
 
+  if (
+    body.cashStartingBalance !== undefined &&
+    (!Number.isInteger(body.cashStartingBalance) || body.cashStartingBalance < 0)
+  ) {
+    return NextResponse.json(
+      { error: "cashStartingBalance doit être un entier positif ou nul (centimes)." },
+      { status: 400 }
+    );
+  }
+
   const numberingChanged = body.contractNumberPrefix !== undefined || body.lastContractNumber !== undefined;
 
   const updated = await prisma.agency.update({
@@ -106,6 +119,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         ? { contractNumberPrefix: body.contractNumberPrefix.trim() }
         : {}),
       ...(body.lastContractNumber !== undefined ? { lastContractNumber: body.lastContractNumber } : {}),
+      ...(body.cashStartingBalance !== undefined ? { cashStartingBalance: body.cashStartingBalance } : {}),
     },
   });
 

@@ -1,10 +1,11 @@
 import Link from "next/link";
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { recomputeCashRegisterBalance, getDailyBreakdown, getCashEntries } from "@/lib/cash-register";
+import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui";
-import { DailyBreakdownChart } from "./CashRegisterCharts";
+import { DailyBreakdownChart, CashVsCardChart } from "./CashRegisterCharts";
 
 const TYPE_LABELS: Record<string, string> = { ENTRY: "Entrée", EXPENSE: "Dépense" };
 
@@ -26,10 +27,22 @@ export default async function CashRegisterPage() {
   const to = new Date();
   const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-  const [summary, dailyBreakdown, recentOperations] = await Promise.all([
+  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+  const [summary, dailyBreakdown, recentOperations, agencies] = await Promise.all([
     recomputeCashRegisterBalance(user.tenantId),
     getDailyBreakdown(user.tenantId, from, to),
     getCashEntries(user.tenantId, { take: 10 }),
+    // Sprint 19 (DOMAINRULES.md section 37) : soldes de départ informatifs par agence — la
+    // caisse elle-même reste un singleton par tenant (summary ci-dessus), jamais restructurée ;
+    // ce tableau n'affiche qu'une référence, aucun calcul ne s'appuie dessus.
+    prisma.agency.findMany({
+      where: {
+        tenantId: user.tenantId,
+        ...(accessibleAgencyIds ? { id: { in: accessibleAgencyIds } } : {}),
+        cashStartingBalance: { gt: 0 },
+      },
+      select: { id: true, name: true, cashStartingBalance: true },
+    }),
   ]);
 
   return (
@@ -55,6 +68,26 @@ export default async function CashRegisterPage() {
           <CardTitle className="text-4xl">{formatMoney(summary.currentBalance, summary.currency)}</CardTitle>
         </CardHeader>
       </Card>
+
+      {agencies.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Soldes de départ par agence</CardTitle>
+            <CardDescription>
+              Informatif uniquement (solde physique constaté à l&apos;ouverture) — la caisse reste
+              commune à tout le tenant, ces montants ne sont pas inclus dans le solde ci-dessus.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-1 text-sm">
+            {agencies.map((agency) => (
+              <div key={agency.id} className="flex justify-between">
+                <span>{agency.name}</span>
+                <span className="font-medium">{formatMoney(agency.cashStartingBalance, summary.currency)}</span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
         <Card>
@@ -87,6 +120,24 @@ export default async function CashRegisterPage() {
         </Card>
       </div>
 
+      {/* Sprint 19 (DOMAINRULES.md section 37) : séparation espèces/carte des entrées du mois —
+          rapprochement de caisse physique (le compte espèces réel doit correspondre à ce total,
+          pas au solde global qui mélange tous les modes de règlement). */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardDescription>Espèces encaissées ce mois</CardDescription>
+            <CardTitle className="text-xl">{formatMoney(summary.monthCash, summary.currency)}</CardTitle>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardDescription>Carte encaissée ce mois</CardDescription>
+            <CardTitle className="text-xl">{formatMoney(summary.monthCard, summary.currency)}</CardTitle>
+          </CardHeader>
+        </Card>
+      </div>
+
       <Card>
         <CardHeader>
           <CardTitle>Entrées vs dépenses</CardTitle>
@@ -94,6 +145,16 @@ export default async function CashRegisterPage() {
         </CardHeader>
         <CardContent>
           <DailyBreakdownChart data={dailyBreakdown} currency={summary.currency} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Espèces vs carte</CardTitle>
+          <CardDescription>Entrées par mode de règlement, par jour, sur les 30 derniers jours.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CashVsCardChart data={dailyBreakdown} currency={summary.currency} />
         </CardContent>
       </Card>
 

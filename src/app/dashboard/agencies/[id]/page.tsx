@@ -36,6 +36,7 @@ export default async function AgencyDetailPage({ params }: PageProps) {
           initialManagerPhone={agency.managerPhone}
           initialContractNumberPrefix={agency.contractNumberPrefix}
           initialLastContractNumber={agency.lastContractNumber}
+          initialCashStartingBalance={agency.cashStartingBalance}
         />
       ) : (
         <p className="text-sm text-muted-foreground">

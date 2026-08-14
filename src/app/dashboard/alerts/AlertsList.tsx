@@ -26,6 +26,10 @@ const TYPE_LABELS: Record<string, string> = {
   VEHICLE_UNAVAILABLE: "Véhicule indisponible",
   DOCUMENT_EXPIRED: "Document expiré",
   STOCK_INCONSISTENCY: "Incohérence de stock",
+  INSURANCE_EXPIRING: "Assurance à renouveler",
+  VIGNETTE_EXPIRING: "Vignette à renouveler",
+  TECHNICAL_INSPECTION_DUE: "Contrôle technique",
+  OIL_CHANGE_DUE: "Vidange à prévoir",
   OTHER: "Autre",
 };
 

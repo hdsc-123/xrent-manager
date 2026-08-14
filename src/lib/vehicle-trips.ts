@@ -152,8 +152,18 @@ export async function createVehicleTrip(data: CreateVehicleTripInput): Promise<V
 export interface ReturnVehicleTripInput {
   returnDate?: Date;
   endOdometer: number;
-  endFuelLevel?: number;
+  /** Sprint 19 (DOMAINRULES.md section 37) : désormais obligatoire au retour (auparavant
+   * optionnel) — même logique que le transfert entre agences, voir MissingFuelLevelError. */
+  endFuelLevel: number;
   remarks?: string;
+}
+
+/** Sprint 19 — carburant retour obligatoire (voir ReturnVehicleTripInput.endFuelLevel). */
+export class MissingFuelLevelError extends Error {
+  constructor() {
+    super("Le niveau de carburant de retour est requis.");
+    this.name = "MissingFuelLevelError";
+  }
 }
 
 /** Retour du déplacement : bloque si endOdometer <= startOdometer (contrainte explicite du
@@ -174,6 +184,9 @@ export async function returnVehicleTrip(
 
   if (!Number.isInteger(data.endOdometer) || data.endOdometer <= existing.startOdometer) {
     throw new InvalidVehicleTripOdometerError();
+  }
+  if (data.endFuelLevel === undefined || data.endFuelLevel === null) {
+    throw new MissingFuelLevelError();
   }
   validateFuelLevel(data.endFuelLevel);
 

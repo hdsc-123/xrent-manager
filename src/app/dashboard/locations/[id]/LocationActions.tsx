@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { apiPatch, ApiError } from "@/lib/api";
-import { Button, Card, CardContent, CardHeader, CardTitle, Input } from "@/components/ui";
+import { apiPatch, apiPost, ApiError } from "@/lib/api";
+import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from "@/components/ui";
 
 type LocationStatus = "PENDING" | "CONFIRMED" | "ACTIVE" | "COMPLETED" | "CANCELLED";
 
@@ -30,10 +30,26 @@ interface LocationActionsProps {
   status: LocationStatus;
   notes: string | null;
   endOdometer: number | null;
-  /** locations.edit (voir src/lib/permissions.ts) — masque toute la carte Actions
-   * (transitions de statut + notes/kilométrage) si absent, calculé côté serveur par la
-   * page appelante. Même pattern que ReservationActions. */
+  /** Sprint 19 — dates actuelles (YYYY-MM-DD), pour le formulaire de modification réservé
+   * ADMIN ci-dessous — seul point d'accès UI à adminOverride pour les dates, voir
+   * PATCH /api/locations/[id]/route.ts. */
+  startDate: string;
+  endDate: string;
+  /** Sprint 19 — second conducteur actuel (Location.secondDriverId), null si aucun. */
+  secondDriver: { id: string; name: string } | null;
+  /** locations.edit ET accès à l'agence de rattachement (pas seulement l'agence de retour) —
+   * masque toute la carte Actions si absent, calculé côté serveur par la page appelante.
+   * Même pattern que ReservationActions. */
   canEdit: boolean;
+  /** Sprint 19 (DOMAINRULES.md section 37) : accès uniquement via l'agence de retour
+   * (dropoffAgencyId) — ne peut que "gérer la réception" (statut → Terminée, kilométrage
+   * retour), jamais les dates/prix/notes/second conducteur. Mutuellement exclusif avec
+   * canEdit (jamais les deux à true en même temps). */
+  canManageReturnOnly: boolean;
+  /** Sprint 19 — role ADMIN : tous les statuts deviennent sélectionnables (pas seulement les
+   * transitions autorisées) et les dates redeviennent modifiables à tout statut (override
+   * serveur, systématiquement journalisé — voir DOMAINRULES.md section 37). */
+  isAdmin: boolean;
 }
 
 export function LocationActions({
@@ -41,7 +57,12 @@ export function LocationActions({
   status,
   notes: initialNotes,
   endOdometer: initialEndOdometer,
+  startDate: initialStartDate,
+  endDate: initialEndDate,
+  secondDriver,
   canEdit,
+  canManageReturnOnly,
+  isAdmin,
 }: LocationActionsProps) {
   const router = useRouter();
   const [notes, setNotes] = useState(initialNotes ?? "");
@@ -50,6 +71,15 @@ export function LocationActions({
   );
   const [isChangingStatus, setIsChangingStatus] = useState(false);
   const [isSavingNotes, setIsSavingNotes] = useState(false);
+  const [showSecondDriverForm, setShowSecondDriverForm] = useState(false);
+  const [secondDriverFirstName, setSecondDriverFirstName] = useState("");
+  const [secondDriverLastName, setSecondDriverLastName] = useState("");
+  const [secondDriverPhone, setSecondDriverPhone] = useState("");
+  const [isSavingSecondDriver, setIsSavingSecondDriver] = useState(false);
+  const [showAdminDatesForm, setShowAdminDatesForm] = useState(false);
+  const [adminStartDate, setAdminStartDate] = useState(initialStartDate);
+  const [adminEndDate, setAdminEndDate] = useState(initialEndDate);
+  const [isSavingAdminDates, setIsSavingAdminDates] = useState(false);
 
   async function handleTransition(next: LocationStatus) {
     setIsChangingStatus(true);
@@ -89,11 +119,82 @@ export function LocationActions({
     }
   }
 
-  if (!canEdit) {
+  async function handleSaveSecondDriver() {
+    if (!secondDriverFirstName || !secondDriverLastName) {
+      toast.error("Le prénom et le nom du second conducteur sont requis.");
+      return;
+    }
+    setIsSavingSecondDriver(true);
+    try {
+      const { client } = await apiPost<{ client: { id: string } }>("/api/clients", {
+        name: `${secondDriverFirstName} ${secondDriverLastName}`.trim(),
+        firstName: secondDriverFirstName,
+        lastName: secondDriverLastName,
+        phone: secondDriverPhone || undefined,
+      });
+      await apiPatch(`/api/locations/${id}`, { secondDriverId: client.id });
+      toast.success("Second conducteur ajouté.");
+      setShowSecondDriverForm(false);
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Erreur lors de l'enregistrement.");
+    } finally {
+      setIsSavingSecondDriver(false);
+    }
+  }
+
+  async function handleSaveAdminDates() {
+    setIsSavingAdminDates(true);
+    try {
+      await apiPatch(`/api/locations/${id}`, { startDate: adminStartDate, endDate: adminEndDate });
+      toast.success("Dates modifiées (override administrateur).");
+      setShowAdminDatesForm(false);
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Erreur lors de l'enregistrement.");
+    } finally {
+      setIsSavingAdminDates(false);
+    }
+  }
+
+  if (!canEdit && !canManageReturnOnly) {
     return null;
   }
 
-  const nextStatuses = ALLOWED_TRANSITIONS[status];
+  // Sprint 19 (DOMAINRULES.md section 37) : l'agence de retour (dropoffAgencyId) sans accès à
+  // l'agence de rattachement du contrat ne peut que gérer la réception — statut vers Terminée
+  // et kilométrage retour, rien d'autre (PATCH /api/locations/[id] rejette le reste côté
+  // serveur de toute façon, ce rendu évite juste de proposer des actions vouées à échouer).
+  if (canManageReturnOnly) {
+    const canComplete = status === "ACTIVE";
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Réception du véhicule</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Kilométrage retour</span>
+            <Input type="number" value={endOdometer} onChange={(e) => setEndOdometer(e.target.value)} />
+          </div>
+          {canComplete ? (
+            <Button type="button" disabled={isChangingStatus} onClick={() => handleTransition("COMPLETED")}>
+              {isChangingStatus ? "Enregistrement..." : "Marquer Terminée"}
+            </Button>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Statut actuel : {STATUS_LABELS[status]} — la réception ne s&apos;enregistre que sur un contrat en cours.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const allowedNextStatuses = ALLOWED_TRANSITIONS[status];
+  const otherStatuses = (Object.keys(STATUS_LABELS) as LocationStatus[]).filter(
+    (candidate) => candidate !== status && !allowedNextStatuses.includes(candidate)
+  );
 
   return (
     <Card>
@@ -103,13 +204,13 @@ export function LocationActions({
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-muted-foreground">Changer le statut</span>
-          {nextStatuses.length === 0 ? (
+          {allowedNextStatuses.length === 0 && !isAdmin ? (
             <p className="text-sm text-muted-foreground">
               Statut terminal ({STATUS_LABELS[status]}) — aucune transition possible.
             </p>
           ) : (
             <div className="flex flex-wrap gap-2">
-              {nextStatuses.map((next) => (
+              {allowedNextStatuses.map((next) => (
                 <Button
                   key={next}
                   type="button"
@@ -123,6 +224,30 @@ export function LocationActions({
               ))}
             </div>
           )}
+          {/* Sprint 19 (DOMAINRULES.md section 37) : un ADMIN peut forcer n'importe quelle
+              transition, pas seulement celles autorisées par la machine à états — contournement
+              serveur systématiquement journalisé (location.admin_override), voir
+              PATCH /api/locations/[id]/route.ts. Séparé visuellement des transitions normales
+              pour ne jamais confondre une action standard avec un forçage. */}
+          {isAdmin && otherStatuses.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-md border border-warning/40 bg-warning/10 p-2">
+              <span className="text-xs font-medium text-warning">Forcer un statut (action administrateur)</span>
+              <div className="flex flex-wrap gap-2">
+                {otherStatuses.map((next) => (
+                  <Button
+                    key={next}
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={isChangingStatus}
+                    onClick={() => handleTransition(next)}
+                  >
+                    {STATUS_LABELS[next]}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -133,6 +258,66 @@ export function LocationActions({
             onChange={(e) => setEndOdometer(e.target.value)}
           />
         </div>
+
+        {isAdmin && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Dates (action administrateur)</span>
+            {showAdminDatesForm ? (
+              <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 p-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="adminStartDate">Départ</Label>
+                    <Input
+                      id="adminStartDate"
+                      type="date"
+                      value={adminStartDate}
+                      onChange={(e) => setAdminStartDate(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="adminEndDate">Retour</Label>
+                    <Input
+                      id="adminEndDate"
+                      type="date"
+                      value={adminEndDate}
+                      onChange={(e) => setAdminEndDate(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={isSavingAdminDates}
+                    onClick={handleSaveAdminDates}
+                    className="w-fit"
+                  >
+                    {isSavingAdminDates ? "Enregistrement..." : "Enregistrer"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setShowAdminDatesForm(false)}
+                    className="w-fit"
+                  >
+                    Annuler
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="w-fit"
+                onClick={() => setShowAdminDatesForm(true)}
+              >
+                Modifier les dates
+              </Button>
+            )}
+          </div>
+        )}
 
         <div className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-muted-foreground">Notes</span>
@@ -147,6 +332,76 @@ export function LocationActions({
           >
             {isSavingNotes ? "Enregistrement..." : "Enregistrer"}
           </Button>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <span className="text-xs font-medium text-muted-foreground">Second conducteur</span>
+          {secondDriver ? (
+            <p className="text-sm">{secondDriver.name}</p>
+          ) : showSecondDriverForm ? (
+            <div className="flex flex-col gap-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="secondDriverFirstName" required>Prénom</Label>
+                  <Input
+                    id="secondDriverFirstName"
+                    required
+                    value={secondDriverFirstName}
+                    onChange={(e) => setSecondDriverFirstName(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="secondDriverLastName" required>Nom</Label>
+                  <Input
+                    id="secondDriverLastName"
+                    required
+                    value={secondDriverLastName}
+                    onChange={(e) => setSecondDriverLastName(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="secondDriverPhone">
+                  Téléphone <span className="text-muted-foreground">— optionnel</span>
+                </Label>
+                <Input
+                  id="secondDriverPhone"
+                  value={secondDriverPhone}
+                  onChange={(e) => setSecondDriverPhone(e.target.value)}
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={isSavingSecondDriver}
+                  onClick={handleSaveSecondDriver}
+                  className="w-fit"
+                >
+                  {isSavingSecondDriver ? "Enregistrement..." : "Ajouter"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowSecondDriverForm(false)}
+                  className="w-fit"
+                >
+                  Annuler
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="w-fit"
+              onClick={() => setShowSecondDriverForm(true)}
+            >
+              Ajouter un second conducteur
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>

@@ -93,6 +93,11 @@ export interface ReservationFilters {
   pickupAgency?: string;
   dropoffAgency?: string;
   vehicleCategory?: string;
+  /** Sprint 19 : agences accessibles à l'appelant (getAccessibleAgencyIds, src/lib/authz.ts)
+   * — `null` = ADMIN, aucune restriction. Un MEMBER ne voit que les réservations dont
+   * pickupAgencyId OU dropoffAgencyId est dans cette liste, ou dont les deux sont non résolus
+   * (voir buildAgencyLookupMap ci-dessus et DOMAINRULES.md section 37). */
+  accessibleAgencyIds?: string[] | null;
 }
 
 export async function getReservations(
@@ -110,6 +115,15 @@ export async function getReservations(
       ...(filters.dropoffAgency ? { dropoffAgency: { equals: filters.dropoffAgency, mode: "insensitive" } } : {}),
       ...(filters.vehicleCategory
         ? { vehicleCategory: { equals: filters.vehicleCategory, mode: "insensitive" } }
+        : {}),
+      ...(filters.accessibleAgencyIds
+        ? {
+            OR: [
+              { pickupAgencyId: { in: filters.accessibleAgencyIds } },
+              { dropoffAgencyId: { in: filters.accessibleAgencyIds } },
+              { pickupAgencyId: null, dropoffAgencyId: null },
+            ],
+          }
         : {}),
       ...(filters.search
         ? {
@@ -187,10 +201,21 @@ export async function generateDirectVoucherNumber(tenantId: string): Promise<str
   return candidate;
 }
 
-export async function createReservation(data: CreateReservationInput): Promise<Reservation> {
+/**
+ * `agencyLookup` (Sprint 19) : optionnel — permet à l'appelant (import Excel en boucle,
+ * voir POST /api/reservations/import) de résoudre la carte ville/agence une seule fois pour
+ * tout le fichier plutôt qu'à chaque ligne ; une création manuelle isolée (POST
+ * /api/reservations) la laisse se reconstruire ici, coût négligeable pour un seul appel.
+ */
+export async function createReservation(
+  data: CreateReservationInput,
+  agencyLookup?: AgencyLookupMap
+): Promise<Reservation> {
   if (data.endDate < data.startDate) {
     throw new InvalidReservationDateRangeError();
   }
+
+  const lookup = agencyLookup ?? (await buildAgencyLookupMap(data.tenantId));
 
   return prisma.reservation.create({
     data: {
@@ -213,6 +238,8 @@ export async function createReservation(data: CreateReservationInput): Promise<R
       vehicleCategory: data.vehicleCategory,
       pickupAgency: data.pickupAgency,
       dropoffAgency: data.dropoffAgency,
+      pickupAgencyId: lookupAgencyId(lookup, data.pickupAgency),
+      dropoffAgencyId: lookupAgencyId(lookup, data.dropoffAgency),
       hasGps: data.hasGps ?? false,
       gpsPrice: data.gpsPrice,
       hasBabySeat: data.hasBabySeat ?? false,
@@ -275,13 +302,28 @@ export async function updateReservation(
   const clearBabySeatPrice = data.hasBabySeat === false && data.babySeatPrice === undefined;
   const clearExtraDriverPrice = data.hasExtraDriver === false && data.extraDriverPrice === undefined;
 
+  // Sprint 19 : pickupAgencyId/dropoffAgencyId (visibilité/autorisation par agence, voir
+  // src/lib/authz.ts) recalculés dès que le texte pickupAgency/dropoffAgency correspondant
+  // change — jamais fournis directement par l'appelant (toujours dérivés, même principe que
+  // Location.agencyId dérivé du véhicule).
+  const needsAgencyLookup = data.pickupAgency !== undefined || data.dropoffAgency !== undefined;
+  const agencyLookup = needsAgencyLookup ? await buildAgencyLookupMap(tenantId) : null;
+  const pickupAgencyId =
+    data.pickupAgency !== undefined ? lookupAgencyId(agencyLookup!, data.pickupAgency) : undefined;
+  const dropoffAgencyId =
+    data.dropoffAgency !== undefined ? lookupAgencyId(agencyLookup!, data.dropoffAgency) : undefined;
+
   return prisma.reservation.update({
     where: { id: reservationId },
     data: {
       ...(data.voucherNumber !== undefined ? { voucherNumber: data.voucherNumber } : {}),
       ...(data.confirmationNumber !== undefined ? { confirmationNumber: data.confirmationNumber } : {}),
       ...(data.receivedAt !== undefined ? { receivedAt: data.receivedAt } : {}),
-      ...(data.source !== undefined ? { source: normalizeSource(data.source) } : {}),
+      // `?? null` (pas juste normalizeSource(data.source)) : Prisma traite une valeur `undefined`
+      // explicite dans `data` comme "champ non fourni" (ignoré, ancienne valeur conservée) —
+      // normalizeSource("") retourne `undefined`, donc sans ce fallback, effacer `source` (chaîne
+      // vide envoyée) ne l'aurait jamais réellement écrit à `null` en base (Sprint 19).
+      ...(data.source !== undefined ? { source: normalizeSource(data.source) ?? null } : {}),
       ...(data.clientFirstName !== undefined ? { clientFirstName: data.clientFirstName } : {}),
       ...(data.clientLastName !== undefined ? { clientLastName: data.clientLastName } : {}),
       ...(data.startDate !== undefined ? { startDate: data.startDate } : {}),
@@ -294,8 +336,8 @@ export async function updateReservation(
       ...(data.totalPrice !== undefined ? { totalPrice: data.totalPrice } : {}),
       ...(data.pricePerDay !== undefined ? { pricePerDay: data.pricePerDay } : {}),
       ...(data.vehicleCategory !== undefined ? { vehicleCategory: data.vehicleCategory } : {}),
-      ...(data.pickupAgency !== undefined ? { pickupAgency: data.pickupAgency } : {}),
-      ...(data.dropoffAgency !== undefined ? { dropoffAgency: data.dropoffAgency } : {}),
+      ...(data.pickupAgency !== undefined ? { pickupAgency: data.pickupAgency, pickupAgencyId } : {}),
+      ...(data.dropoffAgency !== undefined ? { dropoffAgency: data.dropoffAgency, dropoffAgencyId } : {}),
       ...(data.hasGps !== undefined ? { hasGps: data.hasGps } : {}),
       ...(data.gpsPrice !== undefined ? { gpsPrice: data.gpsPrice } : clearGpsPrice ? { gpsPrice: null } : {}),
       ...(data.hasBabySeat !== undefined ? { hasBabySeat: data.hasBabySeat } : {}),
@@ -627,6 +669,41 @@ export async function getKnownAgencyNames(tenantId: string): Promise<Set<string>
     if (agency.name) names.add(agency.name.trim().toLowerCase());
   }
   return names;
+}
+
+/** Sprint 19 (DOMAINRULES.md section 37) : ville/nom d'agence normalisé → agencyId, pour
+ * résoudre pickupAgency/dropoffAgency (texte libre, inchangé) vers l'Agency réelle qu'il
+ * désigne — sert uniquement à la visibilité/autorisation par agence
+ * (canAccessReservationAgencies/canEditReservationAgency, src/lib/authz.ts), jamais à
+ * l'affichage (qui reste basé sur le texte libre pickupAgency/dropoffAgency). Une ville/nom
+ * partagé par plusieurs agences du tenant est délibérément exclue de la carte (ambiguïté,
+ * aucune agence ne prévaut) — la réservation retombe alors sur le comportement antérieur au
+ * Sprint 19 (visible à quiconque a reservations.view), voir getReservations. */
+export type AgencyLookupMap = Map<string, string>;
+
+export async function buildAgencyLookupMap(tenantId: string): Promise<AgencyLookupMap> {
+  const agencies = await prisma.agency.findMany({ where: { tenantId }, select: { id: true, city: true, name: true } });
+
+  const counts = new Map<string, number>();
+  const map: AgencyLookupMap = new Map();
+  for (const agency of agencies) {
+    for (const value of [agency.city, agency.name]) {
+      if (!value) continue;
+      const normalized = value.trim().toLowerCase();
+      if (!normalized) continue;
+      counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+      map.set(normalized, agency.id);
+    }
+  }
+  for (const [key, count] of counts) {
+    if (count > 1) map.delete(key);
+  }
+  return map;
+}
+
+function lookupAgencyId(map: AgencyLookupMap, cityOrName: string | null | undefined): string | null {
+  if (!cityOrName) return null;
+  return map.get(cityOrName.trim().toLowerCase()) ?? null;
 }
 
 export async function deleteReservation(tenantId: string, reservationId: string): Promise<boolean> {
