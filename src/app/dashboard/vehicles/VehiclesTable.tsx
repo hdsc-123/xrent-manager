@@ -56,7 +56,15 @@ const STATUS_VARIANTS: Record<string, "default" | "secondary" | "destructive" | 
   ON_TRIP: "outline",
 };
 
-export function VehiclesTable({ vehicles }: { vehicles: VehicleRow[] }) {
+export function VehiclesTable({
+  vehicles,
+  canDelete = false,
+}: {
+  vehicles: VehicleRow[];
+  /** vehicles.delete (voir src/lib/permissions.ts) — masque la suppression si absent,
+   * calculé côté serveur par la page appelante. */
+  canDelete?: boolean;
+}) {
   const router = useRouter();
   const [pendingDelete, setPendingDelete] = useState<VehicleRow | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -120,20 +128,22 @@ export function VehiclesTable({ vehicles }: { vehicles: VehicleRow[] }) {
                   <Eye className="size-4" />
                   Détails
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() => setPendingDelete(row.original)}
-                >
-                  <Trash2 className="size-4" />
-                  Supprimer
-                </DropdownMenuItem>
+                {canDelete && (
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={() => setPendingDelete(row.original)}
+                  >
+                    <Trash2 className="size-4" />
+                    Supprimer
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
         ),
       },
     ],
-    []
+    [canDelete]
   );
 
   return (

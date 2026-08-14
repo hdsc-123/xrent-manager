@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { recomputeCashRegisterBalance, getDailyBreakdown, getCashEntries } from "@/lib/cash-register";
 import { formatMoney } from "@/lib/format";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui";
@@ -10,6 +11,17 @@ const TYPE_LABELS: Record<string, string> = { ENTRY: "Entrée", EXPENSE: "Dépen
 export default async function CashRegisterPage() {
   const user = await getSessionUser();
   if (!user) return null;
+
+  if (!(await can(user, "cash_register.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Caisse</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter la caisse.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
 
   const to = new Date();
   const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { AlertPriority, AlertStatus, AlertType } from "@prisma/client";
 import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getAlerts, type AlertFilters } from "@/lib/alerts";
 
 const ALERT_TYPES: AlertType[] = [
@@ -23,6 +24,9 @@ export async function GET(request: Request) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "alerts.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { searchParams } = new URL(request.url);

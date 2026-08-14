@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Plus, Upload } from "lucide-react";
-import type { ReservationSource, ReservationStatus } from "@prisma/client";
+import type { ReservationStatus } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getReservations } from "@/lib/reservations";
@@ -15,10 +15,10 @@ const STATUS_OPTIONS: { value: ReservationStatus; label: string }[] = [
   { value: "CANCELLED", label: "Annulée" },
 ];
 
-const SOURCE_OPTIONS: { value: ReservationSource; label: string }[] = [
-  { value: "BROKER", label: "Broker" },
-  { value: "DIRECT", label: "Direct" },
-];
+// Sprint 15 : source est désormais du texte libre (voir prisma/schema.prisma) — ces valeurs
+// ne sont que des suggestions (<datalist>), pas une liste fermée, pour ne jamais perdre un
+// code broker réel (TJS/DCH/CT...) qui ne figurerait pas ici.
+const SOURCE_SUGGESTIONS = ["TJS", "DCH", "CT", "DIRECT", "BROKER"];
 
 interface PageProps {
   searchParams: Promise<{
@@ -52,10 +52,11 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
   const canCreate = await can(user, "reservations.create");
   const canImport = await can(user, "reservations.import");
   const canDelete = await can(user, "reservations.delete");
+  const canEdit = await can(user, "reservations.edit");
 
   const reservations = await getReservations(user.tenantId, {
     ...(params.status ? { status: params.status as ReservationStatus } : {}),
-    ...(params.source ? { source: params.source as ReservationSource } : {}),
+    ...(params.source ? { source: params.source } : {}),
     ...(params.search ? { search: params.search } : {}),
     ...(params.from ? { from: new Date(params.from) } : {}),
     ...(params.to ? { to: new Date(params.to) } : {}),
@@ -75,6 +76,7 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
     id: reservation.id,
     voucherNumber: reservation.voucherNumber,
     source: reservation.source,
+    optionsCurrency: reservation.optionsCurrency,
     flightNumber: reservation.flightNumber,
     clientFirstName: reservation.clientFirstName,
     clientLastName: reservation.clientLastName,
@@ -146,19 +148,20 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
           <label htmlFor="source" className="text-xs font-medium text-muted-foreground">
             Source
           </label>
-          <select
+          <input
             id="source"
+            type="text"
             name="source"
+            list="source-suggestions"
+            placeholder="Toutes"
             defaultValue={params.source ?? ""}
             className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-          >
-            <option value="">Toutes</option>
-            {SOURCE_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
+          />
+          <datalist id="source-suggestions">
+            {SOURCE_SUGGESTIONS.map((option) => (
+              <option key={option} value={option} />
             ))}
-          </select>
+          </datalist>
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -270,7 +273,7 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
         )}
       </form>
 
-      <ReservationsTable reservations={rows} canDelete={canDelete} />
+      <ReservationsTable reservations={rows} canDelete={canDelete} canEdit={canEdit} />
     </div>
   );
 }

@@ -28,7 +28,15 @@ export interface ClientRow {
   phone: string | null;
 }
 
-export function ClientsTable({ clients }: { clients: ClientRow[] }) {
+export function ClientsTable({
+  clients,
+  canDelete = false,
+}: {
+  clients: ClientRow[];
+  /** clients.delete (voir src/lib/permissions.ts) — masque la suppression si absent,
+   * calculé côté serveur par la page appelante. */
+  canDelete?: boolean;
+}) {
   const router = useRouter();
   const [pendingDelete, setPendingDelete] = useState<ClientRow | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -77,20 +85,22 @@ export function ClientsTable({ clients }: { clients: ClientRow[] }) {
                   <Eye className="size-4" />
                   Détails
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() => setPendingDelete(row.original)}
-                >
-                  <Trash2 className="size-4" />
-                  Supprimer
-                </DropdownMenuItem>
+                {canDelete && (
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={() => setPendingDelete(row.original)}
+                  >
+                    <Trash2 className="size-4" />
+                    Supprimer
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
         ),
       },
     ],
-    []
+    [canDelete]
   );
 
   return (

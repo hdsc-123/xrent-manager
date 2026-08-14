@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getCashEntries, type CashEntryFilters } from "@/lib/cash-register";
 
 export async function GET(request: Request) {
@@ -7,6 +8,9 @@ export async function GET(request: Request) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "cash_register.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { searchParams } = new URL(request.url);

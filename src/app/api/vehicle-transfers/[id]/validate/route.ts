@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import {
   getVehicleTransferById,
   validateVehicleTransfer,
@@ -29,6 +30,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "vehicle_transfers.validate"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;

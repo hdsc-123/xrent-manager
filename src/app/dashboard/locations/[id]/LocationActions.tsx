@@ -30,6 +30,10 @@ interface LocationActionsProps {
   status: LocationStatus;
   notes: string | null;
   endOdometer: number | null;
+  /** locations.edit (voir src/lib/permissions.ts) — masque toute la carte Actions
+   * (transitions de statut + notes/kilométrage) si absent, calculé côté serveur par la
+   * page appelante. Même pattern que ReservationActions. */
+  canEdit: boolean;
 }
 
 export function LocationActions({
@@ -37,6 +41,7 @@ export function LocationActions({
   status,
   notes: initialNotes,
   endOdometer: initialEndOdometer,
+  canEdit,
 }: LocationActionsProps) {
   const router = useRouter();
   const [notes, setNotes] = useState(initialNotes ?? "");
@@ -73,6 +78,10 @@ export function LocationActions({
     } finally {
       setIsSavingNotes(false);
     }
+  }
+
+  if (!canEdit) {
+    return null;
   }
 
   const nextStatuses = ALLOWED_TRANSITIONS[status];

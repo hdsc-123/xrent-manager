@@ -32,35 +32,34 @@ interface NavItem {
   href: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
-  /** Clé de permission requise pour afficher l'entrée (voir src/lib/permissions.ts). Réservé
-   * au(x) module(s) réellement gated par can() côté serveur (Sprint 14A, DOMAINRULES.md
-   * section 22) — aujourd'hui seul Réservations. Pour tout autre module, le système de
-   * permissions granulaires ne gate rien : la route/page cible ne vérifie que le rôle
-   * (voir `adminOnly`) ou est ouverte à tout user du tenant. Utiliser `permission` sur un
-   * module non réellement gated masquerait à tort l'onglet pour des groupes qui y ont en
-   * réalité accès (bug corrigé ce sprint). */
+  /** Clé de permission requise pour afficher l'entrée (voir src/lib/permissions.ts). Sprint 15 :
+   * le retrofit de permissions granulaires côté serveur couvre désormais (quasiment) tous les
+   * modules métier (DOMAINRULES.md section 22) — chaque entrée ci-dessous reflète la clé
+   * `<module>.view` réellement vérifiée par la route/page cible. */
   permission?: string;
   /** true = n'afficher qu'aux ADMIN, reflète une vérification `role !== "ADMIN"` réelle côté
-   * page/route cible (vérifié Sprint 14A) — pas une permission granulaire. */
+   * page/route cible — modules volontairement non convertis en permission granulaire ce sprint
+   * (gestion des utilisateurs/invitations/permissions/audit, réservée ADMIN même sur son
+   * propre compte, DOMAINRULES.md section 4). */
   adminOnly?: boolean;
 }
 
 const navItems: NavItem[] = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
   { href: "/dashboard/tenants", label: "Tenants", icon: Building2 },
-  { href: "/dashboard/agencies", label: "Agences", icon: Store },
-  { href: "/dashboard/vehicles", label: "Véhicules", icon: Car },
-  { href: "/dashboard/locations", label: "Locations", icon: CalendarRange },
+  { href: "/dashboard/agencies", label: "Agences", icon: Store, permission: "agencies.view" },
+  { href: "/dashboard/vehicles", label: "Véhicules", icon: Car, permission: "vehicles.view" },
+  { href: "/dashboard/locations", label: "Locations", icon: CalendarRange, permission: "locations.view" },
   { href: "/dashboard/reservations", label: "Réservations", icon: CalendarClock, permission: "reservations.view" },
-  { href: "/dashboard/clients", label: "Clients", icon: UserRound },
-  { href: "/dashboard/vehicle-transfers", label: "Transferts", icon: Repeat },
-  { href: "/dashboard/vehicle-trips", label: "Déplacements", icon: Map },
-  { href: "/dashboard/maintenances", label: "Maintenances", icon: Wrench },
-  { href: "/dashboard/alerts", label: "Alertes", icon: Bell },
-  { href: "/dashboard/invoices", label: "Factures", icon: FileText },
-  { href: "/dashboard/payments", label: "Paiements", icon: CreditCard },
-  { href: "/dashboard/cash-register", label: "Caisse", icon: Wallet },
-  { href: "/dashboard/reports", label: "Rapports", icon: BarChart3, adminOnly: true },
+  { href: "/dashboard/clients", label: "Clients", icon: UserRound, permission: "clients.view" },
+  { href: "/dashboard/vehicle-transfers", label: "Transferts", icon: Repeat, permission: "vehicle_transfers.view" },
+  { href: "/dashboard/vehicle-trips", label: "Déplacements", icon: Map, permission: "vehicle_trips.view" },
+  { href: "/dashboard/maintenances", label: "Maintenances", icon: Wrench, permission: "maintenances.view" },
+  { href: "/dashboard/alerts", label: "Alertes", icon: Bell, permission: "alerts.view" },
+  { href: "/dashboard/invoices", label: "Factures", icon: FileText, permission: "invoices.view" },
+  { href: "/dashboard/payments", label: "Paiements", icon: CreditCard, permission: "payments.view" },
+  { href: "/dashboard/cash-register", label: "Caisse", icon: Wallet, permission: "cash_register.view" },
+  { href: "/dashboard/reports", label: "Rapports", icon: BarChart3, permission: "reports.view" },
   { href: "/dashboard/users", label: "Utilisateurs", icon: Users, adminOnly: true },
   { href: "/dashboard/invitations", label: "Invitations", icon: Mail, adminOnly: true },
   { href: "/dashboard/permission-groups", label: "Permissions", icon: KeyRound, adminOnly: true },

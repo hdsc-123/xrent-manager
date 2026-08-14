@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { VehicleStatus, TransmissionType, FuelType, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import {
   getVehicleById,
   updateVehicle,
@@ -44,6 +45,9 @@ export async function GET(_request: Request, { params }: RouteParams) {
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
   }
+  if (!(await can(user, "vehicles.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
+  }
 
   const { id } = await params;
   const vehicle = await getVehicleById(user.tenantId, id);
@@ -86,6 +90,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "vehicles.edit"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;
@@ -183,6 +190,9 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "vehicles.delete"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;

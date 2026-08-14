@@ -84,17 +84,17 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-describe("GET /api/reports/* — réservé ADMIN (Sprint 10, consolidation sécurité)", () => {
+describe("GET /api/reports/* — désormais gated par can(user, \"reports.view\") (Sprint 15)", () => {
   it("GET /api/reports/revenue refuse une requête non authentifiée", async () => {
     const response = await apiFetch("/api/reports/revenue?from=2030-01-01&to=2030-12-31");
     expect(response.status).toBe(401);
   });
 
-  it("GET /api/reports/revenue refuse un MEMBER", async () => {
+  it("GET /api/reports/revenue autorise un MEMBER (reports.view est dans le groupe MEMBER par défaut, Sprint 15)", async () => {
     const response = await apiFetch("/api/reports/revenue?from=2030-01-01&to=2030-12-31", {
       headers: { Cookie: member.sessionCookie },
     });
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(200);
   });
 
   it("GET /api/reports/revenue autorise un ADMIN", async () => {
@@ -109,11 +109,11 @@ describe("GET /api/reports/* — réservé ADMIN (Sprint 10, consolidation sécu
     expect(response.status).toBe(401);
   });
 
-  it("GET /api/reports/vehicles refuse un MEMBER", async () => {
+  it("GET /api/reports/vehicles autorise un MEMBER (reports.view est dans le groupe MEMBER par défaut, Sprint 15)", async () => {
     const response = await apiFetch("/api/reports/vehicles?from=2030-01-01&to=2030-12-31", {
       headers: { Cookie: member.sessionCookie },
     });
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(200);
   });
 
   it("GET /api/reports/vehicles autorise un ADMIN", async () => {
@@ -121,6 +121,42 @@ describe("GET /api/reports/* — réservé ADMIN (Sprint 10, consolidation sécu
       headers: { Cookie: admin.sessionCookie },
     });
     expect(response.status).toBe(200);
+  });
+});
+
+describe("Sprint 15 — permissions granulaires (reports.view via un groupe personnalisé restrictif)", () => {
+  it("refuse un MEMBER dont le groupe personnalisé n'a pas reports.view", async () => {
+    const restrictedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ name: `NoReportsView-${runId}`, permissions: ["vehicles.view"] }),
+    });
+    const restrictedGroupId = (await restrictedGroupResponse.json()).group.id;
+
+    await apiFetch(`/api/users/${member.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: restrictedGroupId }),
+    });
+
+    try {
+      const revenueResponse = await apiFetch("/api/reports/revenue?from=2030-01-01&to=2030-12-31", {
+        headers: { Cookie: member.sessionCookie },
+      });
+      expect(revenueResponse.status).toBe(403);
+
+      const vehiclesResponse = await apiFetch("/api/reports/vehicles?from=2030-01-01&to=2030-12-31", {
+        headers: { Cookie: member.sessionCookie },
+      });
+      expect(vehiclesResponse.status).toBe(403);
+    } finally {
+      // Nettoyage : on retire le groupe personnalisé pour ne pas affecter les tests suivants.
+      await apiFetch(`/api/users/${member.userId}/permissions`, {
+        method: "PATCH",
+        headers: { Cookie: admin.sessionCookie },
+        body: JSON.stringify({ permissionGroupId: null }),
+      });
+    }
   });
 });
 

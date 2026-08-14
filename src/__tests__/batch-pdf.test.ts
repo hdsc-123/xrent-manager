@@ -8,6 +8,8 @@ const createdTenantIds: string[] = [];
 
 let admin: AuthenticatedTestUser;
 let otherAdmin: AuthenticatedTestUser;
+let agencyId: string;
+let otherAgencyId: string;
 let vehicleId: string;
 let clientId: string;
 
@@ -64,7 +66,16 @@ beforeAll(async () => {
     headers: { Cookie: admin.sessionCookie },
     body: JSON.stringify({ name: "Agence Test", slug: `agence-batch-${runId}` }),
   });
-  const agencyId = (await agencyResponse.json()).agency.id;
+  agencyId = (await agencyResponse.json()).agency.id;
+
+  // Sprint 15 : agence d'un autre tenant, utilisée pour vérifier le rejet de agencyId
+  // inaccessible (canAccessAgency) sur la sélection par plage de numéros de contrat.
+  const otherAgencyResponse = await apiFetch("/api/agencies", {
+    method: "POST",
+    headers: { Cookie: otherAdmin.sessionCookie },
+    body: JSON.stringify({ name: "Agence Test Autre Tenant", slug: `agence-batch-other-${runId}` }),
+  });
+  otherAgencyId = (await otherAgencyResponse.json()).agency.id;
 
   const vehicleResponse = await apiFetch("/api/vehicles", {
     method: "POST",
@@ -182,10 +193,46 @@ describe("POST /api/documents/batch-pdf", () => {
         type: "CONTRACT",
         contractNumberFrom: Math.min(n1, n2),
         contractNumberTo: Math.max(n1, n2),
+        agencyId,
       }),
     });
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/pdf");
+  });
+
+  it("Sprint 15 — refuse la sélection par plage de numéros sans agencyId", async () => {
+    const n1 = Number(contractNumber1.split("-").pop());
+    const n2 = Number(contractNumber2.split("-").pop());
+    const response = await apiFetch("/api/documents/batch-pdf", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({
+        type: "CONTRACT",
+        contractNumberFrom: Math.min(n1, n2),
+        contractNumberTo: Math.max(n1, n2),
+      }),
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("agencyId est requis pour la sélection par plage de numéros de contrat.");
+  });
+
+  it("Sprint 15 — refuse la sélection par plage de numéros avec un agencyId inaccessible", async () => {
+    const n1 = Number(contractNumber1.split("-").pop());
+    const n2 = Number(contractNumber2.split("-").pop());
+    const response = await apiFetch("/api/documents/batch-pdf", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({
+        type: "CONTRACT",
+        contractNumberFrom: Math.min(n1, n2),
+        contractNumberTo: Math.max(n1, n2),
+        agencyId: otherAgencyId,
+      }),
+    });
+    expect(response.status).toBe(404);
+    const body = await response.json();
+    expect(body.error).toBe("Agence introuvable ou inaccessible.");
   });
 
   it("génère un lot de contrats par plage de dates", async () => {

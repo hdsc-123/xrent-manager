@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSessionUser } from "@/lib/authz";
+import { logAction } from "@/lib/audit";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -42,8 +44,6 @@ export async function GET(_request: Request, { params }: RouteParams) {
 
 interface UpdateTenantBody {
   name?: string;
-  contractNumberPrefix?: string;
-  lastContractNumber?: number;
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
@@ -74,25 +74,20 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "name est requis." }, { status: 400 });
   }
 
-  if (
-    body.lastContractNumber !== undefined &&
-    (!Number.isInteger(body.lastContractNumber) || body.lastContractNumber < 0)
-  ) {
-    return NextResponse.json(
-      { error: "lastContractNumber doit être un entier positif ou nul." },
-      { status: 400 }
-    );
-  }
-
   const tenant = await prisma.tenant.update({
     where: { id },
     data: {
       name: body.name,
-      ...(body.contractNumberPrefix !== undefined
-        ? { contractNumberPrefix: body.contractNumberPrefix.trim() }
-        : {}),
-      ...(body.lastContractNumber !== undefined ? { lastContractNumber: body.lastContractNumber } : {}),
     },
+  });
+
+  await logAction({
+    tenantId: user.tenantId,
+    userId: user.id,
+    action: "tenant.updated",
+    resource: "Tenant",
+    resourceId: tenant.id,
+    metadata: { changes: body } as unknown as Prisma.InputJsonValue,
   });
 
   return NextResponse.json({ tenant });

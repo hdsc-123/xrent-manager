@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getVehicleUtilizationReport, getTopVehicles } from "@/lib/reports";
 
-/** Rapports financiers réservés à ADMIN — voir /api/reports/revenue. */
+/**
+ * Sprint 15 : le contrôle strict ADMIN-only a été remplacé par can(user, "reports.view")
+ * — la clé existe déjà dans le catalogue et est accordée par défaut à MEMBER/COMPTABILITÉ
+ * (voir DEFAULT_GROUPS dans src/lib/permissions.ts), mais cette route l'ignorait jusqu'ici.
+ * Un ADMIN passe toujours (can() court-circuite sur le rôle).
+ */
 export async function GET(request: Request) {
   const user = await getSessionUser();
 
@@ -10,8 +16,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
   }
 
-  if (user.role !== "ADMIN") {
-    return NextResponse.json({ error: "Accès réservé aux administrateurs." }, { status: 403 });
+  if (!(await can(user, "reports.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { searchParams } = new URL(request.url);

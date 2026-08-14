@@ -32,10 +32,15 @@ export interface AgencyRow {
 
 export function AgenciesTable({
   agencies,
-  canManage,
+  canEdit,
+  canDelete,
 }: {
   agencies: AgencyRow[];
-  canManage: boolean;
+  /** agencies.edit / agencies.delete (voir src/lib/permissions.ts) — masquent
+   * respectivement "Modifier" et "Supprimer" dans le menu d'actions si absents, calculés
+   * côté serveur par la page appelante (ADMIN a toujours les deux via can()). */
+  canEdit: boolean;
+  canDelete: boolean;
 }) {
   const router = useRouter();
   const [pendingDelete, setPendingDelete] = useState<AgencyRow | null>(null);
@@ -77,7 +82,7 @@ export function AgenciesTable({
       },
     ];
 
-    if (!canManage) {
+    if (!canEdit && !canDelete) {
       return base;
     }
 
@@ -95,24 +100,28 @@ export function AgenciesTable({
                 <MoreHorizontal className="size-4" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem render={<Link href={`/dashboard/agencies/${row.original.id}`} />}>
-                  <Pencil className="size-4" />
-                  Modifier
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() => setPendingDelete(row.original)}
-                >
-                  <Trash2 className="size-4" />
-                  Supprimer
-                </DropdownMenuItem>
+                {canEdit && (
+                  <DropdownMenuItem render={<Link href={`/dashboard/agencies/${row.original.id}`} />}>
+                    <Pencil className="size-4" />
+                    Modifier
+                  </DropdownMenuItem>
+                )}
+                {canDelete && (
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={() => setPendingDelete(row.original)}
+                  >
+                    <Trash2 className="size-4" />
+                    Supprimer
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
         ),
       },
     ];
-  }, [canManage]);
+  }, [canEdit, canDelete]);
 
   return (
     <>

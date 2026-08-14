@@ -2,9 +2,10 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import type { VehicleTransferStatus } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getVehicleTransfers } from "@/lib/vehicle-transfers";
 import { prisma } from "@/lib/prisma";
-import { Button } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { VehicleTransfersTable, type VehicleTransferRow } from "./VehicleTransfersTable";
 
 const STATUS_OPTIONS: { value: VehicleTransferStatus; label: string }[] = [
@@ -21,8 +22,21 @@ export default async function VehicleTransfersPage({ searchParams }: PageProps) 
   const user = await getSessionUser();
   if (!user) return null;
 
+  if (!(await can(user, "vehicle_transfers.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Transferts entre agences</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter les transferts de véhicules.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
   const params = await searchParams;
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+  const canValidatePerm = await can(user, "vehicle_transfers.validate");
+  const canCancel = await can(user, "vehicle_transfers.cancel");
 
   const transfers = await getVehicleTransfers(user.tenantId, {
     status: params.status as VehicleTransferStatus | undefined,
@@ -63,10 +77,10 @@ export default async function VehicleTransfersPage({ searchParams }: PageProps) 
     responsibleName: userMap.get(transfer.responsibleUserId) ?? "—",
     reason: transfer.reason,
     status: transfer.status,
-    canValidate: accessibleAgencyIds === null || accessibleAgencyIds.includes(transfer.toAgencyId),
+    canValidate: canValidatePerm && (accessibleAgencyIds === null || accessibleAgencyIds.includes(transfer.toAgencyId)),
   }));
 
-  const canCreate = accessibleAgencyIds === null || accessibleAgencyIds.length > 0;
+  const canCreate = (accessibleAgencyIds === null || accessibleAgencyIds.length > 0) && (await can(user, "vehicle_transfers.create"));
 
   return (
     <div className="flex flex-col gap-4">
@@ -115,7 +129,7 @@ export default async function VehicleTransfersPage({ searchParams }: PageProps) 
         )}
       </form>
 
-      <VehicleTransfersTable transfers={rows} />
+      <VehicleTransfersTable transfers={rows} canCancel={canCancel} />
     </div>
   );
 }

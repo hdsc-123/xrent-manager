@@ -53,7 +53,16 @@ const STATUS_VARIANTS: Record<string, "default" | "secondary" | "destructive" | 
   CANCELLED: "destructive",
 };
 
-export function VehicleTransfersTable({ transfers }: { transfers: VehicleTransferRow[] }) {
+export function VehicleTransfersTable({
+  transfers,
+  canCancel = false,
+}: {
+  transfers: VehicleTransferRow[];
+  /** vehicle_transfers.cancel (voir src/lib/permissions.ts) — calculé côté serveur par la page
+   * appelante. La validation de réception est déjà gérée par row.canValidate (combine agence
+   * accessible et vehicle_transfers.validate). */
+  canCancel?: boolean;
+}) {
   const router = useRouter();
   const [validating, setValidating] = useState<VehicleTransferRow | null>(null);
   const [arrivalOdometer, setArrivalOdometer] = useState("");
@@ -173,7 +182,7 @@ export function VehicleTransfersTable({ transfers }: { transfers: VehicleTransfe
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     variant="destructive"
-                    disabled={!inTransit}
+                    disabled={!inTransit || !canCancel}
                     onClick={() => setPendingCancel(row.original)}
                   >
                     <XCircle className="size-4" />
@@ -186,7 +195,7 @@ export function VehicleTransfersTable({ transfers }: { transfers: VehicleTransfe
         },
       },
     ],
-    []
+    [canCancel]
   );
 
   return (

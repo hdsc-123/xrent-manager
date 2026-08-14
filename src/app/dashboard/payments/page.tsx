@@ -1,8 +1,9 @@
 import Link from "next/link";
 import type { PaymentMethod } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
-import { Button } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { PaymentsTable, type PaymentRow } from "./PaymentsTable";
 
 const METHOD_OPTIONS: { value: PaymentMethod; label: string }[] = [
@@ -20,6 +21,17 @@ interface PageProps {
 export default async function PaymentsPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
+
+  if (!(await can(user, "payments.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Paiements</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter les paiements.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
 
   const params = await searchParams;
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);

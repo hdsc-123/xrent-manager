@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getVehicleById, checkAvailability } from "@/lib/vehicles";
 
 interface RouteParams {
@@ -11,6 +12,9 @@ export async function GET(request: Request, { params }: RouteParams) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "vehicles.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;

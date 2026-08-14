@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { CashEntryType, PaymentMethod } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import {
   getOrCreateCashRegister,
   recomputeCashRegisterBalance,
@@ -20,6 +21,9 @@ export async function GET(request: Request) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "cash_register.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { searchParams } = new URL(request.url);
@@ -70,6 +74,11 @@ export async function POST(request: Request) {
 
   if (!CASH_ENTRY_TYPES.includes(type)) {
     return NextResponse.json({ error: "type invalide (ENTRY ou EXPENSE)." }, { status: 400 });
+  }
+
+  const requiredPermission = type === "ENTRY" ? "cash_register.create_entry" : "cash_register.create_expense";
+  if (!(await can(user, requiredPermission))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   if (body.paymentMethod && !PAYMENT_METHODS.includes(body.paymentMethod)) {

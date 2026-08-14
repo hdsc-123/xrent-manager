@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { PaymentMethod } from "@prisma/client";
 import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getInvoiceById } from "@/lib/invoices";
 import { prisma } from "@/lib/prisma";
 import {
@@ -21,6 +22,9 @@ export async function GET(request: Request) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "payments.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { searchParams } = new URL(request.url);
@@ -84,6 +88,9 @@ export async function POST(request: Request) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "payments.create"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   let body: CreatePaymentBody;

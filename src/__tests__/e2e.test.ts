@@ -231,3 +231,73 @@ describe("Sécurité — nouvelles surfaces Sprint 9", () => {
     expect(usersPatchResponse.status).toBe(403);
   });
 });
+
+describe("Visibilité de la route/onglet Réservations selon les permissions accordées (Sprint 15)", () => {
+  it("un MEMBER sans reservations.view ne voit ni l'API ni la page ; l'octroi de la permission au groupe débloque les deux", async () => {
+    const tenant = await registerTenantAdmin({
+      tenantName: "Perm Reservations E2E",
+      tenantSlug: `perm-reservations-e2e-${runId}`,
+      name: "Perm Admin",
+      email: `perm-admin-${runId}@test.local`,
+      password,
+    });
+    createdTenantIds.push(tenant.tenantId);
+
+    // Groupe personnalisé n'accordant explicitement pas reservations.view.
+    const groupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: tenant.sessionCookie },
+      body: JSON.stringify({ name: `Sans-Reservations-${runId}`, permissions: ["clients.view"] }),
+    });
+    expect(groupResponse.status).toBe(201);
+    const group = (await groupResponse.json()).group;
+    expect(group.permissions).not.toContain("reservations.view");
+
+    const member = await createAndLoginMember({
+      tenantId: tenant.tenantId,
+      name: "Membre Sans Réservations",
+      email: `membre-sans-reservations-${runId}@test.local`,
+      password,
+    });
+
+    const assignResponse = await apiFetch(`/api/users/${member.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: tenant.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: group.id }),
+    });
+    expect(assignResponse.status).toBe(200);
+
+    // Sans la permission : 403 sur l'API, et la page ne rend pas la liste (carte "accès refusé").
+    const deniedApiResponse = await apiFetch("/api/reservations", { headers: { Cookie: member.sessionCookie } });
+    expect(deniedApiResponse.status).toBe(403);
+
+    const deniedPageResponse = await apiFetch("/dashboard/reservations", {
+      headers: { Cookie: member.sessionCookie },
+    });
+    expect(deniedPageResponse.status).toBe(200);
+    const deniedHtml = await deniedPageResponse.text();
+    expect(deniedHtml).toContain("permission de consulter les réservations");
+    expect(deniedHtml).not.toContain("Ville de départ"); // champ du formulaire de filtre, rendu seulement si accès accordé
+
+    // Octroi de reservations.view au groupe (PATCH remplace l'ensemble des permissions du groupe).
+    const grantResponse = await apiFetch(`/api/permission-groups/${group.id}`, {
+      method: "PATCH",
+      headers: { Cookie: tenant.sessionCookie },
+      body: JSON.stringify({ permissions: ["clients.view", "reservations.view"] }),
+    });
+    expect(grantResponse.status).toBe(200);
+    expect((await grantResponse.json()).group.permissions).toContain("reservations.view");
+
+    // Avec la permission : 200 sur l'API, et la page rend le contenu réel (formulaire de filtre).
+    const grantedApiResponse = await apiFetch("/api/reservations", { headers: { Cookie: member.sessionCookie } });
+    expect(grantedApiResponse.status).toBe(200);
+
+    const grantedPageResponse = await apiFetch("/dashboard/reservations", {
+      headers: { Cookie: member.sessionCookie },
+    });
+    expect(grantedPageResponse.status).toBe(200);
+    const grantedHtml = await grantedPageResponse.text();
+    expect(grantedHtml).toContain("Ville de départ");
+    expect(grantedHtml).not.toContain("permission de consulter les réservations");
+  });
+});

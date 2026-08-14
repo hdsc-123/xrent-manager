@@ -1,5 +1,7 @@
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getCashEntries, getExpenseCategories } from "@/lib/cash-register";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { ExpensesTable, type ExpenseRow } from "./ExpensesTable";
 import { NewExpenseForm } from "./NewExpenseForm";
 
@@ -11,6 +13,19 @@ export default async function CashExpensesPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
+  if (!(await can(user, "cash_register.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Dépenses de caisse</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter la caisse.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  const canCreateExpense = await can(user, "cash_register.create_expense");
+  const canManageCategories = await can(user, "cash_register.manage_categories");
   const params = await searchParams;
   const [expenses, categories] = await Promise.all([
     getCashEntries(user.tenantId, {
@@ -37,7 +52,12 @@ export default async function CashExpensesPage({ searchParams }: PageProps) {
         <p className="text-sm text-muted-foreground">Dépenses enregistrées manuellement, par catégorie.</p>
       </div>
 
-      <NewExpenseForm categories={categories.map((category) => ({ id: category.id, name: category.name }))} />
+      {canCreateExpense && (
+        <NewExpenseForm
+          categories={categories.map((category) => ({ id: category.id, name: category.name }))}
+          canManageCategories={canManageCategories}
+        />
+      )}
 
       <ExpensesTable expenses={rows} />
     </div>

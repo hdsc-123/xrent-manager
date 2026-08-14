@@ -1,5 +1,7 @@
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getCashEntries } from "@/lib/cash-register";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { EntriesTable, type EntryRow } from "./EntriesTable";
 import { NewEntryForm } from "./NewEntryForm";
 
@@ -11,6 +13,18 @@ export default async function CashEntriesPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
+  if (!(await can(user, "cash_register.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Entrées de caisse</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter la caisse.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  const canCreateEntry = await can(user, "cash_register.create_entry");
   const params = await searchParams;
   const entries = await getCashEntries(user.tenantId, {
     type: "ENTRY",
@@ -37,7 +51,7 @@ export default async function CashEntriesPage({ searchParams }: PageProps) {
         <p className="text-sm text-muted-foreground">Versements, commissions et virements encaissés.</p>
       </div>
 
-      <NewEntryForm />
+      {canCreateEntry && <NewEntryForm />}
 
       <EntriesTable entries={rows} />
     </div>

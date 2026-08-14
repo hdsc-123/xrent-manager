@@ -2,8 +2,9 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import type { VehicleStatus } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
-import { Button } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { VehiclesTable, type VehicleRow } from "./VehiclesTable";
 
 const STATUS_OPTIONS: { value: VehicleStatus; label: string }[] = [
@@ -22,6 +23,17 @@ interface PageProps {
 export default async function VehiclesPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
+
+  if (!(await can(user, "vehicles.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Véhicules</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter les véhicules.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
 
   const params = await searchParams;
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
@@ -67,7 +79,9 @@ export default async function VehiclesPage({ searchParams }: PageProps) {
     agencyName: vehicle.agency.name,
   }));
 
-  const canCreate = accessibleAgencyIds === null || accessibleAgencyIds.length > 0;
+  const canCreate =
+    (await can(user, "vehicles.create")) && (accessibleAgencyIds === null || accessibleAgencyIds.length > 0);
+  const canDelete = await can(user, "vehicles.delete");
 
   return (
     <div className="flex flex-col gap-4">
@@ -152,7 +166,7 @@ export default async function VehiclesPage({ searchParams }: PageProps) {
         )}
       </form>
 
-      <VehiclesTable vehicles={rows} />
+      <VehiclesTable vehicles={rows} canDelete={canDelete} />
     </div>
   );
 }

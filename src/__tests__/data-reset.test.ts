@@ -139,7 +139,11 @@ async function seedFullTenantData(admin: AuthenticatedTestUser, suffix: string) 
   });
   await createCashEntry({ tenantId: admin.tenantId, type: "ENTRY", amount: 5000, description: "Test" });
   await prisma.expenseCategory.create({ data: { tenantId: admin.tenantId, name: `Carburant ${suffix}` } });
-  await prisma.tenant.update({ where: { id: admin.tenantId }, data: { lastContractNumber: 7 } });
+  // Sprint 15 : la numérotation de contrat est désormais par agence (DOMAINRULES.md section
+  // 29), plus sur Tenant — les deux agences du tenant sont mises à jour pour vérifier que le
+  // reset remet bien lastContractNumber à 0 sur chacune.
+  await prisma.agency.update({ where: { id: agency.id }, data: { lastContractNumber: 7 } });
+  await prisma.agency.update({ where: { id: agency2.id }, data: { lastContractNumber: 3 } });
 }
 
 describe("GET /api/data-reset", () => {
@@ -329,7 +333,7 @@ describe("POST /api/data-reset", () => {
       agencyCount,
       userCount,
       expenseCategoryCount,
-      tenant,
+      agencies,
       cashRegister,
     ] = await Promise.all([
       prisma.client.count({ where: { tenantId: admin.tenantId } }),
@@ -347,7 +351,7 @@ describe("POST /api/data-reset", () => {
       prisma.agency.count({ where: { tenantId: admin.tenantId } }),
       prisma.user.count({ where: { tenantId: admin.tenantId } }),
       prisma.expenseCategory.count({ where: { tenantId: admin.tenantId } }),
-      prisma.tenant.findUniqueOrThrow({ where: { id: admin.tenantId } }),
+      prisma.agency.findMany({ where: { tenantId: admin.tenantId } }),
       prisma.cashRegister.findUnique({ where: { tenantId: admin.tenantId } }),
     ]);
 
@@ -368,7 +372,7 @@ describe("POST /api/data-reset", () => {
     expect(agencyCount).toBe(2);
     expect(userCount).toBe(1);
     expect(expenseCategoryCount).toBe(1);
-    expect(tenant.lastContractNumber).toBe(0);
+    expect(agencies.every((agency) => agency.lastContractNumber === 0)).toBe(true);
     expect(cashRegister?.currentBalance).toBe(0);
 
     // Journal d'audit préservé par défaut (includeAuditLog non fourni), et contient

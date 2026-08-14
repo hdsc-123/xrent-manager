@@ -110,21 +110,23 @@ function isUniqueConstraintError(error: unknown): boolean {
 }
 
 /**
- * Génère le prochain numéro de contrat séquentiel pour le tenant : "{prefix}-{5 chiffres}"
+ * Génère le prochain numéro de contrat séquentiel pour l'agence : "{prefix}-{5 chiffres}"
  * (ou juste "{5 chiffres}" si aucun préfixe n'est configuré). Contrairement à la numérotation
  * des factures (générée par COUNT(), src/lib/invoices.ts), le compteur est un champ persisté
- * (Tenant.lastContractNumber) incrémenté atomiquement (UPDATE ... SET n = n + 1 côté Postgres,
- * donc sans condition de course même sous forte concurrence) — nécessaire pour permettre de le
- * redéfinir manuellement depuis les paramètres (DOMAINRULES.md section 29).
+ * (Agency.lastContractNumber, Sprint 15 — déplacé depuis Tenant : chaque agence a son propre
+ * préfixe et sa propre séquence indépendante, DOMAINRULES.md section 29) incrémenté
+ * atomiquement (UPDATE ... SET n = n + 1 côté Postgres, donc sans condition de course même
+ * sous forte concurrence) — nécessaire pour permettre de le redéfinir manuellement depuis les
+ * paramètres de l'agence.
  */
-export async function generateContractNumber(tenantId: string): Promise<string> {
-  const tenant = await prisma.tenant.update({
-    where: { id: tenantId },
+export async function generateContractNumber(agencyId: string): Promise<string> {
+  const agency = await prisma.agency.update({
+    where: { id: agencyId },
     data: { lastContractNumber: { increment: 1 } },
     select: { lastContractNumber: true, contractNumberPrefix: true },
   });
-  const padded = String(tenant.lastContractNumber).padStart(5, "0");
-  return tenant.contractNumberPrefix ? `${tenant.contractNumberPrefix}-${padded}` : padded;
+  const padded = String(agency.lastContractNumber).padStart(5, "0");
+  return agency.contractNumberPrefix ? `${agency.contractNumberPrefix}-${padded}` : padded;
 }
 
 export interface LocationFilters {
@@ -209,7 +211,7 @@ export async function createLocation(data: CreateLocationInput): Promise<Locatio
 
   const MAX_CONTRACT_NUMBER_ATTEMPTS = 5;
   for (let attempt = 0; attempt < MAX_CONTRACT_NUMBER_ATTEMPTS; attempt++) {
-    const contractNumber = await generateContractNumber(data.tenantId);
+    const contractNumber = await generateContractNumber(data.agencyId);
     try {
       return await prisma.location.create({
         data: {

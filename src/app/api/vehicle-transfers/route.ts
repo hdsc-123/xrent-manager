@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { VehicleTransferStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import {
   getVehicleTransfers,
   createVehicleTransfer,
@@ -21,6 +22,9 @@ export async function GET(request: Request) {
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "vehicle_transfers.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { searchParams } = new URL(request.url);
@@ -75,6 +79,9 @@ export async function POST(request: Request) {
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "vehicle_transfers.create"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   let body: CreateVehicleTransferBody;

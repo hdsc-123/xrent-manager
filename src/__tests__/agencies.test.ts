@@ -54,6 +54,15 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Sprint 15 — le bloc "numérotation de contrat par agence" ci-dessous crée des
+  // véhicules/clients/locations (contrats) : nettoyage étendu par rapport à la version
+  // d'origine de ce fichier, même ordre que src/__tests__/locations.test.ts (FK).
+  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.userAgency.deleteMany({
     where: { agency: { tenantId: { in: createdTenantIds } } },
   });
@@ -203,6 +212,149 @@ describe("PATCH /api/agencies/[id]", () => {
   });
 });
 
+describe("Sprint 15 — numérotation de contrat par agence (déplacée depuis Tenant)", () => {
+  it("accepte et persiste contractNumberPrefix/lastContractNumber", async () => {
+    const response = await apiFetch(`/api/agencies/${agencyA1Id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ contractNumberPrefix: "RAK", lastContractNumber: 42 }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.agency.contractNumberPrefix).toBe("RAK");
+    expect(body.agency.lastContractNumber).toBe(42);
+  });
+
+  it("refuse un lastContractNumber négatif ou non entier", async () => {
+    const response = await apiFetch(`/api/agencies/${agencyA1Id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ lastContractNumber: -1 }),
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("lastContractNumber doit être un entier positif ou nul.");
+
+    const nonInteger = await apiFetch(`/api/agencies/${agencyA1Id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ lastContractNumber: 1.5 }),
+    });
+    expect(nonInteger.status).toBe(400);
+    const nonIntegerBody = await nonInteger.json();
+    expect(nonIntegerBody.error).toBe("lastContractNumber doit être un entier positif ou nul.");
+  });
+
+  it("deux agences du même tenant ont des compteurs de contrat indépendants et simultanés", async () => {
+    const rakAgencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence RAK", slug: `agence-rak-${runId}` }),
+    });
+    const rakAgencyId = (await rakAgencyResponse.json()).agency.id;
+
+    const casaAgencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence CASA", slug: `agence-casa-${runId}` }),
+    });
+    const casaAgencyId = (await casaAgencyResponse.json()).agency.id;
+
+    await apiFetch(`/api/agencies/${rakAgencyId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ contractNumberPrefix: "RAK" }),
+    });
+    await apiFetch(`/api/agencies/${casaAgencyId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ contractNumberPrefix: "CASA" }),
+    });
+
+    const rakVehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: rakAgencyId,
+        name: "Clio RAK",
+        licensePlate: `NUM-RAK-${runId}`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 5000,
+      }),
+    });
+    const rakVehicleId = (await rakVehicleResponse.json()).vehicle.id;
+
+    const casaVehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: casaAgencyId,
+        name: "Clio CASA",
+        licensePlate: `NUM-CASA-${runId}`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 5000,
+      }),
+    });
+    const casaVehicleId = (await casaVehicleResponse.json()).vehicle.id;
+
+    const clientResponse = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Client Numérotation", email: `client-numerotation-${runId}@test.local` }),
+    });
+    const clientId = (await clientResponse.json()).client.id;
+
+    const rakLocationResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: rakVehicleId,
+        clientId,
+        startDate: "2031-01-10",
+        endDate: "2031-01-12",
+      }),
+    });
+    expect(rakLocationResponse.status).toBe(201);
+    const rakLocation = (await rakLocationResponse.json()).location;
+    expect(rakLocation.contractNumber).toBe("RAK-00001");
+
+    const casaLocationResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: casaVehicleId,
+        clientId,
+        startDate: "2031-01-10",
+        endDate: "2031-01-12",
+      }),
+    });
+    expect(casaLocationResponse.status).toBe(201);
+    const casaLocation = (await casaLocationResponse.json()).location;
+    expect(casaLocation.contractNumber).toBe("CASA-00001");
+
+    // Un deuxième contrat sur l'agence RAK avance sa propre séquence, sans affecter CASA.
+    const rakSecondLocationResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: rakVehicleId,
+        clientId,
+        startDate: "2031-02-10",
+        endDate: "2031-02-12",
+      }),
+    });
+    expect(rakSecondLocationResponse.status).toBe(201);
+    const rakSecondLocation = (await rakSecondLocationResponse.json()).location;
+    expect(rakSecondLocation.contractNumber).toBe("RAK-00002");
+  });
+});
+
 describe("DELETE /api/agencies/[id]", () => {
   it("retourne 404 pour une agence d'un autre tenant", async () => {
     const response = await apiFetch(`/api/agencies/${agencyB1Id}`, {
@@ -233,5 +385,77 @@ describe("DELETE /api/agencies/[id]", () => {
       headers: { Cookie: adminA.sessionCookie },
     });
     expect(deleteResponse.status).toBe(200);
+  });
+});
+
+describe("Sprint 15 — permissions granulaires (agencies.create)", () => {
+  it("un MEMBER du groupe MEMBER par défaut est refusé (agencies.create n'est dans aucun groupe par défaut)", async () => {
+    // Couvre déjà le cas (a) via le groupe MEMBER par défaut lui-même : agencies.create n'est
+    // accordé à aucun groupe par défaut (ADMIN excepté), voir DEFAULT_GROUPS dans
+    // src/lib/permissions.ts — pas besoin d'un groupe personnalisé pour obtenir ce refus.
+    const response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: memberA.sessionCookie },
+      body: JSON.stringify({ name: "Toujours interdit par défaut" }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it("autorise un MEMBER dont le groupe personnalisé accorde explicitement agencies.create", async () => {
+    const grantedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `WithAgencyCreate-${runId}`, permissions: ["agencies.view", "agencies.create"] }),
+    });
+    const grantedGroupId = (await grantedGroupResponse.json()).group.id;
+
+    const grantedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Granted Member",
+      email: `granted-agencies-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await apiFetch(`/api/users/${grantedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: grantedGroupId }),
+    });
+
+    const response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: grantedMember.sessionCookie },
+      body: JSON.stringify({ name: "Autorisé via groupe personnalisé", slug: `via-groupe-${runId}` }),
+    });
+    expect(response.status).toBe(201);
+  });
+
+  it("un ADMIN crée une agence même rattaché à un groupe personnalisé vide (bypass systématique)", async () => {
+    const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `EmptyAdminGroup-${runId}`, permissions: [] }),
+    });
+    const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+
+    await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId }),
+    });
+
+    try {
+      const response = await apiFetch("/api/agencies", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ name: "Admin toujours autorisé", slug: `admin-bypass-${runId}` }),
+      });
+      expect(response.status).toBe(201);
+    } finally {
+      await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ permissionGroupId: null }),
+      });
+    }
   });
 });

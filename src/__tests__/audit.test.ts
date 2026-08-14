@@ -301,3 +301,142 @@ describe("Journal d'audit exhaustif sur le CRUD métier (Sprint 10)", () => {
     expect((await findLog("Alert", alert.id)).some((log) => log.action === "alert.resolved")).toBe(true);
   });
 });
+
+describe("Journal d'audit — Sprint 15 (agences, tenant, invitation → user)", () => {
+  async function findLog(resource: string, resourceId: string) {
+    return prisma.auditLog.findMany({
+      where: { tenantId: adminA.tenantId, resource, resourceId },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  it("trace la création d'une agence (agency.created)", async () => {
+    const response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence Audit S15", slug: `agence-audit-s15-${runId}` }),
+    });
+    expect(response.status).toBe(201);
+    const agency = (await response.json()).agency;
+
+    const log = (await findLog("Agency", agency.id)).find((entry) => entry.action === "agency.created");
+    expect(log).toBeDefined();
+    expect(log?.resource).toBe("Agency");
+    expect(log?.tenantId).toBe(adminA.tenantId);
+    expect(log?.userId).toBe(adminA.userId);
+  });
+
+  it("trace la modification d'une agence, avec previousNumbering uniquement quand la numérotation change", async () => {
+    const createResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence Audit Numbering", slug: `agence-audit-numbering-${runId}` }),
+    });
+    const agency = (await createResponse.json()).agency;
+
+    // Modification sans toucher à la numérotation : pas de previousNumbering dans les metadata.
+    await apiFetch(`/api/agencies/${agency.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence Audit Numbering (renommée)" }),
+    });
+    const simpleLog = (await findLog("Agency", agency.id)).find((entry) => entry.action === "agency.updated");
+    expect(simpleLog).toBeDefined();
+    const simpleMetadata = simpleLog?.metadata as {
+      changes?: Record<string, unknown>;
+      previousNumbering?: unknown;
+    } | null;
+    expect(simpleMetadata?.changes).toEqual({ name: "Agence Audit Numbering (renommée)" });
+    expect(simpleMetadata?.previousNumbering).toBeUndefined();
+
+    // Modification de la numérotation : previousNumbering doit refléter les valeurs précédentes
+    // (défauts d'une agence fraîchement créée : préfixe vide, dernier numéro à 0).
+    await apiFetch(`/api/agencies/${agency.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ contractNumberPrefix: "AUD", lastContractNumber: 7 }),
+    });
+    const numberingLogs = (await findLog("Agency", agency.id)).filter((entry) => entry.action === "agency.updated");
+    const numberingLog = numberingLogs[0]; // le plus récent (orderBy createdAt desc)
+    const numberingMetadata = numberingLog?.metadata as {
+      changes?: Record<string, unknown>;
+      previousNumbering?: { contractNumberPrefix: string; lastContractNumber: number };
+    } | null;
+    expect(numberingMetadata?.previousNumbering).toEqual({ contractNumberPrefix: "", lastContractNumber: 0 });
+  });
+
+  it("trace la suppression d'une agence (agency.deleted)", async () => {
+    const createResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence Audit Delete", slug: `agence-audit-delete-${runId}` }),
+    });
+    const agency = (await createResponse.json()).agency;
+
+    const deleteResponse = await apiFetch(`/api/agencies/${agency.id}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(200);
+
+    const logs = await findLog("Agency", agency.id);
+    expect(logs.some((entry) => entry.action === "agency.deleted")).toBe(true);
+  });
+
+  it("trace la modification du tenant (tenant.updated), auparavant non journalisée", async () => {
+    const response = await apiFetch(`/api/tenants/${adminA.tenantId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Audit Test A (renommé Sprint 15)" }),
+    });
+    expect(response.status).toBe(200);
+
+    const logs = await prisma.auditLog.findMany({
+      where: { tenantId: adminA.tenantId, resource: "Tenant", resourceId: adminA.tenantId },
+    });
+    const log = logs.find((entry) => entry.action === "tenant.updated");
+    expect(log).toBeDefined();
+    expect(log?.userId).toBe(adminA.userId);
+    const metadata = log?.metadata as { changes?: Record<string, unknown> } | null;
+    expect(metadata?.changes).toEqual({ name: "Audit Test A (renommé Sprint 15)" });
+  });
+
+  it("trace à la fois invitation.accepted et user.created pour une seule acceptation d'invitation", async () => {
+    const email = `audit-accept-s15-${runId}@test.local`;
+    const createResponse = await apiFetch("/api/invitations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ email, role: "MEMBER" }),
+    });
+    const invitationId = (await createResponse.json()).invitation.id;
+
+    const acceptResponse = await apiFetch(`/api/invitations/${invitationId}/accept`, {
+      method: "POST",
+      body: JSON.stringify({ name: "Audit Accept S15", password }),
+    });
+    expect(acceptResponse.status).toBe(200);
+    const userId = (await acceptResponse.json()).user.id;
+
+    const invitationLogs = await findLog("Invitation", invitationId);
+    expect(invitationLogs.some((entry) => entry.action === "invitation.accepted")).toBe(true);
+
+    const userLogs = await findLog("User", userId);
+    const userCreatedLog = userLogs.find((entry) => entry.action === "user.created");
+    expect(userCreatedLog).toBeDefined();
+    expect(userCreatedLog?.userId).toBe(userId);
+    const metadata = userCreatedLog?.metadata as { email?: string; role?: string } | null;
+    expect(metadata?.email).toBe(email);
+    expect(metadata?.role).toBe("MEMBER");
+  });
+
+  it("la page /dashboard/audit rend correctement les nouvelles actions", async () => {
+    const response = await apiFetch("/dashboard/audit", { headers: { Cookie: adminA.sessionCookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("Agence créée");
+    expect(html).toContain("Agence modifiée");
+    expect(html).toContain("Agence supprimée");
+    expect(html).toContain("Tenant modifié");
+    expect(html).toContain("Utilisateur créé");
+  });
+});

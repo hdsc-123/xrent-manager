@@ -26,13 +26,7 @@ export default async function TenantDetailPage({ params }: PageProps) {
   return (
     <div className="mx-auto flex max-w-md flex-col gap-4">
       <h1 className="font-heading text-2xl font-semibold">{tenant.name}</h1>
-      <EditTenantForm
-        id={tenant.id}
-        initialName={tenant.name}
-        slug={tenant.slug}
-        initialContractNumberPrefix={tenant.contractNumberPrefix}
-        initialLastContractNumber={tenant.lastContractNumber}
-      />
+      <EditTenantForm id={tenant.id} initialName={tenant.name} slug={tenant.slug} />
     </div>
   );
 }

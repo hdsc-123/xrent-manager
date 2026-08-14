@@ -49,6 +49,25 @@ const ACTION_LABELS: Record<string, string> = {
   "permission_group.created": "Groupe de permissions créé",
   "permission_group.updated": "Groupe de permissions modifié",
   "permission_group.deleted": "Groupe de permissions supprimé",
+  // Sprint 15 : entrées manquantes pour des actions déjà journalisées depuis des sprints
+  // antérieurs (repli sur la clé brute jusqu'ici, voir le commentaire ACTION_ICONS ci-dessous)
+  // + nouvelles actions de ce sprint (agences, tenant, numérotation, création d'utilisateur
+  // via invitation, réinitialisation de données).
+  "cashEntry.created": "Entrée de caisse enregistrée",
+  "cashExpense.created": "Dépense de caisse enregistrée",
+  "expenseCategory.created": "Catégorie de dépense créée",
+  "vehicle_transfer.created": "Transfert de véhicule lancé",
+  "vehicle_transfer.validated": "Transfert de véhicule validé",
+  "vehicle_transfer.cancelled": "Transfert de véhicule annulé",
+  "vehicle_trip.created": "Bon de déplacement créé",
+  "vehicle_trip.returned": "Retour de déplacement enregistré",
+  "vehicle_trip.cancelled": "Bon de déplacement annulé",
+  "data.reset": "Réinitialisation de données",
+  "agency.created": "Agence créée",
+  "agency.updated": "Agence modifiée",
+  "agency.deleted": "Agence supprimée",
+  "user.created": "Utilisateur créé",
+  "tenant.updated": "Tenant modifié",
 };
 
 const RESOURCE_LABELS: Record<string, string> = {
@@ -63,6 +82,13 @@ const RESOURCE_LABELS: Record<string, string> = {
   Alert: "Alerte",
   Reservation: "Réservation",
   PermissionGroup: "Groupe de permissions",
+  Agency: "Agence",
+  Tenant: "Tenant",
+  CashEntry: "Écriture de caisse",
+  CashRegister: "Caisse",
+  ExpenseCategory: "Catégorie de dépense",
+  VehicleTransfer: "Transfert de véhicule",
+  VehicleTrip: "Bon de déplacement",
 };
 
 /** Icône + couleur par type d'action (section 6 du sprint), dérivées du suffixe verbal de

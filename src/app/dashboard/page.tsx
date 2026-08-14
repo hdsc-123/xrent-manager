@@ -1,9 +1,11 @@
 import Link from "next/link";
-import { Bell, Building2, CalendarClock, FileWarning, Store, Users, Wrench } from "lucide-react";
+import { Bell, CalendarClock, CalendarRange, Car, FileWarning, Store, Wrench } from "lucide-react";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { getTenantById } from "@/lib/db";
+import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { getAlerts } from "@/lib/alerts";
+import { formatMoney } from "@/lib/format";
 import {
   Badge,
   Button,
@@ -31,21 +33,30 @@ export default async function DashboardPage() {
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
   const agencyScope = accessibleAgencyIds ? { agencyId: { in: accessibleAgencyIds } } : {};
   const now = new Date();
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
   const endOfToday = new Date(now);
   endOfToday.setHours(23, 59, 59, 999);
 
+  const [canViewReservations, canViewVehicles, canViewAgencies, canCreateAgencies] = await Promise.all([
+    can(user, "reservations.view"),
+    can(user, "vehicles.view"),
+    can(user, "agencies.view"),
+    can(user, "agencies.create"),
+  ]);
+
   const [
     tenant,
-    agencyCount,
-    userCount,
     returnsToday,
     dueMaintenances,
     overdueInvoicesCount,
     recentAlerts,
+    reservationsTodayCount,
+    reservationsTodayByCurrency,
+    availableVehiclesCount,
+    availableVehiclesSample,
   ] = await Promise.all([
     getTenantById(user.tenantId),
-    prisma.agency.count({ where: { tenantId: user.tenantId } }),
-    prisma.user.count({ where: { tenantId: user.tenantId } }),
     prisma.location.count({
       where: { tenantId: user.tenantId, ...agencyScope, status: "ACTIVE", endDate: { lte: endOfToday } },
     }),
@@ -61,6 +72,37 @@ export default async function DashboardPage() {
       },
     }),
     getAlerts(user.tenantId, {}),
+    // Sprint 15 : Reservation n'a pas d'agencyId (DOMAINRULES.md section 21 — aucune agence
+    // réelle n'est associée à une réservation avant sa conversion en contrat) : ce widget
+    // reste donc tenant-wide, pas de scoping par agence possible ici (contrairement aux
+    // tuiles ci-dessus, qui portent toutes sur Location/Maintenance/Invoice, agency-scopées).
+    canViewReservations
+      ? prisma.reservation.count({
+          where: { tenantId: user.tenantId, startDate: { gte: startOfToday, lte: endOfToday } },
+        })
+      : 0,
+    canViewReservations
+      ? prisma.reservation.groupBy({
+          by: ["currency"],
+          where: {
+            tenantId: user.tenantId,
+            startDate: { gte: startOfToday, lte: endOfToday },
+            totalPrice: { not: null },
+          },
+          _sum: { totalPrice: true },
+        })
+      : [],
+    canViewVehicles
+      ? prisma.vehicle.count({ where: { tenantId: user.tenantId, ...agencyScope, status: "AVAILABLE" } })
+      : 0,
+    canViewVehicles
+      ? prisma.vehicle.findMany({
+          where: { tenantId: user.tenantId, ...agencyScope, status: "AVAILABLE" },
+          select: { name: true, licensePlate: true },
+          take: 5,
+          orderBy: { name: "asc" },
+        })
+      : [],
   ]);
 
   const visibleRecentAlerts = (
@@ -81,26 +123,45 @@ export default async function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {canViewReservations && (
+          <Card>
+            <CardHeader>
+              <CardDescription className="flex items-center gap-2">
+                <CalendarRange className="size-4" /> Réservations aujourd&apos;hui
+              </CardDescription>
+              <CardTitle className="text-3xl">{reservationsTodayCount}</CardTitle>
+              {reservationsTodayByCurrency.length > 0 && (
+                <p className="text-sm text-muted-foreground">
+                  {reservationsTodayByCurrency
+                    .map((group) => formatMoney(group._sum.totalPrice ?? 0, group.currency))
+                    .join(" + ")}
+                </p>
+              )}
+            </CardHeader>
+          </Card>
+        )}
+        {canViewVehicles && (
+          <Card>
+            <CardHeader>
+              <CardDescription className="flex items-center gap-2">
+                <Car className="size-4" /> Véhicules disponibles
+              </CardDescription>
+              <CardTitle className="text-3xl">{availableVehiclesCount}</CardTitle>
+              {availableVehiclesSample.length > 0 && (
+                <p className="truncate text-sm text-muted-foreground">
+                  {availableVehiclesSample
+                    .map((vehicle) => vehicle.name || vehicle.licensePlate)
+                    .join(", ")}
+                  {availableVehiclesCount > availableVehiclesSample.length && "…"}
+                </p>
+              )}
+            </CardHeader>
+          </Card>
+        )}
         <Card>
           <CardHeader>
             <CardDescription className="flex items-center gap-2">
-              <Store className="size-4" /> Agences
-            </CardDescription>
-            <CardTitle className="text-3xl">{agencyCount}</CardTitle>
-          </CardHeader>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardDescription className="flex items-center gap-2">
-              <Users className="size-4" /> Utilisateurs
-            </CardDescription>
-            <CardTitle className="text-3xl">{userCount}</CardTitle>
-          </CardHeader>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardDescription className="flex items-center gap-2">
-              <Building2 className="size-4" /> Tenant
+              <Store className="size-4" /> Agence
             </CardDescription>
             <CardTitle className="truncate text-3xl">{tenant?.name ?? "—"}</CardTitle>
           </CardHeader>
@@ -170,22 +231,28 @@ export default async function DashboardPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Actions rapides</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-wrap gap-2">
-          <Button render={<Link href="/dashboard/agencies/new" />}>
-            Créer une agence
-          </Button>
-          <Button variant="outline" render={<Link href="/dashboard/agencies" />}>
-            Voir les agences
-          </Button>
-          <Button variant="outline" render={<Link href="/dashboard/users" />}>
-            Voir les utilisateurs
-          </Button>
-        </CardContent>
-      </Card>
+      {(canCreateAgencies || canViewAgencies || user.role === "ADMIN") && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Actions rapides</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-wrap gap-2">
+            {canCreateAgencies && (
+              <Button render={<Link href="/dashboard/agencies/new" />}>Créer une agence</Button>
+            )}
+            {canViewAgencies && (
+              <Button variant="outline" render={<Link href="/dashboard/agencies" />}>
+                Voir les agences
+              </Button>
+            )}
+            {user.role === "ADMIN" && (
+              <Button variant="outline" render={<Link href="/dashboard/users" />}>
+                Voir les utilisateurs
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

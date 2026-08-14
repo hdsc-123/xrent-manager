@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getAlertById, resolveAlert, InvalidAlertStatusTransitionError } from "@/lib/alerts";
 import { logAction } from "@/lib/audit";
 
@@ -12,6 +13,9 @@ export async function PATCH(_request: Request, { params }: RouteParams) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "alerts.resolve"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;

@@ -1,13 +1,25 @@
 import Link from "next/link";
 import { Plus } from "lucide-react";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
-import { Button } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { AgenciesTable, type AgencyRow } from "./AgenciesTable";
 
 export default async function AgenciesPage() {
   const user = await getSessionUser();
   if (!user) return null;
+
+  if (!(await can(user, "agencies.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Agences</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter les agences.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
 
   const agencies = await prisma.agency.findMany({
     where: { tenantId: user.tenantId },
@@ -23,7 +35,9 @@ export default async function AgenciesPage() {
     createdAt: agency.createdAt.toISOString(),
   }));
 
-  const canManage = user.role === "ADMIN";
+  const canCreate = await can(user, "agencies.create");
+  const canEdit = await can(user, "agencies.edit");
+  const canDelete = await can(user, "agencies.delete");
 
   return (
     <div className="flex flex-col gap-4">
@@ -34,7 +48,7 @@ export default async function AgenciesPage() {
             Points de location de votre organisation.
           </p>
         </div>
-        {canManage && (
+        {canCreate && (
           <Button render={<Link href="/dashboard/agencies/new" />}>
             <Plus className="size-4" />
             Créer une agence
@@ -42,7 +56,7 @@ export default async function AgenciesPage() {
         )}
       </div>
 
-      <AgenciesTable agencies={rows} canManage={canManage} />
+      <AgenciesTable agencies={rows} canEdit={canEdit} canDelete={canDelete} />
     </div>
   );
 }

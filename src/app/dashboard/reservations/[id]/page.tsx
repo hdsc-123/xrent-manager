@@ -20,10 +20,18 @@ const STATUS_LABELS: Record<string, string> = {
   CANCELLED: "Annulée",
 };
 
+// Sprint 15 : source est du texte libre (voir prisma/schema.prisma) — ces libellés ne sont
+// qu'un affichage plus lisible pour les valeurs connues, avec repli sur la valeur brute pour
+// tout autre code broker (ex. non listé ici).
 const SOURCE_LABELS: Record<string, string> = {
   BROKER: "Broker",
   DIRECT: "Direct",
+  TJS: "TJS",
+  DCH: "DCH",
+  CT: "CT",
 };
+
+const EDITABLE_STATUSES = new Set(["PENDING", "CONFIRMED"]);
 
 function formatDate(date: Date): string {
   return date.toLocaleDateString("fr-FR");
@@ -44,7 +52,17 @@ export default async function ReservationDetailPage({ params }: PageProps) {
   }
 
   const canEdit = (await can(user, "reservations.edit")) && reservation.status !== "CONVERTED";
+  const canEditReservation = canEdit && EDITABLE_STATUSES.has(reservation.status);
   const canConvert = (await can(user, "reservations.convert")) && reservation.status === "CONFIRMED";
+
+  const optionsSum =
+    (reservation.gpsPrice ?? 0) + (reservation.babySeatPrice ?? 0) + (reservation.extraDriverPrice ?? 0);
+  const finalPriceDisplay =
+    reservation.totalPrice === null
+      ? "—"
+      : optionsSum === 0 || reservation.optionsCurrency === reservation.currency
+        ? formatMoney(reservation.totalPrice + optionsSum, reservation.currency)
+        : `${formatMoney(reservation.totalPrice, reservation.currency)} + ${formatMoney(optionsSum, reservation.optionsCurrency)}`;
 
   // Invoice la plus récente du contrat issu de cette réservation, pour le téléchargement
   // immédiat du PDF (Sprint 13D, section 5) — même requête que /dashboard/locations/[id].
@@ -69,6 +87,11 @@ export default async function ReservationDetailPage({ params }: PageProps) {
       </div>
 
       <div className="flex flex-wrap gap-2">
+        {canEditReservation && (
+          <Button variant="outline" render={<Link href={`/dashboard/reservations/${reservation.id}/edit`} />}>
+            Modifier
+          </Button>
+        )}
         {canConvert && (
           <Button render={<Link href={`/dashboard/reservations/${reservation.id}/convert`} />}>
             Convertir en contrat
@@ -104,7 +127,7 @@ export default async function ReservationDetailPage({ params }: PageProps) {
           <span>{reservation.confirmationNumber ?? "—"}</span>
 
           <span className="text-muted-foreground">Source</span>
-          <span>{reservation.source ? SOURCE_LABELS[reservation.source] : "—"}</span>
+          <span>{reservation.source ? (SOURCE_LABELS[reservation.source] ?? reservation.source) : "—"}</span>
 
           <span className="text-muted-foreground">Téléphone client</span>
           <span>{reservation.clientPhone ?? "—"}</span>
@@ -142,7 +165,11 @@ export default async function ReservationDetailPage({ params }: PageProps) {
             ]
               .filter(Boolean)
               .join(", ") || "Aucune"}
+            {optionsSum > 0 ? ` (${formatMoney(optionsSum, reservation.optionsCurrency)})` : ""}
           </span>
+
+          <span className="text-muted-foreground">Prix final</span>
+          <span>{finalPriceDisplay}</span>
 
           <span className="text-muted-foreground">Kilométrage / inclus</span>
           <span>

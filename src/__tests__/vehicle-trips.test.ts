@@ -254,3 +254,93 @@ describe("PATCH /api/vehicle-trips/[id]/cancel", () => {
     expect(vehicleBody.vehicle.status).toBe("AVAILABLE");
   });
 });
+
+describe("Sprint 15 — permissions granulaires (vehicle_trips.create)", () => {
+  it("refuse un MEMBER rattaché à l'agence mais dont le groupe personnalisé n'a pas vehicle_trips.create", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const restrictedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `NoTripCreate-${runId}`, permissions: ["vehicle_trips.view"] }),
+    });
+    const restrictedGroupId = (await restrictedGroupResponse.json()).group.id;
+
+    const restrictedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Restricted Member",
+      email: `restricted-trips-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: restrictedMember.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: restrictedGroupId }),
+    });
+
+    const response = await createTrip(restrictedMember, vehicleId, restrictedMember.userId);
+    expect(response.status).toBe(403);
+  });
+
+  it("autorise un MEMBER dont le groupe personnalisé accorde vehicle_trips.create", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const grantedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        name: `WithTripCreate-${runId}`,
+        permissions: ["vehicle_trips.view", "vehicle_trips.create"],
+      }),
+    });
+    const grantedGroupId = (await grantedGroupResponse.json()).group.id;
+
+    const grantedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Granted Member",
+      email: `granted-trips-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: grantedMember.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${grantedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: grantedGroupId }),
+    });
+
+    const response = await createTrip(grantedMember, vehicleId, grantedMember.userId);
+    expect(response.status).toBe(201);
+  });
+
+  it("un ADMIN crée un bon de déplacement même rattaché à un groupe personnalisé vide (bypass systématique)", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `EmptyAdminGroup-${runId}`, permissions: [] }),
+    });
+    const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+
+    await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId }),
+    });
+
+    try {
+      const response = await createTrip(adminA, vehicleId, adminA.userId);
+      expect(response.status).toBe(201);
+    } finally {
+      await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ permissionGroupId: null }),
+      });
+    }
+  });
+});

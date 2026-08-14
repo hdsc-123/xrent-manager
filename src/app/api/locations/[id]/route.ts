@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { LocationStatus, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import {
   getLocationById,
   updateLocation,
@@ -25,6 +26,9 @@ export async function GET(_request: Request, { params }: RouteParams) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "locations.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;
@@ -52,6 +56,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "locations.edit"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;
@@ -132,6 +139,9 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "locations.delete"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;

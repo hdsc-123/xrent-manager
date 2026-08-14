@@ -19,8 +19,9 @@ import { logAction } from "@/lib/audit";
  * Vidé : Client, Vehicle, Location, Invoice, Payment, Maintenance, VehicleTransfer,
  * VehicleTrip, Alert, Invitation, Reservation, CashEntry ; AuditLog uniquement si
  * `includeAuditLog` (option « réinitialisation complète », voir l'énoncé du sprint).
- * `Tenant.lastContractNumber` est remis à 0 (cohérent avec la suppression de toutes les
- * `Location`, voir DOMAINRULES.md section 29) — `contractNumberPrefix` fait partie de la
+ * `Agency.lastContractNumber` (Sprint 15 — déplacé depuis Tenant, numérotation par agence)
+ * est remis à 0 pour toutes les agences du tenant (cohérent avec la suppression de toutes
+ * les `Location`, voir DOMAINRULES.md section 29) — `contractNumberPrefix` fait partie de la
  * configuration et n'est jamais touché.
  *
  * Ordre de suppression : enfants avant parents (contrainte de clé étrangère), même ordre
@@ -213,7 +214,7 @@ export async function resetTenantData(input: ResetTenantDataInput): Promise<Data
       prisma.alert.deleteMany({ where: { tenantId } }),
       prisma.invitation.deleteMany({ where: { tenantId } }),
       prisma.cashEntry.deleteMany({ where: { tenantId } }),
-      prisma.tenant.update({ where: { id: tenantId }, data: { lastContractNumber: 0 } }),
+      prisma.agency.updateMany({ where: { tenantId }, data: { lastContractNumber: 0 } }),
     ]);
 
     const auditLogResult = input.includeAuditLog

@@ -2,8 +2,9 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import type { MaintenanceStatus, MaintenanceType } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
-import { Button } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { MaintenancesTable, type MaintenanceRow } from "./MaintenancesTable";
 import { VehicleStatusOverviewTable, type VehicleStatusRow } from "./VehicleStatusOverviewTable";
 
@@ -30,8 +31,20 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
+  if (!(await can(user, "maintenances.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Maintenances</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter les maintenances.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
   const params = await searchParams;
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+  const canEdit = await can(user, "maintenances.edit");
 
   const [vehicles, vehiclesWithStatus, maintenances] = await Promise.all([
     prisma.vehicle.findMany({
@@ -105,7 +118,7 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
     };
   });
 
-  const canCreate = accessibleAgencyIds === null || accessibleAgencyIds.length > 0;
+  const canCreate = (accessibleAgencyIds === null || accessibleAgencyIds.length > 0) && (await can(user, "maintenances.create"));
 
   return (
     <div className="flex flex-col gap-4">
@@ -226,7 +239,7 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
         )}
       </form>
 
-      <MaintenancesTable maintenances={rows} />
+      <MaintenancesTable maintenances={rows} canEdit={canEdit} />
     </div>
   );
 }

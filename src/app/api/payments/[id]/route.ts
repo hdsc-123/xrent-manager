@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { PaymentMethod, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getInvoiceById } from "@/lib/invoices";
 import {
   getPaymentById,
@@ -38,6 +39,9 @@ export async function GET(_request: Request, { params }: RouteParams) {
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
   }
+  if (!(await can(user, "payments.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
+  }
 
   const { id } = await params;
   const payment = await loadAuthorizedPayment(user.tenantId, id, user);
@@ -62,6 +66,12 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  // Pas de clé payments.edit dans le catalogue (voir src/lib/permissions.ts) : PATCH est
+  // une modification complète du paiement (montant, méthode, date, référence, notes), donc
+  // la clé la plus proche est payments.create, pas payments.delete.
+  if (!(await can(user, "payments.create"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;
@@ -125,6 +135,9 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "payments.delete"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { IdType } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getClients, createClient, getClientById, updateClient, findDuplicateClient } from "@/lib/clients";
 import { logAction } from "@/lib/audit";
 
@@ -17,6 +18,9 @@ export async function GET(request: Request) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "clients.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { searchParams } = new URL(request.url);
@@ -54,6 +58,9 @@ export async function POST(request: Request) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "clients.create"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   let body: CreateClientBody;

@@ -50,7 +50,18 @@ const STATUS_VARIANTS: Record<string, "default" | "secondary" | "destructive" | 
   CANCELLED: "destructive",
 };
 
-export function VehicleTripsTable({ trips }: { trips: VehicleTripRow[] }) {
+export function VehicleTripsTable({
+  trips,
+  canReturn = false,
+  canCancel = false,
+}: {
+  trips: VehicleTripRow[];
+  /** vehicle_trips.return (voir src/lib/permissions.ts) — calculé côté serveur par la page
+   * appelante. */
+  canReturn?: boolean;
+  /** vehicle_trips.cancel */
+  canCancel?: boolean;
+}) {
   const router = useRouter();
   const [returning, setReturning] = useState<VehicleTripRow | null>(null);
   const [endOdometer, setEndOdometer] = useState("");
@@ -153,13 +164,13 @@ export function VehicleTripsTable({ trips }: { trips: VehicleTripRow[] }) {
                   <MoreHorizontal className="size-4" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem disabled={!inProgress} onClick={() => openReturn(row.original)}>
+                  <DropdownMenuItem disabled={!inProgress || !canReturn} onClick={() => openReturn(row.original)}>
                     <CheckCircle2 className="size-4" />
                     Enregistrer le retour
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     variant="destructive"
-                    disabled={!inProgress}
+                    disabled={!inProgress || !canCancel}
                     onClick={() => setPendingCancel(row.original)}
                   >
                     <XCircle className="size-4" />
@@ -172,7 +183,7 @@ export function VehicleTripsTable({ trips }: { trips: VehicleTripRow[] }) {
         },
       },
     ],
-    []
+    [canReturn, canCancel]
   );
 
   return (

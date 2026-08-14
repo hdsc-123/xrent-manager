@@ -38,6 +38,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Sprint 15 : PATCH /api/tenants/[id] journalise désormais "tenant.updated" (AuditLog),
+  // absent jusqu'ici — sans cette suppression, la contrainte de clé étrangère
+  // AuditLog_tenantId_fkey bloque prisma.tenant.deleteMany() ci-dessous.
+  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
@@ -117,7 +121,10 @@ describe("PATCH /api/tenants/[id]", () => {
     expect(response.status).toBe(403);
   });
 
-  it("Sprint 14B — met à jour le préfixe et le dernier numéro de contrat", async () => {
+  it("Sprint 15 — contractNumberPrefix/lastContractNumber n'existent plus sur Tenant (déplacés vers Agency) : ignorés silencieusement", async () => {
+    // Sprint 15 : la numérotation de contrat est désormais portée par Agency, par agence
+    // (voir PATCH /api/agencies/[id]). PATCH /api/tenants/[id] ne connaît plus que `name` —
+    // envoyer ces champs ne doit ni échouer ni les faire apparaître sur le tenant retourné.
     const response = await apiFetch(`/api/tenants/${adminA.tenantId}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
@@ -125,17 +132,20 @@ describe("PATCH /api/tenants/[id]", () => {
     });
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.tenant.contractNumberPrefix).toBe("RAK");
-    expect(body.tenant.lastContractNumber).toBe(42);
+    expect(body.tenant.name).toBe("Tenants Test A");
+    expect(body.tenant).not.toHaveProperty("contractNumberPrefix");
+    expect(body.tenant).not.toHaveProperty("lastContractNumber");
   });
 
-  it("Sprint 14B — refuse un lastContractNumber négatif ou non entier", async () => {
+  it("Sprint 15 — un lastContractNumber négatif envoyé sur /api/tenants/[id] est ignoré (pas de validation, le champ n'existe plus)", async () => {
     const response = await apiFetch(`/api/tenants/${adminA.tenantId}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify({ name: "Tenants Test A", lastContractNumber: -1 }),
     });
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.tenant).not.toHaveProperty("lastContractNumber");
   });
 });
 

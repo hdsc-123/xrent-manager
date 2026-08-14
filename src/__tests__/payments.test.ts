@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -295,5 +295,101 @@ describe("PATCH/DELETE /api/payments/[id]", () => {
     // de taxRate/discountAmount) même si son dernier paiement est supprimé — voir
     // recomputeInvoiceStatus dans src/lib/payments.ts.
     expect(updatedBody.invoice.status).toBe("SENT");
+  });
+});
+
+describe("Sprint 15 — permissions granulaires (payments.create)", () => {
+  it("refuse un MEMBER rattaché à l'agence mais dont le groupe personnalisé n'a pas payments.create", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+
+    const restrictedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `NoPaymentCreate-${runId}`, permissions: ["payments.view"] }),
+    });
+    const restrictedGroupId = (await restrictedGroupResponse.json()).group.id;
+
+    const restrictedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Restricted Member",
+      email: `restricted-payments-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: restrictedMember.userId, agencyId: agencyAId } });
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: restrictedGroupId }),
+    });
+
+    const response = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: restrictedMember.sessionCookie },
+      body: JSON.stringify({ invoiceId: invoice.id, amount: 1000, method: "CASH" }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it("autorise un MEMBER dont le groupe personnalisé accorde payments.create", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+
+    const grantedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `WithPaymentCreate-${runId}`, permissions: ["payments.view", "payments.create"] }),
+    });
+    const grantedGroupId = (await grantedGroupResponse.json()).group.id;
+
+    const grantedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Granted Member",
+      email: `granted-payments-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: grantedMember.userId, agencyId: agencyAId } });
+    await apiFetch(`/api/users/${grantedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: grantedGroupId }),
+    });
+
+    const response = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: grantedMember.sessionCookie },
+      body: JSON.stringify({ invoiceId: invoice.id, amount: 1000, method: "CASH" }),
+    });
+    expect(response.status).toBe(201);
+  });
+
+  it("un ADMIN enregistre un paiement même rattaché à un groupe personnalisé vide (bypass systématique)", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+
+    const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `EmptyAdminGroup-${runId}`, permissions: [] }),
+    });
+    const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+
+    await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId }),
+    });
+
+    try {
+      const response = await apiFetch("/api/payments", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ invoiceId: invoice.id, amount: 1000, method: "CASH" }),
+      });
+      expect(response.status).toBe(201);
+    } finally {
+      await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ permissionGroupId: null }),
+      });
+    }
   });
 });

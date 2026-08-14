@@ -41,6 +41,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma.userPermission.deleteMany({ where: { user: { tenantId: { in: createdTenantIds } } } });
   await prisma.reservation.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -178,12 +180,31 @@ describe("PATCH/DELETE /api/permission-groups/[id]", () => {
 });
 
 describe("GET/PATCH /api/users/[id]/permissions", () => {
-  it("un MEMBER sans groupe ni permission individuelle n'a accès à aucune permission (403 sur une route gated)", async () => {
+  // Sprint 15 : décision explicite — un MEMBER n'ayant jamais été rattaché à un groupe (aucun
+  // code de l'application ne le fait automatiquement à sa création) retombe désormais sur les
+  // permissions du groupe par défaut "MEMBER" (voir src/lib/permissions.ts,
+  // getEffectivePermissions), plutôt que sur un ensemble vide comme avant ce sprint. Ce test
+  // couvrait jusqu'ici ce cas précis avec l'ancienne sémantique ; il est réécrit pour prouver
+  // la frontière désormais correcte : c'est un groupe personnalisé explicitement vide (pas
+  // l'absence totale de groupe) qui doit encore bloquer entièrement l'accès.
+  it("un MEMBER rattaché à un groupe personnalisé explicitement vide n'a accès à aucune permission (403 sur une route gated)", async () => {
+    const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Empty-${runId}`, permissions: [] }),
+    });
+    const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+
     const noPerms = await createAndLoginMember({
       tenantId: adminA.tenantId,
       name: "No Perms",
       email: `no-perms-${runId}@test.local`,
       password,
+    });
+    await apiFetch(`/api/users/${noPerms.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId }),
     });
 
     const response = await apiFetch("/api/reservations", {
@@ -198,6 +219,28 @@ describe("GET/PATCH /api/users/[id]/permissions", () => {
       }),
     });
     expect(response.status).toBe(403);
+  });
+
+  it("un MEMBER sans aucun groupe assigné retombe sur les permissions du groupe par défaut MEMBER (Sprint 15)", async () => {
+    const unassigned = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Unassigned",
+      email: `unassigned-${runId}@test.local`,
+      password,
+    });
+
+    const response = await apiFetch("/api/reservations", {
+      method: "POST",
+      headers: { Cookie: unassigned.sessionCookie },
+      body: JSON.stringify({
+        voucherNumber: `V-unassigned-${runId}`,
+        clientFirstName: "Test",
+        clientLastName: "ParDefaut",
+        startDate: "2030-01-01",
+        endDate: "2030-01-02",
+      }),
+    });
+    expect(response.status).toBe(201);
   });
 
   it("assigner le groupe MEMBER accorde reservations.create (permission gated réellement appliquée)", async () => {
@@ -241,6 +284,17 @@ describe("GET/PATCH /api/users/[id]/permissions", () => {
   });
 
   it("une permission individuelle s'ajoute à celles du groupe (additif, jamais un retrait)", async () => {
+    // Sprint 15 : le groupe utilisé ici doit être explicitement vide (pas l'absence totale de
+    // groupe, qui retombe désormais sur les permissions du groupe par défaut MEMBER — voir le
+    // test précédent) pour que ce test isole correctement l'effet additif d'une permission
+    // individuelle, sans que la base du groupe MEMBER par défaut ne le fausse.
+    const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Empty-Individual-${runId}`, permissions: [] }),
+    });
+    const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+
     const target = await createAndLoginMember({
       tenantId: adminA.tenantId,
       name: "Individual Perm",
@@ -251,7 +305,7 @@ describe("GET/PATCH /api/users/[id]/permissions", () => {
     await apiFetch(`/api/users/${target.userId}/permissions`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ individualPermissions: ["reservations.view"] }),
+      body: JSON.stringify({ permissionGroupId: emptyGroupId, individualPermissions: ["reservations.view"] }),
     });
 
     const viewResponse = await apiFetch("/api/reservations", { headers: { Cookie: target.sessionCookie } });
@@ -284,5 +338,126 @@ describe("GET/PATCH /api/users/[id]/permissions", () => {
       }),
     });
     expect(response.status).toBe(201);
+  });
+});
+
+describe("Sprint 15 — nouvelles clés de permission (maintenances/alerts/cash_register/vehicle_transfers/vehicle_trips)", () => {
+  it("les groupes par défaut MEMBER/AGENCE contiennent les nouvelles clés Sprint 15 pour un tenant fraîchement créé, COMPTABILITÉ reste scopé finance/reporting", async () => {
+    const response = await apiFetch("/api/permission-groups", { headers: { Cookie: adminB.sessionCookie } });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const memberGroup = body.groups.find((g: { name: string }) => g.name === "MEMBER");
+    const agenceGroup = body.groups.find((g: { name: string }) => g.name === "AGENCE");
+    const comptaGroup = body.groups.find((g: { name: string }) => g.name === "COMPTABILITÉ");
+
+    const memberKeys = [
+      "maintenances.view",
+      "maintenances.create",
+      "maintenances.edit",
+      "maintenances.delete",
+      "alerts.view",
+      "alerts.acknowledge",
+      "alerts.resolve",
+      "cash_register.view",
+      "cash_register.create_entry",
+      "cash_register.create_expense",
+      "cash_register.manage_categories",
+      "vehicle_transfers.view",
+      "vehicle_transfers.create",
+      "vehicle_transfers.validate",
+      "vehicle_transfers.cancel",
+      "vehicle_trips.view",
+      "vehicle_trips.create",
+      "vehicle_trips.return",
+      "vehicle_trips.cancel",
+    ];
+    for (const key of memberKeys) {
+      expect(memberGroup.permissions).toContain(key);
+    }
+
+    const agenceKeys = [
+      "maintenances.view",
+      "maintenances.create",
+      "maintenances.edit",
+      "maintenances.delete",
+      "alerts.view",
+      "alerts.acknowledge",
+      "alerts.resolve",
+      "vehicle_transfers.view",
+      "vehicle_transfers.create",
+      "vehicle_transfers.validate",
+      "vehicle_transfers.cancel",
+      "vehicle_trips.view",
+      "vehicle_trips.create",
+      "vehicle_trips.return",
+      "vehicle_trips.cancel",
+    ];
+    for (const key of agenceKeys) {
+      expect(agenceGroup.permissions).toContain(key);
+    }
+
+    // COMPTABILITÉ reste scopé finance/reporting (Sprint 15, resserrement assumé confirmé
+    // avec le propriétaire du projet) : aucune des nouvelles clés opérationnelles ne lui
+    // est accordée.
+    for (const key of [
+      "maintenances.view",
+      "alerts.view",
+      "cash_register.view",
+      "vehicle_transfers.view",
+      "vehicle_trips.view",
+    ]) {
+      expect(comptaGroup.permissions).not.toContain(key);
+    }
+  });
+
+  it("can() applique réellement cash_register.create_entry : refuse sans la clé, accorde une fois le groupe personnalisé mis à jour", async () => {
+    const restrictedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `NoCashEntry-${runId}`, permissions: ["cash_register.view"] }),
+    });
+    const restrictedGroupId = (await restrictedGroupResponse.json()).group.id;
+
+    const restrictedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Restricted Cash Member",
+      email: `restricted-cash-${runId}@test.local`,
+      password,
+    });
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: restrictedGroupId }),
+    });
+
+    const deniedResponse = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: restrictedMember.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", amount: 1000 }),
+    });
+    expect(deniedResponse.status).toBe(403);
+
+    const grantedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        name: `WithCashEntry-${runId}`,
+        permissions: ["cash_register.view", "cash_register.create_entry"],
+      }),
+    });
+    const grantedGroupId = (await grantedGroupResponse.json()).group.id;
+
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: grantedGroupId }),
+    });
+
+    const grantedResponse = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: restrictedMember.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", amount: 1000 }),
+    });
+    expect(grantedResponse.status).toBe(201);
   });
 });

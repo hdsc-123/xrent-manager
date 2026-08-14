@@ -42,7 +42,20 @@ export interface LocationRow {
 
 const CANCELLABLE_STATUSES = new Set(["PENDING", "CONFIRMED", "ACTIVE"]);
 
-export function LocationsTable({ locations }: { locations: LocationRow[] }) {
+export interface AgencyOption {
+  id: string;
+  name: string;
+}
+
+export function LocationsTable({
+  locations,
+  agencies = [],
+}: {
+  locations: LocationRow[];
+  /** Sprint 15 : requis pour la sélection par plage de numéros — la numérotation est
+   * désormais par agence (DOMAINRULES.md section 29), la plage doit préciser de laquelle. */
+  agencies?: AgencyOption[];
+}) {
   const router = useRouter();
   const [pendingCancel, setPendingCancel] = useState<LocationRow | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
@@ -54,6 +67,7 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
   const [rangeTo, setRangeTo] = useState("");
   const [numberFrom, setNumberFrom] = useState("");
   const [numberTo, setNumberTo] = useState("");
+  const [rangeAgencyId, setRangeAgencyId] = useState("");
   const [rangeError, setRangeError] = useState<string | null>(null);
 
   // Seuls les contrats numérotés (Location.contractNumber non nul) peuvent figurer dans un lot
@@ -103,6 +117,7 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
             type: "CONTRACT" as const,
             contractNumberFrom: Number(numberFrom),
             contractNumberTo: Number(numberTo),
+            agencyId: rangeAgencyId,
           };
 
     if (rangeMode === "DATE" && !rangeFrom && !rangeTo) {
@@ -111,6 +126,10 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
     }
     if (rangeMode === "NUMBER" && (!numberFrom || !numberTo)) {
       setRangeError("Renseignez les deux numéros (de/à).");
+      return;
+    }
+    if (rangeMode === "NUMBER" && !rangeAgencyId) {
+      setRangeError("Choisissez l'agence concernée par cette plage de numéros.");
       return;
     }
 
@@ -311,26 +330,47 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
                 </div>
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-3">
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="numberFrom">Numéro de</Label>
-                  <Input
-                    id="numberFrom"
-                    type="number"
-                    min={0}
-                    value={numberFrom}
-                    onChange={(e) => setNumberFrom(e.target.value)}
-                  />
+                  <Label htmlFor="rangeAgencyId" required>Agence</Label>
+                  <select
+                    id="rangeAgencyId"
+                    value={rangeAgencyId}
+                    onChange={(e) => setRangeAgencyId(e.target.value)}
+                    className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                  >
+                    <option value="">Choisir une agence...</option>
+                    {agencies.map((agency) => (
+                      <option key={agency.id} value={agency.id}>
+                        {agency.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    La numérotation (préfixe + compteur) est propre à chaque agence.
+                  </p>
                 </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="numberTo">Numéro à</Label>
-                  <Input
-                    id="numberTo"
-                    type="number"
-                    min={0}
-                    value={numberTo}
-                    onChange={(e) => setNumberTo(e.target.value)}
-                  />
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="numberFrom">Numéro de</Label>
+                    <Input
+                      id="numberFrom"
+                      type="number"
+                      min={0}
+                      value={numberFrom}
+                      onChange={(e) => setNumberFrom(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="numberTo">Numéro à</Label>
+                    <Input
+                      id="numberTo"
+                      type="number"
+                      min={0}
+                      value={numberTo}
+                      onChange={(e) => setNumberTo(e.target.value)}
+                    />
+                  </div>
                 </div>
               </div>
             )}

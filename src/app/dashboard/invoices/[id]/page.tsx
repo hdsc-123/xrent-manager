@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Download } from "lucide-react";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getInvoiceById } from "@/lib/invoices";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
@@ -33,15 +34,22 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
+  if (!(await can(user, "invoices.view"))) {
+    notFound();
+  }
+
   const invoice = await getInvoiceById(user.tenantId, id);
   if (!invoice || !(await canAccessAgency(user, invoice.agencyId))) {
     notFound();
   }
 
-  const [client, location, payments] = await Promise.all([
+  const [client, location, payments, canEdit, canDelete, canCreatePayment] = await Promise.all([
     prisma.client.findUnique({ where: { id: invoice.clientId } }),
     prisma.location.findUnique({ where: { id: invoice.locationId }, include: { vehicle: true } }),
     prisma.payment.findMany({ where: { invoiceId: invoice.id }, orderBy: { paidAt: "desc" } }),
+    can(user, "invoices.edit"),
+    can(user, "invoices.delete"),
+    can(user, "payments.create"),
   ]);
 
   return (
@@ -173,6 +181,9 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
         status={invoice.status}
         remainingBalance={invoice.totalAmount - invoice.amountPaid}
         currency={invoice.currency}
+        canEdit={canEdit}
+        canDelete={canDelete}
+        canCreatePayment={canCreatePayment}
       />
     </div>
   );

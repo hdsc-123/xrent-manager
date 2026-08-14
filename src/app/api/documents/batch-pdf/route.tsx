@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { Document, renderToBuffer } from "@react-pdf/renderer";
-import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { getSessionUser, getAccessibleAgencyIds, canAccessAgency } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { ContractPdfPage } from "@/components/contracts/ContractPdf";
 import { InvoicePdfPage } from "@/components/invoices/InvoicePdf";
@@ -14,6 +14,10 @@ interface BatchPdfBody {
   to?: string;
   contractNumberFrom?: number;
   contractNumberTo?: number;
+  /** Sprint 15 : requis pour la sélection par plage de numéros — la numérotation
+   * (préfixe + compteur) est désormais par agence (DOMAINRULES.md section 29), une plage
+   * numérique seule n'est plus interprétable sans savoir de quelle agence elle provient. */
+  agencyId?: string;
 }
 
 /**
@@ -94,12 +98,33 @@ export async function POST(request: Request) {
     );
   }
 
+  if (hasNumberRange && !body.agencyId) {
+    return NextResponse.json(
+      { error: "agencyId est requis pour la sélection par plage de numéros de contrat." },
+      { status: 400 }
+    );
+  }
+
+  let numberRangeAgency: { id: string; contractNumberPrefix: string } | null = null;
+  if (hasNumberRange) {
+    if (!(await canAccessAgency(user, body.agencyId!))) {
+      return NextResponse.json({ error: "Agence introuvable ou inaccessible." }, { status: 404 });
+    }
+    numberRangeAgency = await prisma.agency.findFirst({
+      where: { id: body.agencyId, tenantId: user.tenantId },
+      select: { id: true, contractNumberPrefix: true },
+    });
+    if (!numberRangeAgency) {
+      return NextResponse.json({ error: "Agence introuvable ou inaccessible." }, { status: 404 });
+    }
+  }
+
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
   const agencyScope = accessibleAgencyIds ? { agencyId: { in: accessibleAgencyIds } } : {};
 
   const tenant = await prisma.tenant.findUnique({
     where: { id: user.tenantId },
-    select: { name: true, contractNumberPrefix: true },
+    select: { name: true },
   });
   if (!tenant) {
     return NextResponse.json({ error: "Tenant introuvable." }, { status: 404 });
@@ -111,7 +136,11 @@ export async function POST(request: Request) {
       contractNumbers = [];
       for (let n = body.contractNumberFrom!; n <= body.contractNumberTo!; n++) {
         const padded = String(n).padStart(5, "0");
-        contractNumbers.push(tenant.contractNumberPrefix ? `${tenant.contractNumberPrefix}-${padded}` : padded);
+        contractNumbers.push(
+          numberRangeAgency!.contractNumberPrefix
+            ? `${numberRangeAgency!.contractNumberPrefix}-${padded}`
+            : padded
+        );
       }
     }
 
@@ -119,6 +148,7 @@ export async function POST(request: Request) {
       where: {
         tenantId: user.tenantId,
         ...agencyScope,
+        ...(hasNumberRange ? { agencyId: numberRangeAgency!.id } : {}),
         contractNumber: { not: null },
         ...(hasIds ? { id: { in: body.ids } } : {}),
         ...(hasDateRange

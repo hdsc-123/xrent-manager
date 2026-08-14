@@ -21,13 +21,7 @@ export default async function SettingsPage() {
       <h1 className="font-heading text-2xl font-semibold">Paramètres</h1>
 
       {tenant && user.role === "ADMIN" && (
-        <EditTenantForm
-          id={tenant.id}
-          initialName={tenant.name}
-          slug={tenant.slug}
-          initialContractNumberPrefix={tenant.contractNumberPrefix}
-          initialLastContractNumber={tenant.lastContractNumber}
-        />
+        <EditTenantForm id={tenant.id} initialName={tenant.name} slug={tenant.slug} />
       )}
 
       <EditProfileForm

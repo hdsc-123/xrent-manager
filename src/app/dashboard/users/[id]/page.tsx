@@ -24,9 +24,12 @@ export default async function UserDetailPage({ params }: PageProps) {
     notFound();
   }
 
-  const [agencies, agencyIds] = await Promise.all([
+  const [agencies, agencyIds, permissionGroup] = await Promise.all([
     prisma.agency.findMany({ where: { tenantId: sessionUser.tenantId }, orderBy: { name: "asc" } }),
     getUserAgencyIds(target.id),
+    target.permissionGroupId
+      ? prisma.permissionGroup.findUnique({ where: { id: target.permissionGroupId }, select: { name: true } })
+      : null,
   ]);
 
   return (
@@ -47,6 +50,7 @@ export default async function UserDetailPage({ params }: PageProps) {
         isSelf={target.id === sessionUser.id}
         agencies={agencies.map((agency) => ({ id: agency.id, name: agency.name }))}
         initialAgencyIds={agencyIds}
+        permissionGroupName={permissionGroup?.name ?? null}
       />
     </div>
   );

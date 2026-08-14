@@ -14,15 +14,6 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Numérotation séquentielle des contrats (Sprint 14B, DOMAINRULES.md section 29).
-  // contractNumberPrefix est du texte libre (ex. "RAK"), vide par défaut (aucun préfixe
-  // inventé — CLAUDE.md section 2). lastContractNumber est le dernier numéro attribué :
-  // incrémenté atomiquement à chaque nouveau contrat (Location) créé, jamais dérivé d'un
-  // COUNT() (contrairement à Invoice.number) car l'énoncé exige de pouvoir le redéfinir
-  // manuellement depuis les paramètres (reprise de numérotation après migration de données).
-  contractNumberPrefix String @default("")
-  lastContractNumber   Int    @default(0)
-
   agencies          Agency[]
   users             User[]
   vehicles          Vehicle[]
@@ -56,6 +47,17 @@ model Agency {
   managerPhone String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  // Numérotation séquentielle des contrats, par agence (Sprint 15 — déplacé depuis Tenant,
+  // DOMAINRULES.md section 29 : chaque agence a son propre préfixe et sa propre séquence,
+  // indépendante des autres agences du même tenant). contractNumberPrefix est du texte libre
+  // (ex. "RAK"), vide par défaut (aucun préfixe inventé — CLAUDE.md section 2).
+  // lastContractNumber est le dernier numéro attribué pour cette agence : incrémenté
+  // atomiquement à chaque nouveau contrat (Location) créé, jamais dérivé d'un COUNT()
+  // (contrairement à Invoice.number) car l'énoncé exige de pouvoir le redéfinir manuellement
+  // depuis les paramètres (reprise de numérotation après migration de données).
+  contractNumberPrefix String @default("")
+  lastContractNumber   Int    @default(0)
 
   tenant        Tenant            @relation(fields: [tenantId], references: [id])
   userAgencies  UserAgency[]
@@ -618,11 +620,6 @@ model AuditLog {
   @@index([createdAt])
 }
 
-enum ReservationSource {
-  BROKER
-  DIRECT
-}
-
 enum ReservationStatus {
   PENDING
   CONFIRMED
@@ -637,13 +634,19 @@ enum ReservationStatus {
 // la sélection du véhicule/agence réels se fait au moment de la conversion en contrat
 // (convertReservationToLocation, src/lib/reservations.ts), jamais déduite automatiquement
 // du texte importé. Montants en centimes (Int), jamais en float (DOMAINRULES.md section 14).
+// source est du texte libre (Sprint 15, même principe que vehicleCategory ci-dessus) — un
+// enum fermé (BROKER/DIRECT) masquait silencieusement les codes broker réels (TJS/DCH/CT...)
+// importés depuis Excel, affichés en tiret cantonné faute de correspondance. currency
+// s'applique à totalPrice/pricePerDay ; optionsCurrency (Sprint 15) s'applique séparément à
+// gpsPrice/babySeatPrice/extraDriverPrice, qui peuvent être dans une devise différente du
+// prix total selon le broker (ex. total en EUR, options toujours en MAD).
 model Reservation {
-  id                  String             @id @default(cuid())
+  id                  String            @id @default(cuid())
   tenantId            String
   voucherNumber       String
   confirmationNumber  String?
   receivedAt          DateTime?
-  source              ReservationSource?
+  source              String?
   clientFirstName     String
   clientLastName      String
   startDate           DateTime
@@ -652,26 +655,27 @@ model Reservation {
   endTime             String?
   daysCount           Int?
   flightNumber        String?
-  currency            String             @default("MAD")
+  currency            String            @default("MAD")
   totalPrice          Int?
   pricePerDay         Int?
   vehicleCategory     String?
   pickupAgency        String?
   dropoffAgency       String?
-  hasGps              Boolean            @default(false)
+  hasGps              Boolean           @default(false)
   gpsPrice            Int?
-  hasBabySeat         Boolean            @default(false)
+  hasBabySeat         Boolean           @default(false)
   babySeatPrice       Int?
-  hasExtraDriver      Boolean            @default(false)
+  hasExtraDriver      Boolean           @default(false)
   extraDriverPrice    Int?
+  optionsCurrency     String            @default("MAD")
   mileage             Int?
   includedKm          Int?
   clientPhone         String?
   notes               String?
-  status              ReservationStatus  @default(PENDING)
+  status              ReservationStatus @default(PENDING)
   convertedLocationId String?
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 

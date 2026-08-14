@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getVehicleById } from "@/lib/vehicles";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
@@ -29,6 +30,8 @@ export default async function VehicleDetailPage({ params }: PageProps) {
     notFound();
   }
 
+  const canEdit = await can(user, "vehicles.edit");
+
   const [agency, locations] = await Promise.all([
     prisma.agency.findUnique({ where: { id: vehicle.agencyId }, select: { name: true } }),
     prisma.location.findMany({
@@ -47,27 +50,33 @@ export default async function VehicleDetailPage({ params }: PageProps) {
         </p>
       </div>
 
-      <EditVehicleForm
-        id={vehicle.id}
-        initialName={vehicle.name}
-        initialCategory={vehicle.category}
-        initialStatus={vehicle.status}
-        initialPricePerDay={vehicle.pricePerDay}
-        licensePlate={vehicle.licensePlate}
-        initialWw={vehicle.ww}
-        initialChassisNumber={vehicle.chassisNumber}
-        initialColor={vehicle.color}
-        initialDoors={vehicle.doors}
-        initialSeats={vehicle.seats}
-        initialTransmission={vehicle.transmission}
-        initialFuel={vehicle.fuel}
-        initialHorsepower={vehicle.horsepower}
-        initialPowerKW={vehicle.powerKW}
-        initialEngineSize={vehicle.engineSize}
-        initialAc={vehicle.ac}
-        initialGps={vehicle.gps}
-        initialImageUrl={vehicle.imageUrl}
-      />
+      {canEdit ? (
+        <EditVehicleForm
+          id={vehicle.id}
+          initialName={vehicle.name}
+          initialCategory={vehicle.category}
+          initialStatus={vehicle.status}
+          initialPricePerDay={vehicle.pricePerDay}
+          licensePlate={vehicle.licensePlate}
+          initialWw={vehicle.ww}
+          initialChassisNumber={vehicle.chassisNumber}
+          initialColor={vehicle.color}
+          initialDoors={vehicle.doors}
+          initialSeats={vehicle.seats}
+          initialTransmission={vehicle.transmission}
+          initialFuel={vehicle.fuel}
+          initialHorsepower={vehicle.horsepower}
+          initialPowerKW={vehicle.powerKW}
+          initialEngineSize={vehicle.engineSize}
+          initialAc={vehicle.ac}
+          initialGps={vehicle.gps}
+          initialImageUrl={vehicle.imageUrl}
+        />
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          Vous n&apos;avez pas la permission de modifier ce véhicule.
+        </p>
+      )}
 
       <div>
         <h2 className="mb-2 font-heading text-lg font-semibold">Locations associées</h2>

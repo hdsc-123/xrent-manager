@@ -9,6 +9,7 @@ const createdTenantIds: string[] = [];
 let adminA: AuthenticatedTestUser;
 let adminB: AuthenticatedTestUser;
 let memberA: AuthenticatedTestUser;
+let agencyAId: string;
 let locationAId: string; // totalPrice = 15000 (3 jours x 5000)
 let locationBId: string;
 
@@ -51,7 +52,7 @@ beforeAll(async () => {
     headers: { Cookie: adminA.sessionCookie },
     body: JSON.stringify({ name: "Agence A1", slug: `agence-a1-${runId}` }),
   });
-  const agencyAId = (await agencyAResponse.json()).agency.id;
+  agencyAId = (await agencyAResponse.json()).agency.id;
 
   const agencyBResponse = await apiFetch("/api/agencies", {
     method: "POST",
@@ -335,5 +336,83 @@ describe("GET /api/invoices/[id]/pdf", () => {
       headers: { Cookie: adminB.sessionCookie },
     });
     expect(response.status).toBe(404);
+  });
+});
+
+describe("Sprint 15 — permissions granulaires (invoices.create)", () => {
+  it("refuse un MEMBER rattaché à l'agence mais dont le groupe personnalisé n'a pas invoices.create", async () => {
+    const restrictedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `NoInvoiceCreate-${runId}`, permissions: ["invoices.view"] }),
+    });
+    const restrictedGroupId = (await restrictedGroupResponse.json()).group.id;
+
+    const restrictedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Restricted Member",
+      email: `restricted-invoices-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: restrictedMember.userId, agencyId: agencyAId } });
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: restrictedGroupId }),
+    });
+
+    const response = await createInvoice(restrictedMember);
+    expect(response.status).toBe(403);
+  });
+
+  it("autorise un MEMBER dont le groupe personnalisé accorde invoices.create", async () => {
+    const grantedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `WithInvoiceCreate-${runId}`, permissions: ["invoices.view", "invoices.create"] }),
+    });
+    const grantedGroupId = (await grantedGroupResponse.json()).group.id;
+
+    const grantedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Granted Member",
+      email: `granted-invoices-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: grantedMember.userId, agencyId: agencyAId } });
+    await apiFetch(`/api/users/${grantedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: grantedGroupId }),
+    });
+
+    const response = await createInvoice(grantedMember);
+    expect(response.status).toBe(201);
+  });
+
+  it("un ADMIN crée une facture même rattaché à un groupe personnalisé vide (bypass systématique)", async () => {
+    const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `EmptyAdminGroup-${runId}`, permissions: [] }),
+    });
+    const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+
+    await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId }),
+    });
+
+    try {
+      const response = await createInvoice(adminA);
+      expect(response.status).toBe(201);
+    } finally {
+      await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ permissionGroupId: null }),
+      });
+    }
   });
 });

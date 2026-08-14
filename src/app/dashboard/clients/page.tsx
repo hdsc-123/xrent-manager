@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { Plus } from "lucide-react";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getClients } from "@/lib/clients";
-import { Button } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { ClientsTable, type ClientRow } from "./ClientsTable";
 
 interface PageProps {
@@ -13,8 +14,21 @@ export default async function ClientsPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
+  if (!(await can(user, "clients.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Clients</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter les clients.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
   const params = await searchParams;
   const clients = await getClients(user.tenantId, params.search);
+  const canCreate = await can(user, "clients.create");
+  const canDelete = await can(user, "clients.delete");
 
   const rows: ClientRow[] = clients.map((client) => ({
     id: client.id,
@@ -30,10 +44,12 @@ export default async function ClientsPage({ searchParams }: PageProps) {
           <h1 className="font-heading text-2xl font-semibold">Clients</h1>
           <p className="text-sm text-muted-foreground">Locataires de votre organisation.</p>
         </div>
-        <Button render={<Link href="/dashboard/clients/new" />}>
-          <Plus className="size-4" />
-          Créer un client
-        </Button>
+        {canCreate && (
+          <Button render={<Link href="/dashboard/clients/new" />}>
+            <Plus className="size-4" />
+            Créer un client
+          </Button>
+        )}
       </div>
 
       <form className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3" method="get">
@@ -59,7 +75,7 @@ export default async function ClientsPage({ searchParams }: PageProps) {
         )}
       </form>
 
-      <ClientsTable clients={rows} />
+      <ClientsTable clients={rows} canDelete={canDelete} />
     </div>
   );
 }

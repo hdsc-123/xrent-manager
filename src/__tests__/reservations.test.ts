@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { RESERVATION_IMPORT_COLUMNS, RESERVATION_IMPORT_COLUMN_MAP } from "@/lib/reservations";
 import { apiFetch } from "./helpers/http";
 import { TEST_BASE_URL } from "./helpers/testServer";
-import { registerTenantAdmin, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -161,9 +161,58 @@ describe("POST /api/reservations", () => {
     expect(body.reservation.totalPrice).toBe(15000);
   });
 
-  it("refuse une source invalide", async () => {
-    const response = await createReservation(adminA, { source: "AUTRE" });
-    expect(response.status).toBe(400);
+  it("accepte n'importe quelle chaîne non vide pour source, texte libre (Sprint 15)", async () => {
+    // Sprint 15 : source n'est plus un enum fermé BROKER/DIRECT — un code broker réel
+    // (TJS, DCH, CT...) doit être accepté et stocké tel quel, casse comprise, plutôt que
+    // silencieusement réduit à undefined (voir normalizeSource, src/lib/reservations.ts).
+    for (const source of ["TJS", "DCH", "CT", "tjs"]) {
+      const response = await createReservation(adminA, { source });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.reservation.source).toBe(source);
+    }
+  });
+
+  it("optionsCurrency vaut MAD par défaut si omis à la création (Sprint 15)", async () => {
+    const response = await createReservation(adminA);
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.reservation.optionsCurrency).toBe("MAD");
+  });
+
+  it("currency et optionsCurrency persistent indépendamment (Sprint 15, ex. total en EUR / options en MAD)", async () => {
+    const createResponse = await createReservation(adminA, {
+      currency: "EUR",
+      optionsCurrency: "MAD",
+      totalPrice: 20000,
+      gpsPrice: 500,
+    });
+    expect(createResponse.status).toBe(201);
+    const created = (await createResponse.json()).reservation;
+    expect(created.currency).toBe("EUR");
+    expect(created.optionsCurrency).toBe("MAD");
+
+    const getResponse = await apiFetch(`/api/reservations/${created.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    const fetched = (await getResponse.json()).reservation;
+    expect(fetched.currency).toBe("EUR");
+    expect(fetched.optionsCurrency).toBe("MAD");
+
+    const patchResponse = await apiFetch(`/api/reservations/${created.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ optionsCurrency: "USD" }),
+    });
+    expect(patchResponse.status).toBe(200);
+    const patched = (await patchResponse.json()).reservation;
+    expect(patched.optionsCurrency).toBe("USD");
+    expect(patched.currency).toBe("EUR"); // non touché par ce PATCH partiel
+
+    const finalGetResponse = await apiFetch(`/api/reservations/${created.id}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const final = (await finalGetResponse.json()).reservation;
+    expect(final.currency).toBe("EUR");
+    expect(final.optionsCurrency).toBe("USD");
   });
 
   it("refuse l'absence de voucherNumber pour une source BROKER (Sprint 13C)", async () => {
@@ -346,6 +395,55 @@ describe("PATCH /api/reservations/[id]", () => {
     });
     expect(response.status).toBe(409);
   });
+
+  it("accepte une source texte libre (code broker réel) sur mise à jour (Sprint 15)", async () => {
+    const createResponse = await createReservation(adminA);
+    const id = (await createResponse.json()).reservation.id;
+
+    const response = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ source: "DCH" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.reservation.source).toBe("DCH");
+  });
+
+  it("exige la permission reservations.edit (retrofit permissions Sprint 15)", async () => {
+    // Sprint 15 : un MEMBER sans groupe assigné retombe désormais sur les permissions du
+    // groupe par défaut MEMBER (qui inclut reservations.edit) — voir src/lib/permissions.ts,
+    // getEffectivePermissions. Ce test doit donc utiliser un groupe personnalisé
+    // explicitement vide pour vérifier un vrai refus, pas l'absence totale de groupe.
+    const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Empty-ReservationsEdit-${runId}`, permissions: [] }),
+    });
+    const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+
+    const noPerms = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "No Perms Reservations",
+      email: `no-perms-reservations-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await apiFetch(`/api/users/${noPerms.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId }),
+    });
+
+    const createResponse = await createReservation(adminA);
+    const id = (await createResponse.json()).reservation.id;
+
+    const response = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: noPerms.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    expect(response.status).toBe(403);
+  });
 });
 
 describe("DELETE /api/reservations/[id]", () => {
@@ -448,6 +546,32 @@ describe("POST /api/reservations/import", () => {
 
     const persisted = await prisma.reservation.findMany({ where: { tenantId: adminA.tenantId, voucherNumber } });
     expect(persisted).toHaveLength(0);
+  });
+
+  it("importe un code broker réel (TJS) sans le perdre — régression du bug Sprint 15", async () => {
+    // Avant Sprint 15, seuls "BROKER"/"DIRECT" étaient acceptés à l'import : un code
+    // broker réel comme "TJS" était silencieusement réduit à undefined (voir
+    // normalizeSource/parseReservationImportRow, src/lib/reservations.ts).
+    const voucherNumber = `V-BROKERCODE-${runId}`;
+    const rows = [
+      importRow({
+        voucherNumber,
+        clientFirstName: "Broker",
+        clientLastName: "Code",
+        startDate: new Date("2030-08-20"),
+        endDate: new Date("2030-08-22"),
+        source: "TJS",
+      }),
+    ];
+
+    const response = await importReservationsFile(adminA, rows, "commit");
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.errors).toHaveLength(0);
+    expect(body.imported).toBe(1);
+
+    const persisted = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber } });
+    expect(persisted?.source).toBe("TJS");
   });
 
   it("refuse un fichier non .xlsx", async () => {

@@ -1,5 +1,18 @@
-import type { Reservation, ReservationStatus, ReservationSource } from "@prisma/client";
+import type { Reservation, ReservationStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+
+/** Longueur maximale raisonnable pour `source` en texte libre (Sprint 15) — évite qu'un
+ * champ mal mappé à l'import n'écrive une valeur disproportionnée, sans imposer de liste
+ * fermée (voir le commentaire du modèle dans prisma/schema.prisma). */
+const MAX_SOURCE_LENGTH = 40;
+
+function normalizeSource(value: string | undefined | null): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed === "" ? undefined : trimmed.slice(0, MAX_SOURCE_LENGTH);
+}
 
 export { combineDateAndTime, calculateDaysCount } from "@/lib/format";
 
@@ -60,7 +73,7 @@ export function canTransition(from: ReservationStatus, to: ReservationStatus): b
 
 export interface ReservationFilters {
   status?: ReservationStatus;
-  source?: ReservationSource;
+  source?: string;
   from?: Date;
   to?: Date;
   search?: string;
@@ -80,7 +93,7 @@ export async function getReservations(
     where: {
       tenantId,
       ...(filters.status ? { status: filters.status } : {}),
-      ...(filters.source ? { source: filters.source } : {}),
+      ...(filters.source ? { source: { equals: filters.source, mode: "insensitive" } } : {}),
       ...(filters.from ? { endDate: { gte: filters.from } } : {}),
       ...(filters.to ? { startDate: { lte: filters.to } } : {}),
       ...(filters.pickupAgency ? { pickupAgency: { equals: filters.pickupAgency, mode: "insensitive" } } : {}),
@@ -111,7 +124,7 @@ export interface ReservationInputFields {
   voucherNumber: string;
   confirmationNumber?: string;
   receivedAt?: Date;
-  source?: ReservationSource;
+  source?: string;
   clientFirstName: string;
   clientLastName: string;
   startDate: Date;
@@ -132,6 +145,7 @@ export interface ReservationInputFields {
   babySeatPrice?: number;
   hasExtraDriver?: boolean;
   extraDriverPrice?: number;
+  optionsCurrency?: string;
   mileage?: number;
   includedKm?: number;
   clientPhone?: string;
@@ -174,7 +188,7 @@ export async function createReservation(data: CreateReservationInput): Promise<R
       voucherNumber: data.voucherNumber,
       confirmationNumber: data.confirmationNumber,
       receivedAt: data.receivedAt,
-      source: data.source,
+      source: normalizeSource(data.source),
       clientFirstName: data.clientFirstName,
       clientLastName: data.clientLastName,
       startDate: data.startDate,
@@ -195,6 +209,7 @@ export async function createReservation(data: CreateReservationInput): Promise<R
       babySeatPrice: data.babySeatPrice,
       hasExtraDriver: data.hasExtraDriver ?? false,
       extraDriverPrice: data.extraDriverPrice,
+      optionsCurrency: data.optionsCurrency ?? "MAD",
       mileage: data.mileage,
       includedKm: data.includedKm,
       clientPhone: data.clientPhone,
@@ -232,7 +247,7 @@ export async function updateReservation(
       ...(data.voucherNumber !== undefined ? { voucherNumber: data.voucherNumber } : {}),
       ...(data.confirmationNumber !== undefined ? { confirmationNumber: data.confirmationNumber } : {}),
       ...(data.receivedAt !== undefined ? { receivedAt: data.receivedAt } : {}),
-      ...(data.source !== undefined ? { source: data.source } : {}),
+      ...(data.source !== undefined ? { source: normalizeSource(data.source) } : {}),
       ...(data.clientFirstName !== undefined ? { clientFirstName: data.clientFirstName } : {}),
       ...(data.clientLastName !== undefined ? { clientLastName: data.clientLastName } : {}),
       ...(data.startDate !== undefined ? { startDate: data.startDate } : {}),
@@ -253,6 +268,7 @@ export async function updateReservation(
       ...(data.babySeatPrice !== undefined ? { babySeatPrice: data.babySeatPrice } : {}),
       ...(data.hasExtraDriver !== undefined ? { hasExtraDriver: data.hasExtraDriver } : {}),
       ...(data.extraDriverPrice !== undefined ? { extraDriverPrice: data.extraDriverPrice } : {}),
+      ...(data.optionsCurrency !== undefined ? { optionsCurrency: data.optionsCurrency } : {}),
       ...(data.mileage !== undefined ? { mileage: data.mileage } : {}),
       ...(data.includedKm !== undefined ? { includedKm: data.includedKm } : {}),
       ...(data.clientPhone !== undefined ? { clientPhone: data.clientPhone } : {}),
@@ -294,6 +310,7 @@ export const RESERVATION_IMPORT_COLUMN_MAP = {
   "Prix siège bébé": "babySeatPrice",
   "Conducteur supplémentaire": "hasExtraDriver",
   "Prix conducteur supplémentaire": "extraDriverPrice",
+  "Devise des options": "optionsCurrency",
   Kilométrage: "mileage",
   "Km inclus": "includedKm",
   "Téléphone client": "clientPhone",
@@ -511,9 +528,11 @@ export function parseReservationImportRow(
     }
   }
 
-  const sourceRaw = cellToString(row.source)?.toUpperCase();
-  const source: ReservationSource | undefined =
-    sourceRaw === "BROKER" || sourceRaw === "DIRECT" ? sourceRaw : undefined;
+  // Sprint 15 : source est du texte libre (voir le commentaire du modèle dans
+  // prisma/schema.prisma) — accepte tout code broker réel (TJS, DCH, CT...), pas seulement
+  // BROKER/DIRECT. Jusqu'ici, toute valeur hors de ces deux littéraux était silencieusement
+  // ignorée (undefined), d'où le tiret affiché à tort pour ces lignes importées.
+  const source = normalizeSource(cellToString(row.source));
 
   return {
     data: {
@@ -541,6 +560,7 @@ export function parseReservationImportRow(
       babySeatPrice: cellToMoney(row.babySeatPrice),
       hasExtraDriver: cellToBoolean(row.hasExtraDriver),
       extraDriverPrice: cellToMoney(row.extraDriverPrice),
+      optionsCurrency: cellToString(row.optionsCurrency),
       mileage: cellToInt(row.mileage),
       includedKm: cellToInt(row.includedKm),
       clientPhone: cellToString(row.clientPhone),

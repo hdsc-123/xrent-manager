@@ -55,13 +55,28 @@ interface InvoiceActionsProps {
   status: InvoiceStatus;
   remainingBalance: number;
   currency: string;
+  /** invoices.edit (voir src/lib/permissions.ts) — autorise les transitions de statut non
+   * destructrices (ex. DRAFT → SENT), calculé côté serveur par la page appelante. */
+  canEdit?: boolean;
+  /** invoices.delete — autorise la transition vers CANCELLED. */
+  canDelete?: boolean;
+  /** payments.create — autorise l'enregistrement d'un paiement depuis cette facture. */
+  canCreatePayment?: boolean;
 }
 
 function formatMoneyLocal(amountInSmallestUnit: number, currency: string): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency }).format(amountInSmallestUnit / 100);
 }
 
-export function InvoiceActions({ id, status, remainingBalance, currency }: InvoiceActionsProps) {
+export function InvoiceActions({
+  id,
+  status,
+  remainingBalance,
+  currency,
+  canEdit = false,
+  canDelete = false,
+  canCreatePayment = false,
+}: InvoiceActionsProps) {
   const router = useRouter();
   const [isChangingStatus, setIsChangingStatus] = useState(false);
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
@@ -145,7 +160,10 @@ export function InvoiceActions({ id, status, remainingBalance, currency }: Invoi
   }
 
   const nextStatuses = ALLOWED_TRANSITIONS[status];
-  const canRecordPayment = remainingBalance > 0 && status !== "CANCELLED";
+  // Filtrage par permission : CANCELLED s'apparente à une suppression (invoices.delete), les
+  // autres transitions (ex. DRAFT → SENT) à une modification (invoices.edit).
+  const visibleNextStatuses = nextStatuses.filter((next) => (next === "CANCELLED" ? canDelete : canEdit));
+  const canRecordPayment = remainingBalance > 0 && status !== "CANCELLED" && canCreatePayment;
 
   return (
     <Card>
@@ -153,29 +171,31 @@ export function InvoiceActions({ id, status, remainingBalance, currency }: Invoi
         <CardTitle>Actions</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-muted-foreground">Changer le statut</span>
-          {nextStatuses.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Statut terminal ({STATUS_LABELS[status]}) — aucune transition manuelle possible.
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {nextStatuses.map((next) => (
-                <Button
-                  key={next}
-                  type="button"
-                  size="sm"
-                  variant={next === "CANCELLED" ? "destructive" : "default"}
-                  disabled={isChangingStatus}
-                  onClick={() => handleTransition(next)}
-                >
-                  {STATUS_LABELS[next]}
-                </Button>
-              ))}
-            </div>
-          )}
-        </div>
+        {(nextStatuses.length === 0 || visibleNextStatuses.length > 0) && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Changer le statut</span>
+            {nextStatuses.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Statut terminal ({STATUS_LABELS[status]}) — aucune transition manuelle possible.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {visibleNextStatuses.map((next) => (
+                  <Button
+                    key={next}
+                    type="button"
+                    size="sm"
+                    variant={next === "CANCELLED" ? "destructive" : "default"}
+                    disabled={isChangingStatus}
+                    onClick={() => handleTransition(next)}
+                  >
+                    {STATUS_LABELS[next]}
+                  </Button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {canRecordPayment && (
           <div className="flex flex-col gap-1.5">

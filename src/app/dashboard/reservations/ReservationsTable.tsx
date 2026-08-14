@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { MoreHorizontal, Eye, Ban, Trash2 } from "lucide-react";
+import { MoreHorizontal, Eye, Ban, Trash2, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { apiPatch, apiDelete, ApiError } from "@/lib/api";
 import { formatMoney, combineDateAndTime, calculateDaysCount } from "@/lib/format";
@@ -47,6 +47,10 @@ export interface ReservationRow {
   babySeatPrice: number | null;
   extraDriverPrice: number | null;
   currency: string;
+  /** Sprint 15 : devise des options (GPS/siège bébé/conducteur suppl.), distincte de
+   * `currency` (qui reste dédiée à totalPrice/pricePerDay) — un broker facture parfois le
+   * prix total dans une devise et les options systématiquement dans une autre. */
+  optionsCurrency: string;
   notes: string | null;
   status: string;
 }
@@ -55,6 +59,9 @@ const CANCELLABLE_STATUSES = new Set(["PENDING", "CONFIRMED"]);
 /** Mêmes statuts que deleteReservation (src/lib/reservations.ts) — CONFIRMED/CONVERTED ne
  * sont supprimables qu'après annulation préalable. */
 const DELETABLE_STATUSES = new Set(["PENDING", "CANCELLED"]);
+/** Une réservation CONVERTED/CANCELLED est terminale — l'éditer n'aurait plus de sens (le
+ * contrat, s'il existe, est désormais la source de vérité ; voir DOMAINRULES.md section 21). */
+const EDITABLE_STATUSES = new Set(["PENDING", "CONFIRMED"]);
 const NOTES_TRUNCATE_LENGTH = 50;
 
 /** "10/08/26 10:00" — date au format court fr-FR + heure telle qu'importée/saisie
@@ -91,11 +98,14 @@ function truncateNotes(notes: string | null): string {
 export function ReservationsTable({
   reservations,
   canDelete = false,
+  canEdit = false,
 }: {
   reservations: ReservationRow[];
   /** reservations.delete (voir src/lib/permissions.ts) — masque la sélection/suppression si
    * absent, calculé côté serveur par la page appelante. */
   canDelete?: boolean;
+  /** reservations.edit — masque l'action « Modifier » si absent. */
+  canEdit?: boolean;
 }) {
   const router = useRouter();
   const [pendingCancel, setPendingCancel] = useState<ReservationRow | null>(null);
@@ -215,12 +225,8 @@ export function ReservationsTable({
       {
         id: "source",
         header: "Source",
+        accessorFn: (row) => row.source ?? "",
         cell: ({ row }) => row.original.source ?? "—",
-      },
-      {
-        id: "flightNumber",
-        header: "N° vol",
-        cell: ({ row }) => row.original.flightNumber ?? "—",
       },
       {
         id: "client",
@@ -231,14 +237,17 @@ export function ReservationsTable({
       {
         id: "departure",
         header: "Départ",
+        // accessorFn (plutôt qu'un simple cell) : nécessaire pour que le tri fonctionne — sans
+        // accesseur, TanStack Table n'a aucune valeur comparable et le bouton de tri de l'en-tête
+        // reste sans effet (Sprint 15, correctif du tri Départ/Retour demandé par l'énoncé).
+        accessorFn: (row) => combineDateAndTime(new Date(row.startDate), row.startTime).getTime(),
         cell: ({ row }) => formatDateTimeCell(row.original.startDate, row.original.startTime),
-        size: 110,
       },
       {
         id: "return",
         header: "Retour",
+        accessorFn: (row) => combineDateAndTime(new Date(row.endDate), row.endTime).getTime(),
         cell: ({ row }) => formatDateTimeCell(row.original.endDate, row.original.endTime),
-        size: 110,
       },
       {
         id: "daysCount",
@@ -253,20 +262,28 @@ export function ReservationsTable({
       {
         id: "pickupAgency",
         header: "Ville de départ",
+        accessorFn: (row) => row.pickupAgency ?? "",
         cell: ({ row }) => row.original.pickupAgency ?? "—",
         size: 110,
       },
       {
         id: "dropoffAgency",
         header: "Ville de retour",
+        accessorFn: (row) => row.dropoffAgency ?? "",
         cell: ({ row }) => row.original.dropoffAgency ?? "—",
         size: 110,
       },
       {
         id: "vehicleCategory",
         header: "Catégorie",
+        accessorFn: (row) => row.vehicleCategory ?? "",
         cell: ({ row }) => row.original.vehicleCategory ?? "—",
         size: 100,
+      },
+      {
+        id: "flightNumber",
+        header: "N° vol",
+        cell: ({ row }) => row.original.flightNumber ?? "—",
       },
       {
         id: "hasGps",
@@ -287,6 +304,7 @@ export function ReservationsTable({
         id: "totalPrice",
         header: "Prix total",
         meta: { align: "right" },
+        accessorFn: (row) => row.totalPrice ?? 0,
         cell: ({ row }) =>
           row.original.totalPrice !== null ? formatMoney(row.original.totalPrice, row.original.currency) : "—",
       },
@@ -295,10 +313,16 @@ export function ReservationsTable({
         header: "Prix final",
         meta: { align: "right" },
         cell: ({ row }) => {
-          const { totalPrice, gpsPrice, babySeatPrice, extraDriverPrice, currency } = row.original;
+          const { totalPrice, gpsPrice, babySeatPrice, extraDriverPrice, currency, optionsCurrency } = row.original;
           if (totalPrice === null) return "—";
-          const finalPrice = totalPrice + (gpsPrice ?? 0) + (babySeatPrice ?? 0) + (extraDriverPrice ?? 0);
-          return formatMoney(finalPrice, currency);
+          const optionsSum = (gpsPrice ?? 0) + (babySeatPrice ?? 0) + (extraDriverPrice ?? 0);
+          // Sprint 15 : totalPrice/pricePerDay sont en `currency`, les options (GPS/siège
+          // bébé/conducteur suppl.) en `optionsCurrency` — jamais additionnées sans conversion
+          // si elles diffèrent (ex. broker facturant le total en EUR, les options en MAD).
+          if (optionsSum === 0 || optionsCurrency === currency) {
+            return formatMoney(totalPrice + optionsSum, currency);
+          }
+          return `${formatMoney(totalPrice, currency)} + ${formatMoney(optionsSum, optionsCurrency)}`;
         },
       },
       {
@@ -326,6 +350,12 @@ export function ReservationsTable({
                   <Eye className="size-4" />
                   Détails
                 </DropdownMenuItem>
+                {canEdit && EDITABLE_STATUSES.has(row.original.status) && (
+                  <DropdownMenuItem render={<Link href={`/dashboard/reservations/${row.original.id}/edit`} />}>
+                    <Pencil className="size-4" />
+                    Modifier
+                  </DropdownMenuItem>
+                )}
                 {CANCELLABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingCancel(row.original)}>
                     <Ban className="size-4" />
@@ -344,7 +374,7 @@ export function ReservationsTable({
         ),
       },
     ],
-    [canDelete, selectedIds, allDeletableSelected, toggleSelectAll, toggleSelected]
+    [canDelete, canEdit, selectedIds, allDeletableSelected, toggleSelectAll, toggleSelected]
   );
 
   return (

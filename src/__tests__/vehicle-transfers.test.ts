@@ -281,3 +281,95 @@ describe("PATCH /api/vehicle-transfers/[id]/cancel", () => {
     expect(vehicleBody.vehicle.agencyId).toBe(agencyA1Id);
   });
 });
+
+describe("Sprint 15 — permissions granulaires (vehicle_transfers.create)", () => {
+  it("refuse un MEMBER rattaché à l'agence de départ mais dont le groupe personnalisé n'a pas vehicle_transfers.create", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const restrictedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `NoTransferCreate-${runId}`, permissions: ["vehicle_transfers.view"] }),
+    });
+    const restrictedGroupId = (await restrictedGroupResponse.json()).group.id;
+
+    const restrictedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Restricted Member",
+      email: `restricted-transfers-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: restrictedMember.userId, agencyId: agencyA1Id } });
+    await prisma.userAgency.create({ data: { userId: restrictedMember.userId, agencyId: agencyA2Id } });
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: restrictedGroupId }),
+    });
+
+    const response = await createTransfer(restrictedMember, vehicleId, agencyA2Id, restrictedMember.userId);
+    expect(response.status).toBe(403);
+  });
+
+  it("autorise un MEMBER dont le groupe personnalisé accorde vehicle_transfers.create", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const grantedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        name: `WithTransferCreate-${runId}`,
+        permissions: ["vehicle_transfers.view", "vehicle_transfers.create"],
+      }),
+    });
+    const grantedGroupId = (await grantedGroupResponse.json()).group.id;
+
+    const grantedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Granted Member",
+      email: `granted-transfers-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: grantedMember.userId, agencyId: agencyA1Id } });
+    await prisma.userAgency.create({ data: { userId: grantedMember.userId, agencyId: agencyA2Id } });
+    await apiFetch(`/api/users/${grantedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: grantedGroupId }),
+    });
+
+    const response = await createTransfer(grantedMember, vehicleId, agencyA2Id, grantedMember.userId);
+    expect(response.status).toBe(201);
+  });
+
+  it("un ADMIN lance un transfert même rattaché à un groupe personnalisé vide (bypass systématique)", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `EmptyAdminGroup-${runId}`, permissions: [] }),
+    });
+    const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+
+    await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId }),
+    });
+
+    try {
+      const response = await createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId);
+      expect(response.status).toBe(201);
+    } finally {
+      await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ permissionGroupId: null }),
+      });
+    }
+  });
+});

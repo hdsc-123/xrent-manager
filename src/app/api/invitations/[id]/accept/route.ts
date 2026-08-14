@@ -52,6 +52,15 @@ export async function POST(request: Request, { params }: RouteParams) {
       resourceId: id,
     });
 
+    await logAction({
+      tenantId: result.user.tenantId,
+      userId: result.user.id,
+      action: "user.created",
+      resource: "User",
+      resourceId: result.user.id,
+      metadata: { email: result.user.email, role: result.user.role },
+    });
+
     return NextResponse.json({
       user: { id: result.user.id, email: result.user.email, tenantId: result.user.tenantId },
     });

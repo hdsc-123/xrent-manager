@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { LocationStatus } from "@prisma/client";
 import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getVehicleById } from "@/lib/vehicles";
 import { getClientById } from "@/lib/clients";
 import {
@@ -24,6 +25,9 @@ export async function GET(request: Request) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "locations.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { searchParams } = new URL(request.url);
@@ -83,6 +87,9 @@ export async function POST(request: Request) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "locations.create"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   let body: CreateLocationBody;

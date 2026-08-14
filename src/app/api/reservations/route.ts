@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { ReservationSource, ReservationStatus } from "@prisma/client";
+import type { ReservationStatus } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import {
@@ -13,7 +13,6 @@ import {
 import { logAction } from "@/lib/audit";
 
 const RESERVATION_STATUSES: ReservationStatus[] = ["PENDING", "CONFIRMED", "CONVERTED", "CANCELLED"];
-const RESERVATION_SOURCES: ReservationSource[] = ["BROKER", "DIRECT"];
 
 const MONEY_FIELDS = ["totalPrice", "pricePerDay", "gpsPrice", "babySeatPrice", "extraDriverPrice"] as const;
 const INT_FIELDS = ["daysCount", "mileage", "includedKm"] as const;
@@ -40,13 +39,10 @@ export async function GET(request: Request) {
   if (statusParam && !RESERVATION_STATUSES.includes(statusParam as ReservationStatus)) {
     return NextResponse.json({ error: "status invalide." }, { status: 400 });
   }
-  if (sourceParam && !RESERVATION_SOURCES.includes(sourceParam as ReservationSource)) {
-    return NextResponse.json({ error: "source invalide." }, { status: 400 });
-  }
 
   const filters: ReservationFilters = {
     status: statusParam as ReservationStatus | undefined,
-    source: sourceParam as ReservationSource | undefined,
+    source: sourceParam,
     search: searchParam,
     from: fromParam ? new Date(fromParam) : undefined,
     to: toParam ? new Date(toParam) : undefined,
@@ -63,7 +59,7 @@ interface CreateReservationBody {
   voucherNumber?: string;
   confirmationNumber?: string;
   receivedAt?: string;
-  source?: ReservationSource;
+  source?: string;
   clientFirstName?: string;
   clientLastName?: string;
   startDate?: string;
@@ -84,6 +80,7 @@ interface CreateReservationBody {
   babySeatPrice?: number;
   hasExtraDriver?: boolean;
   extraDriverPrice?: number;
+  optionsCurrency?: string;
   mileage?: number;
   includedKm?: number;
   clientPhone?: string;
@@ -113,10 +110,6 @@ export async function POST(request: Request) {
       { error: "clientFirstName, clientLastName, startDate et endDate sont requis." },
       { status: 400 }
     );
-  }
-
-  if (body.source && !RESERVATION_SOURCES.includes(body.source)) {
-    return NextResponse.json({ error: "source invalide." }, { status: 400 });
   }
 
   // voucherNumber est saisi manuellement pour une réservation BROKER, mais généré
@@ -216,6 +209,7 @@ export async function POST(request: Request) {
       babySeatPrice: body.babySeatPrice,
       hasExtraDriver: body.hasExtraDriver,
       extraDriverPrice: body.extraDriverPrice,
+      optionsCurrency: body.optionsCurrency,
       mileage: body.mileage,
       includedKm: body.includedKm,
       clientPhone: body.clientPhone,

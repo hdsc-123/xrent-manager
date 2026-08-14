@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { Prisma, IdType } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getClientById, updateClient, deleteClient, ClientHasLocationsError } from "@/lib/clients";
 import { logAction } from "@/lib/audit";
 
@@ -15,6 +16,9 @@ export async function GET(_request: Request, { params }: RouteParams) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "clients.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;
@@ -50,6 +54,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "clients.edit"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;
@@ -116,6 +123,9 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "clients.delete"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   const { id } = await params;

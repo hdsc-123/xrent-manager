@@ -8,13 +8,17 @@ import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from "
 
 interface NewExpenseFormProps {
   categories: { id: string; name: string }[];
+  /** cash_register.manage_categories (voir src/lib/permissions.ts) — sans cette permission,
+   * la création d'une nouvelle catégorie depuis ce formulaire est masquée ; seule la sélection
+   * d'une catégorie existante reste possible, calculé côté serveur par la page appelante. */
+  canManageCategories?: boolean;
 }
 
-export function NewExpenseForm({ categories }: NewExpenseFormProps) {
+export function NewExpenseForm({ categories, canManageCategories = false }: NewExpenseFormProps) {
   const router = useRouter();
   const [category, setCategory] = useState(categories[0]?.name ?? "");
   const [newCategoryName, setNewCategoryName] = useState("");
-  const [showNewCategory, setShowNewCategory] = useState(categories.length === 0);
+  const [showNewCategory, setShowNewCategory] = useState(canManageCategories && categories.length === 0);
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -38,7 +42,7 @@ export function NewExpenseForm({ categories }: NewExpenseFormProps) {
 
     setIsSubmitting(true);
     try {
-      if (showNewCategory && newCategoryName.trim()) {
+      if (canManageCategories && showNewCategory && newCategoryName.trim()) {
         try {
           await apiPost("/api/cash-register/categories", { name: newCategoryName.trim() });
         } catch (err) {
@@ -79,7 +83,7 @@ export function NewExpenseForm({ categories }: NewExpenseFormProps) {
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between gap-4">
               <Label htmlFor="expense-category">Catégorie</Label>
-              {categories.length > 0 && (
+              {canManageCategories && categories.length > 0 && (
                 <button
                   type="button"
                   onClick={() => setShowNewCategory((v) => !v)}
@@ -89,7 +93,7 @@ export function NewExpenseForm({ categories }: NewExpenseFormProps) {
                 </button>
               )}
             </div>
-            {showNewCategory ? (
+            {canManageCategories && showNewCategory ? (
               <Input
                 id="expense-category"
                 placeholder="Nom de la catégorie"

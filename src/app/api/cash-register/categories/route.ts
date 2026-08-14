@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getExpenseCategories, createExpenseCategory, ExpenseCategoryNameInUseError } from "@/lib/cash-register";
 import { logAction } from "@/lib/audit";
 
@@ -16,6 +17,9 @@ export async function GET() {
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
   }
+  if (!(await can(user, "cash_register.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
+  }
 
   const categories = await getExpenseCategories(user.tenantId);
   return NextResponse.json({ categories });
@@ -31,6 +35,9 @@ export async function POST(request: Request) {
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  }
+  if (!(await can(user, "cash_register.manage_categories"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   let body: CreateExpenseCategoryBody;

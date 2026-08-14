@@ -227,3 +227,111 @@ describe("GET /api/alerts (filtrage par priorité/status)", () => {
     expect(response.status).toBe(400);
   });
 });
+
+describe("Sprint 15 — permissions granulaires (alerts.acknowledge)", () => {
+  it("refuse un MEMBER rattaché à l'agence mais dont le groupe personnalisé n'a pas alerts.acknowledge", async () => {
+    const alert = await createAlert({
+      tenantId: adminA.tenantId,
+      agencyId: agencyA1Id,
+      type: "OTHER",
+      message: "Permissions — refusé",
+    });
+
+    const restrictedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `NoAlertAck-${runId}`, permissions: ["alerts.view"] }),
+    });
+    const restrictedGroupId = (await restrictedGroupResponse.json()).group.id;
+
+    const restrictedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Restricted Member",
+      email: `restricted-alerts-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: restrictedMember.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: restrictedGroupId }),
+    });
+
+    const response = await apiFetch(`/api/alerts/${alert.id}/acknowledge`, {
+      method: "PATCH",
+      headers: { Cookie: restrictedMember.sessionCookie },
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it("autorise un MEMBER dont le groupe personnalisé accorde alerts.acknowledge", async () => {
+    const alert = await createAlert({
+      tenantId: adminA.tenantId,
+      agencyId: agencyA1Id,
+      type: "OTHER",
+      message: "Permissions — accordé",
+    });
+
+    const grantedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `WithAlertAck-${runId}`, permissions: ["alerts.view", "alerts.acknowledge"] }),
+    });
+    const grantedGroupId = (await grantedGroupResponse.json()).group.id;
+
+    const grantedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Granted Member",
+      email: `granted-alerts-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: grantedMember.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${grantedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: grantedGroupId }),
+    });
+
+    const response = await apiFetch(`/api/alerts/${alert.id}/acknowledge`, {
+      method: "PATCH",
+      headers: { Cookie: grantedMember.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it("un ADMIN acquitte une alerte même rattaché à un groupe personnalisé vide (bypass systématique)", async () => {
+    const alert = await createAlert({
+      tenantId: adminA.tenantId,
+      agencyId: agencyA1Id,
+      type: "OTHER",
+      message: "Permissions — admin",
+    });
+
+    const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `EmptyAdminGroup-${runId}`, permissions: [] }),
+    });
+    const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+
+    await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId }),
+    });
+
+    try {
+      const response = await apiFetch(`/api/alerts/${alert.id}/acknowledge`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+      });
+      expect(response.status).toBe(200);
+    } finally {
+      await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ permissionGroupId: null }),
+      });
+    }
+  });
+});

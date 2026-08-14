@@ -16,11 +16,9 @@ import {
   PhoneInput,
 } from "@/components/ui";
 
-const SOURCE_OPTIONS = [
-  { value: "", label: "—" },
-  { value: "BROKER", label: "Broker" },
-  { value: "DIRECT", label: "Direct" },
-];
+// Sprint 15 : source est du texte libre (voir prisma/schema.prisma) — suggestions seulement,
+// pas une liste fermée, pour accepter tout code broker réel (TJS/DCH/CT...).
+const SOURCE_SUGGESTIONS = ["TJS", "DCH", "CT", "DIRECT", "BROKER"];
 
 interface Agency {
   id: string;
@@ -59,6 +57,7 @@ export default function NewReservationPage() {
   const [babySeatPrice, setBabySeatPrice] = useState("");
   const [hasExtraDriver, setHasExtraDriver] = useState(false);
   const [extraDriverPrice, setExtraDriverPrice] = useState("");
+  const [optionsCurrency, setOptionsCurrency] = useState("MAD");
   const [mileage, setMileage] = useState("");
   const [includedKm, setIncludedKm] = useState("");
   const [notes, setNotes] = useState("");
@@ -134,6 +133,7 @@ export default function NewReservationPage() {
         babySeatPrice: hasBabySeat ? toCentimes(babySeatPrice) : undefined,
         hasExtraDriver,
         extraDriverPrice: hasExtraDriver ? toCentimes(extraDriverPrice) : undefined,
+        optionsCurrency,
         mileage: mileage ? Number(mileage) : undefined,
         includedKm: includedKm ? Number(includedKm) : undefined,
         notes: notes || undefined,
@@ -189,18 +189,17 @@ export default function NewReservationPage() {
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="source">Source</Label>
-              <select
+              <Input
                 id="source"
+                list="source-suggestions"
                 value={source}
                 onChange={(e) => setSource(e.target.value)}
-                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-              >
-                {SOURCE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
+              />
+              <datalist id="source-suggestions">
+                {SOURCE_SUGGESTIONS.map((option) => (
+                  <option key={option} value={option} />
                 ))}
-              </select>
+              </datalist>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -359,6 +358,21 @@ export default function NewReservationPage() {
                 )}
               </div>
             </div>
+
+            {(hasGps || hasBabySeat || hasExtraDriver) && (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="optionsCurrency">
+                  Devise des options
+                  <span className="text-muted-foreground"> — GPS/siège bébé/conducteur suppl.</span>
+                </Label>
+                <Input
+                  id="optionsCurrency"
+                  value={optionsCurrency}
+                  onChange={(e) => setOptionsCurrency(e.target.value)}
+                  className="max-w-32"
+                />
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">

@@ -2,8 +2,9 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import type { LocationStatus } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
-import { Button } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { LocationsTable, type LocationRow } from "./LocationsTable";
 
 const STATUS_OPTIONS: { value: LocationStatus; label: string }[] = [
@@ -28,10 +29,21 @@ export default async function LocationsPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
+  if (!(await can(user, "locations.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Locations</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter les locations.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
   const params = await searchParams;
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
 
-  const [vehicles, clients, locations] = await Promise.all([
+  const [vehicles, clients, agencies, locations] = await Promise.all([
     prisma.vehicle.findMany({
       where: {
         tenantId: user.tenantId,
@@ -42,6 +54,14 @@ export default async function LocationsPage({ searchParams }: PageProps) {
     }),
     prisma.client.findMany({
       where: { tenantId: user.tenantId },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.agency.findMany({
+      where: {
+        tenantId: user.tenantId,
+        ...(accessibleAgencyIds ? { id: { in: accessibleAgencyIds } } : {}),
+      },
       select: { id: true, name: true },
       orderBy: { name: "asc" },
     }),
@@ -92,7 +112,8 @@ export default async function LocationsPage({ searchParams }: PageProps) {
     invoiceId: invoiceIdByLocationId.get(location.id) ?? null,
   }));
 
-  const canCreate = accessibleAgencyIds === null || accessibleAgencyIds.length > 0;
+  const canCreate =
+    (await can(user, "locations.create")) && (accessibleAgencyIds === null || accessibleAgencyIds.length > 0);
 
   return (
     <div className="flex flex-col gap-4">
@@ -203,7 +224,7 @@ export default async function LocationsPage({ searchParams }: PageProps) {
         )}
       </form>
 
-      <LocationsTable locations={rows} />
+      <LocationsTable locations={rows} agencies={agencies} />
     </div>
   );
 }

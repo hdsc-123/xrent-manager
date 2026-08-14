@@ -62,7 +62,17 @@ const STATUS_VARIANTS: Record<string, "default" | "secondary" | "destructive" | 
 
 const EDITABLE_STATUSES = new Set(["SCHEDULED", "IN_PROGRESS"]);
 
-export function MaintenancesTable({ maintenances }: { maintenances: MaintenanceRow[] }) {
+export function MaintenancesTable({
+  maintenances,
+  canEdit = false,
+}: {
+  maintenances: MaintenanceRow[];
+  /** maintenances.edit (voir src/lib/permissions.ts) — l'API ne passe que par PATCH pour
+   * modifier/terminer/annuler une maintenance (voir /api/maintenances/[id]/route.ts), donc les
+   * trois actions de ce menu dépendent toutes de cette même permission, calculée côté serveur
+   * par la page appelante. */
+  canEdit?: boolean;
+}) {
   const router = useRouter();
   const [editing, setEditing] = useState<MaintenanceRow | null>(null);
   const [editScheduledDate, setEditScheduledDate] = useState("");
@@ -154,7 +164,7 @@ export function MaintenancesTable({ maintenances }: { maintenances: MaintenanceR
         id: "actions",
         header: "",
         cell: ({ row }) => {
-          const editable = EDITABLE_STATUSES.has(row.original.status);
+          const editable = canEdit && EDITABLE_STATUSES.has(row.original.status);
           return (
             <div className="flex justify-end">
               <DropdownMenu>
@@ -188,7 +198,7 @@ export function MaintenancesTable({ maintenances }: { maintenances: MaintenanceR
         },
       },
     ],
-    []
+    [canEdit]
   );
 
   return (

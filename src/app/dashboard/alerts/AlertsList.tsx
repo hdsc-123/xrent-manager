@@ -49,7 +49,18 @@ const STATUS_LABELS: Record<string, string> = {
   RESOLVED: "Résolue",
 };
 
-export function AlertsList({ alerts }: { alerts: AlertRow[] }) {
+export function AlertsList({
+  alerts,
+  canAcknowledge = false,
+  canResolve = false,
+}: {
+  alerts: AlertRow[];
+  /** alerts.acknowledge (voir src/lib/permissions.ts) — calculé côté serveur par la page
+   * appelante. */
+  canAcknowledge?: boolean;
+  /** alerts.resolve */
+  canResolve?: boolean;
+}) {
   const router = useRouter();
   const [pendingId, setPendingId] = useState<string | null>(null);
 
@@ -95,9 +106,9 @@ export function AlertsList({ alerts }: { alerts: AlertRow[] }) {
             </span>
           </div>
 
-          {alert.status !== "RESOLVED" && (
+          {alert.status !== "RESOLVED" && (canAcknowledge || canResolve) && (
             <div className="flex shrink-0 gap-2">
-              {alert.status === "PENDING" && (
+              {alert.status === "PENDING" && canAcknowledge && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -108,14 +119,16 @@ export function AlertsList({ alerts }: { alerts: AlertRow[] }) {
                   Marquer vue
                 </Button>
               )}
-              <Button
-                size="sm"
-                disabled={pendingId === alert.id}
-                onClick={() => handleAction(alert.id, "resolve")}
-              >
-                <CheckCheck className="size-4" />
-                Résoudre
-              </Button>
+              {canResolve && (
+                <Button
+                  size="sm"
+                  disabled={pendingId === alert.id}
+                  onClick={() => handleAction(alert.id, "resolve")}
+                >
+                  <CheckCheck className="size-4" />
+                  Résoudre
+                </Button>
+              )}
             </div>
           )}
         </div>

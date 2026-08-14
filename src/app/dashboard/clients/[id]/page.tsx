@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getClientById } from "@/lib/clients";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
@@ -29,6 +30,8 @@ export default async function ClientDetailPage({ params }: PageProps) {
     notFound();
   }
 
+  const canEdit = await can(user, "clients.edit");
+
   const locations = await prisma.location.findMany({
     where: { clientId: client.id },
     include: { vehicle: { select: { name: true, licensePlate: true } } },
@@ -44,27 +47,33 @@ export default async function ClientDetailPage({ params }: PageProps) {
         </p>
       </div>
 
-      <EditClientForm
-        id={client.id}
-        initialFirstName={client.firstName}
-        initialLastName={client.lastName}
-        initialEmail={client.email}
-        initialPhone={client.phone}
-        initialAltPhone={client.altPhone}
-        initialAddress={client.address}
-        initialCity={client.city}
-        initialCountry={client.country}
-        initialIdNumber={client.idNumber}
-        initialIdType={client.idType}
-        initialLicenseNumber={client.licenseNumber}
-        initialLicenseIssueDate={
-          client.licenseIssueDate ? client.licenseIssueDate.toISOString().slice(0, 10) : null
-        }
-        initialLicenseExpiryDate={
-          client.licenseExpiryDate ? client.licenseExpiryDate.toISOString().slice(0, 10) : null
-        }
-        initialNotes={client.notes}
-      />
+      {canEdit ? (
+        <EditClientForm
+          id={client.id}
+          initialFirstName={client.firstName}
+          initialLastName={client.lastName}
+          initialEmail={client.email}
+          initialPhone={client.phone}
+          initialAltPhone={client.altPhone}
+          initialAddress={client.address}
+          initialCity={client.city}
+          initialCountry={client.country}
+          initialIdNumber={client.idNumber}
+          initialIdType={client.idType}
+          initialLicenseNumber={client.licenseNumber}
+          initialLicenseIssueDate={
+            client.licenseIssueDate ? client.licenseIssueDate.toISOString().slice(0, 10) : null
+          }
+          initialLicenseExpiryDate={
+            client.licenseExpiryDate ? client.licenseExpiryDate.toISOString().slice(0, 10) : null
+          }
+          initialNotes={client.notes}
+        />
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          Vous n&apos;avez pas la permission de modifier ce client.
+        </p>
+      )}
 
       <div>
         <h2 className="mb-2 font-heading text-lg font-semibold">Locations associées</h2>

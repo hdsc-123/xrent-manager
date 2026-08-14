@@ -9,16 +9,18 @@ import type { SessionUser } from "@/lib/authz";
  * dans prisma/schema.prisma) — pour ne pas avoir à garder une table de référence
  * synchronisée avec le code à chaque nouvelle permission.
  *
- * Portée (voir HANDOFF.md, SECURITY.md) : seul le module Reservation applique ces
- * permissions côté serveur cette version-ci. Les autres modules (agencies, vehicles,
- * clients, locations, invoices, payments, reports, users, invitations, audit) gardent
- * leurs vérifications de rôle (`role !== "ADMIN"`) et `canAccessAgency()` actuelles,
- * inchangées — un retrofit complet aurait un risque de régression important sur les
- * décisions déjà validées (ex. DOMAINRULES.md section 4 : un MEMBER rattaché à une
- * agence peut supprimer les véhicules/locations de cette agence, ce qui contredirait le
- * groupe par défaut "MEMBER" ci-dessous si on l'appliquait aux routes existantes).
- * Le catalogue couvre néanmoins tous les modules dès maintenant, pour que la sidebar
- * (section 8 du sprint) puisse masquer ses entrées par permission dès ce sprint.
+ * Portée (Sprint 15, DOMAINRULES.md section 22) : ces permissions sont désormais
+ * appliquées côté serveur sur (quasiment) tous les modules métier — agencies, vehicles,
+ * clients, locations, reservations, invoices, payments, reports, maintenances, alerts,
+ * cash_register, vehicle_transfers, vehicle_trips — en complément, jamais en remplacement,
+ * de `canAccessAgency()`/`getAccessibleAgencyIds()` là où elles existent déjà. Restent
+ * volontairement en contrôle de rôle strict (ADMIN only), non convertis en `can()` :
+ * users, invitations, permission-groups, tenants, data-reset, audit — DOMAINRULES.md
+ * section 4 réserve explicitement la gestion des utilisateurs à ADMIN, même sur son
+ * propre compte ; les clés `users.*`/`invitations.*`/`audit.view` du catalogue restent
+ * donc décoratives (choix délibéré, pas un oubli). Les groupes par défaut ci-dessous ont
+ * été mis à jour pour préserver le comportement effectif d'aujourd'hui (aucune régression
+ * involontaire) — voir le commentaire sur chaque groupe.
  */
 export interface PermissionDefinition {
   key: string;
@@ -74,6 +76,30 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: "invitations.revoke", label: "Révoquer des invitations", category: "Invitations" },
 
   { key: "audit.view", label: "Voir le journal d'audit", category: "Audit" },
+
+  { key: "maintenances.view", label: "Voir les maintenances", category: "Maintenances" },
+  { key: "maintenances.create", label: "Planifier des maintenances", category: "Maintenances" },
+  { key: "maintenances.edit", label: "Modifier des maintenances", category: "Maintenances" },
+  { key: "maintenances.delete", label: "Supprimer des maintenances", category: "Maintenances" },
+
+  { key: "alerts.view", label: "Voir les alertes", category: "Alertes" },
+  { key: "alerts.acknowledge", label: "Acquitter des alertes", category: "Alertes" },
+  { key: "alerts.resolve", label: "Résoudre des alertes", category: "Alertes" },
+
+  { key: "cash_register.view", label: "Voir la caisse", category: "Caisse" },
+  { key: "cash_register.create_entry", label: "Enregistrer une entrée de caisse", category: "Caisse" },
+  { key: "cash_register.create_expense", label: "Enregistrer une dépense de caisse", category: "Caisse" },
+  { key: "cash_register.manage_categories", label: "Gérer les catégories de dépense", category: "Caisse" },
+
+  { key: "vehicle_transfers.view", label: "Voir les transferts de véhicules", category: "Transferts" },
+  { key: "vehicle_transfers.create", label: "Lancer un transfert de véhicule", category: "Transferts" },
+  { key: "vehicle_transfers.validate", label: "Valider un transfert de véhicule", category: "Transferts" },
+  { key: "vehicle_transfers.cancel", label: "Annuler un transfert de véhicule", category: "Transferts" },
+
+  { key: "vehicle_trips.view", label: "Voir les bons de déplacement", category: "Déplacements" },
+  { key: "vehicle_trips.create", label: "Créer un bon de déplacement", category: "Déplacements" },
+  { key: "vehicle_trips.return", label: "Enregistrer un retour de déplacement", category: "Déplacements" },
+  { key: "vehicle_trips.cancel", label: "Annuler un bon de déplacement", category: "Déplacements" },
 ];
 
 export const PERMISSION_KEYS = PERMISSIONS.map((permission) => permission.key);
@@ -92,18 +118,27 @@ interface DefaultGroupDefinition {
 export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
   { name: "ADMIN", permissions: PERMISSION_KEYS },
   {
+    // Sprint 15 : vehicles.delete/locations.delete/clients.delete/invoices.delete/
+    // payments.delete et les modules maintenances/alerts/cash_register/vehicle_transfers/
+    // vehicle_trips ont été ajoutés pour préserver le comportement actuel — ces actions
+    // étaient possibles sans aucune restriction avant le retrofit des routes (seul
+    // canAccessAgency() s'appliquait), les retirer par défaut aurait été une régression
+    // fonctionnelle silencieuse, pas un simple resserrement de sécurité.
     name: "MEMBER",
     permissions: [
       "agencies.view",
       "vehicles.view",
       "vehicles.create",
       "vehicles.edit",
+      "vehicles.delete",
       "clients.view",
       "clients.create",
       "clients.edit",
+      "clients.delete",
       "locations.view",
       "locations.create",
       "locations.edit",
+      "locations.delete",
       "reservations.view",
       "reservations.create",
       "reservations.edit",
@@ -111,12 +146,37 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "invoices.view",
       "invoices.create",
       "invoices.edit",
+      "invoices.delete",
       "payments.view",
       "payments.create",
+      "payments.delete",
       "reports.view",
+      "maintenances.view",
+      "maintenances.create",
+      "maintenances.edit",
+      "maintenances.delete",
+      "alerts.view",
+      "alerts.acknowledge",
+      "alerts.resolve",
+      "cash_register.view",
+      "cash_register.create_entry",
+      "cash_register.create_expense",
+      "cash_register.manage_categories",
+      "vehicle_transfers.view",
+      "vehicle_transfers.create",
+      "vehicle_transfers.validate",
+      "vehicle_transfers.cancel",
+      "vehicle_trips.view",
+      "vehicle_trips.create",
+      "vehicle_trips.return",
+      "vehicle_trips.cancel",
     ],
   },
   {
+    // Sprint 15 : resserrement assumé (confirmé explicitement avec le propriétaire du
+    // projet) — ce groupe reste scopé finance/reporting, sans accès véhicules/locations/
+    // clients/maintenances, même si ces actions étaient possibles sans restriction avant
+    // le retrofit des routes (cohérent avec la description du rôle "comptabilité").
     name: "COMPTABILITÉ",
     permissions: [
       "invoices.view",
@@ -131,6 +191,10 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
     ],
   },
   {
+    // Sprint 15 : maintenances/alerts/vehicle_transfers/vehicle_trips ajoutés (modules
+    // opérationnels d'agence, cohérents avec la vocation de ce groupe) ; invoices.view/
+    // create/edit et payments.view/create ajoutés pour préserver la capacité de facturer/
+    // encaisser un contrat de son agence, déjà possible sans restriction avant le retrofit.
     name: "AGENCE",
     permissions: [
       "vehicles.view",
@@ -150,43 +214,138 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "reservations.edit",
       "reservations.delete",
       "reservations.convert",
+      "invoices.view",
+      "invoices.create",
+      "invoices.edit",
+      "payments.view",
+      "payments.create",
+      "maintenances.view",
+      "maintenances.create",
+      "maintenances.edit",
+      "maintenances.delete",
+      "alerts.view",
+      "alerts.acknowledge",
+      "alerts.resolve",
+      "vehicle_transfers.view",
+      "vehicle_transfers.create",
+      "vehicle_transfers.validate",
+      "vehicle_transfers.cancel",
+      "vehicle_trips.view",
+      "vehicle_trips.create",
+      "vehicle_trips.return",
+      "vehicle_trips.cancel",
     ],
   },
 ];
 
 /**
- * Crée les 4 groupes par défaut pour un tenant s'il n'en a aucun encore — idempotent,
+ * Sprint 15 : clés nouvellement introduites par le retrofit de permissions (nouveaux
+ * modules maintenances/alerts/cash_register/vehicle_transfers/vehicle_trips, plus les
+ * suppressions/factures/paiements ajoutées à MEMBER/AGENCE pour préserver leur comportement
+ * actuel — voir le commentaire sur DEFAULT_GROUPS ci-dessus). Un tenant déjà existant a déjà
+ * ses groupes MEMBER/COMPTABILITÉ/AGENCE en base (créés par un Sprint antérieur) :
+ * `ensureDefaultGroups` ci-dessous ne les recrée jamais (idempotent par nom), donc ces
+ * nouvelles clés ne leur seraient jamais ajoutées sans ce backfill explicite — laissant un
+ * MEMBER déjà en poste soudainement bloqué sur des actions qu'il pouvait faire sans
+ * restriction avant ce sprint (aucune vérification de permission n'existait). Seules les
+ * clés listées ici sont fusionnées (union, jamais de retrait) dans les groupes déjà
+ * existants portant ces noms — les clés antérieures à ce sprint, potentiellement déjà
+ * personnalisées par un ADMIN, ne sont jamais touchées.
+ */
+const SPRINT15_BACKFILL_PERMISSIONS: Record<string, string[]> = {
+  MEMBER: [
+    "vehicles.delete",
+    "clients.delete",
+    "locations.delete",
+    "invoices.delete",
+    "payments.delete",
+    "maintenances.view",
+    "maintenances.create",
+    "maintenances.edit",
+    "maintenances.delete",
+    "alerts.view",
+    "alerts.acknowledge",
+    "alerts.resolve",
+    "cash_register.view",
+    "cash_register.create_entry",
+    "cash_register.create_expense",
+    "cash_register.manage_categories",
+    "vehicle_transfers.view",
+    "vehicle_transfers.create",
+    "vehicle_transfers.validate",
+    "vehicle_transfers.cancel",
+    "vehicle_trips.view",
+    "vehicle_trips.create",
+    "vehicle_trips.return",
+    "vehicle_trips.cancel",
+  ],
+  AGENCE: [
+    "invoices.view",
+    "invoices.create",
+    "invoices.edit",
+    "payments.view",
+    "payments.create",
+    "maintenances.view",
+    "maintenances.create",
+    "maintenances.edit",
+    "maintenances.delete",
+    "alerts.view",
+    "alerts.acknowledge",
+    "alerts.resolve",
+    "vehicle_transfers.view",
+    "vehicle_transfers.create",
+    "vehicle_transfers.validate",
+    "vehicle_transfers.cancel",
+    "vehicle_trips.view",
+    "vehicle_trips.create",
+    "vehicle_trips.return",
+    "vehicle_trips.cancel",
+  ],
+};
+
+/**
+ * Crée les groupes par défaut pour un tenant s'il n'en a aucun encore — idempotent,
  * appelée à l'inscription (nouveaux tenants) et paresseusement depuis les pages de
  * gestion des permissions (backfill des tenants existants, sans script de migration
  * séparé). Ignore silencieusement une violation de contrainte unique (P2002) en cas
- * d'appels concurrents.
+ * d'appels concurrents. Pour un groupe par défaut déjà existant, fusionne en plus les
+ * nouvelles clés Sprint 15 manquantes (voir SPRINT15_BACKFILL_PERMISSIONS ci-dessus).
  */
 export async function ensureDefaultGroups(tenantId: string): Promise<void> {
-  const existing = await prisma.permissionGroup.findMany({
+  const existingGroups = await prisma.permissionGroup.findMany({
     where: { tenantId },
-    select: { name: true },
+    select: { id: true, name: true },
   });
-  const existingNames = new Set(existing.map((group) => group.name));
+  const existingByName = new Map(existingGroups.map((group) => [group.name, group.id]));
 
   for (const def of DEFAULT_GROUPS) {
-    if (existingNames.has(def.name)) {
+    const existingGroupId = existingByName.get(def.name);
+
+    if (existingGroupId === undefined) {
+      try {
+        await prisma.permissionGroup.create({
+          data: {
+            tenantId,
+            name: def.name,
+            groupPermissions: {
+              createMany: { data: def.permissions.map((permissionKey) => ({ permissionKey })) },
+            },
+          },
+        });
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) {
+          throw error;
+        }
+      }
       continue;
     }
 
-    try {
-      await prisma.permissionGroup.create({
-        data: {
-          tenantId,
-          name: def.name,
-          groupPermissions: {
-            createMany: { data: def.permissions.map((permissionKey) => ({ permissionKey })) },
-          },
-        },
+    const backfill = SPRINT15_BACKFILL_PERMISSIONS[def.name];
+    if (backfill && backfill.length > 0) {
+      await prisma.groupPermission.createMany({
+        data: backfill.map((permissionKey) => ({ groupId: existingGroupId, permissionKey })),
+        skipDuplicates: true,
       });
-    } catch (error) {
-      if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) {
-        throw error;
-      }
     }
   }
 }
@@ -221,6 +380,21 @@ export async function getEffectivePermissions(user: SessionUser): Promise<Set<st
     });
     for (const groupPermission of groupPermissions) {
       keys.add(groupPermission.permissionKey);
+    }
+  } else {
+    // Sprint 15 : un MEMBER n'ayant jamais été explicitement rattaché à un groupe (aucun
+    // code de l'application ne le fait automatiquement à sa création — invitation acceptée,
+    // voir src/lib/invitations.ts) retombe implicitement sur le groupe par défaut "MEMBER"
+    // (DEFAULT_GROUPS ci-dessus), plutôt que sur un ensemble vide. Avant le retrofit de ce
+    // sprint, l'absence de permission granulaire n'avait aucun effet (seuls role/agence
+    // comptaient) ; un MEMBER non assigné se retrouverait sinon totalement bloqué sur tous
+    // les modules dès la création de son compte — régression réelle, pas un simple
+    // resserrement, et contraire à l'objectif explicite des DEFAULT_GROUPS (préserver le
+    // comportement actuel). N'affecte jamais un groupe personnalisé explicitement assigné,
+    // même vide (id renseigné) : seule l'absence totale d'assignation retombe ici.
+    const memberDefaults = DEFAULT_GROUPS.find((group) => group.name === "MEMBER");
+    for (const permissionKey of memberDefaults?.permissions ?? []) {
+      keys.add(permissionKey);
     }
   }
 

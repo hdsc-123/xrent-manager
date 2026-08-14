@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { toast } from "sonner";
 import { apiPatch, apiDelete, ApiError } from "@/lib/api";
 import {
@@ -34,9 +35,20 @@ interface EditUserFormProps {
   isSelf: boolean;
   agencies: AgencyOption[];
   initialAgencyIds: string[];
+  /** Nom du PermissionGroup assigné (Sprint 12C), null si aucun — affiché ici pour la
+   * découvrabilité (Sprint 15) : le rôle ADMIN/MEMBER seul ne reflète pas les groupes
+   * COMPTABILITÉ/AGENCE/personnalisés, gérés sur la page /permissions dédiée. */
+  permissionGroupName: string | null;
 }
 
-export function EditUserForm({ id, initialRole, isSelf, agencies, initialAgencyIds }: EditUserFormProps) {
+export function EditUserForm({
+  id,
+  initialRole,
+  isSelf,
+  agencies,
+  initialAgencyIds,
+  permissionGroupName,
+}: EditUserFormProps) {
   const router = useRouter();
   const [role, setRole] = useState(initialRole);
   const [password, setPassword] = useState("");
@@ -117,6 +129,12 @@ export function EditUserForm({ id, initialRole, isSelf, agencies, initialAgencyI
                 <option value="MEMBER">Membre</option>
                 <option value="ADMIN">Administrateur</option>
               </select>
+              <p className="text-xs text-muted-foreground">
+                Groupe de permissions : {permissionGroupName ?? "Aucun"} —{" "}
+                <Link href={`/dashboard/users/${id}/permissions`} className="underline">
+                  Modifier
+                </Link>
+              </p>
             </div>
 
             {role === "MEMBER" && (

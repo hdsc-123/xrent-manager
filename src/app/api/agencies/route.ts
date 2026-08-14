@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
+import { logAction } from "@/lib/audit";
 
 function slugify(value: string): string {
   return value
@@ -26,6 +28,10 @@ export async function GET() {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
   }
 
+  if (!(await can(user, "agencies.view"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
+  }
+
   const agencies = await prisma.agency.findMany({ where: { tenantId: user.tenantId } });
 
   return NextResponse.json({ agencies });
@@ -49,8 +55,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
   }
 
-  if (user.role !== "ADMIN") {
-    return NextResponse.json({ error: "Accès réservé aux administrateurs." }, { status: 403 });
+  if (!(await can(user, "agencies.create"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
   let body: CreateAgencyBody;
@@ -81,6 +87,16 @@ export async function POST(request: Request) {
         managerPhone: body.managerPhone,
       },
     });
+
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: "agency.created",
+      resource: "Agency",
+      resourceId: agency.id,
+      metadata: { name: agency.name },
+    });
+
     return NextResponse.json({ agency }, { status: 201 });
   } catch (error) {
     if (isUniqueConstraintError(error)) {

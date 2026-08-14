@@ -2,9 +2,10 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import type { VehicleTripStatus } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getVehicleTrips } from "@/lib/vehicle-trips";
 import { prisma } from "@/lib/prisma";
-import { Button } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { VehicleTripsTable, type VehicleTripRow } from "./VehicleTripsTable";
 
 const STATUS_OPTIONS: { value: VehicleTripStatus; label: string }[] = [
@@ -21,8 +22,21 @@ export default async function VehicleTripsPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
+  if (!(await can(user, "vehicle_trips.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Bons de déplacement</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter les bons de déplacement.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
   const params = await searchParams;
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+  const canReturn = await can(user, "vehicle_trips.return");
+  const canCancel = await can(user, "vehicle_trips.cancel");
 
   const trips = await getVehicleTrips(user.tenantId, {
     status: params.status as VehicleTripStatus | undefined,
@@ -59,7 +73,7 @@ export default async function VehicleTripsPage({ searchParams }: PageProps) {
     status: trip.status,
   }));
 
-  const canCreate = accessibleAgencyIds === null || accessibleAgencyIds.length > 0;
+  const canCreate = (accessibleAgencyIds === null || accessibleAgencyIds.length > 0) && (await can(user, "vehicle_trips.create"));
 
   return (
     <div className="flex flex-col gap-4">
@@ -108,7 +122,7 @@ export default async function VehicleTripsPage({ searchParams }: PageProps) {
         )}
       </form>
 
-      <VehicleTripsTable trips={rows} />
+      <VehicleTripsTable trips={rows} canReturn={canReturn} canCancel={canCancel} />
     </div>
   );
 }

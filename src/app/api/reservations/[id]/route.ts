@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { Prisma, ReservationSource, ReservationStatus } from "@prisma/client";
+import type { Prisma, ReservationStatus } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import {
@@ -13,7 +13,6 @@ import {
 import { logAction } from "@/lib/audit";
 
 const RESERVATION_STATUSES: ReservationStatus[] = ["PENDING", "CONFIRMED", "CONVERTED", "CANCELLED"];
-const RESERVATION_SOURCES: ReservationSource[] = ["BROKER", "DIRECT"];
 const MONEY_FIELDS = ["totalPrice", "pricePerDay", "gpsPrice", "babySeatPrice", "extraDriverPrice"] as const;
 const INT_FIELDS = ["daysCount", "mileage", "includedKm"] as const;
 
@@ -43,7 +42,7 @@ interface PatchReservationBody {
   voucherNumber?: string;
   confirmationNumber?: string;
   receivedAt?: string;
-  source?: ReservationSource;
+  source?: string;
   clientFirstName?: string;
   clientLastName?: string;
   startDate?: string;
@@ -64,6 +63,7 @@ interface PatchReservationBody {
   babySeatPrice?: number;
   hasExtraDriver?: boolean;
   extraDriverPrice?: number;
+  optionsCurrency?: string;
   mileage?: number;
   includedKm?: number;
   clientPhone?: string;
@@ -91,9 +91,6 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
   if (body.status !== undefined && !RESERVATION_STATUSES.includes(body.status)) {
     return NextResponse.json({ error: "status invalide." }, { status: 400 });
-  }
-  if (body.source !== undefined && !RESERVATION_SOURCES.includes(body.source)) {
-    return NextResponse.json({ error: "source invalide." }, { status: 400 });
   }
 
   for (const field of MONEY_FIELDS) {
@@ -148,6 +145,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       babySeatPrice: body.babySeatPrice,
       hasExtraDriver: body.hasExtraDriver,
       extraDriverPrice: body.extraDriverPrice,
+      optionsCurrency: body.optionsCurrency,
       mileage: body.mileage,
       includedKm: body.includedKm,
       clientPhone: body.clientPhone,

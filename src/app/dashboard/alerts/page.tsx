@@ -1,8 +1,9 @@
 import Link from "next/link";
 import type { AlertPriority, AlertStatus, AlertType } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getAlerts } from "@/lib/alerts";
-import { Button } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { AlertsList, type AlertRow } from "./AlertsList";
 
 const TYPE_OPTIONS: { value: AlertType; label: string }[] = [
@@ -39,8 +40,21 @@ export default async function AlertsPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
+  if (!(await can(user, "alerts.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Alertes</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter les alertes.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
   const params = await searchParams;
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+  const canAcknowledge = await can(user, "alerts.acknowledge");
+  const canResolve = await can(user, "alerts.resolve");
 
   const alerts = await getAlerts(user.tenantId, {
     type: params.type as AlertType | undefined,
@@ -137,7 +151,7 @@ export default async function AlertsPage({ searchParams }: PageProps) {
         )}
       </form>
 
-      <AlertsList alerts={rows} />
+      <AlertsList alerts={rows} canAcknowledge={canAcknowledge} canResolve={canResolve} />
     </div>
   );
 }

@@ -2,8 +2,9 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import type { InvoiceStatus } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
-import { Button } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { InvoicesTable, type InvoiceRow } from "./InvoicesTable";
 
 const STATUS_OPTIONS: { value: InvoiceStatus; label: string }[] = [
@@ -21,6 +22,17 @@ interface PageProps {
 export default async function InvoicesPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
+
+  if (!(await can(user, "invoices.view"))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Factures</CardTitle>
+          <CardDescription>Vous n&apos;avez pas la permission de consulter les factures.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
 
   const params = await searchParams;
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
@@ -49,7 +61,7 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
     currency: invoice.currency,
   }));
 
-  const canCreate = accessibleAgencyIds === null || accessibleAgencyIds.length > 0;
+  const canCreate = (accessibleAgencyIds === null || accessibleAgencyIds.length > 0) && (await can(user, "invoices.create"));
 
   return (
     <div className="flex flex-col gap-4">

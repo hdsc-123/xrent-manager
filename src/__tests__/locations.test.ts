@@ -486,11 +486,11 @@ describe("Sprint 14B — numérotation de contrat", () => {
     expect(secondN).toBe(firstN + 1);
   });
 
-  it("respecte le préfixe et le dernier numéro configurés dans les paramètres du tenant", async () => {
-    await apiFetch(`/api/tenants/${adminA.tenantId}`, {
+  it("respecte le préfixe et le dernier numéro configurés dans les paramètres de l'agence (Sprint 15 — numérotation déplacée vers Agency)", async () => {
+    await apiFetch(`/api/agencies/${agencyA1Id}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ name: "Locations Test A", contractNumberPrefix: "RAK", lastContractNumber: 120 }),
+      body: JSON.stringify({ contractNumberPrefix: "RAK", lastContractNumber: 120 }),
     });
 
     const response = await createLocation(adminA, { startDate: "2029-06-01", endDate: "2029-06-03" });
@@ -503,11 +503,12 @@ describe("Sprint 14B — numérotation de contrat", () => {
     const firstBody = await first.json();
     const firstN = Number(firstBody.location.contractNumber.split("-").pop());
 
-    // Rembobine volontairement le compteur pour forcer une collision sur le prochain numéro.
-    await apiFetch(`/api/tenants/${adminA.tenantId}`, {
+    // Rembobine volontairement le compteur pour forcer une collision sur le prochain numéro
+    // (Sprint 15 — la numérotation est désormais portée par Agency, pas Tenant).
+    await apiFetch(`/api/agencies/${agencyA1Id}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ name: "Locations Test A", lastContractNumber: firstN - 1 }),
+      body: JSON.stringify({ lastContractNumber: firstN - 1 }),
     });
 
     const second = await createLocation(adminA, { startDate: "2029-07-10", endDate: "2029-07-12" });
@@ -594,5 +595,83 @@ describe("GET /api/locations/[id]/pdf", () => {
       headers: { Cookie: adminB.sessionCookie },
     });
     expect(response.status).toBe(404);
+  });
+});
+
+describe("Sprint 15 — permissions granulaires (locations.create)", () => {
+  it("refuse un MEMBER rattaché à l'agence mais dont le groupe personnalisé n'a pas locations.create", async () => {
+    const restrictedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `NoLocationCreate-${runId}`, permissions: ["locations.view"] }),
+    });
+    const restrictedGroupId = (await restrictedGroupResponse.json()).group.id;
+
+    const restrictedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Restricted Member",
+      email: `restricted-locations-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: restrictedMember.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: restrictedGroupId }),
+    });
+
+    const response = await createLocation(restrictedMember, { startDate: "2029-11-01", endDate: "2029-11-03" });
+    expect(response.status).toBe(403);
+  });
+
+  it("autorise un MEMBER dont le groupe personnalisé accorde locations.create", async () => {
+    const grantedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `WithLocationCreate-${runId}`, permissions: ["locations.view", "locations.create"] }),
+    });
+    const grantedGroupId = (await grantedGroupResponse.json()).group.id;
+
+    const grantedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Granted Member",
+      email: `granted-locations-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: grantedMember.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${grantedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: grantedGroupId }),
+    });
+
+    const response = await createLocation(grantedMember, { startDate: "2029-11-05", endDate: "2029-11-07" });
+    expect(response.status).toBe(201);
+  });
+
+  it("un ADMIN crée une location même rattaché à un groupe personnalisé vide (bypass systématique)", async () => {
+    const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `EmptyAdminGroup-${runId}`, permissions: [] }),
+    });
+    const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+
+    await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId }),
+    });
+
+    try {
+      const response = await createLocation(adminA, { startDate: "2029-11-10", endDate: "2029-11-12" });
+      expect(response.status).toBe(201);
+    } finally {
+      await apiFetch(`/api/users/${adminA.userId}/permissions`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ permissionGroupId: null }),
+      });
+    }
   });
 });

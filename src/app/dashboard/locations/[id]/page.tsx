@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { FileText, Download } from "lucide-react";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getLocationById } from "@/lib/locations";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
@@ -29,6 +30,8 @@ export default async function LocationDetailPage({ params }: PageProps) {
   if (!location || !(await canAccessAgency(user, location.agencyId))) {
     notFound();
   }
+
+  const canEdit = await can(user, "locations.edit");
 
   const [vehicle, client, agency, invoice] = await Promise.all([
     prisma.vehicle.findUnique({ where: { id: location.vehicleId } }),
@@ -136,6 +139,7 @@ export default async function LocationDetailPage({ params }: PageProps) {
         status={location.status}
         notes={location.notes}
         endOdometer={location.endOdometer}
+        canEdit={canEdit}
       />
     </div>
   );
