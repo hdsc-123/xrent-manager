@@ -14,6 +14,14 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Sprint 23 (DOMAINRULES.md section 39, remplace le verrou en mémoire de process du
+  // Sprint 22 — DOMAINRULES.md section 38 point 4) : throttle des 13 vérifications d'alertes
+  // planifiées (une exécution par tenant par heure), désormais porté en base pour rester
+  // correct sur un déploiement multi-instance — voir maybeRunScheduledAlertChecks,
+  // src/lib/scheduled-tasks.ts. Mis à jour par une seule instruction UPDATE ... WHERE
+  // atomique (updateMany conditionné), jamais lu/écrit hors de cette garde.
+  lastAlertCheckAt DateTime?
+
   agencies          Agency[]
   users             User[]
   vehicles          Vehicle[]
@@ -287,6 +295,13 @@ model Location {
   endDate         DateTime
   startOdometer   Int?
   endOdometer     Int?
+  // Sprint 23 (DOMAINRULES.md section 39) : jauge de carburant départ/retour du contrat,
+  // même convention que VehicleTransfer/VehicleTrip (pourcentage entier 0-100, jamais un
+  // float — DOMAINRULES.md section 14) — absente jusqu'ici sur Location. Alimente aussi
+  // getVehicleLastKnownState (src/lib/vehicles.ts), qui sélectionnait déjà endOdometer sur
+  // Location mais renvoyait toujours fuelLevel: null faute de ce champ.
+  startFuelLevel  Int?
+  endFuelLevel    Int?
   status          LocationStatus @default(PENDING)
   pricePerDay     Int
   totalPrice      Int
@@ -689,6 +704,11 @@ enum ReservationStatus {
   CONFIRMED
   CONVERTED
   CANCELLED
+  // Sprint 23 (DOMAINRULES.md section 39) : le client ne s'est jamais présenté — distinct de
+  // CANCELLED (client venu mais véhicule refusé/conditions non respectées). Terminal comme
+  // CANCELLED/CONVERTED, sauf reset explicite par un ADMIN (resetReservationToPending,
+  // src/lib/reservations.ts).
+  NO_SHOW
 }
 
 // Réservation importée (Excel) ou saisie manuellement, en amont d'un contrat (Location).

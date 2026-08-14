@@ -3,9 +3,9 @@
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { MoreHorizontal, Eye, Ban, Trash2, Pencil } from "lucide-react";
+import { MoreHorizontal, Eye, Ban, Trash2, Pencil, CheckCircle2, UserX, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
-import { apiPatch, apiDelete, ApiError } from "@/lib/api";
+import { apiPatch, apiPost, apiDelete, ApiError } from "@/lib/api";
 import { formatMoney, combineDateAndTime, calculateDaysCount } from "@/lib/format";
 import { DataTable, type DataTableColumn } from "@/components/layout/DataTable";
 import {
@@ -66,6 +66,13 @@ const DELETABLE_STATUSES = new Set(["PENDING", "CANCELLED"]);
 /** Une réservation CONVERTED/CANCELLED est terminale — l'éditer n'aurait plus de sens (le
  * contrat, s'il existe, est désormais la source de vérité ; voir DOMAINRULES.md section 21). */
 const EDITABLE_STATUSES = new Set(["PENDING", "CONFIRMED"]);
+/** Sprint 23 (DOMAINRULES.md section 39) — mêmes statuts que canTransition(status, "NO_SHOW")/
+ * "CONVERTED" (src/lib/reservations.ts) : le client ne s'est pas présenté, ou l'agent valide
+ * directement vers le formulaire de contrat, uniquement depuis un statut non terminal. */
+const NO_SHOWABLE_STATUSES = new Set(["PENDING", "CONFIRMED"]);
+const CONVERTIBLE_STATUSES = new Set(["PENDING", "CONFIRMED"]);
+/** Réinitialisation à zéro (ADMIN uniquement) — depuis n'importe quel statut terminal. */
+const RESETTABLE_STATUSES = new Set(["CONVERTED", "CANCELLED", "NO_SHOW"]);
 const NOTES_TRUNCATE_LENGTH = 50;
 
 /** "10/08/26 10:00" — date au format court fr-FR + heure telle qu'importée/saisie
@@ -103,17 +110,28 @@ export function ReservationsTable({
   reservations,
   canDelete = false,
   canEdit = false,
+  canConvert = false,
+  isAdmin = false,
 }: {
   reservations: ReservationRow[];
   /** reservations.delete (voir src/lib/permissions.ts) — masque la sélection/suppression si
    * absent, calculé côté serveur par la page appelante. */
   canDelete?: boolean;
-  /** reservations.edit — masque l'action « Modifier » si absent. */
+  /** reservations.edit — masque l'action « Modifier »/« Annuler »/« No Show » si absent. */
   canEdit?: boolean;
+  /** Sprint 23 — reservations.convert : masque l'action rapide « Valider » si absent. */
+  canConvert?: boolean;
+  /** Sprint 23 — réinitialisation à zéro, réservée ADMIN (jamais une permission granulaire,
+   * voir DOMAINRULES.md section 39). */
+  isAdmin?: boolean;
 }) {
   const router = useRouter();
   const [pendingCancel, setPendingCancel] = useState<ReservationRow | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [pendingNoShow, setPendingNoShow] = useState<ReservationRow | null>(null);
+  const [isMarkingNoShow, setIsMarkingNoShow] = useState(false);
+  const [pendingReset, setPendingReset] = useState<ReservationRow | null>(null);
+  const [isResetting, setIsResetting] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ReservationRow | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -200,6 +218,39 @@ export function ReservationsTable({
       toast.error(err instanceof ApiError ? err.message : "Erreur lors de l'annulation.");
     } finally {
       setIsCancelling(false);
+    }
+  }
+
+  async function handleNoShow() {
+    if (!pendingNoShow) return;
+    setIsMarkingNoShow(true);
+    try {
+      await apiPatch(`/api/reservations/${pendingNoShow.id}`, { status: "NO_SHOW" });
+      toast.success("Réservation marquée No Show.");
+      setPendingNoShow(null);
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Erreur lors du marquage No Show.");
+    } finally {
+      setIsMarkingNoShow(false);
+    }
+  }
+
+  // Sprint 23 (DOMAINRULES.md section 39) — réinitialisation à zéro, ADMIN uniquement ;
+  // POST /api/reservations/[id]/reset (nouveau) peut refuser (409) si un contrat lié n'est pas
+  // encore annulé par un admin, message renvoyé tel quel.
+  async function handleReset() {
+    if (!pendingReset) return;
+    setIsResetting(true);
+    try {
+      await apiPost(`/api/reservations/${pendingReset.id}/reset`, {});
+      toast.success("Réservation réinitialisée à zéro.");
+      setPendingReset(null);
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Erreur lors de la réinitialisation.");
+    } finally {
+      setIsResetting(false);
     }
   }
 
@@ -357,6 +408,16 @@ export function ReservationsTable({
                   <Eye className="size-4" />
                   Détails
                 </DropdownMenuItem>
+                {/* Sprint 23 (point A de l'énoncé) — action rapide « Valider » : mène
+                    directement au formulaire de contrat existant (convert/page.tsx, inchangé),
+                    cohérent avec la transition PENDING/CONFIRMED → CONVERTED déjà autorisée
+                    directement (DOMAINRULES.md section 21). */}
+                {canConvert && row.original.canEditAgency && CONVERTIBLE_STATUSES.has(row.original.status) && (
+                  <DropdownMenuItem render={<Link href={`/dashboard/reservations/${row.original.id}/convert`} />}>
+                    <CheckCircle2 className="size-4" />
+                    Valider
+                  </DropdownMenuItem>
+                )}
                 {canEdit && row.original.canEditAgency && EDITABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem render={<Link href={`/dashboard/reservations/${row.original.id}/edit`} />}>
                     <Pencil className="size-4" />
@@ -375,10 +436,26 @@ export function ReservationsTable({
                     Annuler
                   </DropdownMenuItem>
                 )}
+                {/* Sprint 23 — No Show : le client ne s'est pas présenté, distinct d'Annuler. */}
+                {canEdit && row.original.canEditAgency && NO_SHOWABLE_STATUSES.has(row.original.status) && (
+                  <DropdownMenuItem variant="destructive" onClick={() => setPendingNoShow(row.original)}>
+                    <UserX className="size-4" />
+                    No Show
+                  </DropdownMenuItem>
+                )}
                 {canDelete && row.original.canEditAgency && DELETABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingDelete(row.original)}>
                     <Trash2 className="size-4" />
                     Supprimer
+                  </DropdownMenuItem>
+                )}
+                {/* Sprint 23 — réinitialisation à zéro, ADMIN uniquement (jamais une permission
+                    granulaire, DOMAINRULES.md section 39) : corrige une erreur d'agent (mauvais
+                    clic Annuler/No Show, ou reprise à zéro après annulation admin d'un contrat). */}
+                {isAdmin && RESETTABLE_STATUSES.has(row.original.status) && (
+                  <DropdownMenuItem onClick={() => setPendingReset(row.original)}>
+                    <RotateCcw className="size-4" />
+                    Réinitialiser à zéro
                   </DropdownMenuItem>
                 )}
               </DropdownMenuContent>
@@ -387,7 +464,7 @@ export function ReservationsTable({
         ),
       },
     ],
-    [canDelete, canEdit, selectedIds, allDeletableSelected, toggleSelectAll, toggleSelected]
+    [canDelete, canEdit, canConvert, isAdmin, selectedIds, allDeletableSelected, toggleSelectAll, toggleSelected]
   );
 
   return (
@@ -418,6 +495,45 @@ export function ReservationsTable({
             </Button>
             <Button variant="destructive" onClick={handleCancel} disabled={isCancelling}>
               {isCancelling ? "Annulation..." : "Annuler la réservation"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(pendingNoShow)} onOpenChange={(open) => !open && setPendingNoShow(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Marquer No Show ?</DialogTitle>
+            <DialogDescription>
+              Le client ne s&apos;est pas présenté pour la réservation « {pendingNoShow?.voucherNumber} ».
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingNoShow(null)}>
+              Retour
+            </Button>
+            <Button variant="destructive" onClick={handleNoShow} disabled={isMarkingNoShow}>
+              {isMarkingNoShow ? "Enregistrement..." : "Marquer No Show"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(pendingReset)} onOpenChange={(open) => !open && setPendingReset(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Réinitialiser à zéro ?</DialogTitle>
+            <DialogDescription>
+              La réservation « {pendingReset?.voucherNumber} » repassera à « En attente ». Si un contrat a déjà été
+              généré, il doit d&apos;abord être annulé (fiche du contrat) — sinon cette action sera refusée.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingReset(null)}>
+              Retour
+            </Button>
+            <Button onClick={handleReset} disabled={isResetting}>
+              {isResetting ? "Réinitialisation..." : "Réinitialiser"}
             </Button>
           </DialogFooter>
         </DialogContent>

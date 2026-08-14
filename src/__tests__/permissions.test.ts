@@ -72,6 +72,18 @@ describe("GET /api/permission-groups", () => {
     expect(memberGroup.permissions).toContain("reservations.view");
     expect(memberGroup.permissions).not.toContain("reservations.delete");
   });
+
+  it("Sprint 23 — contracts_overview.view/vehicle_performance.view accordées par défaut à MEMBER/AGENCE/COMPTABILITÉ (DOMAINRULES.md section 39)", async () => {
+    const response = await apiFetch("/api/permission-groups", { headers: { Cookie: adminA.sessionCookie } });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    for (const name of ["MEMBER", "AGENCE", "COMPTABILITÉ"]) {
+      const group = body.groups.find((g: { name: string }) => g.name === name);
+      expect(group.permissions).toContain("contracts_overview.view");
+      expect(group.permissions).toContain("vehicle_performance.view");
+    }
+  });
 });
 
 describe("POST /api/permission-groups", () => {

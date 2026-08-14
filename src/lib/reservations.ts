@@ -57,10 +57,33 @@ export class ReservationNotDeletableError extends Error {
 export class ReservationLockedError extends Error {
   constructor() {
     super(
-      "Cette réservation est terminale (CONVERTED/CANCELLED) : seules les notes restent " +
+      "Cette réservation est terminale (CONVERTED/CANCELLED/NO_SHOW) : seules les notes restent " +
         "modifiables. Le contrat déjà généré à la conversion n'est jamais mis à jour rétroactivement."
     );
     this.name = "ReservationLockedError";
+  }
+}
+
+/** Sprint 23 (DOMAINRULES.md section 39) — reset à zéro réservé à un ADMIN
+ * (resetReservationToPending ci-dessous, jamais atteignable via updateReservation). */
+export class ReservationNotResettableError extends Error {
+  constructor() {
+    super("Seule une réservation CONVERTED, CANCELLED ou NO_SHOW peut être réinitialisée.");
+    this.name = "ReservationNotResettableError";
+  }
+}
+
+/** Sprint 23 : une réservation CONVERTED ne peut être réinitialisée que si le contrat qu'elle
+ * a généré a déjà été annulé par un ADMIN (voir adminCancelValidatedLocation,
+ * src/lib/locations.ts) — jamais un reset laissant un contrat actif orphelin de sa réservation
+ * d'origine. */
+export class ReservationResetRequiresCancelledContractError extends Error {
+  constructor() {
+    super(
+      "Le contrat généré par cette réservation doit d'abord être annulé par un administrateur " +
+        "avant de pouvoir réinitialiser la réservation."
+    );
+    this.name = "ReservationResetRequiresCancelledContractError";
   }
 }
 
@@ -71,10 +94,15 @@ export class ReservationLockedError extends Error {
  * (src/lib/maintenances.ts). CONVERTED/CANCELLED sont terminaux.
  */
 const ALLOWED_TRANSITIONS: Record<ReservationStatus, ReservationStatus[]> = {
-  PENDING: ["CONFIRMED", "CONVERTED", "CANCELLED"],
-  CONFIRMED: ["CONVERTED", "CANCELLED"],
+  PENDING: ["CONFIRMED", "CONVERTED", "CANCELLED", "NO_SHOW"],
+  CONFIRMED: ["CONVERTED", "CANCELLED", "NO_SHOW"],
   CONVERTED: [],
   CANCELLED: [],
+  // Sprint 23 (DOMAINRULES.md section 39) : le client ne s'est jamais présenté — terminal,
+  // distinct de CANCELLED (client venu mais véhicule refusé/conditions non respectées). Seul
+  // un ADMIN peut en sortir (resetReservationToPending ci-dessous, hors de cette machine à
+  // états normale, jamais via canTransition).
+  NO_SHOW: [],
 };
 
 export function canTransition(from: ReservationStatus, to: ReservationStatus): boolean {
@@ -274,7 +302,8 @@ export async function updateReservation(
   // modifier, l'API acceptait silencieusement un PATCH direct sur n'importe quel champ. Les
   // notes restent modifiables à tout statut (ReservationActions.tsx les édite indépendamment
   // du statut, y compris déjà terminal).
-  const isTerminal = existing.status === "CONVERTED" || existing.status === "CANCELLED";
+  const isTerminal =
+    existing.status === "CONVERTED" || existing.status === "CANCELLED" || existing.status === "NO_SHOW";
   if (isTerminal) {
     const touchesNonNotesField = (Object.keys(data) as (keyof UpdateReservationInput)[]).some(
       (key) => key !== "notes" && data[key] !== undefined
@@ -313,9 +342,7 @@ export async function updateReservation(
   const dropoffAgencyId =
     data.dropoffAgency !== undefined ? lookupAgencyId(agencyLookup!, data.dropoffAgency) : undefined;
 
-  return prisma.reservation.update({
-    where: { id: reservationId },
-    data: {
+  const updateData = {
       ...(data.voucherNumber !== undefined ? { voucherNumber: data.voucherNumber } : {}),
       ...(data.confirmationNumber !== undefined ? { confirmationNumber: data.confirmationNumber } : {}),
       ...(data.receivedAt !== undefined ? { receivedAt: data.receivedAt } : {}),
@@ -358,7 +385,73 @@ export async function updateReservation(
       ...(data.clientPhone !== undefined ? { clientPhone: data.clientPhone } : {}),
       ...(data.notes !== undefined ? { notes: data.notes } : {}),
       ...(data.status !== undefined ? { status: data.status } : {}),
-    },
+  };
+
+  // Sprint 23 : la transition de statut passe désormais par un `updateMany` conditionné sur
+  // `status: existing.status`, atomique côté base — même correctif de course que
+  // validateVehicleTransfer/cancelVehicleTransfer (Sprint 22, src/lib/vehicle-transfers.ts),
+  // étendu ici (DOMAINRULES.md section 39) car les nouvelles actions rapides (Annuler/No Show)
+  // rendent deux clics quasi simultanés sur la même ligne plus plausibles. Une modification qui
+  // ne change pas le statut n'a pas besoin de cette garde (pas de machine à états en jeu).
+  if (data.status !== undefined && data.status !== existing.status) {
+    return prisma.$transaction(async (tx) => {
+      const { count } = await tx.reservation.updateMany({
+        where: { id: reservationId, status: existing.status },
+        data: updateData,
+      });
+      if (count === 0) {
+        throw new InvalidReservationStatusTransitionError(existing.status, data.status as ReservationStatus);
+      }
+      return tx.reservation.findUniqueOrThrow({ where: { id: reservationId } });
+    });
+  }
+
+  return prisma.reservation.update({
+    where: { id: reservationId },
+    data: updateData,
+  });
+}
+
+/**
+ * Sprint 23 (DOMAINRULES.md section 39) — reset à zéro d'une réservation terminale, réservé à
+ * un ADMIN (dérivé côté route uniquement, jamais un champ de corps de requête — même principe
+ * que Location.adminOverride, DOMAINRULES.md section 37). Hors de la machine à états normale
+ * (`ALLOWED_TRANSITIONS` ci-dessus n'autorise jamais un retour à PENDING) : cette fonction
+ * l'atteint directement, volontairement, pour permettre à un admin de corriger une erreur
+ * d'agent (mauvais clic Annuler/No Show, ou contrat annulé qu'il faut reprendre à zéro).
+ */
+export async function resetReservationToPending(
+  tenantId: string,
+  reservationId: string
+): Promise<Reservation | null> {
+  const existing = await getReservationById(tenantId, reservationId);
+  if (!existing) {
+    return null;
+  }
+
+  if (existing.status !== "CONVERTED" && existing.status !== "CANCELLED" && existing.status !== "NO_SHOW") {
+    throw new ReservationNotResettableError();
+  }
+
+  if (existing.status === "CONVERTED" && existing.convertedLocationId) {
+    const location = await prisma.location.findUnique({
+      where: { id: existing.convertedLocationId },
+      select: { status: true },
+    });
+    if (location && location.status !== "CANCELLED") {
+      throw new ReservationResetRequiresCancelledContractError();
+    }
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const { count } = await tx.reservation.updateMany({
+      where: { id: reservationId, status: existing.status },
+      data: { status: "PENDING", convertedLocationId: null },
+    });
+    if (count === 0) {
+      throw new ReservationNotResettableError();
+    }
+    return tx.reservation.findUniqueOrThrow({ where: { id: reservationId } });
   });
 }
 
@@ -738,8 +831,15 @@ export async function markReservationConverted(
     throw new InvalidReservationStatusTransitionError(existing.status, "CONVERTED");
   }
 
-  return prisma.reservation.update({
-    where: { id: reservationId },
+  // Sprint 23 : même garde atomique que updateReservation ci-dessus — une conversion et une
+  // action rapide (Annuler/No Show) quasi simultanées sur la même réservation ne doivent
+  // jamais toutes deux réussir.
+  const { count } = await prisma.reservation.updateMany({
+    where: { id: reservationId, status: existing.status },
     data: { status: "CONVERTED", convertedLocationId: locationId },
   });
+  if (count === 0) {
+    throw new InvalidReservationStatusTransitionError(existing.status, "CONVERTED");
+  }
+  return prisma.reservation.findUniqueOrThrow({ where: { id: reservationId } });
 }

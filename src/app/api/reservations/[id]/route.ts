@@ -14,7 +14,7 @@ import {
 } from "@/lib/reservations";
 import { logAction } from "@/lib/audit";
 
-const RESERVATION_STATUSES: ReservationStatus[] = ["PENDING", "CONFIRMED", "CONVERTED", "CANCELLED"];
+const RESERVATION_STATUSES: ReservationStatus[] = ["PENDING", "CONFIRMED", "CONVERTED", "CANCELLED", "NO_SHOW"];
 const MONEY_FIELDS = ["totalPrice", "pricePerDay", "gpsPrice", "babySeatPrice", "extraDriverPrice"] as const;
 const INT_FIELDS = ["daysCount", "mileage", "includedKm"] as const;
 

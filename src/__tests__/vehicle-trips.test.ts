@@ -271,6 +271,35 @@ describe("PATCH /api/vehicle-trips/[id]/cancel", () => {
   });
 });
 
+describe("Sprint 23 — correctif de concurrence sur returnVehicleTrip/cancelVehicleTrip (DOMAINRULES.md section 39, étend le correctif Sprint 22)", () => {
+  it("retour et annulation concurrents sur le même déplacement — une seule réussit (409 pour l'autre)", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const createResponse = await createTrip(adminA, vehicleId, adminA.userId);
+    const tripId = (await createResponse.json()).trip.id;
+
+    const [returnResponse, cancelResponse] = await Promise.all([
+      apiFetch(`/api/vehicle-trips/${tripId}/return`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ endOdometer: 10500, endFuelLevel: 75 }),
+      }),
+      apiFetch(`/api/vehicle-trips/${tripId}/cancel`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+      }),
+    ]);
+
+    const statuses = [returnResponse.status, cancelResponse.status].sort();
+    expect(statuses).toEqual([200, 409]);
+
+    const finalCheck = await apiFetch(`/api/vehicle-trips/${tripId}`, { headers: { Cookie: adminA.sessionCookie } });
+    const finalTrip = (await finalCheck.json()).trip;
+    expect(["COMPLETED", "CANCELLED"]).toContain(finalTrip.status);
+  });
+});
+
 describe("Sprint 15 — permissions granulaires (vehicle_trips.create)", () => {
   it("refuse un MEMBER rattaché à l'agence mais dont le groupe personnalisé n'a pas vehicle_trips.create", async () => {
     const vehicleResponse = await createVehicle(adminA, agencyA1Id);

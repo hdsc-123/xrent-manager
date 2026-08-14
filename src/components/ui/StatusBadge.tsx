@@ -22,6 +22,10 @@ const STATUS_STYLES: Record<string, string> = {
     "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800",
   CONVERTED:
     "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800",
+  // Sprint 23 (DOMAINRULES.md section 39) : gris, distinct du rouge CANCELLED — le client ne
+  // s'est jamais présenté, ce n'est pas un refus/litige.
+  NO_SHOW:
+    "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800/60 dark:text-slate-300 dark:border-slate-700",
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -31,6 +35,7 @@ const STATUS_LABELS: Record<string, string> = {
   COMPLETED: "Terminée",
   CANCELLED: "Annulée",
   CONVERTED: "Convertie",
+  NO_SHOW: "No show",
 };
 
 export function StatusBadge({ status }: { status: string }) {

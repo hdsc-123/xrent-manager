@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { apiPatch, ApiError } from "@/lib/api";
 import { Button, Card, CardContent, CardHeader, CardTitle, Input } from "@/components/ui";
 
-type ReservationStatus = "PENDING" | "CONFIRMED" | "CONVERTED" | "CANCELLED";
+type ReservationStatus = "PENDING" | "CONFIRMED" | "CONVERTED" | "CANCELLED" | "NO_SHOW";
 
 interface ReservationActionsProps {
   id: string;
@@ -29,11 +29,16 @@ export function ReservationActions({ id, status, notes: initialNotes, canEdit }:
   const [isChangingStatus, setIsChangingStatus] = useState(false);
   const [isSavingNotes, setIsSavingNotes] = useState(false);
 
-  async function handleTransition(next: "CONFIRMED" | "CANCELLED") {
+  async function handleTransition(next: "CONFIRMED" | "CANCELLED" | "NO_SHOW") {
     setIsChangingStatus(true);
     try {
       await apiPatch(`/api/reservations/${id}`, { status: next });
-      toast.success(next === "CONFIRMED" ? "Réservation confirmée." : "Réservation annulée.");
+      const messages: Record<typeof next, string> = {
+        CONFIRMED: "Réservation confirmée.",
+        CANCELLED: "Réservation annulée.",
+        NO_SHOW: "Réservation marquée No Show.",
+      };
+      toast.success(messages[next]);
       router.refresh();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Erreur lors du changement de statut.");
@@ -60,6 +65,8 @@ export function ReservationActions({ id, status, notes: initialNotes, canEdit }:
   }
 
   const canCancel = status === "PENDING" || status === "CONFIRMED";
+  // Sprint 23 (DOMAINRULES.md section 39) — même statuts que canTransition(status, "NO_SHOW").
+  const canMarkNoShow = status === "PENDING" || status === "CONFIRMED";
 
   return (
     <Card>
@@ -67,7 +74,7 @@ export function ReservationActions({ id, status, notes: initialNotes, canEdit }:
         <CardTitle>Actions</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        {(status === "PENDING" || canCancel) && (
+        {(status === "PENDING" || canCancel || canMarkNoShow) && (
           <div className="flex flex-wrap gap-2">
             {status === "PENDING" && (
               <Button type="button" size="sm" disabled={isChangingStatus} onClick={() => handleTransition("CONFIRMED")}>
@@ -83,6 +90,18 @@ export function ReservationActions({ id, status, notes: initialNotes, canEdit }:
                 onClick={() => handleTransition("CANCELLED")}
               >
                 Annuler
+              </Button>
+            )}
+            {/* Sprint 23 — client jamais présenté, distinct d'Annuler. */}
+            {canMarkNoShow && (
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                disabled={isChangingStatus}
+                onClick={() => handleTransition("NO_SHOW")}
+              >
+                No Show
               </Button>
             )}
           </div>

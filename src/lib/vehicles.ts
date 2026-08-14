@@ -207,10 +207,13 @@ export interface VehicleLastKnownState {
  * Sprint 19 (DOMAINRULES.md section 37) : dernier kilométrage/niveau de carburant connus d'un
  * véhicule, pour pré-remplir automatiquement le départ d'un transfert/bon de déplacement
  * (au lieu de champs toujours vides jusqu'ici) — le plus récent parmi le retour de sa dernière
- * Location (kilométrage uniquement, Location ne suit pas le carburant), son dernier
- * VehicleTransfer ou son dernier VehicleTrip. `null` si aucune donnée de retour n'existe encore
- * pour ce véhicule (jamais loué/transféré/déplacé) — les champs restent alors vides et
- * modifiables normalement, aucune valeur inventée.
+ * Location, son dernier VehicleTransfer ou son dernier VehicleTrip. `null` si aucune donnée de
+ * retour n'existe encore pour ce véhicule (jamais loué/transféré/déplacé) — les champs restent
+ * alors vides et modifiables normalement, aucune valeur inventée.
+ *
+ * Sprint 23 : Location gagne startFuelLevel/endFuelLevel (voir prisma/schema.prisma) — la
+ * candidate Location contribue désormais aussi un niveau de carburant réel, plus jamais
+ * systématiquement `null` comme avant ce sprint.
  */
 export async function getVehicleLastKnownState(
   tenantId: string,
@@ -220,7 +223,7 @@ export async function getVehicleLastKnownState(
     prisma.location.findFirst({
       where: { tenantId, vehicleId, endOdometer: { not: null } },
       orderBy: { updatedAt: "desc" },
-      select: { endOdometer: true, updatedAt: true },
+      select: { endOdometer: true, endFuelLevel: true, updatedAt: true },
     }),
     prisma.vehicleTransfer.findFirst({
       where: { tenantId, vehicleId, endOdometer: { not: null } },
@@ -235,7 +238,8 @@ export async function getVehicleLastKnownState(
   ]);
 
   const candidates: { odometer: number | null; fuelLevel: number | null; at: Date }[] = [];
-  if (lastLocation) candidates.push({ odometer: lastLocation.endOdometer, fuelLevel: null, at: lastLocation.updatedAt });
+  if (lastLocation)
+    candidates.push({ odometer: lastLocation.endOdometer, fuelLevel: lastLocation.endFuelLevel, at: lastLocation.updatedAt });
   if (lastTransfer)
     candidates.push({ odometer: lastTransfer.endOdometer, fuelLevel: lastTransfer.endFuelLevel, at: lastTransfer.updatedAt });
   if (lastTrip) candidates.push({ odometer: lastTrip.endOdometer, fuelLevel: lastTrip.endFuelLevel, at: lastTrip.updatedAt });

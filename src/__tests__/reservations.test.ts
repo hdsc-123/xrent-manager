@@ -114,6 +114,148 @@ beforeAll(async () => {
   });
 });
 
+describe("Sprint 23 — statut NO_SHOW et réinitialisation à zéro réservée ADMIN (DOMAINRULES.md section 39)", () => {
+  it("autorise PENDING → NO_SHOW et CONFIRMED → NO_SHOW", async () => {
+    const pendingResponse = await createReservation(adminA);
+    const pendingId = (await pendingResponse.json()).reservation.id;
+    const patchPending = await apiFetch(`/api/reservations/${pendingId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "NO_SHOW" }),
+    });
+    expect(patchPending.status).toBe(200);
+    expect((await patchPending.json()).reservation.status).toBe("NO_SHOW");
+
+    const confirmedResponse = await createReservation(adminA);
+    const confirmedId = (await confirmedResponse.json()).reservation.id;
+    await apiFetch(`/api/reservations/${confirmedId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    const patchConfirmed = await apiFetch(`/api/reservations/${confirmedId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "NO_SHOW" }),
+    });
+    expect(patchConfirmed.status).toBe(200);
+  });
+
+  it("NO_SHOW est terminal — un PATCH ultérieur (hors notes) est refusé (409, ReservationLockedError)", async () => {
+    const createResponse = await createReservation(adminA);
+    const id = (await createResponse.json()).reservation.id;
+    await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "NO_SHOW" }),
+    });
+
+    const patchResponse = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ clientFirstName: "Autre" }),
+    });
+    expect(patchResponse.status).toBe(409);
+  });
+
+  it("POST .../reset refusé (403) pour un non-ADMIN", async () => {
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Member Reset Test",
+      email: `member-reset-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    const createResponse = await createReservation(adminA);
+    const id = (await createResponse.json()).reservation.id;
+    await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+
+    const resetResponse = await apiFetch(`/api/reservations/${id}/reset`, {
+      method: "POST",
+      headers: { Cookie: member.sessionCookie },
+    });
+    expect(resetResponse.status).toBe(403);
+  });
+
+  it("POST .../reset réinitialise une réservation NO_SHOW/CANCELLED à PENDING pour un ADMIN", async () => {
+    const createResponse = await createReservation(adminA);
+    const id = (await createResponse.json()).reservation.id;
+    await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "NO_SHOW" }),
+    });
+
+    const resetResponse = await apiFetch(`/api/reservations/${id}/reset`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(resetResponse.status).toBe(200);
+    expect((await resetResponse.json()).reservation.status).toBe("PENDING");
+  });
+
+  it("POST .../reset sur une réservation CONVERTED est refusé (409) tant que le contrat lié n'est pas annulé", async () => {
+    const createResponse = await createReservation(adminA, {
+      pickupAgency: "Agence A1",
+      dropoffAgency: "Agence A1",
+    });
+    const id = (await createResponse.json()).reservation.id;
+
+    const clientResponse = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Client Convert ${runId}`, phone: `+21262${runId.slice(-7)}` }),
+    });
+    const clientId = (await clientResponse.json()).client.id;
+
+    const convertResponse = await apiFetch(`/api/reservations/${id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: vehicleAId,
+        startDate: "2030-06-01T10:00:00.000Z",
+        endDate: "2030-06-03T10:00:00.000Z",
+        useExistingClientId: clientId,
+        payment: { deferred: true },
+      }),
+    });
+    expect(convertResponse.status).toBe(201);
+
+    const resetResponse = await apiFetch(`/api/reservations/${id}/reset`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(resetResponse.status).toBe(409);
+  });
+
+  it("deux actions rapides concurrentes (Annuler + No Show) sur la même réservation — une seule réussit (409 pour l'autre)", async () => {
+    const createResponse = await createReservation(adminA);
+    const id = (await createResponse.json()).reservation.id;
+
+    const [cancelResponse, noShowResponse] = await Promise.all([
+      apiFetch(`/api/reservations/${id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ status: "CANCELLED" }),
+      }),
+      apiFetch(`/api/reservations/${id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ status: "NO_SHOW" }),
+      }),
+    ]);
+
+    const statuses = [cancelResponse.status, noShowResponse.status].sort();
+    expect(statuses).toEqual([200, 409]);
+
+    const finalReservation = await prisma.reservation.findUnique({ where: { id } });
+    expect(["CANCELLED", "NO_SHOW"]).toContain(finalReservation?.status);
+  });
+});
+
 afterAll(async () => {
   await prisma.reservation.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });

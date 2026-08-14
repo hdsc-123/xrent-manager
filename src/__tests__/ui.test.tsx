@@ -265,3 +265,65 @@ describe("GET /api/users", () => {
     }
   });
 });
+
+describe("Sprint 23 — nouveaux onglets Contrats/Performance véhicules, gated par permission (DOMAINRULES.md section 39)", () => {
+  it("/dashboard/contracts rend la page pour un MEMBER par défaut (contracts_overview.view accordée)", async () => {
+    const response = await apiFetch("/dashboard/contracts", { headers: { Cookie: member.sessionCookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).not.toContain("permission de consulter");
+    expect(html).toContain("Contrats");
+  });
+
+  it("/dashboard/vehicle-performance rend la page pour un MEMBER par défaut (vehicle_performance.view accordée)", async () => {
+    const response = await apiFetch("/dashboard/vehicle-performance", { headers: { Cookie: member.sessionCookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).not.toContain("permission de consulter");
+    expect(html).toContain("Performance véhicules");
+  });
+
+  it("/dashboard/contracts refuse un MEMBER dont le groupe personnalisé n'a pas contracts_overview.view", async () => {
+    const restrictedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ name: `NoContractsOverview-${runId}`, permissions: ["reservations.view"] }),
+    });
+    const restrictedGroupId = (await restrictedGroupResponse.json()).group.id;
+
+    const restrictedMember = await createAndLoginMember({
+      tenantId: admin.tenantId,
+      name: "UI Restricted Contracts",
+      email: `ui-restricted-contracts-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: restrictedGroupId }),
+    });
+
+    const response = await apiFetch("/dashboard/contracts", { headers: { Cookie: restrictedMember.sessionCookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("permission de consulter");
+  });
+});
+
+describe("Sprint 23 — /dashboard/administration : vue par ville/agence, réservée ADMIN (DOMAINRULES.md section 39)", () => {
+  it("refuse un MEMBER (message « réservée aux administrateurs »)", async () => {
+    const response = await apiFetch("/dashboard/administration", { headers: { Cookie: member.sessionCookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("réservée aux administrateurs");
+  });
+
+  it("rend la page pour un ADMIN, avec le sélecteur de station", async () => {
+    const response = await apiFetch("/dashboard/administration", { headers: { Cookie: admin.sessionCookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).not.toContain("réservée aux administrateurs");
+    expect(html).toContain("Administration");
+    expect(html).toContain("Choisir une station");
+  });
+});

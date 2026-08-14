@@ -565,29 +565,29 @@ export async function checkOilChangeDue(tenantId: string): Promise<Alert[]> {
  * dashboard, tout rôle confondu), best-effort — une erreur ici ne doit jamais casser le
  * rendu du dashboard.
  *
- * Throttlée en mémoire de process (Map<tenantId, timestamp>, même classe de décision
- * d'ingénierie que le verrou de reset de données — src/lib/data-reset.ts, DOMAINRULES.md
- * section 31) : au plus une exécution complète par tenant toutes les LOOKBACK_MS
- * millisecondes, pour ne pas relancer treize requêtes agrégées à chaque navigation. Un vrai
- * cron périodique multi-instance reste hors périmètre (aucun mécanisme d'authentification de
- * service ni de verrou distribué dans ce projet, voir HANDOFF.md section 8) — cette
- * limitation documentée déjà actée aux Sprints 7/14C s'applique toujours : sur un déploiement
- * multi-instance, chaque instance a son propre throttle en mémoire, ce qui reste sans risque
- * ici (les vérifications sont idempotentes, hasUnresolvedAlert déduplique) mais peut exécuter
- * le scan plus souvent qu'une fois par fenêtre à l'échelle du cluster.
+ * Throttlée via `Tenant.lastAlertCheckAt` (Sprint 23, DOMAINRULES.md section 39 — remplace le
+ * verrou en mémoire de process du Sprint 22, dont la limite multi-instance était déjà
+ * documentée) : au plus une exécution complète par tenant toutes les ALERT_CHECK_THROTTLE_MS
+ * millisecondes, garantie par une seule instruction `UPDATE ... WHERE` atomique côté Postgres
+ * (`prisma.tenant.updateMany`, ci-dessous) plutôt qu'un `Map` local — deux instances (ou deux
+ * requêtes quasi simultanées sur la même instance) ne peuvent jamais toutes deux obtenir
+ * `count === 1` pour la même fenêtre, la seconde sort immédiatement (`count === 0`). Reste un
+ * best-effort au sens où les treize vérifications elles-mêmes ne sont pas transactionnelles
+ * entre elles une fois la garde acquise — acceptable, chacune est déjà idempotente
+ * (`hasUnresolvedAlert` déduplique), même limite déjà documentée pour le verrou de reset de
+ * données (`src/lib/data-reset.ts`, DOMAINRULES.md section 31).
  */
 const ALERT_CHECK_THROTTLE_MS = 60 * 60 * 1000;
-const lastAlertCheckRunByTenant = new Map<string, number>();
 
 export async function maybeRunScheduledAlertChecks(tenantId: string): Promise<void> {
-  const now = Date.now();
-  const lastRun = lastAlertCheckRunByTenant.get(tenantId);
-  if (lastRun !== undefined && now - lastRun < ALERT_CHECK_THROTTLE_MS) {
+  const cutoff = new Date(Date.now() - ALERT_CHECK_THROTTLE_MS);
+  const claimed = await prisma.tenant.updateMany({
+    where: { id: tenantId, OR: [{ lastAlertCheckAt: null }, { lastAlertCheckAt: { lt: cutoff } }] },
+    data: { lastAlertCheckAt: new Date() },
+  });
+  if (claimed.count === 0) {
     return;
   }
-  // Posé avant tout await, de façon synchrone, pour rester déterministe face à des requêtes
-  // concurrentes sur le même tenant (même principe que le verrou de reset, section 31).
-  lastAlertCheckRunByTenant.set(tenantId, now);
 
   try {
     await Promise.all([

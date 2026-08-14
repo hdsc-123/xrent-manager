@@ -13,12 +13,14 @@ import {
   CreditCard,
   Wallet,
   FileText,
+  Gauge,
   KeyRound,
   LayoutDashboard,
   Mail,
   Map,
   Repeat,
   Settings,
+  ShieldCheck,
   Store,
   UserRound,
   Users,
@@ -60,6 +62,18 @@ const navItems: NavItem[] = [
   { href: "/dashboard/payments", label: "Paiements", icon: CreditCard, permission: "payments.view" },
   { href: "/dashboard/cash-register", label: "Caisse", icon: Wallet, permission: "cash_register.view" },
   { href: "/dashboard/reports", label: "Rapports", icon: BarChart3, permission: "reports.view" },
+  // Sprint 23 (DOMAINRULES.md section 39) : listing de tous les contrats et performance par
+  // véhicule — clés distinctes de reports.view, voir src/lib/permissions.ts.
+  { href: "/dashboard/contracts", label: "Contrats", icon: FileText, permission: "contracts_overview.view" },
+  {
+    href: "/dashboard/vehicle-performance",
+    label: "Performance véhicules",
+    icon: Gauge,
+    permission: "vehicle_performance.view",
+  },
+  // Sprint 23 : vue Administration par ville/agence — réservée ADMIN (comme Utilisateurs/
+  // Audit/etc. ci-dessous), pas une permission granulaire (DOMAINRULES.md section 39).
+  { href: "/dashboard/administration", label: "Administration", icon: ShieldCheck, adminOnly: true },
   { href: "/dashboard/users", label: "Utilisateurs", icon: Users, adminOnly: true },
   { href: "/dashboard/invitations", label: "Invitations", icon: Mail, adminOnly: true },
   { href: "/dashboard/permission-groups", label: "Permissions", icon: KeyRound, adminOnly: true },

@@ -2,6 +2,7 @@ import type { Location, LocationStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getVehicleById, checkAvailability } from "@/lib/vehicles";
 import { getClientById } from "@/lib/clients";
+import { recomputeCashRegisterBalance } from "@/lib/cash-register";
 
 export class InvalidDateRangeError extends Error {
   constructor() {
@@ -87,6 +88,46 @@ export class LocationLockedError extends Error {
 }
 
 /**
+ * Sprint 23 (DOMAINRULES.md section 39) : un contrat encore PENDING (brouillon jamais
+ * confirmé) reste annulable par tout titulaire de locations.edit, comme avant ce sprint —
+ * mais annuler un contrat déjà validé (CONFIRMED/ACTIVE/COMPLETED) est désormais réservé à un
+ * ADMIN (voir adminOverride, déjà dérivé de user.role côté route, DOMAINRULES.md section 37).
+ * Pour une annulation avec réversibilité financière complète (factures/caisse), voir
+ * adminCancelValidatedLocation ci-dessous plutôt que cette transition simple.
+ */
+export class LocationCancellationRequiresAdminError extends Error {
+  constructor() {
+    super(
+      "Seul un administrateur peut annuler un contrat déjà validé (voir POST /api/locations/[id]/admin-cancel)."
+    );
+    this.name = "LocationCancellationRequiresAdminError";
+  }
+}
+
+/** Sprint 23 — garde de concurrence sur la transition de statut (voir updateLocation). */
+export class LocationStatusConflictError extends Error {
+  constructor() {
+    super("Le statut de ce contrat a été modifié entre-temps — rechargez la page et réessayez.");
+    this.name = "LocationStatusConflictError";
+  }
+}
+
+/** Sprint 23 — même validation que VehicleTransfer/VehicleTrip (src/lib/vehicle-transfers.ts),
+ * dupliquée localement pour éviter une dépendance croisée entre modules indépendants. */
+export class InvalidFuelLevelError extends Error {
+  constructor() {
+    super("Le niveau de carburant doit être un entier entre 0 et 100 (pourcentage).");
+    this.name = "InvalidFuelLevelError";
+  }
+}
+
+function validateFuelLevel(value: number | null | undefined): void {
+  if (value !== null && value !== undefined && (!Number.isInteger(value) || value < 0 || value > 100)) {
+    throw new InvalidFuelLevelError();
+  }
+}
+
+/**
  * Machine à états explicite (ARCHITECTURE.md section 12) : aucune transition non listée
  * n'est autorisée. COMPLETED et CANCELLED sont des états terminaux.
  */
@@ -165,6 +206,85 @@ export async function getLocationById(tenantId: string, locationId: string): Pro
   return prisma.location.findFirst({ where: { id: locationId, tenantId } });
 }
 
+export interface ContractOverviewRow {
+  id: string;
+  contractNumber: string | null;
+  clientName: string;
+  /** Résolue depuis la Reservation dont convertedLocationId pointe vers ce contrat (Sprint 23,
+   * DOMAINRULES.md section 39) — null si le contrat a été créé directement, sans réservation. */
+  source: string | null;
+  startDate: Date;
+  endDate: Date;
+  make: string;
+  licensePlate: string;
+  startOdometer: number | null;
+  endOdometer: number | null;
+  startFuelLevel: number | null;
+  endFuelLevel: number | null;
+  totalPrice: number;
+  currency: string;
+  status: LocationStatus;
+}
+
+/**
+ * Onglet « Listing contrats » (Sprint 23, DOMAINRULES.md section 39) — basé uniquement sur les
+ * contrats réels (`Location`), décision confirmée explicitement avec le propriétaire du projet :
+ * une réservation No Show/annulée qui n'a jamais généré de contrat n'apparaît jamais ici (aucune
+ * `Location` n'existe pour elle). `source` (broker/direct) est résolue en cherchant la
+ * `Reservation` dont `convertedLocationId` pointe vers chaque contrat (requête batch, une seule
+ * fois pour toute la page) — vide si le contrat a été créé directement, sans réservation.
+ * `agencyIds` restreint aux agences accessibles à l'appelant (départ **ou** retour, même
+ * principe que `canAccessLocationAgency`, `src/lib/authz.ts`) ; `null` = ADMIN, aucune
+ * restriction.
+ */
+export async function getContractsOverview(
+  tenantId: string,
+  filters: { agencyIds?: string[] | null; status?: LocationStatus } = {}
+): Promise<ContractOverviewRow[]> {
+  const locations = await prisma.location.findMany({
+    where: {
+      tenantId,
+      ...(filters.status ? { status: filters.status } : {}),
+      ...(filters.agencyIds
+        ? { OR: [{ agencyId: { in: filters.agencyIds } }, { dropoffAgencyId: { in: filters.agencyIds } }] }
+        : {}),
+    },
+    include: {
+      vehicle: { select: { make: true, licensePlate: true } },
+      client: { select: { name: true } },
+    },
+    orderBy: { startDate: "desc" },
+  });
+
+  const reservations = await prisma.reservation.findMany({
+    where: { tenantId, convertedLocationId: { in: locations.map((location) => location.id) } },
+    select: { convertedLocationId: true, source: true },
+  });
+  const sourceByLocationId = new Map(
+    reservations
+      .filter((reservation) => reservation.convertedLocationId !== null)
+      .map((reservation) => [reservation.convertedLocationId as string, reservation.source])
+  );
+
+  return locations.map((location) => ({
+    id: location.id,
+    contractNumber: location.contractNumber,
+    clientName: location.client.name,
+    source: sourceByLocationId.get(location.id) ?? null,
+    startDate: location.startDate,
+    endDate: location.endDate,
+    make: location.vehicle.make,
+    licensePlate: location.vehicle.licensePlate,
+    startOdometer: location.startOdometer,
+    endOdometer: location.endOdometer,
+    startFuelLevel: location.startFuelLevel,
+    endFuelLevel: location.endFuelLevel,
+    totalPrice: location.totalPrice,
+    currency: location.currency,
+    status: location.status,
+  }));
+}
+
 export interface CreateLocationInput {
   tenantId: string;
   agencyId: string;
@@ -183,6 +303,10 @@ export interface CreateLocationInput {
   notes?: string;
   startOdometer?: number;
   endOdometer?: number;
+  /** Sprint 23 — jauge de carburant départ/retour du contrat (0-100), voir Location.startFuelLevel/
+   * endFuelLevel dans prisma/schema.prisma. */
+  startFuelLevel?: number;
+  endFuelLevel?: number;
   deposit?: number;
   /** Prix/jour réel de cette location (centimes), saisi à la réservation/au contrat — source
    * de vérité de la facturation (Sprint 14A, DOMAINRULES.md section 5/7). Si absent, retombe
@@ -224,6 +348,9 @@ export async function createLocation(data: CreateLocationInput): Promise<Locatio
     }
   }
 
+  validateFuelLevel(data.startFuelLevel);
+  validateFuelLevel(data.endFuelLevel);
+
   const availability = await checkAvailability(data.tenantId, data.vehicleId, data.startDate, data.endDate);
   if (!availability?.available) {
     throw new VehicleNotAvailableError(availability?.conflictingLocations ?? []);
@@ -257,6 +384,8 @@ export async function createLocation(data: CreateLocationInput): Promise<Locatio
           notes: data.notes,
           startOdometer: data.startOdometer,
           endOdometer: data.endOdometer,
+          startFuelLevel: data.startFuelLevel,
+          endFuelLevel: data.endFuelLevel,
           deposit: data.deposit,
           contractNumber,
         },
@@ -283,6 +412,9 @@ export interface UpdateLocationInput {
   notes?: string;
   startOdometer?: number | null;
   endOdometer?: number | null;
+  /** Sprint 23 — jauge de carburant départ/retour (0-100). */
+  startFuelLevel?: number | null;
+  endFuelLevel?: number | null;
   deposit?: number | null;
   /** Sprint 19 — second conducteur, ajoutable/modifiable à tout statut (n'affecte ni dates ni
    * prix, jamais verrouillé par LocationLockedError). `null` retire le second conducteur. */
@@ -308,6 +440,22 @@ export async function updateLocation(
     if (!secondDriver) {
       throw new SecondDriverNotFoundError();
     }
+  }
+
+  validateFuelLevel(data.startFuelLevel);
+  validateFuelLevel(data.endFuelLevel);
+
+  // Sprint 23 (DOMAINRULES.md section 39) : un contrat déjà validé (sorti de PENDING) ne peut
+  // plus jamais être annulé via cette transition simple — ni par un titulaire ordinaire de
+  // locations.edit, ni même par un ADMIN via adminOverride. Annuler un contrat validé n'est
+  // plus une simple transition de statut : cela doit toujours passer par
+  // adminCancelValidatedLocation (POST /api/locations/[id]/admin-cancel), qui orchestre en plus
+  // l'annulation des factures et la réversibilité financière (écritures de caisse de
+  // compensation) — sans quoi une facture/des paiements resteraient incohérents avec un
+  // contrat désormais annulé. Un contrat encore PENDING (brouillon jamais confirmé) reste
+  // annulable normalement par tout titulaire de locations.edit, comportement inchangé.
+  if (data.status === "CANCELLED" && existing.status !== "CANCELLED" && existing.status !== "PENDING") {
+    throw new LocationCancellationRequiresAdminError();
   }
 
   // Contrat verrouillé (Sprint 14B, DOMAINRULES.md section 29) : les dates ne sont plus
@@ -354,19 +502,42 @@ export async function updateLocation(
       ? calculateTotalPrice(existing.pricePerDay, nextStart, nextEnd)
       : existing.totalPrice;
 
+  const updateData = {
+    startDate: nextStart,
+    endDate: nextEnd,
+    totalPrice,
+    ...(data.status ? { status: data.status } : {}),
+    ...(data.notes !== undefined ? { notes: data.notes } : {}),
+    ...(data.startOdometer !== undefined ? { startOdometer: data.startOdometer } : {}),
+    ...(data.endOdometer !== undefined ? { endOdometer: data.endOdometer } : {}),
+    ...(data.startFuelLevel !== undefined ? { startFuelLevel: data.startFuelLevel } : {}),
+    ...(data.endFuelLevel !== undefined ? { endFuelLevel: data.endFuelLevel } : {}),
+    ...(data.deposit !== undefined ? { deposit: data.deposit } : {}),
+    ...(data.secondDriverId !== undefined ? { secondDriverId: data.secondDriverId } : {}),
+  };
+
+  // Sprint 23 (DOMAINRULES.md section 39, étend le correctif Sprint 22 — DOMAINRULES.md
+  // section 38 point 3(c) — aux « flux similaires concernés ») : une transition de statut passe
+  // désormais par un `updateMany` conditionné sur `status: existing.status`, atomique côté
+  // base — deux transitions quasi simultanées sur le même contrat (ex. un agent clique
+  // "Terminée" pendant qu'un admin clique "Annuler") ne peuvent plus toutes deux réussir. Une
+  // modification qui ne change pas le statut n'a pas besoin de cette garde.
+  if (data.status !== undefined && data.status !== existing.status) {
+    return prisma.$transaction(async (tx) => {
+      const { count } = await tx.location.updateMany({
+        where: { id: locationId, status: existing.status },
+        data: updateData,
+      });
+      if (count === 0) {
+        throw new LocationStatusConflictError();
+      }
+      return tx.location.findUniqueOrThrow({ where: { id: locationId } });
+    });
+  }
+
   return prisma.location.update({
     where: { id: locationId },
-    data: {
-      startDate: nextStart,
-      endDate: nextEnd,
-      totalPrice,
-      ...(data.status ? { status: data.status } : {}),
-      ...(data.notes !== undefined ? { notes: data.notes } : {}),
-      ...(data.startOdometer !== undefined ? { startOdometer: data.startOdometer } : {}),
-      ...(data.endOdometer !== undefined ? { endOdometer: data.endOdometer } : {}),
-      ...(data.deposit !== undefined ? { deposit: data.deposit } : {}),
-      ...(data.secondDriverId !== undefined ? { secondDriverId: data.secondDriverId } : {}),
-    },
+    data: updateData,
   });
 }
 
@@ -400,4 +571,136 @@ export async function deleteLocation(tenantId: string, locationId: string): Prom
     prisma.location.delete({ where: { id: locationId } }),
   ]);
   return true;
+}
+
+/** Sprint 23 (DOMAINRULES.md section 39) — statuts considérés « validés » (sortis du simple
+ * brouillon PENDING) : seuls ceux-là exigent le circuit de réversibilité complète ci-dessous. */
+const VALIDATED_LOCATION_STATUSES: LocationStatus[] = ["CONFIRMED", "ACTIVE", "COMPLETED"];
+
+export class LocationNotAdminCancellableError extends Error {
+  constructor() {
+    super(
+      "Seul un contrat validé (CONFIRMED/ACTIVE/COMPLETED) peut être annulé par cette action — " +
+        "un contrat encore PENDING s'annule normalement (PATCH), un contrat déjà CANCELLED l'est déjà."
+    );
+    this.name = "LocationNotAdminCancellableError";
+  }
+}
+
+export interface AdminCancelLocationResult {
+  location: Location;
+  cancelledInvoiceIds: string[];
+  reversedPaymentCount: number;
+  reversedAmountTotal: number;
+}
+
+/**
+ * Annulation d'un contrat déjà validé, réservée à un ADMIN (dérivé côté route uniquement,
+ * jamais un champ de corps de requête — DOMAINRULES.md section 39) : orchestre en une seule
+ * transaction Prisma (1) le passage atomique de la Location à CANCELLED (même garde
+ * `updateMany` conditionnée que le reste de ce fichier), (2) l'annulation de toute Invoice non
+ * déjà CANCELLED de ce contrat — y compris depuis PAID/PARTIALLY_PAID, un cas que la machine à
+ * états normale d'Invoice (src/lib/invoices.ts, canTransition) n'autorise jamais autrement,
+ * jamais exposé par la route PATCH générique des factures — (3) pour chaque Payment de ces
+ * factures, une CashEntry de compensation (jamais une modification/suppression du Payment ou
+ * de la CashEntry d'origine, qui restent la source de vérité immuable — DOMAINRULES.md
+ * sections 10/23) de type inversé et de même montant, pour que le solde de caisse redevienne
+ * exact sans jamais réécrire l'historique. Le contrat lui-même n'est jamais supprimé (reste
+ * consultable, mention « Contrat annulé ») — voir LocationHasInvoiceError pour la suppression,
+ * volontairement non assouplie après cette opération (une facture CANCELLED reste `!== DRAFT`).
+ */
+export async function adminCancelValidatedLocation(
+  tenantId: string,
+  locationId: string
+): Promise<AdminCancelLocationResult | null> {
+  const existing = await getLocationById(tenantId, locationId);
+  if (!existing) {
+    return null;
+  }
+
+  if (!VALIDATED_LOCATION_STATUSES.includes(existing.status)) {
+    throw new LocationNotAdminCancellableError();
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const { count } = await tx.location.updateMany({
+      where: { id: locationId, status: existing.status },
+      data: { status: "CANCELLED" },
+    });
+    if (count === 0) {
+      throw new LocationStatusConflictError();
+    }
+    const location = await tx.location.findUniqueOrThrow({ where: { id: locationId } });
+
+    // Ne force à CANCELLED que les factures qui reflètent une vraie activité — même prédicat
+    // que deleteLocation ci-dessus (hasNonDeletableInvoice) : SENT/PARTIALLY_PAID/PAID, ou
+    // toute facture ayant reçu un paiement. Une facture DRAFT à 0 paiement n'est qu'un
+    // sous-produit vide de la création du contrat (même commentaire que deleteLocation) —
+    // la laisser DRAFT permet à un contrat validé annulé sans historique financier réel de
+    // rester supprimable ensuite (LocationHasInvoiceError ne bloquerait alors jamais à tort).
+    const invoicesToCancel = await tx.invoice.findMany({
+      where: {
+        locationId,
+        status: { not: "CANCELLED" },
+        OR: [{ status: { not: "DRAFT" } }, { amountPaid: { gt: 0 } }],
+      },
+    });
+
+    let reversedPaymentCount = 0;
+    let reversedAmountTotal = 0;
+
+    // Un tenant ayant déjà encaissé un paiement a nécessairement déjà une CashRegister (créée
+    // par createCashEntry/getOrCreateCashRegister au premier paiement) — recherchée une seule
+    // fois avant la boucle, jamais recréée ici (pas de getOrCreateCashRegister transactionnel).
+    const register =
+      invoicesToCancel.length > 0 ? await tx.cashRegister.findUnique({ where: { tenantId } }) : null;
+
+    for (const invoice of invoicesToCancel) {
+      await tx.invoice.update({ where: { id: invoice.id }, data: { status: "CANCELLED" } });
+
+      if (!register) continue;
+
+      const payments = await tx.payment.findMany({ where: { invoiceId: invoice.id } });
+      for (const payment of payments) {
+        await tx.cashEntry.create({
+          data: {
+            tenantId,
+            cashRegisterId: register.id,
+            // Un Payment alimente toujours une CashEntry de type ENTRY/VERSEMENT
+            // (recordPaymentCashEntry, src/lib/payments.ts — aucun remboursement/paiement
+            // négatif ne se modélise ailleurs dans le projet, DOMAINRULES.md section 10) : la
+            // compensation est donc toujours une sortie (EXPENSE) de même montant, sans jamais
+            // toucher à l'écriture d'origine (append-only, DOMAINRULES.md section 23).
+            type: "EXPENSE",
+            category: "ANNULATION_CONTRAT",
+            amount: payment.amount,
+            currency: payment.currency,
+            description: `Annulation contrat ${location.contractNumber ?? `#${location.id.slice(-8)}`} — compensation du paiement du ${payment.paidAt.toISOString().slice(0, 10)}`,
+            agencyId: location.agencyId,
+            contractId: location.id,
+            contractNumber: location.contractNumber,
+            paymentMethod: payment.method,
+          },
+        });
+        reversedPaymentCount += 1;
+        reversedAmountTotal += payment.amount;
+      }
+    }
+
+    return {
+      location,
+      cancelledInvoiceIds: invoicesToCancel.map((invoice) => invoice.id),
+      reversedPaymentCount,
+      reversedAmountTotal,
+    };
+  });
+
+  // Hors transaction, même principe que createCashEntry (src/lib/cash-register.ts) : le solde
+  // n'est jamais qu'une valeur dérivée des CashEntry réelles, jamais la source de vérité —
+  // un échec ici ne laisse rien d'incohérent (le prochain recalcul, quel qu'il soit, corrige).
+  if (result.reversedPaymentCount > 0) {
+    await recomputeCashRegisterBalance(tenantId);
+  }
+
+  return result;
 }

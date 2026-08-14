@@ -13,6 +13,9 @@ import {
   LocationNotDeletableError,
   LocationHasInvoiceError,
   LocationLockedError,
+  LocationCancellationRequiresAdminError,
+  LocationStatusConflictError,
+  InvalidFuelLevelError,
   SecondDriverNotFoundError,
 } from "@/lib/locations";
 import { logAction } from "@/lib/audit";
@@ -52,6 +55,9 @@ interface UpdateLocationBody {
   notes?: string;
   startOdometer?: number | null;
   endOdometer?: number | null;
+  /** Sprint 23 — jauge de carburant départ/retour (0-100). */
+  startFuelLevel?: number | null;
+  endFuelLevel?: number | null;
   deposit?: number | null;
   /** Sprint 19 — second conducteur (voir Location.secondDriverId). */
   secondDriverId?: string | null;
@@ -89,7 +95,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   // à l'agence de départ, voir DOMAINRULES.md section 37).
   const hasPickupAccess = await canAccessAgency(user, location.agencyId);
   if (!hasPickupAccess) {
-    const allowedKeys = new Set(["status", "endOdometer"]);
+    const allowedKeys = new Set(["status", "endOdometer", "endFuelLevel"]);
     const touchesDisallowedField = (Object.keys(body) as (keyof UpdateLocationBody)[]).some(
       (key) => !allowedKeys.has(key) && body[key] !== undefined
     );
@@ -138,6 +144,8 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       notes: body.notes,
       startOdometer: body.startOdometer,
       endOdometer: body.endOdometer,
+      startFuelLevel: body.startFuelLevel,
+      endFuelLevel: body.endFuelLevel,
       deposit: body.deposit,
       secondDriverId: body.secondDriverId,
       adminOverride: isAdmin,
@@ -173,6 +181,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     }
     if (error instanceof LocationLockedError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof LocationCancellationRequiresAdminError) {
+      return NextResponse.json({ error: error.message }, { status: 403 });
+    }
+    if (error instanceof LocationStatusConflictError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof InvalidFuelLevelError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof VehicleNotAvailableError) {
       return NextResponse.json(

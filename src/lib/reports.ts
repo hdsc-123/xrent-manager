@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/prisma";
+import { getVehicleLastKnownState } from "@/lib/vehicles";
+import { calculateDaysCount } from "@/lib/format";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -262,7 +264,10 @@ export async function getReservationsByStatus(
     _count: { _all: true },
   });
 
-  const ALL_STATUSES = ["PENDING", "CONFIRMED", "CONVERTED", "CANCELLED"] as const;
+  // Sprint 23 : NO_SHOW ajouté (DOMAINRULES.md section 39) — sans cette entrée, groupBy()
+  // renvoie bien les lignes NO_SHOW mais map() les ignore silencieusement (statut absent de
+  // la liste), sous-comptant le graphique comme l'ancien bug "broker" du Sprint 17.
+  const ALL_STATUSES = ["PENDING", "CONFIRMED", "CONVERTED", "CANCELLED", "NO_SHOW"] as const;
 
   // Sprint 15 a transformé `source` en texte libre (normalizeSource) précisément pour ne plus
   // perdre les codes broker réels (TJS/DCH/CT...) — un groupBy par valeur exacte de `source`
@@ -279,4 +284,88 @@ export async function getReservationsByStatus(
       .reduce((sum, entry) => sum + entry._count._all, 0);
     return { status, broker, direct };
   });
+}
+
+export interface VehiclePerformanceRow {
+  vehicleId: string;
+  model: string;
+  make: string;
+  licensePlate: string;
+  currentAgencyName: string;
+  currentOdometer: number | null;
+  currentFuelLevel: number | null;
+  validatedContractCount: number;
+  rentedDays: number;
+  revenue: number;
+  expenses: number;
+  currency: string;
+  /** revenue - expenses, décroissant — voir le classement ci-dessous. */
+  netMargin: number;
+  rank: number;
+}
+
+/**
+ * Onglet « Performance véhicule » (Sprint 23, DOMAINRULES.md section 39, point D de
+ * l'énoncé) — toutes villes confondues pour un ADMIN (`agencyIds` null), sinon restreint aux
+ * agences accessibles à l'appelant (`getAccessibleAgencyIds`, `src/lib/authz.ts`). Réutilise
+ * les mêmes conventions que `getTopVehicles`/`getVehicleUtilizationReport` ci-dessus plutôt que
+ * de les dupliquer : `REALIZED_LOCATION_STATUSES` (ACTIVE/COMPLETED) pour les contrats
+ * « validés », CA = `Location.totalPrice` facturé (pas encaissé, même définition que
+ * `getTopVehicles.revenue`) sur toute la durée (pas de fenêtre de dates, contrairement aux
+ * autres rapports — cet onglet est un cumul, pas un rapport périodique). Dépenses = somme de
+ * `Maintenance.cost`, seule dépense véhicule-scopée existante dans le schéma. Classement
+ * (`rank`) : marge nette (CA - dépenses) décroissante.
+ */
+export async function getVehiclePerformanceReport(
+  tenantId: string,
+  agencyIds: string[] | null = null
+): Promise<VehiclePerformanceRow[]> {
+  const vehicles = await prisma.vehicle.findMany({
+    where: { tenantId, ...(agencyIds ? { agencyId: { in: agencyIds } } : {}) },
+    select: {
+      id: true,
+      model: true,
+      make: true,
+      licensePlate: true,
+      currency: true,
+      agency: { select: { name: true } },
+      locations: {
+        where: { status: { in: [...REALIZED_LOCATION_STATUSES] } },
+        select: { totalPrice: true, startDate: true, endDate: true },
+      },
+      maintenances: { select: { cost: true } },
+    },
+  });
+
+  const rows = await Promise.all(
+    vehicles.map(async (vehicle) => {
+      const lastKnownState = await getVehicleLastKnownState(tenantId, vehicle.id);
+      const revenue = vehicle.locations.reduce((sum, location) => sum + location.totalPrice, 0);
+      const rentedDays = vehicle.locations.reduce(
+        (sum, location) => sum + calculateDaysCount(location.startDate, location.endDate),
+        0
+      );
+      const expenses = vehicle.maintenances.reduce((sum, maintenance) => sum + (maintenance.cost ?? 0), 0);
+
+      return {
+        vehicleId: vehicle.id,
+        model: vehicle.model,
+        make: vehicle.make,
+        licensePlate: vehicle.licensePlate,
+        currentAgencyName: vehicle.agency.name,
+        currentOdometer: lastKnownState.odometer,
+        currentFuelLevel: lastKnownState.fuelLevel,
+        validatedContractCount: vehicle.locations.length,
+        rentedDays,
+        revenue,
+        expenses,
+        currency: vehicle.currency,
+        netMargin: revenue - expenses,
+      };
+    })
+  );
+
+  return rows
+    .sort((a, b) => b.netMargin - a.netMargin)
+    .map((row, index) => ({ ...row, rank: index + 1 }));
 }

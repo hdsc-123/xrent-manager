@@ -166,8 +166,19 @@ export class MissingFuelLevelError extends Error {
   }
 }
 
-/** Retour du déplacement : bloque si endOdometer <= startOdometer (contrainte explicite du
- * sprint), repasse le véhicule AVAILABLE. */
+/**
+ * Retour du déplacement : bloque si endOdometer <= startOdometer (contrainte explicite du
+ * sprint), repasse le véhicule AVAILABLE.
+ *
+ * Sprint 23 (DOMAINRULES.md section 39, étend le correctif Sprint 22 — DOMAINRULES.md section
+ * 38 point 3(c) — aux « flux similaires concernés », documentés comme non corrigés depuis le
+ * Sprint 17, DOMAINRULES.md section 35) : la transition de statut passe désormais par un
+ * `updateMany` conditionné sur `status: "IN_PROGRESS"`, atomique côté base — même correctif
+ * que validateVehicleTransfer/cancelVehicleTransfer (src/lib/vehicle-transfers.ts). Un second
+ * appel concurrent (ex. `returnVehicleTrip` et `cancelVehicleTrip` sur le même déplacement)
+ * obtient `count === 0` et échoue proprement plutôt que d'écraser silencieusement un état déjà
+ * terminal.
+ */
 export async function returnVehicleTrip(
   tenantId: string,
   tripId: string,
@@ -191,8 +202,8 @@ export async function returnVehicleTrip(
   validateFuelLevel(data.endFuelLevel);
 
   return prisma.$transaction(async (tx) => {
-    const trip = await tx.vehicleTrip.update({
-      where: { id: existing.id },
+    const { count } = await tx.vehicleTrip.updateMany({
+      where: { id: existing.id, status: "IN_PROGRESS" },
       data: {
         status: "COMPLETED",
         returnDate: data.returnDate ?? new Date(),
@@ -201,6 +212,11 @@ export async function returnVehicleTrip(
         remarks: data.remarks !== undefined ? data.remarks : existing.remarks,
       },
     });
+    if (count === 0) {
+      throw new VehicleTripNotEditableError();
+    }
+
+    const trip = await tx.vehicleTrip.findUniqueOrThrow({ where: { id: existing.id } });
 
     await tx.vehicle.update({ where: { id: existing.vehicleId }, data: { status: "AVAILABLE" } });
 
@@ -208,6 +224,8 @@ export async function returnVehicleTrip(
   });
 }
 
+/** Sprint 23 : même correctif de race condition que returnVehicleTrip ci-dessus — updateMany
+ * conditionné sur status: "IN_PROGRESS", atomique. */
 export async function cancelVehicleTrip(tenantId: string, tripId: string): Promise<VehicleTrip | null> {
   const existing = await getVehicleTripById(tenantId, tripId);
   if (!existing) {
@@ -219,7 +237,15 @@ export async function cancelVehicleTrip(tenantId: string, tripId: string): Promi
   }
 
   return prisma.$transaction(async (tx) => {
-    const trip = await tx.vehicleTrip.update({ where: { id: existing.id }, data: { status: "CANCELLED" } });
+    const { count } = await tx.vehicleTrip.updateMany({
+      where: { id: existing.id, status: "IN_PROGRESS" },
+      data: { status: "CANCELLED" },
+    });
+    if (count === 0) {
+      throw new VehicleTripNotEditableError();
+    }
+
+    const trip = await tx.vehicleTrip.findUniqueOrThrow({ where: { id: existing.id } });
     await tx.vehicle.update({ where: { id: existing.vehicleId }, data: { status: "AVAILABLE" } });
     return trip;
   });

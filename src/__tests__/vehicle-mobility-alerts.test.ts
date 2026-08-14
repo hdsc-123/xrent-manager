@@ -268,3 +268,35 @@ describe("Sprint 22 — déclenchement automatique des vérifications d'alertes 
     expect(alert).toBeDefined();
   });
 });
+
+describe("Sprint 23 — throttle des vérifications d'alertes porté en base, multi-instance (DOMAINRULES.md section 39, remplace le Map en mémoire du Sprint 22)", () => {
+  it("Tenant.lastAlertCheckAt est posé au premier appel et n'est plus mis à jour par un second appel immédiat (throttle actif)", async () => {
+    const { maybeRunScheduledAlertChecks } = await import("@/lib/scheduled-tasks");
+
+    const freshAdmin = await registerTenantAdmin({
+      tenantName: "Alert Throttle DB",
+      tenantSlug: `alert-throttle-db-${runId}`,
+      name: "Admin Throttle",
+      email: `admin-throttle-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    createdTenantIds.push(freshAdmin.tenantId);
+
+    const before = await prisma.tenant.findUnique({ where: { id: freshAdmin.tenantId } });
+    expect(before?.lastAlertCheckAt).toBeNull();
+
+    await maybeRunScheduledAlertChecks(freshAdmin.tenantId);
+    const afterFirst = await prisma.tenant.findUnique({ where: { id: freshAdmin.tenantId } });
+    expect(afterFirst?.lastAlertCheckAt).not.toBeNull();
+
+    await maybeRunScheduledAlertChecks(freshAdmin.tenantId);
+    const afterSecond = await prisma.tenant.findUnique({ where: { id: freshAdmin.tenantId } });
+    // Un second appel immédiat (dans la fenêtre d'une heure) ne doit jamais réclamer la garde
+    // à nouveau — la valeur reste strictement identique, jamais réécrite. Le mécanisme
+    // (updateMany conditionné, atomique côté Postgres) est le même que celui déjà testé pour
+    // les transitions de statut concurrentes (locations/reservations/vehicle-trips) — seule sa
+    // persistance en base (au lieu d'un Map en mémoire) est nouvelle ici, ce qui la rend
+    // effective sur un déploiement multi-instance (chaque instance partage la même base).
+    expect(afterSecond?.lastAlertCheckAt?.getTime()).toBe(afterFirst?.lastAlertCheckAt?.getTime());
+  });
+});

@@ -12,6 +12,7 @@ import {
   ClientNotFoundError,
   VehicleNotAvailableError,
   MissingPriceError,
+  InvalidFuelLevelError,
 } from "@/lib/locations";
 import { createInvoice } from "@/lib/invoices";
 import { processLocationPayment, validatePaymentInput, type PaymentInput } from "@/lib/location-payment";
@@ -74,6 +75,9 @@ interface CreateLocationBody {
   notes?: string;
   startOdometer?: number;
   endOdometer?: number;
+  /** Sprint 23 — jauge de carburant départ/retour (0-100). */
+  startFuelLevel?: number;
+  endFuelLevel?: number;
   deposit?: number;
   /** Prix/jour réel (centimes) — voir DOMAINRULES.md section 5/7. Optionnel : retombe sur le
    * prix informatif du véhicule s'il en a un ; sinon 400 (voir MissingPriceError). */
@@ -162,6 +166,8 @@ export async function POST(request: Request) {
       notes: body.notes,
       startOdometer: body.startOdometer,
       endOdometer: body.endOdometer,
+      startFuelLevel: body.startFuelLevel,
+      endFuelLevel: body.endFuelLevel,
       deposit: body.deposit,
       pricePerDay: body.pricePerDay,
     });
@@ -225,6 +231,9 @@ export async function POST(request: Request) {
       );
     }
     if (error instanceof MissingPriceError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof InvalidFuelLevelError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
 

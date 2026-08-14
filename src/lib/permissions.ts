@@ -66,6 +66,12 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: "payments.delete", label: "Supprimer des paiements", category: "Paiements" },
 
   { key: "reports.view", label: "Voir les rapports", category: "Rapports" },
+  // Sprint 23 (DOMAINRULES.md section 39) : deux nouveaux onglets de reporting métier —
+  // listing de tous les contrats (toutes agences confondues pour un ADMIN) et performance par
+  // véhicule. Clés distinctes de reports.view (KPI agrégés) : ce sont des listings détaillés,
+  // pas un tableau de bord financier — un tenant peut vouloir accorder l'un sans l'autre.
+  { key: "contracts_overview.view", label: "Voir le listing des contrats", category: "Rapports" },
+  { key: "vehicle_performance.view", label: "Voir la performance des véhicules", category: "Rapports" },
 
   { key: "users.view", label: "Voir les utilisateurs", category: "Utilisateurs" },
   { key: "users.create", label: "Créer des utilisateurs", category: "Utilisateurs" },
@@ -157,6 +163,11 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "payments.create",
       "payments.delete",
       "reports.view",
+      // Sprint 23 : deux nouveaux onglets de reporting (listing contrats/performance
+      // véhicules) — accordés par défaut comme reports.view, préservant la même largeur
+      // d'accès pour ce groupe déjà largement doté.
+      "contracts_overview.view",
+      "vehicle_performance.view",
       "maintenances.view",
       "maintenances.create",
       "maintenances.edit",
@@ -195,6 +206,9 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "payments.create",
       "payments.delete",
       "reports.view",
+      // Sprint 23 : voir le commentaire équivalent sur MEMBER ci-dessus.
+      "contracts_overview.view",
+      "vehicle_performance.view",
       "reservations.view",
     ],
   },
@@ -209,6 +223,9 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
     // réservation" et empêche de fait toute soumission de ces formulaires malgré des permissions
     // *.create par ailleurs accordées ; cash_register.* était possible sans restriction avant le
     // retrofit, comme pour MEMBER — même principe de préservation du comportement antérieur).
+    // Sprint 23 : contracts_overview.view/vehicle_performance.view ajoutés — listings
+    // opérationnels utiles au quotidien d'une agence (pas seulement financiers, contrairement à
+    // reports.view que ce groupe n'a jamais eu).
     name: "AGENCE",
     permissions: [
       "agencies.view",
@@ -234,6 +251,8 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "invoices.edit",
       "payments.view",
       "payments.create",
+      "contracts_overview.view",
+      "vehicle_performance.view",
       "maintenances.view",
       "maintenances.create",
       "maintenances.edit",
@@ -313,6 +332,9 @@ export const PAST_PERMISSION_BACKFILLS: Record<string, string[]> = {
     "vehicle_trips.create",
     "vehicle_trips.return",
     "vehicle_trips.cancel",
+    // Sprint 23 : deux nouveaux onglets de reporting (voir le commentaire sur DEFAULT_GROUPS).
+    "contracts_overview.view",
+    "vehicle_performance.view",
   ],
   AGENCE: [
     // Sprint 17 : agencies.view/cash_register.* — voir le commentaire sur DEFAULT_GROUPS
@@ -345,7 +367,13 @@ export const PAST_PERMISSION_BACKFILLS: Record<string, string[]> = {
     "vehicle_trips.create",
     "vehicle_trips.return",
     "vehicle_trips.cancel",
+    // Sprint 23 : voir le commentaire équivalent sur MEMBER ci-dessus.
+    "contracts_overview.view",
+    "vehicle_performance.view",
   ],
+  // Sprint 23 : COMPTABILITÉ n'avait jamais eu d'entrée dans ce dictionnaire (resserré, jamais
+  // étendu, depuis le Sprint 15) — première extension pour ce groupe.
+  COMPTABILITÉ: ["contracts_overview.view", "vehicle_performance.view"],
 };
 
 /**

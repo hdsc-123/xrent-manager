@@ -13,6 +13,7 @@ const STATUS_OPTIONS: { value: ReservationStatus; label: string }[] = [
   { value: "CONFIRMED", label: "Confirmée" },
   { value: "CONVERTED", label: "Convertie" },
   { value: "CANCELLED", label: "Annulée" },
+  { value: "NO_SHOW", label: "No show" },
 ];
 
 // Sprint 15 : source est désormais du texte libre (voir prisma/schema.prisma) — ces valeurs
@@ -53,6 +54,12 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
   const canImport = await can(user, "reservations.import");
   const canDelete = await can(user, "reservations.delete");
   const canEdit = await can(user, "reservations.edit");
+  // Sprint 23 : action rapide « Valider » (renvoie vers le formulaire de contrat) — distincte
+  // de reservations.edit, catalogue depuis le Sprint 12C (DOMAINRULES.md section 22).
+  const canConvert = await can(user, "reservations.convert");
+  // Réinitialiser à zéro (section 39) : réservé ADMIN, jamais une permission granulaire —
+  // même principe que l'admin override des contrats (DOMAINRULES.md section 37).
+  const isAdmin = user.role === "ADMIN";
 
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
   const reservations = await getReservations(user.tenantId, {
@@ -286,7 +293,13 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
         )}
       </form>
 
-      <ReservationsTable reservations={rows} canDelete={canDelete} canEdit={canEdit} />
+      <ReservationsTable
+        reservations={rows}
+        canDelete={canDelete}
+        canEdit={canEdit}
+        canConvert={canConvert}
+        isAdmin={isAdmin}
+      />
     </div>
   );
 }

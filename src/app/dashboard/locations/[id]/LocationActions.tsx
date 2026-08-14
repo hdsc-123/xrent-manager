@@ -4,7 +4,22 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { apiPatch, apiPost, ApiError } from "@/lib/api";
-import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from "@/components/ui";
+import {
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  Label,
+} from "@/components/ui";
+import { FuelLevelSelect } from "@/components/ui/fuel-level-select";
 
 type LocationStatus = "PENDING" | "CONFIRMED" | "ACTIVE" | "COMPLETED" | "CANCELLED";
 
@@ -30,6 +45,8 @@ interface LocationActionsProps {
   status: LocationStatus;
   notes: string | null;
   endOdometer: number | null;
+  /** Sprint 23 — carburant retour actuel (0-100), null si jamais renseigné. */
+  endFuelLevel: number | null;
   /** Sprint 19 — dates actuelles (YYYY-MM-DD), pour le formulaire de modification réservé
    * ADMIN ci-dessous — seul point d'accès UI à adminOverride pour les dates, voir
    * PATCH /api/locations/[id]/route.ts. */
@@ -57,6 +74,7 @@ export function LocationActions({
   status,
   notes: initialNotes,
   endOdometer: initialEndOdometer,
+  endFuelLevel: initialEndFuelLevel,
   startDate: initialStartDate,
   endDate: initialEndDate,
   secondDriver,
@@ -69,6 +87,9 @@ export function LocationActions({
   const [endOdometer, setEndOdometer] = useState(
     initialEndOdometer !== null ? String(initialEndOdometer) : ""
   );
+  const [endFuelLevel, setEndFuelLevel] = useState(
+    initialEndFuelLevel !== null ? String(initialEndFuelLevel) : ""
+  );
   const [isChangingStatus, setIsChangingStatus] = useState(false);
   const [isSavingNotes, setIsSavingNotes] = useState(false);
   const [showSecondDriverForm, setShowSecondDriverForm] = useState(false);
@@ -80,6 +101,8 @@ export function LocationActions({
   const [adminStartDate, setAdminStartDate] = useState(initialStartDate);
   const [adminEndDate, setAdminEndDate] = useState(initialEndDate);
   const [isSavingAdminDates, setIsSavingAdminDates] = useState(false);
+  const [showAdminCancelDialog, setShowAdminCancelDialog] = useState(false);
+  const [isAdminCancelling, setIsAdminCancelling] = useState(false);
 
   async function handleTransition(next: LocationStatus) {
     setIsChangingStatus(true);
@@ -93,6 +116,7 @@ export function LocationActions({
       await apiPatch(`/api/locations/${id}`, {
         status: next,
         endOdometer: endOdometer ? Number(endOdometer) : null,
+        endFuelLevel: endFuelLevel ? Number(endFuelLevel) : null,
       });
       toast.success(`Statut mis à jour : ${STATUS_LABELS[next]}.`);
       router.refresh();
@@ -109,6 +133,7 @@ export function LocationActions({
       await apiPatch(`/api/locations/${id}`, {
         notes,
         endOdometer: endOdometer ? Number(endOdometer) : null,
+        endFuelLevel: endFuelLevel ? Number(endFuelLevel) : null,
       });
       toast.success("Notes enregistrées.");
       router.refresh();
@@ -140,6 +165,24 @@ export function LocationActions({
       toast.error(err instanceof ApiError ? err.message : "Erreur lors de l'enregistrement.");
     } finally {
       setIsSavingSecondDriver(false);
+    }
+  }
+
+  // Sprint 23 (DOMAINRULES.md section 39) — annulation d'un contrat validé avec réversibilité
+  // financière complète (factures + caisse) : POST dédié, distinct de la transition PATCH
+  // normale (toujours refusée pour un contrat validé, voir LocationCancellationRequiresAdminError,
+  // src/lib/locations.ts).
+  async function handleAdminCancel() {
+    setIsAdminCancelling(true);
+    try {
+      await apiPost(`/api/locations/${id}/admin-cancel`, {});
+      toast.success("Contrat annulé (factures et caisse mises à jour).");
+      setShowAdminCancelDialog(false);
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Erreur lors de l'annulation.");
+    } finally {
+      setIsAdminCancelling(false);
     }
   }
 
@@ -177,6 +220,10 @@ export function LocationActions({
             <span className="text-xs font-medium text-muted-foreground">Kilométrage retour</span>
             <Input type="number" value={endOdometer} onChange={(e) => setEndOdometer(e.target.value)} />
           </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="endFuelLevelReturn">Carburant retour</Label>
+            <FuelLevelSelect id="endFuelLevelReturn" value={endFuelLevel} onChange={setEndFuelLevel} />
+          </div>
           {canComplete ? (
             <Button type="button" disabled={isChangingStatus} onClick={() => handleTransition("COMPLETED")}>
               {isChangingStatus ? "Enregistrement..." : "Marquer Terminée"}
@@ -191,9 +238,18 @@ export function LocationActions({
     );
   }
 
-  const allowedNextStatuses = ALLOWED_TRANSITIONS[status];
+  const rawAllowedNextStatuses = ALLOWED_TRANSITIONS[status];
+  // Sprint 23 (DOMAINRULES.md section 39) : un contrat déjà validé (sorti de PENDING) ne peut
+  // plus être annulé via cette transition simple, même pour un ADMIN (PATCH le refuse
+  // systématiquement, voir LocationCancellationRequiresAdminError) — retirée des transitions
+  // proposées, remplacée par l'action dédiée « Annuler ce contrat (administrateur) » plus bas,
+  // seule voie qui orchestre aussi la réversibilité financière (factures/caisse).
+  const isValidatedContract = status !== "PENDING" && status !== "CANCELLED";
+  const allowedNextStatuses = rawAllowedNextStatuses.filter(
+    (candidate) => !(candidate === "CANCELLED" && isValidatedContract)
+  );
   const otherStatuses = (Object.keys(STATUS_LABELS) as LocationStatus[]).filter(
-    (candidate) => candidate !== status && !allowedNextStatuses.includes(candidate)
+    (candidate) => candidate !== status && candidate !== "CANCELLED" && !rawAllowedNextStatuses.includes(candidate)
   );
 
   return (
@@ -248,6 +304,30 @@ export function LocationActions({
               </div>
             </div>
           )}
+          {/* Sprint 23 (DOMAINRULES.md section 39) — annulation d'un contrat validé, réservée
+              ADMIN : distincte des transitions ci-dessus, orchestre aussi l'annulation des
+              factures et la réversibilité financière (écritures de caisse de compensation),
+              voir POST /api/locations/[id]/admin-cancel. */}
+          {isAdmin && isValidatedContract && (
+            <div className="flex flex-col gap-1.5 rounded-md border border-destructive/40 bg-destructive/5 p-2">
+              <span className="text-xs font-medium text-destructive">
+                Annuler ce contrat (action administrateur)
+              </span>
+              <p className="text-xs text-muted-foreground">
+                Annule le contrat, ses factures et compense les paiements déjà encaissés en caisse — sans jamais
+                effacer l&apos;historique.
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                className="w-fit"
+                onClick={() => setShowAdminCancelDialog(true)}
+              >
+                Annuler ce contrat
+              </Button>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -257,6 +337,11 @@ export function LocationActions({
             value={endOdometer}
             onChange={(e) => setEndOdometer(e.target.value)}
           />
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="endFuelLevelMain">Carburant retour</Label>
+          <FuelLevelSelect id="endFuelLevelMain" value={endFuelLevel} onChange={setEndFuelLevel} />
         </div>
 
         {isAdmin && (
@@ -404,6 +489,27 @@ export function LocationActions({
           )}
         </div>
       </CardContent>
+
+      <Dialog open={showAdminCancelDialog} onOpenChange={setShowAdminCancelDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Annuler ce contrat ?</DialogTitle>
+            <DialogDescription>
+              Le contrat sera marqué « Annulée » (conservé, jamais supprimé), ses factures seront annulées et
+              chaque paiement déjà encaissé sera compensé par une écriture de caisse — sans jamais modifier
+              l&apos;historique des paiements existants. Cette action est irréversible.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAdminCancelDialog(false)}>
+              Retour
+            </Button>
+            <Button variant="destructive" onClick={handleAdminCancel} disabled={isAdminCancelling}>
+              {isAdminCancelling ? "Annulation..." : "Annuler ce contrat"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

@@ -132,8 +132,215 @@ beforeAll(async () => {
   await prisma.userAgency.create({ data: { userId: linkedMemberA.userId, agencyId: agencyA1Id } });
 });
 
+/** Sprint 23 — plage de dates unique par appel (base 2028-02-01, +5 jours à chaque fois) : les
+ * tests ci-dessous créent plusieurs contrats sur le même vehicleAId dans le même describe block
+ * (contrairement aux tests existants du fichier, chacun avec ses propres dates explicites) —
+ * sans cela, tous retomberaient sur les dates par défaut de createLocation et se
+ * chevaucheraient (VehicleNotAvailableError, 409). */
+let sprint23DateCounter = 0;
+function nextTestDateRange(): { startDate: string; endDate: string } {
+  const startDay = 1 + sprint23DateCounter * 5;
+  sprint23DateCounter += 1;
+  const start = new Date(Date.UTC(2028, 1, startDay));
+  const end = new Date(Date.UTC(2028, 1, startDay + 3));
+  return { startDate: start.toISOString().slice(0, 10), endDate: end.toISOString().slice(0, 10) };
+}
+
+/** Sprint 23 — même motif que createLocationWithPayment (location-payment.test.ts) : crée un
+ * contrat CONFIRMED avec un paiement intégré (donc une facture PAID et une CashEntry réelle),
+ * pour tester l'annulation admin avec réversibilité financière. */
+async function createConfirmedLocationWithPayment(admin: AuthenticatedTestUser) {
+  const response = await createLocation(admin, {
+    ...nextTestDateRange(),
+    status: "CONFIRMED",
+    payment: { method: "CASH", partial: false },
+  });
+  const body = await response.json();
+  return {
+    location: body.location as { id: string; agencyId: string; totalPrice: number },
+    invoice: body.invoice as { id: string; status: string },
+  };
+}
+
+describe("Sprint 23 — annulation d'un contrat validé, réservée ADMIN, avec réversibilité (DOMAINRULES.md section 39)", () => {
+  it("PATCH status=CANCELLED sur un contrat CONFIRMED est refusé (403) même pour un ADMIN — seule POST .../admin-cancel le permet", async () => {
+    const { location } = await createConfirmedLocationWithPayment(adminA);
+
+    const patchResponse = await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+    expect(patchResponse.status).toBe(403);
+  });
+
+  it("PATCH status=CANCELLED sur un contrat encore PENDING reste autorisé pour un MEMBER (brouillon jamais validé)", async () => {
+    const createResponse = await createLocation(linkedMemberA, nextTestDateRange());
+    const { location: pendingLocation } = await createResponse.json();
+
+    const patchResponse = await apiFetch(`/api/locations/${pendingLocation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: linkedMemberA.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+    expect(patchResponse.status).toBe(200);
+  });
+
+  it("POST .../admin-cancel refusé (403) pour un MEMBER, même rattaché à l'agence", async () => {
+    const { location } = await createConfirmedLocationWithPayment(adminA);
+
+    const response = await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: linkedMemberA.sessionCookie },
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it("POST .../admin-cancel refusé (409) sur un contrat encore PENDING", async () => {
+    const createResponse = await createLocation(adminA, nextTestDateRange());
+    const { location: pendingLocation } = await createResponse.json();
+
+    const response = await apiFetch(`/api/locations/${pendingLocation.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it("annule un contrat CONFIRMED avec facture PAID : facture annulée, écriture de compensation créée, solde de caisse revenu à sa valeur d'origine, Payment inchangé", async () => {
+    const balanceBefore = await apiFetch("/api/cash-register", { headers: { Cookie: adminA.sessionCookie } });
+    const currentBalanceBefore = (await balanceBefore.json()).currentBalance as number;
+
+    const { location, invoice } = await createConfirmedLocationWithPayment(adminA);
+    expect(invoice.status).toBe("PAID");
+
+    const paymentsBefore = await prisma.payment.findMany({ where: { invoiceId: invoice.id } });
+    expect(paymentsBefore.length).toBe(1);
+    const paymentAmount = paymentsBefore[0].amount;
+
+    const response = await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.location.status).toBe("CANCELLED");
+    expect(body.cancelledInvoiceCount).toBe(1);
+    expect(body.reversedPaymentCount).toBe(1);
+    expect(body.reversedAmountTotal).toBe(paymentAmount);
+
+    const invoiceAfter = await prisma.invoice.findUnique({ where: { id: invoice.id } });
+    expect(invoiceAfter?.status).toBe("CANCELLED");
+
+    // Le Payment d'origine n'est jamais modifié ni supprimé (append-only, DOMAINRULES.md
+    // section 10/23) — seule une écriture de compensation est ajoutée en caisse.
+    const paymentsAfter = await prisma.payment.findMany({ where: { invoiceId: invoice.id } });
+    expect(paymentsAfter).toEqual(paymentsBefore);
+
+    const compensationEntry = await prisma.cashEntry.findFirst({
+      where: { contractId: location.id, category: "ANNULATION_CONTRAT" },
+    });
+    expect(compensationEntry).not.toBeNull();
+    expect(compensationEntry?.type).toBe("EXPENSE");
+    expect(compensationEntry?.amount).toBe(paymentAmount);
+
+    const balanceAfter = await apiFetch("/api/cash-register", { headers: { Cookie: adminA.sessionCookie } });
+    const currentBalanceAfter = (await balanceAfter.json()).currentBalance as number;
+    expect(currentBalanceAfter).toBe(currentBalanceBefore);
+  });
+
+  it("un second appel admin-cancel sur le même contrat déjà annulé échoue proprement (409, jamais un double reversal)", async () => {
+    const { location } = await createConfirmedLocationWithPayment(adminA);
+
+    const first = await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(first.status).toBe(200);
+
+    const second = await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(second.status).toBe(409);
+  });
+
+  it("un contrat annulé avec historique financier reste bloqué à la suppression (LocationHasInvoiceError, décision documentée section 3.3 du plan Sprint 23)", async () => {
+    const { location } = await createConfirmedLocationWithPayment(adminA);
+    await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+
+    const deleteResponse = await apiFetch(`/api/locations/${location.id}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(409);
+  });
+
+  it("le contrat annulé n'est plus compté dans le CA réalisé du véhicule (getTopVehicles)", async () => {
+    const { location } = await createConfirmedLocationWithPayment(adminA);
+    // Contrat validé (CONFIRMED) : passe ACTIVE pour compter dans REALIZED_LOCATION_STATUSES
+    // (src/lib/reports.ts) avant annulation, pour vérifier qu'il en sort bien après.
+    await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "ACTIVE" }),
+    });
+
+    const { getTopVehicles } = await import("@/lib/reports");
+    const before = await getTopVehicles(adminA.tenantId, 50);
+    const vehicleBefore = before.find((entry) => entry.vehicleId === vehicleAId);
+    expect(vehicleBefore).toBeDefined();
+
+    await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+
+    const after = await getTopVehicles(adminA.tenantId, 50);
+    const vehicleAfter = after.find((entry) => entry.vehicleId === vehicleAId);
+    expect(vehicleAfter?.revenue ?? 0).toBe((vehicleBefore?.revenue ?? 0) - location.totalPrice);
+  });
+});
+
+describe("Sprint 23 — correctif de concurrence sur updateLocation (DOMAINRULES.md section 39, étend le correctif Sprint 22)", () => {
+  it("deux transitions de statut concurrentes sur la même location PENDING — une seule réussit (409 pour l'autre)", async () => {
+    // PENDING → CONFIRMED et PENDING → CANCELLED sont toutes deux des transitions normalement
+    // valides depuis PENDING (contrairement à CONFIRMED → CANCELLED, réservée ADMIN depuis ce
+    // sprint via admin-cancel) — le choix le plus propre pour exercer la garde de concurrence
+    // sans se heurter à cette nouvelle restriction.
+    const createResponse = await createLocation(adminA, nextTestDateRange());
+    const { location } = await createResponse.json();
+
+    const [toConfirmed, toCancelled] = await Promise.all([
+      apiFetch(`/api/locations/${location.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ status: "CONFIRMED" }),
+      }),
+      apiFetch(`/api/locations/${location.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ status: "CANCELLED" }),
+      }),
+    ]);
+
+    const statuses = [toConfirmed.status, toCancelled.status].sort();
+    expect(statuses).toEqual([200, 409]);
+
+    const finalLocation = await prisma.location.findUnique({ where: { id: location.id } });
+    expect(["CONFIRMED", "CANCELLED"]).toContain(finalLocation?.status);
+  });
+});
+
 afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  // Sprint 23 — les tests d'annulation admin avec réversibilité créent des Payment/CashEntry
+  // réels (voir createLocationWithPayment ci-dessous), à purger avant Payment/Location.
+  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -472,7 +679,7 @@ describe("DELETE /api/locations/[id]", () => {
     expect(response.status).toBe(200);
   });
 
-  it("refuse la suppression d'une location CONFIRMED (doit être annulée d'abord)", async () => {
+  it("refuse la suppression d'une location CONFIRMED (doit être annulée d'abord, désormais via admin-cancel — Sprint 23, DOMAINRULES.md section 39)", async () => {
     const createResponse = await createLocation(adminA, {
       startDate: "2028-11-10",
       endDate: "2028-11-13",
@@ -491,13 +698,25 @@ describe("DELETE /api/locations/[id]", () => {
     });
     expect(deleteResponse.status).toBe(409);
 
+    // Sprint 23 : un contrat déjà validé (CONFIRMED) ne peut plus être annulé via la
+    // transition PATCH simple, même pour un ADMIN — seul POST .../admin-cancel le permet
+    // (voir LocationCancellationRequiresAdminError, src/lib/locations.ts).
     const cancelResponse = await apiFetch(`/api/locations/${locationId}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify({ status: "CANCELLED" }),
     });
-    expect(cancelResponse.status).toBe(200);
+    expect(cancelResponse.status).toBe(403);
 
+    const adminCancelResponse = await apiFetch(`/api/locations/${locationId}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(adminCancelResponse.status).toBe(200);
+
+    // Aucun paiement n'a jamais été enregistré ici (facture restée DRAFT, amountPaid = 0) —
+    // admin-cancel ne la force donc pas à CANCELLED (voir le commentaire dans
+    // adminCancelValidatedLocation), la suppression reste donc possible ensuite.
     const deleteAfterCancelResponse = await apiFetch(`/api/locations/${locationId}`, {
       method: "DELETE",
       headers: { Cookie: adminA.sessionCookie },
