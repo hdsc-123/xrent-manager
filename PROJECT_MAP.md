@@ -49,7 +49,7 @@ xrent-manager/
 │   ├── app/                 # App Router Next.js
 │   │   ├── favicon.ico
 │   │   ├── globals.css      # Styles Tailwind + tokens shadcn/ui (générés par `shadcn init`)
-│   │   ├── layout.tsx       # Layout racine (police Inter — Geist jusqu'au Sprint 13E —, <Toaster /> global sonner) — page d'accueil / toujours celle par défaut create-next-app
+│   │   ├── layout.tsx       # Layout racine (police Inter — Geist jusqu'au Sprint 13E —, <Toaster /> global sonner ; (Sprint 20) suppressHydrationWarning sur <html> — tolère les attributs injectés par une extension navigateur (ex. Dark Reader) avant l'hydratation, sans rapport avec la logique métier) — page d'accueil / toujours celle par défaut create-next-app
 │   │   ├── page.tsx         # Page d'accueil par défaut (démo create-next-app, non modifiée)
 │   │   ├── (auth)/          # Groupe de routes auth (URLs /login, /register — pas de préfixe)
 │   │   │   ├── layout.tsx          # Layout centré, sans sidebar
@@ -316,11 +316,13 @@ xrent-manager/
 
 **Sprint 19 — corrections de préproduction, un seul nouveau module de portée réduite (voir ci-dessous) :** une migration de schéma additive (`20260814141823_add_sprint19_second_driver_agency_vehicle_alerts` : `Reservation.pickupAgencyId`/`dropoffAgencyId`, `Location.dropoffAgencyId`/`secondDriverId`, `Agency.cashStartingBalance`, cinq champs `Vehicle` d'alertes proactives, quatre valeurs `AlertType`). Nouveaux fichiers de production : `src/app/api/cash-register/[id]/route.ts` (`PATCH`/`DELETE`, écritures manuelles uniquement), `src/app/api/vehicles/[id]/last-known-state/route.ts` (`GET`, dernier kilométrage/carburant connu d'un véhicule), `src/components/ui/fuel-level-select.tsx` (jauge carburant partagée transferts/déplacements), `scripts/backfill-permissions.js` (rattrapage ponctuel de clés de permission pour des tenants existants, même garde-fou dev/test que `scripts/reset-dev-data.js`). Correctifs répartis sur `src/lib/{reservations,locations,cash-register,permissions,vehicles,scheduled-tasks}.ts`, `src/app/api/{reservations,locations,vehicles,vehicle-transfers,vehicle-trips,agencies,alerts,tasks/check-alerts}/**`, `src/app/dashboard/{reservations,locations,vehicles,agencies,cash-register,vehicle-transfers,vehicle-trips,alerts}/**` (voir DOMAINRULES.md section 37 pour le détail point par point des 17 corrections). `src/__tests__/{reservations,cash-register,permissions,locations,vehicle-transfers,vehicle-trips,vehicles,maintenances,agencies,vehicle-mobility-alerts}.test.ts` étendus (+29, aucun nouveau fichier de test). Point 15 de l'énoncé (module « dégâts ») explicitement reporté après validation du propriétaire du projet — aucun code, voir DOMAINRULES.md section 12. Voir HANDOFF.md et DOMAINRULES.md section 37 pour le détail complet.
 
+**Sprint 20 — stabilisation pré-production, correctif d'hydratation, aucun nouveau module métier :** un seul fichier modifié, une seule ligne — `src/app/layout.tsx` (`suppressHydrationWarning` ajouté sur `<html>`, corrige le hydration mismatch causé par les attributs injectés par l'extension navigateur Dark Reader avant l'hydratation React sur `/login`). Aucune migration, aucune nouvelle route API, aucun nouveau fichier de test. Voir HANDOFF.md et TESTREPORT.md section 3 « Tests Sprint 20 » pour le détail complet (méthode de reproduction/vérification avec un vrai navigateur).
+
 ## 2. Rôle des principaux fichiers existants
 
 | Fichier | Rôle |
 |---|---|
-| `src/app/layout.tsx` | Layout racine de l'application (métadonnées, polices, structure HTML de base). Actuellement le layout par défaut de `create-next-app`. |
+| `src/app/layout.tsx` | Layout racine de l'application (métadonnées, polices Inter/Geist Mono, `<Toaster />` global, structure HTML de base). `<html>` porte `suppressHydrationWarning` depuis le Sprint 20 (tolère les attributs injectés par une extension navigateur avant l'hydratation React, ex. Dark Reader — sans rapport avec la logique métier). Métadonnées (`title`/`description`) et page d'accueil (`src/app/page.tsx`) restées celles par défaut de `create-next-app`, non modifiées. |
 | `src/app/page.tsx` | Page d'accueil actuelle. Actuellement la page de démonstration par défaut de `create-next-app`, sans lien avec le métier XRent. |
 | `src/app/globals.css` | Styles globaux et directives Tailwind CSS. |
 | `next.config.ts` | Configuration Next.js. Actuellement vide (options par défaut). |
