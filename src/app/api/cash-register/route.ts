@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import type { CashEntryType, PaymentMethod } from "@prisma/client";
-import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import {
   getOrCreateCashRegister,
   recomputeCashRegisterBalance,
+  getCashRegisterSummaryForAgencies,
   createCashEntry,
   getCashEntries,
   getDailyBreakdown,
@@ -31,13 +32,20 @@ export async function GET(request: Request) {
   const days = Number.isInteger(daysParam) && daysParam > 0 ? daysParam : 30;
 
   await getOrCreateCashRegister(user.tenantId);
-  const summary = await recomputeCashRegisterBalance(user.tenantId);
+  // Sprint 24 (correction) : un non-ADMIN ne doit voir que le solde/l'activité de son
+  // périmètre d'agences accessibles, jamais le total tenant-wide — même correctif que
+  // /dashboard/cash-register/page.tsx (SECURITY.md section 2).
+  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+  const summary =
+    accessibleAgencyIds === null
+      ? await recomputeCashRegisterBalance(user.tenantId)
+      : await getCashRegisterSummaryForAgencies(user.tenantId, accessibleAgencyIds);
 
   const to = new Date();
   const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
   const [dailyBreakdown, recentOperations] = await Promise.all([
-    getDailyBreakdown(user.tenantId, from, to),
-    getCashEntries(user.tenantId, { take: 10 }),
+    getDailyBreakdown(user.tenantId, from, to, accessibleAgencyIds ?? undefined),
+    getCashEntries(user.tenantId, { take: 10, agencyIds: accessibleAgencyIds ?? undefined }),
   ]);
 
   return NextResponse.json({ summary, dailyBreakdown, recentOperations });

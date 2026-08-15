@@ -114,6 +114,8 @@ export default async function LocationsPage({ searchParams }: PageProps) {
 
   const canCreate =
     (await can(user, "locations.create")) && (accessibleAgencyIds === null || accessibleAgencyIds.length > 0);
+  // Sprint 24 (correction) : locations.cancel — voir le commentaire dans LocationsTable.tsx.
+  const canCancel = await can(user, "locations.cancel");
 
   return (
     <div className="flex flex-col gap-4">
@@ -224,7 +226,7 @@ export default async function LocationsPage({ searchParams }: PageProps) {
         )}
       </form>
 
-      <LocationsTable locations={rows} agencies={agencies} />
+      <LocationsTable locations={rows} agencies={agencies} canCancel={canCancel} />
     </div>
   );
 }

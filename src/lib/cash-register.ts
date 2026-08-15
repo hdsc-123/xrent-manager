@@ -140,6 +140,71 @@ export async function recomputeCashRegisterBalance(tenantId: string): Promise<Ca
   };
 }
 
+/**
+ * Sprint 24 (correction) : équivalent en lecture seule de recomputeCashRegisterBalance
+ * ci-dessus, restreint aux écritures des agences fournies (voir getAccessibleAgencyIds,
+ * src/lib/authz.ts). N'écrit jamais dans CashRegister (qui reste le solde tenant-wide,
+ * consulté tel quel par un ADMIN — décision Sprint 19 reconduite, DOMAINRULES.md section 23) :
+ * un non-ADMIN restreint à une ou plusieurs agences doit voir *son* solde/mois/répartition
+ * espèces-carte, pas celui de tout le tenant — jusqu'ici la page Caisse affichait le même
+ * total tenant-wide à tout titulaire de cash_register.view, quel que soit son périmètre réel
+ * (SECURITY.md section 2).
+ */
+export async function getCashRegisterSummaryForAgencies(
+  tenantId: string,
+  agencyIds: string[]
+): Promise<CashRegisterSummary> {
+  const register = await getOrCreateCashRegister(tenantId);
+  const now = new Date();
+  const monthStart = startOfMonthUtc(now);
+  const agencyFilter = { agencyId: { in: agencyIds } };
+
+  const [priorEntries, priorExpenses, monthEntriesAgg, monthExpensesAgg, monthCashAgg, monthCardAgg] =
+    await Promise.all([
+      prisma.cashEntry.aggregate({
+        where: { tenantId, type: "ENTRY", createdAt: { lt: monthStart }, ...agencyFilter },
+        _sum: { amount: true },
+      }),
+      prisma.cashEntry.aggregate({
+        where: { tenantId, type: "EXPENSE", createdAt: { lt: monthStart }, ...agencyFilter },
+        _sum: { amount: true },
+      }),
+      prisma.cashEntry.aggregate({
+        where: { tenantId, type: "ENTRY", createdAt: { gte: monthStart }, ...agencyFilter },
+        _sum: { amount: true },
+      }),
+      prisma.cashEntry.aggregate({
+        where: { tenantId, type: "EXPENSE", createdAt: { gte: monthStart }, ...agencyFilter },
+        _sum: { amount: true },
+      }),
+      prisma.cashEntry.aggregate({
+        where: { tenantId, type: "ENTRY", paymentMethod: "CASH", createdAt: { gte: monthStart }, ...agencyFilter },
+        _sum: { amount: true },
+      }),
+      prisma.cashEntry.aggregate({
+        where: { tenantId, type: "ENTRY", paymentMethod: "CARD", createdAt: { gte: monthStart }, ...agencyFilter },
+        _sum: { amount: true },
+      }),
+    ]);
+
+  const previousBalance = (priorEntries._sum.amount ?? 0) - (priorExpenses._sum.amount ?? 0);
+  const monthEntries = monthEntriesAgg._sum.amount ?? 0;
+  const monthExpenses = monthExpensesAgg._sum.amount ?? 0;
+  const currentBalance = previousBalance + monthEntries - monthExpenses;
+
+  return {
+    currentBalance,
+    currentMonth: monthKey(now),
+    previousBalance,
+    monthEntries,
+    monthExpenses,
+    finalBalance: currentBalance,
+    currency: register.currency,
+    monthCash: monthCashAgg._sum.amount ?? 0,
+    monthCard: monthCardAgg._sum.amount ?? 0,
+  };
+}
+
 export interface CreateCashEntryInput {
   tenantId: string;
   type: CashEntryType;
@@ -249,6 +314,13 @@ export interface CashEntryFilters {
   from?: Date;
   to?: Date;
   take?: number;
+  /** Sprint 24 : restreint aux écritures rattachées à l'une de ces agences (voir
+   * getAccessibleAgencyIds, src/lib/authz.ts) — un non-ADMIN ne doit voir que le périmètre de
+   * son agence/ville/groupe, jamais la caisse d'agences auxquelles il n'est pas rattaché.
+   * Une écriture manuelle sans agencyId (non attribuée) n'est incluse dans aucun périmètre
+   * scopé — cohérent avec getUnattributedCashAmount ci-dessous. `undefined`/absent = aucune
+   * restriction (ADMIN). */
+  agencyIds?: string[];
 }
 
 export async function getCashEntries(tenantId: string, filters: CashEntryFilters = {}): Promise<CashEntry[]> {
@@ -257,6 +329,7 @@ export async function getCashEntries(tenantId: string, filters: CashEntryFilters
       tenantId,
       ...(filters.type ? { type: filters.type } : {}),
       ...(filters.category ? { category: filters.category } : {}),
+      ...(filters.agencyIds ? { agencyId: { in: filters.agencyIds } } : {}),
       ...(filters.from || filters.to
         ? {
             createdAt: {
@@ -283,10 +356,24 @@ export interface DailyBreakdownEntry {
   card: number;
 }
 
-/** Répartition entrées/dépenses par jour, sur la période demandée (par défaut les 30 derniers jours) — pour le graphique du tableau de bord Caisse. */
-export async function getDailyBreakdown(tenantId: string, from: Date, to: Date): Promise<DailyBreakdownEntry[]> {
+/**
+ * Répartition entrées/dépenses par jour, sur la période demandée (par défaut les 30 derniers
+ * jours) — pour le graphique du tableau de bord Caisse. Sprint 24 : `agencyIds` restreint aux
+ * écritures des agences accessibles à l'appelant (voir CashEntryFilters.agencyIds ci-dessus) —
+ * `undefined`/absent = aucune restriction (ADMIN).
+ */
+export async function getDailyBreakdown(
+  tenantId: string,
+  from: Date,
+  to: Date,
+  agencyIds?: string[]
+): Promise<DailyBreakdownEntry[]> {
   const entries = await prisma.cashEntry.findMany({
-    where: { tenantId, createdAt: { gte: from, lte: to } },
+    where: {
+      tenantId,
+      createdAt: { gte: from, lte: to },
+      ...(agencyIds ? { agencyId: { in: agencyIds } } : {}),
+    },
     select: { type: true, amount: true, createdAt: true, paymentMethod: true },
   });
 

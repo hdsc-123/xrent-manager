@@ -111,16 +111,24 @@ export function ReservationsTable({
   canDelete = false,
   canEdit = false,
   canConvert = false,
+  canCancel = false,
+  canNoShow = false,
   isAdmin = false,
 }: {
   reservations: ReservationRow[];
   /** reservations.delete (voir src/lib/permissions.ts) — masque la sélection/suppression si
    * absent, calculé côté serveur par la page appelante. */
   canDelete?: boolean;
-  /** reservations.edit — masque l'action « Modifier »/« Annuler »/« No Show » si absent. */
+  /** reservations.edit — masque l'action « Modifier » si absent. */
   canEdit?: boolean;
   /** Sprint 23 — reservations.convert : masque l'action rapide « Valider » si absent. */
   canConvert?: boolean;
+  /** Sprint 24 — reservations.cancel, distincte de reservations.edit : masque « Annuler » si
+   * absent. */
+  canCancel?: boolean;
+  /** Sprint 24 — reservations.no_show, distincte de reservations.edit : masque « No Show » si
+   * absent. */
+  canNoShow?: boolean;
   /** Sprint 23 — réinitialisation à zéro, réservée ADMIN (jamais une permission granulaire,
    * voir DOMAINRULES.md section 39). */
   isAdmin?: boolean;
@@ -424,20 +432,19 @@ export function ReservationsTable({
                     Modifier
                   </DropdownMenuItem>
                 )}
-                {/* Sprint 18 : gatée par canEdit, comme "Modifier" — PATCH /api/reservations/[id]
-                    (utilisé par cette action, status: "CANCELLED") exige reservations.edit ;
-                    sans cette garde, un rôle en lecture seule (ex. COMPTABILITÉ) voyait "Annuler"
-                    cliquable dans le menu, systématiquement rejeté par l'API après confirmation.
+                {/* Sprint 24 : gatée par reservations.cancel, plus reservations.edit — clé
+                    dédiée, distincte de la modification de champs (voir src/lib/permissions.ts).
                     Sprint 19 : + canEditAgency — seule l'agence de départ peut annuler, voir
                     DOMAINRULES.md section 37. */}
-                {canEdit && row.original.canEditAgency && CANCELLABLE_STATUSES.has(row.original.status) && (
+                {canCancel && row.original.canEditAgency && CANCELLABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingCancel(row.original)}>
                     <Ban className="size-4" />
                     Annuler
                   </DropdownMenuItem>
                 )}
-                {/* Sprint 23 — No Show : le client ne s'est pas présenté, distinct d'Annuler. */}
-                {canEdit && row.original.canEditAgency && NO_SHOWABLE_STATUSES.has(row.original.status) && (
+                {/* Sprint 23 — No Show : le client ne s'est pas présenté, distinct d'Annuler.
+                    Sprint 24 : gatée par reservations.no_show, plus reservations.edit. */}
+                {canNoShow && row.original.canEditAgency && NO_SHOWABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingNoShow(row.original)}>
                     <UserX className="size-4" />
                     No Show
@@ -464,7 +471,7 @@ export function ReservationsTable({
         ),
       },
     ],
-    [canDelete, canEdit, canConvert, isAdmin, selectedIds, allDeletableSelected, toggleSelectAll, toggleSelected]
+    [canDelete, canEdit, canConvert, canCancel, canNoShow, isAdmin, selectedIds, allDeletableSelected, toggleSelectAll, toggleSelected]
   );
 
   return (

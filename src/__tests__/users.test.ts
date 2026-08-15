@@ -677,3 +677,68 @@ describe("DELETE /api/users/[id]", () => {
     expect(links).toHaveLength(0);
   });
 });
+
+describe("GET /api/users/directory — Sprint 24 (correction, filtrage par agence/ville)", () => {
+  it("un MEMBER ne voit que les users de sa propre agence ou de la même ville, jamais ceux d'une autre agence/ville", async () => {
+    const agencyXResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Agence X-${runId}`, slug: `agence-x-${runId}`, city: "Casablanca" }),
+    });
+    const agencyXId = (await agencyXResponse.json()).agency.id;
+
+    // Même ville que X, agence distincte — doit rester visible pour un MEMBER de X.
+    const agencyYResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Agence Y-${runId}`, slug: `agence-y-${runId}`, city: "Casablanca" }),
+    });
+    const agencyYId = (await agencyYResponse.json()).agency.id;
+
+    // Ville différente — ne doit jamais apparaître pour un MEMBER de X.
+    const agencyZResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Agence Z-${runId}`, slug: `agence-z-${runId}`, city: "Rabat" }),
+    });
+    const agencyZId = (await agencyZResponse.json()).agency.id;
+
+    const memberX = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Member X",
+      email: `member-x-${runId}@test.local`,
+      password,
+    });
+    await prisma.userAgency.create({ data: { userId: memberX.userId, agencyId: agencyXId } });
+
+    const memberY = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Member Y",
+      email: `member-y-${runId}@test.local`,
+      password,
+    });
+    await prisma.userAgency.create({ data: { userId: memberY.userId, agencyId: agencyYId } });
+
+    const memberZ = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Member Z",
+      email: `member-z-${runId}@test.local`,
+      password,
+    });
+    await prisma.userAgency.create({ data: { userId: memberZ.userId, agencyId: agencyZId } });
+
+    const response = await apiFetch("/api/users/directory", { headers: { Cookie: memberX.sessionCookie } });
+    expect(response.status).toBe(200);
+    const { users } = await response.json();
+    const names = users.map((u: { name: string }) => u.name);
+
+    expect(names).toContain("Member X"); // soi-même
+    expect(names).toContain("Member Y"); // même ville (Casablanca), agence différente
+    expect(names).not.toContain("Member Z"); // autre ville (Rabat)
+
+    // Un ADMIN reste sans restriction — voit tout le tenant, y compris Member Z.
+    const adminResponse = await apiFetch("/api/users/directory", { headers: { Cookie: adminA.sessionCookie } });
+    const adminNames = (await adminResponse.json()).users.map((u: { name: string }) => u.name);
+    expect(adminNames).toEqual(expect.arrayContaining(["Member X", "Member Y", "Member Z"]));
+  });
+});

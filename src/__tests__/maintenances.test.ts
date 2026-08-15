@@ -364,7 +364,8 @@ describe("Sprint 19 — alertes véhicule proactives (assurance/vignette/contrô
     await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ endOdometer: 1200 }),
+      // Sprint 24 : endFuelLevel/arrivalDriverName désormais obligatoires en plus d'endOdometer.
+      body: JSON.stringify({ endOdometer: 1200, endFuelLevel: 50, arrivalDriverName: "Chauffeur Test" }),
     });
 
     const response = await apiFetch("/api/tasks/check-alerts", {
@@ -461,5 +462,111 @@ describe("Sprint 15 — permissions granulaires (maintenances.create)", () => {
         body: JSON.stringify({ permissionGroupId: null }),
       });
     }
+  });
+});
+
+describe("Sprint 24 — maintenances.complete/cancel séparées de maintenances.edit", () => {
+  async function createGroupAndMember(name: string, permissions: string[]) {
+    const groupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `${name}-${runId}`, permissions }),
+    });
+    const groupId = (await groupResponse.json()).group.id;
+
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name,
+      email: `${name.toLowerCase()}-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: member.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${member.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: groupId }),
+    });
+    return member;
+  }
+
+  it("maintenances.edit seul ne permet plus de terminer ni annuler", async () => {
+    const editOnly = await createGroupAndMember("MtEditOnly", ["maintenances.view", "maintenances.edit"]);
+
+    const createResponse = await createMaintenance(adminA, vehicleA1Id, { scheduledDate: "2030-07-01" });
+    const maintenance = (await createResponse.json()).maintenance;
+
+    for (const status of ["COMPLETED", "CANCELLED"]) {
+      const response = await apiFetch(`/api/maintenances/${maintenance.id}`, {
+        method: "PATCH",
+        headers: { Cookie: editOnly.sessionCookie },
+        body: JSON.stringify({ status }),
+      });
+      expect(response.status).toBe(403);
+    }
+
+    // Un champ générique (notes) reste autorisé avec maintenances.edit seul.
+    const notesResponse = await apiFetch(`/api/maintenances/${maintenance.id}`, {
+      method: "PATCH",
+      headers: { Cookie: editOnly.sessionCookie },
+      body: JSON.stringify({ notes: "Note ajoutée par MtEditOnly" }),
+    });
+    expect(notesResponse.status).toBe(200);
+  });
+
+  it("maintenances.complete seul termine, sans maintenances.edit", async () => {
+    const completeOnly = await createGroupAndMember("MtCompleteOnly", ["maintenances.view", "maintenances.complete"]);
+
+    const createResponse = await createMaintenance(adminA, vehicleA1Id, { scheduledDate: "2030-07-02" });
+    const maintenance = (await createResponse.json()).maintenance;
+
+    const completeResponse = await apiFetch(`/api/maintenances/${maintenance.id}`, {
+      method: "PATCH",
+      headers: { Cookie: completeOnly.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED" }),
+    });
+    expect(completeResponse.status).toBe(200);
+    expect((await completeResponse.json()).maintenance.status).toBe("COMPLETED");
+
+    const notesResponse = await apiFetch(`/api/maintenances/${maintenance.id}`, {
+      method: "PATCH",
+      headers: { Cookie: completeOnly.sessionCookie },
+      body: JSON.stringify({ notes: "Tentative" }),
+    });
+    expect(notesResponse.status).toBe(403);
+  });
+
+  it("maintenances.cancel seul annule, sans maintenances.edit", async () => {
+    const cancelOnly = await createGroupAndMember("MtCancelOnly", ["maintenances.view", "maintenances.cancel"]);
+
+    const createResponse = await createMaintenance(adminA, vehicleA1Id, { scheduledDate: "2030-07-03" });
+    const maintenance = (await createResponse.json()).maintenance;
+
+    const cancelResponse = await apiFetch(`/api/maintenances/${maintenance.id}`, {
+      method: "PATCH",
+      headers: { Cookie: cancelOnly.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+    expect(cancelResponse.status).toBe(200);
+    expect((await cancelResponse.json()).maintenance.status).toBe("CANCELLED");
+  });
+
+  it("un ADMIN (super admin du tenant) termine/annule une maintenance sans aucun groupe de permissions", async () => {
+    const completeTargetResponse = await createMaintenance(adminA, vehicleA1Id, { scheduledDate: "2030-07-04" });
+    const completeTarget = (await completeTargetResponse.json()).maintenance;
+    const completeResponse = await apiFetch(`/api/maintenances/${completeTarget.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED" }),
+    });
+    expect(completeResponse.status).toBe(200);
+
+    const cancelTargetResponse = await createMaintenance(adminA, vehicleA1Id, { scheduledDate: "2030-07-05" });
+    const cancelTarget = (await cancelTargetResponse.json()).maintenance;
+    const cancelResponse = await apiFetch(`/api/maintenances/${cancelTarget.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+    expect(cancelResponse.status).toBe(200);
   });
 });

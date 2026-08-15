@@ -237,6 +237,15 @@ model Vehicle {
   pricePerDay   Int?
   currency      String            @default("MAD")
 
+  // Sprint 24 : kilométrage/carburant actuels du véhicule, capturés à la création — dernier
+  // état connu avant toute Location/VehicleTransfer/VehicleTrip. Purement informatifs comme
+  // pricePerDay ci-dessus : getVehicleLastKnownState (src/lib/vehicles.ts) les utilise
+  // seulement comme repli quand aucun mouvement (retour de location/transfert/déplacement)
+  // n'a encore renseigné de valeur plus récente. Optionnels (véhicules déjà existants n'en
+  // ont pas, jamais backfillés — même principe que pricePerDay Sprint 14A).
+  currentOdometer  Int?
+  currentFuelLevel Int?
+
   // Champs proactifs pour les alertes métier (Sprint 19, DOMAINRULES section 37) : tous
   // optionnels (véhicules déjà existants n'en ont pas, jamais backfillés — même principe que
   // pricePerDay Sprint 14A) ; renseignés depuis la fiche véhicule, consultés par

@@ -48,6 +48,16 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: "locations.create", label: "Créer des locations", category: "Locations" },
   { key: "locations.edit", label: "Modifier des locations", category: "Locations" },
   { key: "locations.delete", label: "Supprimer des locations", category: "Locations" },
+  // Sprint 24 : même correctif que reservations.confirm/cancel/no_show ci-dessous — les
+  // transitions de statut d'un contrat (Confirmer/Activer/Terminer/Annuler) passaient toutes
+  // par locations.edit, la même clé que la modification des champs. Clés dédiées, vérifiées
+  // par transition cible (voir PATCH /api/locations/[id]/route.ts). N'affecte pas
+  // adminCancelValidatedLocation (POST .../admin-cancel), déjà réservé au rôle ADMIN sans
+  // permission granulaire (DOMAINRULES.md section 39).
+  { key: "locations.confirm", label: "Confirmer un contrat (PENDING → CONFIRMED)", category: "Locations" },
+  { key: "locations.activate", label: "Activer un contrat (CONFIRMED → ACTIVE)", category: "Locations" },
+  { key: "locations.complete", label: "Terminer un contrat (→ COMPLETED)", category: "Locations" },
+  { key: "locations.cancel", label: "Annuler un contrat non validé (PENDING → CANCELLED)", category: "Locations" },
 
   { key: "reservations.view", label: "Voir les réservations", category: "Réservations" },
   { key: "reservations.create", label: "Créer des réservations", category: "Réservations" },
@@ -55,6 +65,15 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: "reservations.delete", label: "Supprimer des réservations", category: "Réservations" },
   { key: "reservations.import", label: "Importer des réservations (Excel)", category: "Réservations" },
   { key: "reservations.convert", label: "Convertir une réservation en contrat", category: "Réservations" },
+  // Sprint 24 : jusqu'ici, confirmer/annuler/marquer No Show une réservation n'étaient pas
+  // des actions distinctes — elles passaient toutes par reservations.edit, la même clé que
+  // la modification des champs (dates/prix/identité client...). Un groupe accordant
+  // reservations.edit pour de simples corrections de champ accordait donc implicitement ces
+  // trois actions de statut, sans possibilité de les retirer séparément. Clés dédiées,
+  // vérifiées par transition (voir PATCH /api/reservations/[id]/route.ts).
+  { key: "reservations.confirm", label: "Confirmer une réservation", category: "Réservations" },
+  { key: "reservations.cancel", label: "Annuler une réservation", category: "Réservations" },
+  { key: "reservations.no_show", label: "Marquer une réservation No Show", category: "Réservations" },
 
   { key: "invoices.view", label: "Voir les factures", category: "Factures" },
   { key: "invoices.create", label: "Créer des factures", category: "Factures" },
@@ -87,6 +106,10 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: "maintenances.create", label: "Planifier des maintenances", category: "Maintenances" },
   { key: "maintenances.edit", label: "Modifier des maintenances", category: "Maintenances" },
   { key: "maintenances.delete", label: "Supprimer des maintenances", category: "Maintenances" },
+  // Sprint 24 : même correctif — Terminer/Annuler une maintenance passaient par
+  // maintenances.edit, la même clé que la modification des champs (coût/notes/dates...).
+  { key: "maintenances.complete", label: "Terminer une maintenance", category: "Maintenances" },
+  { key: "maintenances.cancel", label: "Annuler une maintenance", category: "Maintenances" },
 
   { key: "alerts.view", label: "Voir les alertes", category: "Alertes" },
   { key: "alerts.acknowledge", label: "Acquitter des alertes", category: "Alertes" },
@@ -150,11 +173,22 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "locations.create",
       "locations.edit",
       "locations.delete",
+      // Sprint 24 : locations.confirm/activate/complete/cancel désormais distinctes de
+      // locations.edit — accordées ici pour préserver le comportement actuel de ce groupe.
+      "locations.confirm",
+      "locations.activate",
+      "locations.complete",
+      "locations.cancel",
       "reservations.view",
       "reservations.create",
       "reservations.edit",
       "reservations.import",
       "reservations.convert",
+      // Sprint 24 : reservations.confirm/cancel/no_show désormais distinctes de
+      // reservations.edit — accordées ici pour préserver le comportement actuel de ce groupe.
+      "reservations.confirm",
+      "reservations.cancel",
+      "reservations.no_show",
       "invoices.view",
       "invoices.create",
       "invoices.edit",
@@ -172,6 +206,10 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "maintenances.create",
       "maintenances.edit",
       "maintenances.delete",
+      // Sprint 24 : maintenances.complete/cancel désormais distinctes de maintenances.edit —
+      // accordées ici pour préserver le comportement actuel de ce groupe.
+      "maintenances.complete",
+      "maintenances.cancel",
       "alerts.view",
       "alerts.acknowledge",
       "alerts.resolve",
@@ -237,6 +275,11 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "locations.create",
       "locations.edit",
       "locations.delete",
+      // Sprint 24 : voir le commentaire équivalent sur MEMBER ci-dessus.
+      "locations.confirm",
+      "locations.activate",
+      "locations.complete",
+      "locations.cancel",
       "clients.view",
       "clients.create",
       "clients.edit",
@@ -246,6 +289,10 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "reservations.edit",
       "reservations.delete",
       "reservations.convert",
+      // Sprint 24 : voir le commentaire équivalent sur MEMBER ci-dessus.
+      "reservations.confirm",
+      "reservations.cancel",
+      "reservations.no_show",
       "invoices.view",
       "invoices.create",
       "invoices.edit",
@@ -257,6 +304,9 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "maintenances.create",
       "maintenances.edit",
       "maintenances.delete",
+      // Sprint 24 : voir le commentaire équivalent sur MEMBER ci-dessus.
+      "maintenances.complete",
+      "maintenances.cancel",
       "alerts.view",
       "alerts.acknowledge",
       "alerts.resolve",
@@ -335,6 +385,17 @@ export const PAST_PERMISSION_BACKFILLS: Record<string, string[]> = {
     // Sprint 23 : deux nouveaux onglets de reporting (voir le commentaire sur DEFAULT_GROUPS).
     "contracts_overview.view",
     "vehicle_performance.view",
+    // Sprint 24 : reservations.confirm/cancel/no_show, locations.confirm/activate/complete/
+    // cancel, maintenances.complete/cancel — voir le commentaire sur DEFAULT_GROUPS.
+    "reservations.confirm",
+    "reservations.cancel",
+    "reservations.no_show",
+    "locations.confirm",
+    "locations.activate",
+    "locations.complete",
+    "locations.cancel",
+    "maintenances.complete",
+    "maintenances.cancel",
   ],
   AGENCE: [
     // Sprint 17 : agencies.view/cash_register.* — voir le commentaire sur DEFAULT_GROUPS
@@ -370,6 +431,16 @@ export const PAST_PERMISSION_BACKFILLS: Record<string, string[]> = {
     // Sprint 23 : voir le commentaire équivalent sur MEMBER ci-dessus.
     "contracts_overview.view",
     "vehicle_performance.view",
+    // Sprint 24 : voir le commentaire équivalent sur MEMBER ci-dessus.
+    "reservations.confirm",
+    "reservations.cancel",
+    "reservations.no_show",
+    "locations.confirm",
+    "locations.activate",
+    "locations.complete",
+    "locations.cancel",
+    "maintenances.complete",
+    "maintenances.cancel",
   ],
   // Sprint 23 : COMPTABILITÉ n'avait jamais eu d'entrée dans ce dictionnaire (resserré, jamais
   // étendu, depuis le Sprint 15) — première extension pour ce groupe.

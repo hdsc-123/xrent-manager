@@ -593,3 +593,65 @@ describe("Sprint 22 — GET /dashboard/vehicles/[id] : fiche complète en lectur
     expect(html).not.toContain("Modifier le véhicule");
   });
 });
+
+describe("Sprint 24 — kilométrage/carburant actuels à la création véhicule", () => {
+  it("accepte currentOdometer/currentFuelLevel à la création et les renvoie tels quels", async () => {
+    const response = await createVehicle(adminA, agencyA1Id, { currentOdometer: 15000, currentFuelLevel: 80 });
+    expect(response.status).toBe(201);
+    const { vehicle } = await response.json();
+    expect(vehicle.currentOdometer).toBe(15000);
+    expect(vehicle.currentFuelLevel).toBe(80);
+  });
+
+  it("refuse un currentOdometer négatif", async () => {
+    const response = await createVehicle(adminA, agencyA1Id, { currentOdometer: -1 });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse un currentFuelLevel hors de la plage 0-100", async () => {
+    const response = await createVehicle(adminA, agencyA1Id, { currentFuelLevel: 150 });
+    expect(response.status).toBe(400);
+  });
+
+  it("currentOdometer/currentFuelLevel restent optionnels (véhicule créé sans eux)", async () => {
+    const response = await createVehicle(adminA, agencyA1Id);
+    expect(response.status).toBe(201);
+    const { vehicle } = await response.json();
+    expect(vehicle.currentOdometer).toBeNull();
+    expect(vehicle.currentFuelLevel).toBeNull();
+  });
+
+  it("le prix journalier informatif (pricePerDay) reste optionnel malgré l'ajout de ces champs", async () => {
+    const response = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: agencyA1Id,
+        name: "Sans prix",
+        licensePlate: `NOPRICE-${Math.floor(Math.random() * 1_000_000)}`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        currentOdometer: 5000,
+        currentFuelLevel: 100,
+      }),
+    });
+    expect(response.status).toBe(201);
+    const { vehicle } = await response.json();
+    expect(vehicle.pricePerDay).toBeNull();
+  });
+
+  it("GET /api/vehicles/[id]/last-known-state retombe sur currentOdometer/currentFuelLevel tant qu'aucun mouvement (location/transfert/déplacement) n'existe", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id, { currentOdometer: 42000, currentFuelLevel: 60 });
+    const vehicle = (await createResponse.json()).vehicle;
+
+    const response = await apiFetch(`/api/vehicles/${vehicle.id}/last-known-state`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.odometer).toBe(42000);
+    expect(body.fuelLevel).toBe(60);
+  });
+});

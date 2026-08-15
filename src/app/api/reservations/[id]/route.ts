@@ -73,12 +73,46 @@ interface PatchReservationBody {
   status?: ReservationStatus;
 }
 
+/**
+ * Sprint 24 : confirmer/annuler/marquer No Show une réservation ne sont plus couverts par
+ * reservations.edit (la même clé que la modification de champ) — chaque transition de statut
+ * vérifie désormais sa propre clé dédiée. La conversion en contrat reste hors de cette route
+ * (POST .../convert, reservations.convert, inchangé) ; toute autre valeur de body.status
+ * (CONVERTED, ou un statut inchangé) retombe sur reservations.edit, comportement antérieur
+ * conservé pour ne pas régresser sur un cas non demandé par ce sprint.
+ */
+function requiredPermissionForStatusChange(status: ReservationStatus | undefined): string {
+  switch (status) {
+    case "CONFIRMED":
+      return "reservations.confirm";
+    case "CANCELLED":
+      return "reservations.cancel";
+    case "NO_SHOW":
+      return "reservations.no_show";
+    default:
+      return "reservations.edit";
+  }
+}
+
 export async function PATCH(request: Request, { params }: RouteParams) {
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
   }
-  if (!(await can(user, "reservations.edit"))) {
+
+  let body: PatchReservationBody;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
+  }
+
+  if (body.status !== undefined && !RESERVATION_STATUSES.includes(body.status)) {
+    return NextResponse.json({ error: "status invalide." }, { status: 400 });
+  }
+
+  const requiredPermission = requiredPermissionForStatusChange(body.status);
+  if (!(await can(user, requiredPermission))) {
     return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
@@ -93,17 +127,6 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   // ne peut que la consulter.
   if (!(await canEditReservationAgency(user, existingReservation))) {
     return NextResponse.json({ error: "Seule l'agence de départ peut modifier cette réservation." }, { status: 403 });
-  }
-
-  let body: PatchReservationBody;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
-  }
-
-  if (body.status !== undefined && !RESERVATION_STATUSES.includes(body.status)) {
-    return NextResponse.json({ error: "status invalide." }, { status: 400 });
   }
 
   for (const field of MONEY_FIELDS) {

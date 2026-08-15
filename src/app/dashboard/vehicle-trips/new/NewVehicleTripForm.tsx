@@ -43,8 +43,13 @@ export function NewVehicleTripForm() {
   }, []);
 
   // Sprint 19 (DOMAINRULES.md section 37) : dernier kilométrage/carburant connus du véhicule
-  // choisi, pré-remplis automatiquement (modifiables ensuite) — même logique que les
-  // transferts entre agences, voir GET /api/vehicles/[id]/last-known-state.
+  // choisi, pré-remplis automatiquement — même logique que les transferts entre agences, voir
+  // GET /api/vehicles/[id]/last-known-state. Sprint 24 : non modifiables ensuite (verrouillés),
+  // même correctif que NewVehicleTransferForm.tsx pour un comportement cohérent partout où le
+  // kilométrage/carburant de départ d'un mouvement est auto-rempli. Aucun reset à "" nécessaire
+  // ici (pas d'effet de bord synchrone dans l'effet) : vehicleId ne revient jamais à "" après
+  // une première sélection dans ce formulaire (sélecteur unique, sans option vide re-sélectionnable),
+  // et l'état initial est déjà "" (useState).
   useEffect(() => {
     if (!vehicleId) return;
     apiGet<{ odometer: number | null; fuelLevel: number | null }>(`/api/vehicles/${vehicleId}/last-known-state`)
@@ -63,7 +68,7 @@ export function NewVehicleTripForm() {
     setError(null);
 
     if (!vehicleId || !employeeUserId || !reason.trim() || !destination.trim() || startOdometer.trim() === "") {
-      setError("Véhicule, employé, motif, destination et kilométrage de départ sont requis.");
+      setError("Véhicule, employé, motif et destination sont requis (kilométrage de départ inconnu pour ce véhicule).");
       return;
     }
 
@@ -171,21 +176,15 @@ export function NewVehicleTripForm() {
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="startOdometer" required>
-                  Kilométrage départ <span className="text-muted-foreground">— auto, modifiable</span>
+                  Kilométrage départ <span className="text-muted-foreground">— auto, verrouillé</span>
                 </Label>
-                <Input
-                  id="startOdometer"
-                  required
-                  inputMode="numeric"
-                  value={startOdometer}
-                  onChange={(e) => setStartOdometer(e.target.value)}
-                />
+                <Input id="startOdometer" value={startOdometer || "—"} disabled />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="startFuelLevel">
-                  Carburant départ <span className="text-muted-foreground">— auto, modifiable</span>
+                  Carburant départ <span className="text-muted-foreground">— auto, verrouillé</span>
                 </Label>
-                <FuelLevelSelect id="startFuelLevel" value={startFuelLevel} onChange={setStartFuelLevel} />
+                <FuelLevelSelect id="startFuelLevel" value={startFuelLevel} onChange={() => {}} disabled />
               </div>
             </div>
 

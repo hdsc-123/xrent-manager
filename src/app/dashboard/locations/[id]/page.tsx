@@ -32,12 +32,23 @@ export default async function LocationDetailPage({ params }: PageProps) {
     notFound();
   }
 
-  const canEdit = await can(user, "locations.edit");
+  const hasLocationsEdit = await can(user, "locations.edit");
+  // Sprint 24 : Confirmer/Activer/Terminer/Annuler ne sont plus couvertes par locations.edit —
+  // clés dédiées, vérifiées par transition cible (voir PATCH /api/locations/[id]/route.ts).
+  const hasLocationsConfirm = await can(user, "locations.confirm");
+  const hasLocationsActivate = await can(user, "locations.activate");
+  const hasLocationsComplete = await can(user, "locations.complete");
+  const hasLocationsCancel = await can(user, "locations.cancel");
+
   // Sprint 19 : une agence de retour (dropoffAgencyId) sans accès à l'agence de rattachement
   // du contrat ne peut que gérer la réception — voir PATCH /api/locations/[id] pour
-  // l'équivalent serveur de cette restriction.
-  const canManageFullEdit = canEdit && (await canAccessAgency(user, location.agencyId));
-  const canManageReturnOnly = canEdit && !canManageFullEdit;
+  // l'équivalent serveur de cette restriction. La réception n'est jamais qu'une transition
+  // vers COMPLETED : elle ne dépend donc que de locations.complete (Sprint 24).
+  const hasPickupAccess = await canAccessAgency(user, location.agencyId);
+  const canManageFullEdit =
+    hasPickupAccess &&
+    (hasLocationsEdit || hasLocationsConfirm || hasLocationsActivate || hasLocationsComplete || hasLocationsCancel);
+  const canManageReturnOnly = !hasPickupAccess && hasLocationsComplete;
 
   const [vehicle, client, secondDriver, agency, dropoffAgency, invoice] = await Promise.all([
     prisma.vehicle.findUnique({ where: { id: location.vehicleId } }),
@@ -162,7 +173,11 @@ export default async function LocationDetailPage({ params }: PageProps) {
         startDate={location.startDate.toISOString().slice(0, 10)}
         endDate={location.endDate.toISOString().slice(0, 10)}
         secondDriver={secondDriver ? { id: secondDriver.id, name: secondDriver.name } : null}
-        canEdit={canManageFullEdit}
+        canEdit={canManageFullEdit && hasLocationsEdit}
+        canConfirm={canManageFullEdit && hasLocationsConfirm}
+        canActivate={canManageFullEdit && hasLocationsActivate}
+        canComplete={canManageFullEdit && hasLocationsComplete}
+        canCancel={canManageFullEdit && hasLocationsCancel}
         canManageReturnOnly={canManageReturnOnly}
         isAdmin={user.role === "ADMIN"}
       />

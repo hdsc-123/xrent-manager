@@ -45,6 +45,9 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
   const canEdit = await can(user, "maintenances.edit");
+  // Sprint 24 : terminer/annuler ne sont plus couvertes par maintenances.edit — clés dédiées.
+  const canComplete = await can(user, "maintenances.complete");
+  const canCancel = await can(user, "maintenances.cancel");
 
   const [vehicles, vehiclesWithStatus, maintenances] = await Promise.all([
     prisma.vehicle.findMany({
@@ -239,7 +242,7 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
         )}
       </form>
 
-      <MaintenancesTable maintenances={rows} canEdit={canEdit} />
+      <MaintenancesTable maintenances={rows} canEdit={canEdit} canComplete={canComplete} canCancel={canCancel} />
     </div>
   );
 }

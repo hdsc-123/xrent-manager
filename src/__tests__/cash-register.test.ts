@@ -564,3 +564,84 @@ describe("Sprint 22 — solde par agence (DOMAINRULES.md section 23, révisée)"
     expect(agencyBalance!.entries).toBeGreaterThanOrEqual(10_000);
   });
 });
+
+describe("Sprint 24 — GET /api/cash-register scopé par périmètre (correction : solde tenant-wide affiché à tort à tout rôle)", () => {
+  it("un ADMIN voit le solde consolidé de toutes les agences ; un MEMBER restreint ne voit que le sien", async () => {
+    const agencyOneResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Agence Scope Caisse 1 ${runId}`, slug: `scope-caisse-1-${runId}` }),
+    });
+    const agencyOneId = (await agencyOneResponse.json()).agency.id;
+
+    const agencyTwoResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Agence Scope Caisse 2 ${runId}`, slug: `scope-caisse-2-${runId}` }),
+    });
+    const agencyTwoId = (await agencyTwoResponse.json()).agency.id;
+
+    // Groupe accordant cash_register.view (MEMBER ne l'a pas forcément par défaut selon
+    // l'environnement de test) — même pattern que les autres tests de ce fichier.
+    const viewGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `CashViewOnly-${runId}`, permissions: ["cash_register.view"] }),
+    });
+    const viewGroupId = (await viewGroupResponse.json()).group.id;
+
+    const restrictedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Restricted Cash Member",
+      email: `restricted-cash-scope-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: restrictedMember.userId, agencyId: agencyOneId } });
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: viewGroupId }),
+    });
+
+    await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 70_000, agencyId: agencyOneId }),
+    });
+    await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 130_000, agencyId: agencyTwoId }),
+    });
+
+    // ADMIN : solde consolidé — reflète les deux agences (au moins 200 000, d'autres tests du
+    // fichier alimentent aussi la même caisse tenant-wide sans la vider).
+    const adminResponse = await apiFetch("/api/cash-register", { headers: { Cookie: adminA.sessionCookie } });
+    expect(adminResponse.status).toBe(200);
+    const adminBody = await adminResponse.json();
+    expect(adminBody.summary.currentBalance).toBeGreaterThanOrEqual(200_000);
+    const adminOperationAgencyIds = adminBody.recentOperations.map((op: { agencyId: string | null }) => op.agencyId);
+    // Les 10 dernières opérations tenant-wide peuvent ne pas inclure les deux entrées créées
+    // ci-dessus selon le volume déjà présent dans ce fichier — seule l'absence de restriction
+    // de périmètre est vérifiée ici (contrairement au MEMBER ci-dessous).
+    expect(Array.isArray(adminOperationAgencyIds)).toBe(true);
+
+    // MEMBER restreint à agencyOneId : solde et opérations limités à son périmètre.
+    const memberResponse = await apiFetch("/api/cash-register", { headers: { Cookie: restrictedMember.sessionCookie } });
+    expect(memberResponse.status).toBe(200);
+    const memberBody = await memberResponse.json();
+    expect(memberBody.summary.currentBalance).toBe(70_000);
+    for (const operation of memberBody.recentOperations) {
+      expect(operation.agencyId).toBe(agencyOneId);
+    }
+
+    // Les écritures de l'agence 2 (hors périmètre) n'apparaissent jamais pour ce MEMBER.
+    const entriesResponse = await apiFetch("/api/cash-register/entries", {
+      headers: { Cookie: restrictedMember.sessionCookie },
+    });
+    const entriesBody = await entriesResponse.json();
+    for (const entry of entriesBody.entries) {
+      expect(entry.agencyId).not.toBe(agencyTwoId);
+    }
+  });
+});

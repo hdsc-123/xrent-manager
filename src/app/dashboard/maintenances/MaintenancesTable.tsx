@@ -65,13 +65,18 @@ const EDITABLE_STATUSES = new Set(["SCHEDULED", "IN_PROGRESS"]);
 export function MaintenancesTable({
   maintenances,
   canEdit = false,
+  canComplete = false,
+  canCancel = false,
 }: {
   maintenances: MaintenanceRow[];
-  /** maintenances.edit (voir src/lib/permissions.ts) — l'API ne passe que par PATCH pour
-   * modifier/terminer/annuler une maintenance (voir /api/maintenances/[id]/route.ts), donc les
-   * trois actions de ce menu dépendent toutes de cette même permission, calculée côté serveur
-   * par la page appelante. */
+  /** maintenances.edit (voir src/lib/permissions.ts) — gate « Modifier » (coût/notes/dates)
+   * uniquement, calculé côté serveur par la page appelante. */
   canEdit?: boolean;
+  /** Sprint 24 — maintenances.complete, distincte de maintenances.edit : gate « Marquer
+   * terminée ». */
+  canComplete?: boolean;
+  /** Sprint 24 — maintenances.cancel, distincte de maintenances.edit : gate « Annuler ». */
+  canCancel?: boolean;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState<MaintenanceRow | null>(null);
@@ -164,7 +169,10 @@ export function MaintenancesTable({
         id: "actions",
         header: "",
         cell: ({ row }) => {
-          const editable = canEdit && EDITABLE_STATUSES.has(row.original.status);
+          const statusEditable = EDITABLE_STATUSES.has(row.original.status);
+          const editable = canEdit && statusEditable;
+          const completable = canComplete && statusEditable;
+          const cancellable = canCancel && statusEditable;
           return (
             <div className="flex justify-end">
               <DropdownMenu>
@@ -177,7 +185,7 @@ export function MaintenancesTable({
                     Modifier
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    disabled={!editable}
+                    disabled={!completable}
                     onClick={() => setPendingAction({ row: row.original, kind: "complete" })}
                   >
                     <CheckCircle2 className="size-4" />
@@ -185,7 +193,7 @@ export function MaintenancesTable({
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     variant="destructive"
-                    disabled={!editable}
+                    disabled={!cancellable}
                     onClick={() => setPendingAction({ row: row.original, kind: "cancel" })}
                   >
                     <XCircle className="size-4" />
@@ -198,7 +206,7 @@ export function MaintenancesTable({
         },
       },
     ],
-    [canEdit]
+    [canEdit, canComplete, canCancel]
   );
 
   return (

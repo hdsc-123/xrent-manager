@@ -50,11 +50,18 @@ export interface AgencyOption {
 export function LocationsTable({
   locations,
   agencies = [],
+  canCancel = false,
 }: {
   locations: LocationRow[];
   /** Sprint 15 : requis pour la sélection par plage de numéros — la numérotation est
    * désormais par agence (DOMAINRULES.md section 29), la plage doit préciser de laquelle. */
   agencies?: AgencyOption[];
+  /** Sprint 24 (correction) — locations.cancel : jusqu'ici cette action n'était gatée par
+   * aucune permission côté client (seul le statut comptait), la vérification serveur (alors
+   * locations.edit, désormais locations.cancel) rejetait silencieusement un user sans le
+   * droit après confirmation — même classe de correctif que ReservationsTable/
+   * MaintenancesTable, appliquée ici en marge de l'audit du point 5. */
+  canCancel?: boolean;
 }) {
   const router = useRouter();
   const [pendingCancel, setPendingCancel] = useState<LocationRow | null>(null);
@@ -232,7 +239,7 @@ export function LocationsTable({
                     Voir facture
                   </DropdownMenuItem>
                 )}
-                {CANCELLABLE_STATUSES.has(row.original.status) && (
+                {canCancel && CANCELLABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingCancel(row.original)}>
                     <Ban className="size-4" />
                     Annuler
@@ -244,7 +251,7 @@ export function LocationsTable({
         ),
       },
     ],
-    [allNumberedSelected, selectedIds, toggleSelectAll, toggleSelected]
+    [canCancel, allNumberedSelected, selectedIds, toggleSelectAll, toggleSelected]
   );
 
   return (

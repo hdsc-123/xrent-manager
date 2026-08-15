@@ -54,8 +54,20 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   if (arrivalDate && Number.isNaN(arrivalDate.getTime())) {
     return NextResponse.json({ error: "arrivalDate doit être une date ISO valide." }, { status: 400 });
   }
-  if (body.endOdometer !== undefined && (!Number.isInteger(body.endOdometer) || body.endOdometer < 0)) {
+  // Sprint 24 : kilométrage/carburant/chauffeur d'arrivée deviennent obligatoires à la
+  // réception d'un véhicule transféré — jusqu'ici tous optionnels, seule garantie réelle
+  // (la vérification côté formulaire n'est qu'une aide UX, jamais suffisante à elle seule).
+  if (body.endOdometer === undefined) {
+    return NextResponse.json({ error: "endOdometer est requis." }, { status: 400 });
+  }
+  if (!Number.isInteger(body.endOdometer) || body.endOdometer < 0) {
     return NextResponse.json({ error: "endOdometer doit être un entier positif ou nul." }, { status: 400 });
+  }
+  if (body.endFuelLevel === undefined) {
+    return NextResponse.json({ error: "endFuelLevel est requis." }, { status: 400 });
+  }
+  if (!body.arrivalDriverName || !body.arrivalDriverName.trim()) {
+    return NextResponse.json({ error: "arrivalDriverName est requis." }, { status: 400 });
   }
 
   try {

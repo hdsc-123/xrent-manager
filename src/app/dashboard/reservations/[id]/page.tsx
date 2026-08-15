@@ -57,6 +57,11 @@ export default async function ReservationDetailPage({ params }: PageProps) {
   const canEditThisAgency = await canEditReservationAgency(user, reservation);
   const canEdit = (await can(user, "reservations.edit")) && reservation.status !== "CONVERTED" && canEditThisAgency;
   const canEditReservation = canEdit && EDITABLE_STATUSES.has(reservation.status);
+  // Sprint 24 : confirmer/annuler/marquer No Show ne sont plus couvertes par reservations.edit
+  // ci-dessus — clés dédiées (voir src/lib/permissions.ts, PATCH /api/reservations/[id]).
+  const canConfirm = (await can(user, "reservations.confirm")) && canEditThisAgency;
+  const canCancel = (await can(user, "reservations.cancel")) && canEditThisAgency;
+  const canNoShow = (await can(user, "reservations.no_show")) && canEditThisAgency;
   // Sprint 22 : reservations.convert est une permission distincte de reservations.edit (déjà
   // séparée dans le catalogue, src/lib/permissions.ts) — le bouton doit suivre exactement la
   // machine à états (canTransition, qui autorise PENDING → CONVERTED directement, pas seulement
@@ -197,6 +202,9 @@ export default async function ReservationDetailPage({ params }: PageProps) {
         status={reservation.status}
         notes={reservation.notes}
         canEdit={canEdit}
+        canConfirm={canConfirm}
+        canCancel={canCancel}
+        canNoShow={canNoShow}
       />
     </div>
   );

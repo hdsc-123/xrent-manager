@@ -19,6 +19,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  FuelLevelSelect,
   Input,
   Label,
 } from "@/components/ui";
@@ -84,14 +85,29 @@ export function VehicleTransfersTable({
     if (!validating) return;
     setError(null);
 
-    const endOdometer = arrivalOdometer.trim() === "" ? undefined : Number(arrivalOdometer);
-    if (endOdometer !== undefined && (!Number.isInteger(endOdometer) || endOdometer < 0)) {
+    // Sprint 24 : kilométrage/carburant/chauffeur d'arrivée deviennent obligatoires à la
+    // réception d'un véhicule transféré (voir aussi PATCH .../validate, qui applique la même
+    // règle côté serveur, seule garantie réelle — cette vérification n'est qu'une aide UX).
+    if (arrivalOdometer.trim() === "") {
+      setError("Le kilométrage d'arrivée est requis.");
+      return;
+    }
+    const endOdometer = Number(arrivalOdometer);
+    if (!Number.isInteger(endOdometer) || endOdometer < 0) {
       setError("Le kilométrage d'arrivée doit être un entier positif ou nul.");
       return;
     }
-    const endFuelLevel = arrivalFuelLevel.trim() === "" ? undefined : Number(arrivalFuelLevel);
-    if (endFuelLevel !== undefined && (!Number.isInteger(endFuelLevel) || endFuelLevel < 0 || endFuelLevel > 100)) {
+    if (arrivalFuelLevel.trim() === "") {
+      setError("Le carburant à l'arrivée est requis.");
+      return;
+    }
+    const endFuelLevel = Number(arrivalFuelLevel);
+    if (!Number.isInteger(endFuelLevel) || endFuelLevel < 0 || endFuelLevel > 100) {
       setError("Le niveau de carburant doit être un entier entre 0 et 100.");
+      return;
+    }
+    if (arrivalDriverName.trim() === "") {
+      setError("Le nom du chauffeur à l'arrivée est requis.");
       return;
     }
 
@@ -100,7 +116,7 @@ export function VehicleTransfersTable({
       await apiPatch(`/api/vehicle-transfers/${validating.id}/validate`, {
         endOdometer,
         endFuelLevel,
-        arrivalDriverName: arrivalDriverName.trim() || undefined,
+        arrivalDriverName: arrivalDriverName.trim(),
       });
       toast.success("Transfert validé — véhicule rattaché à l'agence d'arrivée.");
       setValidating(null);
@@ -216,30 +232,28 @@ export function VehicleTransfersTable({
           </DialogHeader>
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="arrivalOdometer">Kilométrage à l&apos;arrivée</Label>
+              <Label htmlFor="arrivalOdometer" required>Kilométrage à l&apos;arrivée</Label>
               <Input
                 id="arrivalOdometer"
+                required
                 inputMode="numeric"
-                placeholder={validating?.startOdometer != null ? `≥ ${validating.startOdometer}` : "optionnel"}
+                placeholder={validating?.startOdometer != null ? `≥ ${validating.startOdometer}` : undefined}
                 value={arrivalOdometer}
                 onChange={(e) => setArrivalOdometer(e.target.value)}
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="arrivalFuelLevel">Carburant à l&apos;arrivée (%)</Label>
-              <Input
-                id="arrivalFuelLevel"
-                inputMode="numeric"
-                placeholder="optionnel"
-                value={arrivalFuelLevel}
-                onChange={(e) => setArrivalFuelLevel(e.target.value)}
-              />
+              {/* Sprint 24 : jauge métier (Vide/1-4/2-4/3-4/Plein), alignée sur le carburant
+                  départ (transferts) et sur les bons de déplacement — un champ numérique libre
+                  était jusqu'ici seul incohérent avec le reste de l'app. */}
+              <Label htmlFor="arrivalFuelLevel" required>Carburant à l&apos;arrivée</Label>
+              <FuelLevelSelect id="arrivalFuelLevel" required value={arrivalFuelLevel} onChange={setArrivalFuelLevel} />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="arrivalDriverName">Nom du chauffeur à l&apos;arrivée</Label>
+              <Label htmlFor="arrivalDriverName" required>Nom du chauffeur à l&apos;arrivée</Label>
               <Input
                 id="arrivalDriverName"
-                placeholder="optionnel"
+                required
                 value={arrivalDriverName}
                 onChange={(e) => setArrivalDriverName(e.target.value)}
               />

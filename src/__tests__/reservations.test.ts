@@ -1363,3 +1363,167 @@ describe("POST /api/reservations/[id]/convert", () => {
     expect(convertJson.reservation.status).toBe("CONVERTED");
   });
 });
+
+describe("Sprint 24 — reservations.confirm/cancel/no_show séparées de reservations.edit", () => {
+  /** Crée un groupe portant exactement `permissions`, un MEMBER rattaché à agencyA1Id et
+   * assigné à ce groupe — même pattern que le test "convertOnlyMember" ci-dessus. */
+  async function createGroupAndMember(name: string, permissions: string[]) {
+    const groupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `${name}-${runId}`, permissions }),
+    });
+    const groupId = (await groupResponse.json()).group.id;
+
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name,
+      email: `${name.toLowerCase()}-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: member.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${member.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: groupId }),
+    });
+    return member;
+  }
+
+  it("reservations.edit seul ne permet plus de confirmer, annuler, ni marquer No Show", async () => {
+    const editOnly = await createGroupAndMember("EditOnly", [
+      "reservations.view",
+      "reservations.edit",
+    ]);
+
+    const createResponse = await createReservation(adminA, {
+      clientLastName: `EditOnly-${runId}`,
+      pickupAgency: "Agence A1",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    for (const status of ["CONFIRMED", "CANCELLED", "NO_SHOW"]) {
+      const response = await apiFetch(`/api/reservations/${reservation.id}`, {
+        method: "PATCH",
+        headers: { Cookie: editOnly.sessionCookie },
+        body: JSON.stringify({ status }),
+      });
+      expect(response.status).toBe(403);
+    }
+
+    // reservations.edit reste suffisant pour un champ générique (non lié au statut).
+    const notesResponse = await apiFetch(`/api/reservations/${reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: editOnly.sessionCookie },
+      body: JSON.stringify({ notes: "Note ajoutée par EditOnly" }),
+    });
+    expect(notesResponse.status).toBe(200);
+  });
+
+  it("reservations.confirm seul permet de confirmer, sans reservations.edit", async () => {
+    const confirmOnly = await createGroupAndMember("ConfirmOnly", [
+      "reservations.view",
+      "reservations.confirm",
+    ]);
+
+    const createResponse = await createReservation(adminA, {
+      clientLastName: `ConfirmOnly-${runId}`,
+      pickupAgency: "Agence A1",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const confirmResponse = await apiFetch(`/api/reservations/${reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: confirmOnly.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    expect(confirmResponse.status).toBe(200);
+    expect((await confirmResponse.json()).reservation.status).toBe("CONFIRMED");
+
+    // Un champ générique reste refusé : reservations.edit n'est pas accordée.
+    const notesResponse = await apiFetch(`/api/reservations/${reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: confirmOnly.sessionCookie },
+      body: JSON.stringify({ notes: "Tentative" }),
+    });
+    expect(notesResponse.status).toBe(403);
+  });
+
+  it("reservations.cancel seul permet d'annuler, sans reservations.edit", async () => {
+    const cancelOnly = await createGroupAndMember("CancelOnly", [
+      "reservations.view",
+      "reservations.cancel",
+    ]);
+
+    const createResponse = await createReservation(adminA, {
+      clientLastName: `CancelOnly-${runId}`,
+      pickupAgency: "Agence A1",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const cancelResponse = await apiFetch(`/api/reservations/${reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: cancelOnly.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+    expect(cancelResponse.status).toBe(200);
+    expect((await cancelResponse.json()).reservation.status).toBe("CANCELLED");
+  });
+
+  it("reservations.no_show seul permet de marquer No Show, sans reservations.edit", async () => {
+    const noShowOnly = await createGroupAndMember("NoShowOnly", [
+      "reservations.view",
+      "reservations.no_show",
+    ]);
+
+    const createResponse = await createReservation(adminA, {
+      clientLastName: `NoShowOnly-${runId}`,
+      pickupAgency: "Agence A1",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const noShowResponse = await apiFetch(`/api/reservations/${reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: noShowOnly.sessionCookie },
+      body: JSON.stringify({ status: "NO_SHOW" }),
+    });
+    expect(noShowResponse.status).toBe(200);
+    expect((await noShowResponse.json()).reservation.status).toBe("NO_SHOW");
+  });
+
+  it("un ADMIN (super admin du tenant) confirme/annule/marque No Show sans aucun groupe de permissions", async () => {
+    const confirmTarget = await createReservation(adminA, {
+      clientLastName: `AdminConfirm-${runId}`,
+      pickupAgency: "Agence A1",
+    });
+    const cancelTarget = await createReservation(adminA, {
+      clientLastName: `AdminCancel-${runId}`,
+      pickupAgency: "Agence A1",
+    });
+    const noShowTarget = await createReservation(adminA, {
+      clientLastName: `AdminNoShow-${runId}`,
+      pickupAgency: "Agence A1",
+    });
+
+    const confirmResponse = await apiFetch(`/api/reservations/${(await confirmTarget.json()).reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    expect(confirmResponse.status).toBe(200);
+
+    const cancelResponse = await apiFetch(`/api/reservations/${(await cancelTarget.json()).reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+    expect(cancelResponse.status).toBe(200);
+
+    const noShowResponse = await apiFetch(`/api/reservations/${(await noShowTarget.json()).reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "NO_SHOW" }),
+    });
+    expect(noShowResponse.status).toBe(200);
+  });
+});

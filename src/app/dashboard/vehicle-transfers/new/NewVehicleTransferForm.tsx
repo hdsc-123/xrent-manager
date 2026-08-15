@@ -30,42 +30,54 @@ function toDatetimeLocalValue(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-export function NewVehicleTransferForm() {
+interface NewVehicleTransferFormProps {
+  /** Sprint 24 (DOMAINRULES.md) : agences réellement accessibles à l'appelant (toutes celles
+   * du tenant pour un ADMIN, sinon uniquement celles rattachées via UserAgency) — voir
+   * page.tsx. Remplace l'ancien sélecteur libre parmi toutes les agences du tenant. */
+  ownAgencies: Agency[];
+}
+
+export function NewVehicleTransferForm({ ownAgencies }: NewVehicleTransferFormProps) {
   const router = useRouter();
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [agencies, setAgencies] = useState<Agency[]>([]);
-  const [users, setUsers] = useState<User[]>([]);
+  const [destinationAgencies, setDestinationAgencies] = useState<Agency[]>([]);
 
-  // Sprint 19 (DOMAINRULES.md section 37) : agence de départ (station) choisie en premier —
-  // le sélecteur de véhicule ne propose ensuite que les véhicules de cette agence, plus de
-  // liste tenant-wide (bug corrigé : un agent voyait jusqu'ici tous les véhicules disponibles
-  // de toutes les agences, pas seulement les siens).
-  const [fromAgencyId, setFromAgencyId] = useState("");
+  // Sprint 24 : la ville/agence de départ est désormais dérivée de l'agence de l'utilisateur
+  // (verrouillée, non modifiable) — un seul choix possible pour un user rattaché à une seule
+  // agence (le cas le plus courant), pré-sélectionné automatiquement et non éditable. Un user
+  // rattaché à plusieurs agences (ou un ADMIN) choisit uniquement parmi les siennes, jamais
+  // une agence à laquelle il n'est pas rattaché.
+  const [fromAgencyId, setFromAgencyId] = useState(ownAgencies.length === 1 ? ownAgencies[0].id : "");
+  const fromAgencyLocked = ownAgencies.length === 1;
   const [vehicleId, setVehicleId] = useState("");
   const [toAgencyId, setToAgencyId] = useState("");
   const [departureDate, setDepartureDate] = useState(() => toDatetimeLocalValue(new Date()));
-  const [startOdometer, setStartOdometer] = useState("");
-  const [startFuelLevel, setStartFuelLevel] = useState("");
+  // Sprint 24 : kilométrage/carburant de départ ne sont plus modifiables — auto-remplis depuis
+  // le dernier état connu du véhicule (GET /api/vehicles/[id]/last-known-state) puis verrouillés.
+  const [startOdometer, setStartOdometer] = useState<number | null>(null);
+  const [startFuelLevel, setStartFuelLevel] = useState<number | null>(null);
   const [responsibleUserId, setResponsibleUserId] = useState("");
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState("");
+  const [users, setUsers] = useState<User[]>([]);
 
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     apiGet<{ agencies: Agency[] }>("/api/agencies")
-      .then((data) => setAgencies(data.agencies))
-      .catch(() => setAgencies([]));
+      .then((data) => setDestinationAgencies(data.agencies))
+      .catch(() => setDestinationAgencies([]));
+    // Sprint 24 : annuaire déjà filtré par agence/ville de l'appelant côté serveur (voir
+    // GET /api/users/directory) — un agent ne voit que les responsables/agents de sa propre
+    // agence ou ville, plus aucun user d'une autre agence/ville.
     apiGet<{ users: User[] }>("/api/users/directory")
       .then((data) => setUsers(data.users))
       .catch(() => setUsers([]));
   }, []);
 
-  // Sprint 19 : véhicules filtrés à l'agence de départ choisie (station), pas la liste
-  // complète du tenant — voir le commentaire ci-dessus. Le reset de vehicleId se fait dans le
-  // onChange du sélecteur d'agence (synchrone), pas ici, pour ne jamais appeler setState
-  // directement dans le corps d'un effet.
+  // Sprint 19 : véhicules filtrés à l'agence de départ (désormais verrouillée sur l'agence de
+  // l'utilisateur, Sprint 24), pas la liste complète du tenant.
   useEffect(() => {
     if (!fromAgencyId) return;
     apiGet<{ vehicles: Vehicle[] }>(`/api/vehicles?status=AVAILABLE&agencyId=${fromAgencyId}`)
@@ -74,39 +86,34 @@ export function NewVehicleTransferForm() {
   }, [fromAgencyId]);
 
   // Sprint 19 : dernier kilométrage/carburant connus du véhicule choisi, pré-remplis
-  // automatiquement (modifiables ensuite) — voir GET /api/vehicles/[id]/last-known-state.
+  // automatiquement — Sprint 24 : non modifiables ensuite (verrouillés). Le reset lorsque
+  // vehicleId redevient vide se fait dans le onChange du sélecteur d'agence (synchrone, voir
+  // plus bas), pas ici, pour ne jamais appeler setState directement dans le corps d'un effet.
   useEffect(() => {
     if (!vehicleId) return;
     apiGet<{ odometer: number | null; fuelLevel: number | null }>(`/api/vehicles/${vehicleId}/last-known-state`)
       .then((data) => {
-        setStartOdometer(data.odometer !== null ? String(data.odometer) : "");
-        setStartFuelLevel(data.fuelLevel !== null ? String(data.fuelLevel) : "");
+        setStartOdometer(data.odometer);
+        setStartFuelLevel(data.fuelLevel);
       })
       .catch(() => {
-        setStartOdometer("");
-        setStartFuelLevel("");
+        setStartOdometer(null);
+        setStartFuelLevel(null);
       });
   }, [vehicleId]);
 
-  const fromAgency = agencies.find((agency) => agency.id === fromAgencyId) ?? null;
-  const toAgency = agencies.find((agency) => agency.id === toAgencyId) ?? null;
-  const destinationAgencies = agencies.filter((agency) => agency.id !== fromAgencyId);
+  const fromAgency = ownAgencies.find((agency) => agency.id === fromAgencyId) ?? null;
+  const toAgency = destinationAgencies.find((agency) => agency.id === toAgencyId) ?? null;
+  const availableDestinationAgencies = destinationAgencies.filter((agency) => agency.id !== fromAgencyId);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
 
-    if (!vehicleId || !toAgencyId || !responsibleUserId) {
-      setError("Véhicule, agence d'arrivée et responsable sont requis.");
+    if (!fromAgencyId || !vehicleId || !toAgencyId || !responsibleUserId) {
+      setError("Agence de départ, véhicule, agence d'arrivée et responsable sont requis.");
       return;
     }
-
-    const startOdometerValue = startOdometer.trim() === "" ? undefined : Number(startOdometer);
-    if (startOdometerValue !== undefined && (!Number.isInteger(startOdometerValue) || startOdometerValue < 0)) {
-      setError("Le kilométrage de départ doit être un entier positif ou nul.");
-      return;
-    }
-    const startFuelLevelValue = startFuelLevel.trim() === "" ? undefined : Number(startFuelLevel);
 
     setIsSubmitting(true);
     try {
@@ -116,8 +123,10 @@ export function NewVehicleTransferForm() {
         fromCity: fromAgency?.city ?? undefined,
         toCity: toAgency?.city ?? undefined,
         departureDate: departureDate || undefined,
-        startOdometer: startOdometerValue,
-        startFuelLevel: startFuelLevelValue,
+        // Sprint 24 : toujours la valeur verrouillée telle qu'auto-remplie, jamais une saisie
+        // libre — envoyée telle quelle (undefined si jamais connue pour ce véhicule).
+        startOdometer: startOdometer ?? undefined,
+        startFuelLevel: startFuelLevel ?? undefined,
         responsibleUserId,
         reason: reason || undefined,
         notes: notes || undefined,
@@ -144,27 +153,41 @@ export function NewVehicleTransferForm() {
         <CardContent>
           <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="fromAgencyId" required>Agence de départ (station)</Label>
-              <select
-                id="fromAgencyId"
-                required
-                value={fromAgencyId}
-                onChange={(e) => {
-                  setFromAgencyId(e.target.value);
-                  setVehicleId("");
-                  setVehicles([]);
-                }}
-                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-              >
-                <option value="" disabled>
-                  Sélectionner l&apos;agence de départ
-                </option>
-                {agencies.map((agency) => (
-                  <option key={agency.id} value={agency.id}>
-                    {agency.name}
+              <Label htmlFor="fromAgencyId" required>
+                Agence de départ (station) <span className="text-muted-foreground">— votre agence, verrouillée</span>
+              </Label>
+              {fromAgencyLocked ? (
+                <Input id="fromAgencyId" value={fromAgency?.name ?? ""} disabled />
+              ) : (
+                <select
+                  id="fromAgencyId"
+                  required
+                  value={fromAgencyId}
+                  onChange={(e) => {
+                    setFromAgencyId(e.target.value);
+                    setVehicleId("");
+                    setVehicles([]);
+                    setStartOdometer(null);
+                    setStartFuelLevel(null);
+                  }}
+                  className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                >
+                  <option value="" disabled>
+                    Sélectionner votre agence de départ
                   </option>
-                ))}
-              </select>
+                  {ownAgencies.map((agency) => (
+                    <option key={agency.id} value={agency.id}>
+                      {agency.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {ownAgencies.length === 0 && (
+                <p className="text-xs text-destructive">
+                  Vous n&apos;êtes rattaché à aucune agence — un ADMIN doit vous en assigner une avant de pouvoir
+                  lancer un transfert.
+                </p>
+              )}
             </div>
 
             <div className="flex flex-col gap-1.5">
@@ -204,7 +227,7 @@ export function NewVehicleTransferForm() {
                 <option value="" disabled>
                   Sélectionner l&apos;agence de destination
                 </option>
-                {destinationAgencies.map((agency) => (
+                {availableDestinationAgencies.map((agency) => (
                   <option key={agency.id} value={agency.id}>
                     {agency.name}
                   </option>
@@ -237,15 +260,20 @@ export function NewVehicleTransferForm() {
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="startOdometer">
-                  Kilométrage départ <span className="text-muted-foreground">— auto, modifiable</span>
+                  Kilométrage départ <span className="text-muted-foreground">— auto, verrouillé</span>
                 </Label>
-                <Input id="startOdometer" inputMode="numeric" value={startOdometer} onChange={(e) => setStartOdometer(e.target.value)} />
+                <Input id="startOdometer" value={startOdometer ?? "—"} disabled />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="startFuelLevel">
-                  Carburant départ <span className="text-muted-foreground">— auto, modifiable</span>
+                  Carburant départ <span className="text-muted-foreground">— auto, verrouillé</span>
                 </Label>
-                <FuelLevelSelect id="startFuelLevel" value={startFuelLevel} onChange={setStartFuelLevel} />
+                <FuelLevelSelect
+                  id="startFuelLevel"
+                  value={startFuelLevel !== null ? String(startFuelLevel) : ""}
+                  onChange={() => {}}
+                  disabled
+                />
               </div>
             </div>
 

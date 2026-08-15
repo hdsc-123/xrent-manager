@@ -47,13 +47,39 @@ interface UpdateMaintenanceBody {
   notes?: string;
 }
 
+/**
+ * Sprint 24 : terminer/annuler une maintenance ne sont plus couvertes par maintenances.edit
+ * (la même clé que la modification de champ, ex. coût/notes) — clés dédiées. Toute autre
+ * valeur (SCHEDULED/IN_PROGRESS, ou aucun changement de statut) retombe sur
+ * maintenances.edit, comportement antérieur conservé.
+ */
+function requiredPermissionForMaintenanceStatusChange(status: MaintenanceStatus | undefined): string {
+  switch (status) {
+    case "COMPLETED":
+      return "maintenances.complete";
+    case "CANCELLED":
+      return "maintenances.cancel";
+    default:
+      return "maintenances.edit";
+  }
+}
+
 export async function PATCH(request: Request, { params }: RouteParams) {
   const user = await getSessionUser();
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
   }
-  if (!(await can(user, "maintenances.edit"))) {
+
+  let body: UpdateMaintenanceBody;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
+  }
+
+  const requiredPermission = requiredPermissionForMaintenanceStatusChange(body.status);
+  if (!(await can(user, requiredPermission))) {
     return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
@@ -62,13 +88,6 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
   if (!maintenance || !(await canAccessAgency(user, maintenance.agencyId))) {
     return NextResponse.json({ error: "Maintenance introuvable." }, { status: 404 });
-  }
-
-  let body: UpdateMaintenanceBody;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
   }
 
   if (body.status && !MAINTENANCE_STATUSES.includes(body.status)) {

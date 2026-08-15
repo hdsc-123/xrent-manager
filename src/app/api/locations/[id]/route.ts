@@ -63,13 +63,42 @@ interface UpdateLocationBody {
   secondDriverId?: string | null;
 }
 
+/** Sprint 24 — voir le commentaire sur PATCH ci-dessous. */
+function requiredPermissionForLocationStatusChange(status: LocationStatus | undefined): string {
+  switch (status) {
+    case "CONFIRMED":
+      return "locations.confirm";
+    case "ACTIVE":
+      return "locations.activate";
+    case "COMPLETED":
+      return "locations.complete";
+    case "CANCELLED":
+      return "locations.cancel";
+    default:
+      return "locations.edit";
+  }
+}
+
 export async function PATCH(request: Request, { params }: RouteParams) {
   const user = await getSessionUser();
 
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
   }
-  if (!(await can(user, "locations.edit"))) {
+
+  let body: UpdateLocationBody;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
+  }
+
+  // Sprint 24 : confirmer/activer/terminer/annuler un contrat ne sont plus couvertes par
+  // locations.edit (la même clé que la modification de champ) — chaque transition de statut
+  // vérifie désormais sa propre clé dédiée. Toute autre valeur (PENDING, ou aucun changement
+  // de statut) retombe sur locations.edit, comportement antérieur conservé.
+  const requiredPermission = requiredPermissionForLocationStatusChange(body.status);
+  if (!(await can(user, requiredPermission))) {
     return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
@@ -80,13 +109,6 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   // (dropoffAgencyId), pas seulement l'agence de rattachement du contrat.
   if (!location || !(await canAccessLocationAgency(user, location))) {
     return NextResponse.json({ error: "Location introuvable." }, { status: 404 });
-  }
-
-  let body: UpdateLocationBody;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
   }
 
   // Sprint 19 : une agence de retour (dropoffAgencyId) qui n'a pas accès à l'agence de

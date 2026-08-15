@@ -71,6 +71,9 @@ export interface CreateVehicleInput {
   ac?: boolean;
   gps?: boolean;
   imageUrl?: string;
+  /** Sprint 24 — kilométrage/carburant actuels à la création (voir prisma/schema.prisma). */
+  currentOdometer?: number;
+  currentFuelLevel?: number;
   /** Sprint 19 (DOMAINRULES.md section 37) — alertes proactives, tous optionnels. */
   insuranceExpiryDate?: Date;
   vignetteExpiryDate?: Date;
@@ -107,6 +110,9 @@ export interface UpdateVehicleInput {
   ac?: boolean;
   gps?: boolean;
   imageUrl?: string | null;
+  /** Sprint 24 — kilométrage/carburant actuels (voir prisma/schema.prisma). */
+  currentOdometer?: number | null;
+  currentFuelLevel?: number | null;
   /** Sprint 19 (DOMAINRULES.md section 37) — alertes proactives, tous optionnels. */
   insuranceExpiryDate?: Date | null;
   vignetteExpiryDate?: Date | null;
@@ -214,12 +220,21 @@ export interface VehicleLastKnownState {
  * Sprint 23 : Location gagne startFuelLevel/endFuelLevel (voir prisma/schema.prisma) — la
  * candidate Location contribue désormais aussi un niveau de carburant réel, plus jamais
  * systématiquement `null` comme avant ce sprint.
+ *
+ * Sprint 24 : à défaut de tout mouvement connu (véhicule jamais loué/transféré/déplacé, cas le
+ * plus fréquent juste après sa création), retombe sur Vehicle.currentOdometer/currentFuelLevel
+ * (saisis à la création, voir CreateVehicleInput) plutôt que sur `null` systématique — un
+ * véhicule neuf n'a plus besoin d'un premier mouvement pour avoir un état de départ connu.
  */
 export async function getVehicleLastKnownState(
   tenantId: string,
   vehicleId: string
 ): Promise<VehicleLastKnownState> {
-  const [lastLocation, lastTransfer, lastTrip] = await Promise.all([
+  const [vehicle, lastLocation, lastTransfer, lastTrip] = await Promise.all([
+    prisma.vehicle.findFirst({
+      where: { id: vehicleId, tenantId },
+      select: { currentOdometer: true, currentFuelLevel: true },
+    }),
     prisma.location.findFirst({
       where: { tenantId, vehicleId, endOdometer: { not: null } },
       orderBy: { updatedAt: "desc" },
@@ -245,7 +260,7 @@ export async function getVehicleLastKnownState(
   if (lastTrip) candidates.push({ odometer: lastTrip.endOdometer, fuelLevel: lastTrip.endFuelLevel, at: lastTrip.updatedAt });
 
   if (candidates.length === 0) {
-    return { odometer: null, fuelLevel: null };
+    return { odometer: vehicle?.currentOdometer ?? null, fuelLevel: vehicle?.currentFuelLevel ?? null };
   }
 
   const latest = candidates.reduce((a, b) => (b.at > a.at ? b : a));

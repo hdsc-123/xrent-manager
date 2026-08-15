@@ -956,3 +956,169 @@ describe("Sprint 15 — permissions granulaires (locations.create)", () => {
     }
   });
 });
+
+describe("Sprint 24 — locations.confirm/activate/complete/cancel séparées de locations.edit", () => {
+  async function createGroupAndMember(name: string, permissions: string[]) {
+    const groupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `${name}-${runId}`, permissions }),
+    });
+    const groupId = (await groupResponse.json()).group.id;
+
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name,
+      email: `${name.toLowerCase()}-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: member.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${member.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: groupId }),
+    });
+    return member;
+  }
+
+  it("locations.edit seul ne permet plus de confirmer, activer, terminer ni annuler", async () => {
+    const editOnly = await createGroupAndMember("LocEditOnly", ["locations.view", "locations.edit"]);
+
+    const createResponse = await createLocation(adminA, { startDate: "2029-12-01", endDate: "2029-12-03" });
+    const location = (await createResponse.json()).location;
+
+    for (const status of ["CONFIRMED", "CANCELLED"]) {
+      const response = await apiFetch(`/api/locations/${location.id}`, {
+        method: "PATCH",
+        headers: { Cookie: editOnly.sessionCookie },
+        body: JSON.stringify({ status }),
+      });
+      expect(response.status).toBe(403);
+    }
+
+    // Un champ générique (notes) reste autorisé avec locations.edit seul.
+    const notesResponse = await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: editOnly.sessionCookie },
+      body: JSON.stringify({ notes: "Note ajoutée par LocEditOnly" }),
+    });
+    expect(notesResponse.status).toBe(200);
+  });
+
+  it("locations.confirm seul confirme, sans locations.edit", async () => {
+    const confirmOnly = await createGroupAndMember("LocConfirmOnly", ["locations.view", "locations.confirm"]);
+
+    const createResponse = await createLocation(adminA, { startDate: "2029-12-05", endDate: "2029-12-07" });
+    const location = (await createResponse.json()).location;
+
+    const confirmResponse = await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: confirmOnly.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    expect(confirmResponse.status).toBe(200);
+    expect((await confirmResponse.json()).location.status).toBe("CONFIRMED");
+
+    const notesResponse = await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: confirmOnly.sessionCookie },
+      body: JSON.stringify({ notes: "Tentative" }),
+    });
+    expect(notesResponse.status).toBe(403);
+  });
+
+  it("locations.activate seul active (CONFIRMED → ACTIVE), sans locations.edit", async () => {
+    const activateOnly = await createGroupAndMember("LocActivateOnly", ["locations.view", "locations.activate"]);
+
+    const createResponse = await createLocation(adminA, { startDate: "2029-12-08", endDate: "2029-12-10" });
+    const location = (await createResponse.json()).location;
+    await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+
+    const activateResponse = await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: activateOnly.sessionCookie },
+      body: JSON.stringify({ status: "ACTIVE" }),
+    });
+    expect(activateResponse.status).toBe(200);
+    expect((await activateResponse.json()).location.status).toBe("ACTIVE");
+  });
+
+  it("locations.complete seul termine (→ COMPLETED), sans locations.edit", async () => {
+    const completeOnly = await createGroupAndMember("LocCompleteOnly", ["locations.view", "locations.complete"]);
+
+    const createResponse = await createLocation(adminA, { startDate: "2029-12-11", endDate: "2029-12-13" });
+    const location = (await createResponse.json()).location;
+    await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "ACTIVE" }),
+    });
+
+    const completeResponse = await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: completeOnly.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED" }),
+    });
+    expect(completeResponse.status).toBe(200);
+    expect((await completeResponse.json()).location.status).toBe("COMPLETED");
+  });
+
+  it("locations.cancel seul annule un contrat PENDING, sans locations.edit", async () => {
+    const cancelOnly = await createGroupAndMember("LocCancelOnly", ["locations.view", "locations.cancel"]);
+
+    const createResponse = await createLocation(adminA, { startDate: "2029-12-15", endDate: "2029-12-17" });
+    const location = (await createResponse.json()).location;
+
+    const cancelResponse = await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: cancelOnly.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+    expect(cancelResponse.status).toBe(200);
+    expect((await cancelResponse.json()).location.status).toBe("CANCELLED");
+  });
+
+  it("un ADMIN (super admin du tenant) confirme/active/termine/annule sans aucun groupe de permissions", async () => {
+    const progressResponse = await createLocation(adminA, { startDate: "2029-12-20", endDate: "2029-12-22" });
+    const progress = (await progressResponse.json()).location;
+
+    const confirmResponse = await apiFetch(`/api/locations/${progress.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    expect(confirmResponse.status).toBe(200);
+
+    const activateResponse = await apiFetch(`/api/locations/${progress.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "ACTIVE" }),
+    });
+    expect(activateResponse.status).toBe(200);
+
+    const completeResponse = await apiFetch(`/api/locations/${progress.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED" }),
+    });
+    expect(completeResponse.status).toBe(200);
+
+    const cancelTargetResponse = await createLocation(adminA, { startDate: "2029-12-23", endDate: "2029-12-25" });
+    const cancelTarget = (await cancelTargetResponse.json()).location;
+    const cancelResponse = await apiFetch(`/api/locations/${cancelTarget.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+    expect(cancelResponse.status).toBe(200);
+  });
+});

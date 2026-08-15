@@ -58,10 +58,30 @@ const BACKFILLS = {
   MEMBER: [
     "cash_register.edit",
     "cash_register.delete",
+    // Sprint 24 : voir PAST_PERMISSION_BACKFILLS (src/lib/permissions.ts).
+    "reservations.confirm",
+    "reservations.cancel",
+    "reservations.no_show",
+    "locations.confirm",
+    "locations.activate",
+    "locations.complete",
+    "locations.cancel",
+    "maintenances.complete",
+    "maintenances.cancel",
   ],
   AGENCE: [
     "cash_register.edit",
     "cash_register.delete",
+    // Sprint 24 : voir PAST_PERMISSION_BACKFILLS (src/lib/permissions.ts).
+    "reservations.confirm",
+    "reservations.cancel",
+    "reservations.no_show",
+    "locations.confirm",
+    "locations.activate",
+    "locations.complete",
+    "locations.cancel",
+    "maintenances.complete",
+    "maintenances.cancel",
   ],
 };
 

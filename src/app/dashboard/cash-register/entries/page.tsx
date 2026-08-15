@@ -35,6 +35,10 @@ export default async function CashEntriesPage({ searchParams }: PageProps) {
       type: "ENTRY",
       from: params.from ? new Date(params.from) : undefined,
       to: params.to ? new Date(params.to) : undefined,
+      // Sprint 24 (correction) : un non-ADMIN ne doit voir que les écritures de son périmètre
+      // d'agences accessibles (SECURITY.md section 2) — jusqu'ici tenant-wide pour tout
+      // titulaire de cash_register.view.
+      agencyIds: accessibleAgencyIds ?? undefined,
     }),
     prisma.agency.findMany({
       where: { tenantId: user.tenantId, ...(accessibleAgencyIds ? { id: { in: accessibleAgencyIds } } : {}) },

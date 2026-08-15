@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getCashEntries, type CashEntryFilters } from "@/lib/cash-register";
 
@@ -18,11 +18,16 @@ export async function GET(request: Request) {
   const fromParam = searchParams.get("from") ?? undefined;
   const toParam = searchParams.get("to") ?? undefined;
 
+  // Sprint 24 (correction) : un non-ADMIN ne doit voir que les écritures de son périmètre
+  // d'agences accessibles (SECURITY.md section 2) — jusqu'ici tenant-wide.
+  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+
   const filters: CashEntryFilters = {
     type: "ENTRY",
     category,
     from: fromParam ? new Date(fromParam) : undefined,
     to: toParam ? new Date(toParam) : undefined,
+    agencyIds: accessibleAgencyIds ?? undefined,
   };
 
   const entries = await getCashEntries(user.tenantId, filters);

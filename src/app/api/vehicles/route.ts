@@ -97,6 +97,9 @@ interface CreateVehicleBody {
   ac?: boolean;
   gps?: boolean;
   imageUrl?: string;
+  /** Sprint 24 — kilométrage/carburant actuels à la création. */
+  currentOdometer?: number;
+  currentFuelLevel?: number;
   /** Sprint 19 (DOMAINRULES.md section 37) — alertes proactives, dates ISO. */
   insuranceExpiryDate?: string;
   vignetteExpiryDate?: string;
@@ -190,6 +193,24 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "nextOilChangeKm doit être un entier positif ou nul." }, { status: 400 });
   }
 
+  // Sprint 24 : kilométrage/carburant actuels — mêmes bornes que les champs équivalents des
+  // transferts/bons de déplacement (src/lib/vehicle-transfers.ts, src/lib/vehicle-trips.ts).
+  if (
+    body.currentOdometer !== undefined &&
+    (!Number.isInteger(body.currentOdometer) || body.currentOdometer < 0)
+  ) {
+    return NextResponse.json({ error: "currentOdometer doit être un entier positif ou nul." }, { status: 400 });
+  }
+  if (
+    body.currentFuelLevel !== undefined &&
+    (!Number.isInteger(body.currentFuelLevel) || body.currentFuelLevel < 0 || body.currentFuelLevel > 100)
+  ) {
+    return NextResponse.json(
+      { error: "currentFuelLevel doit être un entier entre 0 et 100." },
+      { status: 400 }
+    );
+  }
+
   // Sprint 19 (DOMAINRULES.md section 37) : dates optionnelles des alertes proactives.
   const parsedDates: Partial<Record<(typeof OPTIONAL_DATE_FIELDS)[number], Date>> = {};
   for (const field of OPTIONAL_DATE_FIELDS) {
@@ -232,6 +253,8 @@ export async function POST(request: Request) {
       ac: body.ac,
       gps: body.gps,
       imageUrl: body.imageUrl,
+      currentOdometer: body.currentOdometer,
+      currentFuelLevel: body.currentFuelLevel,
       nextOilChangeKm: body.nextOilChangeKm,
       ...parsedDates,
     });

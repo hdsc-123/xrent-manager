@@ -13,6 +13,12 @@ interface ReservationActionsProps {
   status: ReservationStatus;
   notes: string | null;
   canEdit: boolean;
+  /** Sprint 24 — reservations.confirm, distincte de reservations.edit. */
+  canConfirm: boolean;
+  /** Sprint 24 — reservations.cancel, distincte de reservations.edit. */
+  canCancel: boolean;
+  /** Sprint 24 — reservations.no_show, distincte de reservations.edit. */
+  canNoShow: boolean;
 }
 
 /**
@@ -23,7 +29,15 @@ interface ReservationActionsProps {
  * /dashboard/reservations/[id]/convert), pour ne plus confondre les deux actions comme dans
  * l'ancien flux (un seul bouton « Changer le statut » générique).
  */
-export function ReservationActions({ id, status, notes: initialNotes, canEdit }: ReservationActionsProps) {
+export function ReservationActions({
+  id,
+  status,
+  notes: initialNotes,
+  canEdit,
+  canConfirm,
+  canCancel,
+  canNoShow,
+}: ReservationActionsProps) {
   const router = useRouter();
   const [notes, setNotes] = useState(initialNotes ?? "");
   const [isChangingStatus, setIsChangingStatus] = useState(false);
@@ -60,13 +74,16 @@ export function ReservationActions({ id, status, notes: initialNotes, canEdit }:
     }
   }
 
-  if (!canEdit) {
+  if (!canEdit && !canConfirm && !canCancel && !canNoShow) {
     return null;
   }
 
-  const canCancel = status === "PENDING" || status === "CONFIRMED";
+  // Sprint 24 : chaque bouton croise désormais le statut (machine à états, inchangée) ET sa
+  // propre permission (reservations.confirm/cancel/no_show) — plus reservations.edit.
+  const showConfirm = status === "PENDING" && canConfirm;
+  const showCancel = (status === "PENDING" || status === "CONFIRMED") && canCancel;
   // Sprint 23 (DOMAINRULES.md section 39) — même statuts que canTransition(status, "NO_SHOW").
-  const canMarkNoShow = status === "PENDING" || status === "CONFIRMED";
+  const showNoShow = (status === "PENDING" || status === "CONFIRMED") && canNoShow;
 
   return (
     <Card>
@@ -74,14 +91,14 @@ export function ReservationActions({ id, status, notes: initialNotes, canEdit }:
         <CardTitle>Actions</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        {(status === "PENDING" || canCancel || canMarkNoShow) && (
+        {(showConfirm || showCancel || showNoShow) && (
           <div className="flex flex-wrap gap-2">
-            {status === "PENDING" && (
+            {showConfirm && (
               <Button type="button" size="sm" disabled={isChangingStatus} onClick={() => handleTransition("CONFIRMED")}>
                 Confirmer la réservation
               </Button>
             )}
-            {canCancel && (
+            {showCancel && (
               <Button
                 type="button"
                 size="sm"
@@ -93,7 +110,7 @@ export function ReservationActions({ id, status, notes: initialNotes, canEdit }:
               </Button>
             )}
             {/* Sprint 23 — client jamais présenté, distinct d'Annuler. */}
-            {canMarkNoShow && (
+            {showNoShow && (
               <Button
                 type="button"
                 size="sm"
@@ -107,20 +124,22 @@ export function ReservationActions({ id, status, notes: initialNotes, canEdit }:
           </div>
         )}
 
-        <div className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-muted-foreground">Remarques</span>
-          <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="w-fit"
-            disabled={isSavingNotes}
-            onClick={handleSaveNotes}
-          >
-            {isSavingNotes ? "Enregistrement..." : "Enregistrer"}
-          </Button>
-        </div>
+        {canEdit && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Remarques</span>
+            <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="w-fit"
+              disabled={isSavingNotes}
+              onClick={handleSaveNotes}
+            >
+              {isSavingNotes ? "Enregistrement..." : "Enregistrer"}
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

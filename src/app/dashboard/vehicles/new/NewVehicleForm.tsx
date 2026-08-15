@@ -11,6 +11,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  FuelLevelSelect,
   Input,
   Label,
 } from "@/components/ui";
@@ -61,6 +62,11 @@ export function NewVehicleForm() {
   const [engineSize, setEngineSize] = useState("");
   const [ac, setAc] = useState(false);
   const [gps, setGps] = useState(false);
+  // Sprint 24 : kilométrage/carburant actuels, capturés à la création — voir
+  // getVehicleLastKnownState (src/lib/vehicles.ts), utilisés comme repli tant qu'aucune
+  // Location/VehicleTransfer/VehicleTrip n'a encore renseigné de valeur plus récente.
+  const [currentOdometer, setCurrentOdometer] = useState("");
+  const [currentFuelLevel, setCurrentFuelLevel] = useState("");
   const [status, setStatus] = useState("AVAILABLE");
   const [pricePerDay, setPricePerDay] = useState("");
   const [imageUrl, setImageUrl] = useState("");
@@ -131,6 +137,8 @@ export function NewVehicleForm() {
         engineSize: engineSize ? Number(engineSize.replace(",", ".")) : undefined,
         ac,
         gps,
+        currentOdometer: currentOdometer ? Number(currentOdometer) : undefined,
+        currentFuelLevel: currentFuelLevel ? Number(currentFuelLevel) : undefined,
         imageUrl: imageUrl || undefined,
         insuranceExpiryDate: insuranceExpiryDate || undefined,
         vignetteExpiryDate: vignetteExpiryDate || undefined,
@@ -361,6 +369,26 @@ export function NewVehicleForm() {
                 <input type="checkbox" checked={gps} onChange={(e) => setGps(e.target.checked)} />
                 GPS intégré
               </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="currentOdometer">
+                  Kilométrage actuel <span className="text-muted-foreground">— optionnel</span>
+                </Label>
+                <Input
+                  id="currentOdometer"
+                  inputMode="numeric"
+                  value={currentOdometer}
+                  onChange={(e) => setCurrentOdometer(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="currentFuelLevel">
+                  Carburant actuel <span className="text-muted-foreground">— optionnel</span>
+                </Label>
+                <FuelLevelSelect id="currentFuelLevel" value={currentFuelLevel} onChange={setCurrentFuelLevel} />
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">

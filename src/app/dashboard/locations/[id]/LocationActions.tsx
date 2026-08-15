@@ -55,9 +55,20 @@ interface LocationActionsProps {
   /** Sprint 19 — second conducteur actuel (Location.secondDriverId), null si aucun. */
   secondDriver: { id: string; name: string } | null;
   /** locations.edit ET accès à l'agence de rattachement (pas seulement l'agence de retour) —
-   * masque toute la carte Actions si absent, calculé côté serveur par la page appelante.
+   * gate les notes/dates/second conducteur, calculé côté serveur par la page appelante.
    * Même pattern que ReservationActions. */
   canEdit: boolean;
+  /** Sprint 24 — locations.confirm ET accès à l'agence de rattachement, distincte de
+   * canEdit : PENDING → CONFIRMED. */
+  canConfirm: boolean;
+  /** Sprint 24 — locations.activate ET accès à l'agence de rattachement : CONFIRMED → ACTIVE. */
+  canActivate: boolean;
+  /** Sprint 24 — locations.complete ET accès à l'agence de rattachement : → COMPLETED. */
+  canComplete: boolean;
+  /** Sprint 24 — locations.cancel ET accès à l'agence de rattachement : PENDING → CANCELLED
+   * (seule transition CANCELLED encore atteignable via cette route, voir
+   * LocationCancellationRequiresAdminError). */
+  canCancel: boolean;
   /** Sprint 19 (DOMAINRULES.md section 37) : accès uniquement via l'agence de retour
    * (dropoffAgencyId) — ne peut que "gérer la réception" (statut → Terminée, kilométrage
    * retour), jamais les dates/prix/notes/second conducteur. Mutuellement exclusif avec
@@ -79,6 +90,10 @@ export function LocationActions({
   endDate: initialEndDate,
   secondDriver,
   canEdit,
+  canConfirm,
+  canActivate,
+  canComplete,
+  canCancel,
   canManageReturnOnly,
   isAdmin,
 }: LocationActionsProps) {
@@ -200,7 +215,9 @@ export function LocationActions({
     }
   }
 
-  if (!canEdit && !canManageReturnOnly) {
+  const hasAnyStatusPermission = canConfirm || canActivate || canComplete || canCancel;
+
+  if (!canEdit && !hasAnyStatusPermission && !canManageReturnOnly) {
     return null;
   }
 
@@ -245,8 +262,17 @@ export function LocationActions({
   // proposées, remplacée par l'action dédiée « Annuler ce contrat (administrateur) » plus bas,
   // seule voie qui orchestre aussi la réversibilité financière (factures/caisse).
   const isValidatedContract = status !== "PENDING" && status !== "CANCELLED";
+  // Sprint 24 : chaque transition croise désormais le statut (machine à états, inchangée) ET
+  // sa propre permission (locations.confirm/activate/complete/cancel) — plus locations.edit.
+  const permissionForTarget: Record<LocationStatus, boolean> = {
+    PENDING: false,
+    CONFIRMED: canConfirm,
+    ACTIVE: canActivate,
+    COMPLETED: canComplete,
+    CANCELLED: canCancel,
+  };
   const allowedNextStatuses = rawAllowedNextStatuses.filter(
-    (candidate) => !(candidate === "CANCELLED" && isValidatedContract)
+    (candidate) => !(candidate === "CANCELLED" && isValidatedContract) && permissionForTarget[candidate]
   );
   const otherStatuses = (Object.keys(STATUS_LABELS) as LocationStatus[]).filter(
     (candidate) => candidate !== status && candidate !== "CANCELLED" && !rawAllowedNextStatuses.includes(candidate)
@@ -258,6 +284,7 @@ export function LocationActions({
         <CardTitle>Actions</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        {(hasAnyStatusPermission || isAdmin) && (
         <div className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-muted-foreground">Changer le statut</span>
           {allowedNextStatuses.length === 0 && !isAdmin ? (
@@ -329,6 +356,7 @@ export function LocationActions({
             </div>
           )}
         </div>
+        )}
 
         <div className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-muted-foreground">Kilométrage retour</span>

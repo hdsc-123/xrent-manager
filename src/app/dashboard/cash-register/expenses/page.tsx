@@ -36,6 +36,8 @@ export default async function CashExpensesPage({ searchParams }: PageProps) {
       type: "EXPENSE",
       from: params.from ? new Date(params.from) : undefined,
       to: params.to ? new Date(params.to) : undefined,
+      // Sprint 24 (correction) : voir le commentaire équivalent sur entries/page.tsx.
+      agencyIds: accessibleAgencyIds ?? undefined,
     }),
     getExpenseCategories(user.tenantId),
     prisma.agency.findMany({

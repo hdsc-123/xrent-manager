@@ -242,7 +242,9 @@ describe("Sprint 19 — GET /api/vehicles/[id]/last-known-state", () => {
     await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ endOdometer: 1200, endFuelLevel: 75 }),
+      // Sprint 24 : endOdometer/endFuelLevel/arrivalDriverName désormais obligatoires à la
+      // réception d'un transfert (voir PATCH .../validate).
+      body: JSON.stringify({ endOdometer: 1200, endFuelLevel: 75, arrivalDriverName: "Chauffeur Test" }),
     });
 
     const response = await apiFetch(`/api/vehicles/${vehicleId}/last-known-state`, {
@@ -267,7 +269,8 @@ describe("PATCH /api/vehicle-transfers/[id]/validate", () => {
     const response = await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ endOdometer: 5200, endFuelLevel: 60 }),
+      // Sprint 24 : voir le commentaire équivalent ci-dessus.
+      body: JSON.stringify({ endOdometer: 5200, endFuelLevel: 60, arrivalDriverName: "Chauffeur Test" }),
     });
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -292,7 +295,9 @@ describe("PATCH /api/vehicle-transfers/[id]/validate", () => {
     const response = await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ endOdometer: 7000 }),
+      // Sprint 24 : endFuelLevel/arrivalDriverName fournis pour isoler spécifiquement le rejet
+      // sur l'incohérence de kilométrage (400), pas sur un champ obligatoire manquant.
+      body: JSON.stringify({ endOdometer: 7000, endFuelLevel: 50, arrivalDriverName: "Chauffeur Test" }),
     });
     expect(response.status).toBe(400);
   });
@@ -304,16 +309,20 @@ describe("PATCH /api/vehicle-transfers/[id]/validate", () => {
     const createResponse = await createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId);
     const transferId = (await createResponse.json()).transfer.id;
 
+    // Sprint 24 : champs obligatoires à la réception (voir PATCH .../validate) — fournis ici
+    // pour que la première validation aboutisse réellement (COMPLETED), condition nécessaire
+    // pour exercer le rejet d'une revalidation (409) testé ci-dessous.
+    const arrivalBody = { endOdometer: 100, endFuelLevel: 50, arrivalDriverName: "Chauffeur Test" };
     await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({}),
+      body: JSON.stringify(arrivalBody),
     });
 
     const response = await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({}),
+      body: JSON.stringify(arrivalBody),
     });
     expect(response.status).toBe(409);
   });
@@ -350,7 +359,8 @@ describe("PATCH /api/vehicle-transfers/[id]/cancel", () => {
       apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
         method: "PATCH",
         headers: { Cookie: adminA.sessionCookie },
-        body: JSON.stringify({}),
+        // Sprint 24 : champs obligatoires à la réception, voir le commentaire ci-dessus.
+        body: JSON.stringify({ endOdometer: 100, endFuelLevel: 50, arrivalDriverName: "Chauffeur Test" }),
       }),
       apiFetch(`/api/vehicle-transfers/${transferId}/cancel`, {
         method: "PATCH",
@@ -379,7 +389,8 @@ describe("PATCH /api/vehicle-transfers/[id]/cancel", () => {
     const response = await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ arrivalDriverName: "Karim Chauffeur" }),
+      // Sprint 24 : endOdometer/endFuelLevel désormais obligatoires en plus d'arrivalDriverName.
+      body: JSON.stringify({ endOdometer: 100, endFuelLevel: 50, arrivalDriverName: "Karim Chauffeur" }),
     });
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -496,5 +507,70 @@ describe("Sprint 15 — permissions granulaires (vehicle_transfers.create)", () 
         body: JSON.stringify({ permissionGroupId: null }),
       });
     }
+  });
+});
+
+describe("Sprint 24 — kilométrage/carburant/chauffeur d'arrivée obligatoires à la réception", () => {
+  async function createInTransitTransfer() {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+    const createResponse = await createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId, {
+      startOdometer: 1000,
+    });
+    const transferId = (await createResponse.json()).transfer.id;
+    return { vehicleId, transferId };
+  }
+
+  it("refuse la réception sans endOdometer", async () => {
+    const { transferId } = await createInTransitTransfer();
+    const response = await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ endFuelLevel: 50, arrivalDriverName: "Chauffeur Test" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse la réception sans endFuelLevel", async () => {
+    const { transferId } = await createInTransitTransfer();
+    const response = await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ endOdometer: 1200, arrivalDriverName: "Chauffeur Test" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse la réception sans arrivalDriverName", async () => {
+    const { transferId } = await createInTransitTransfer();
+    const response = await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ endOdometer: 1200, endFuelLevel: 50 }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse un arrivalDriverName vide/blanc", async () => {
+    const { transferId } = await createInTransitTransfer();
+    const response = await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ endOdometer: 1200, endFuelLevel: 50, arrivalDriverName: "   " }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("accepte la réception avec les trois champs fournis et cohérents (endOdometer ≥ startOdometer)", async () => {
+    const { transferId } = await createInTransitTransfer();
+    const response = await apiFetch(`/api/vehicle-transfers/${transferId}/validate`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ endOdometer: 1200, endFuelLevel: 50, arrivalDriverName: "Chauffeur Test" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.transfer.status).toBe("COMPLETED");
+    expect(body.transfer.arrivalDriverName).toBe("Chauffeur Test");
   });
 });

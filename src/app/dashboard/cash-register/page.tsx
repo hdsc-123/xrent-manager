@@ -3,6 +3,7 @@ import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import {
   recomputeCashRegisterBalance,
+  getCashRegisterSummaryForAgencies,
   getDailyBreakdown,
   getCashEntries,
   getCashBalanceByAgency,
@@ -39,14 +40,23 @@ export default async function CashRegisterPage() {
   // ci-dessus (CashRegister reste un singleton par tenant, décision reconduite). Scopé aux
   // agences accessibles à l'appelant (null = toutes, ADMIN) — un MEMBER restreint à une agence
   // ne voit que son bloc, l'admin principal voit tout.
+  //
+  // Sprint 24 (correction) : le solde principal/graphiques/dernières opérations ci-dessous
+  // étaient jusqu'ici toujours calculés tenant-wide (recomputeCashRegisterBalance sans filtre),
+  // quel que soit le rôle — un MEMBER restreint à une agence voyait donc le solde et l'activité
+  // de *toutes* les agences du tenant, pas seulement les siennes (SECURITY.md section 2). Un
+  // ADMIN (accessibleAgencyIds === null) continue de voir le total consolidé tenant-wide,
+  // cohérent avec « toutes villes/agences confondues ».
   const [summary, dailyBreakdown, recentOperations, agencyBalances, unattributed] = await Promise.all([
-    recomputeCashRegisterBalance(user.tenantId),
-    getDailyBreakdown(user.tenantId, from, to),
-    getCashEntries(user.tenantId, { take: 10 }),
+    accessibleAgencyIds === null
+      ? recomputeCashRegisterBalance(user.tenantId)
+      : getCashRegisterSummaryForAgencies(user.tenantId, accessibleAgencyIds),
+    getDailyBreakdown(user.tenantId, from, to, accessibleAgencyIds ?? undefined),
+    getCashEntries(user.tenantId, { take: 10, agencyIds: accessibleAgencyIds ?? undefined }),
     getCashBalanceByAgency(user.tenantId, accessibleAgencyIds),
     getUnattributedCashAmount(user.tenantId),
   ]);
-  const hasUnattributed = unattributed.entries > 0 || unattributed.expenses > 0;
+  const hasUnattributed = accessibleAgencyIds === null && (unattributed.entries > 0 || unattributed.expenses > 0);
 
   return (
     <div className="flex flex-col gap-4">

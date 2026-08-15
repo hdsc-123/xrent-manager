@@ -21,16 +21,18 @@ interface FuelLevelSelectProps {
   value: string;
   onChange: (value: string) => void;
   required?: boolean;
+  disabled?: boolean;
 }
 
-export function FuelLevelSelect({ id, value, onChange, required }: FuelLevelSelectProps) {
+export function FuelLevelSelect({ id, value, onChange, required, disabled }: FuelLevelSelectProps) {
   return (
     <select
       id={id}
       required={required}
+      disabled={disabled}
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+      className="h-9 rounded-md border border-input bg-transparent px-3 text-sm disabled:opacity-60"
     >
       {FUEL_LEVEL_OPTIONS.map((option) => (
         <option key={option.value} value={option.value} disabled={required && option.value === ""}>

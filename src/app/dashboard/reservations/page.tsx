@@ -57,6 +57,10 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
   // Sprint 23 : action rapide « Valider » (renvoie vers le formulaire de contrat) — distincte
   // de reservations.edit, catalogue depuis le Sprint 12C (DOMAINRULES.md section 22).
   const canConvert = await can(user, "reservations.convert");
+  // Sprint 24 : Annuler/No Show désormais gatées par leurs propres clés, distinctes de
+  // reservations.edit (voir src/lib/permissions.ts, PATCH /api/reservations/[id]).
+  const canCancel = await can(user, "reservations.cancel");
+  const canNoShow = await can(user, "reservations.no_show");
   // Réinitialiser à zéro (section 39) : réservé ADMIN, jamais une permission granulaire —
   // même principe que l'admin override des contrats (DOMAINRULES.md section 37).
   const isAdmin = user.role === "ADMIN";
@@ -298,6 +302,8 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
         canDelete={canDelete}
         canEdit={canEdit}
         canConvert={canConvert}
+        canCancel={canCancel}
+        canNoShow={canNoShow}
         isAdmin={isAdmin}
       />
     </div>
