@@ -403,6 +403,23 @@ describe("POST /api/locations", () => {
     expect(body.location.totalPrice).toBe(16000); // 2 jours × 8000
   });
 
+  // Sprint 24-1 : NewLocationForm.tsx préremplit désormais startOdometer/startFuelLevel depuis
+  // GET /api/vehicles/[id]/last-known-state (comportement client, non testable ici) — ce test
+  // couvre la seule partie serveur concernée : startFuelLevel accepté et persisté à la création,
+  // déjà supporté par l'API depuis le Sprint 23 mais jusqu'ici non couvert par un test dédié.
+  it("accepte et persiste startFuelLevel à la création (Sprint 23, non testé jusqu'ici)", async () => {
+    const response = await createLocation(adminA, {
+      startDate: "2028-01-25",
+      endDate: "2028-01-27",
+      startOdometer: 15000,
+      startFuelLevel: 75,
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.location.startOdometer).toBe(15000);
+    expect(body.location.startFuelLevel).toBe(75);
+  });
+
   describe("véhicule sans pricePerDay (Sprint 14A, prix optionnel)", () => {
     let vehicleNoPriceId: string;
 

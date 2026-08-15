@@ -13,6 +13,7 @@ import {
   CardHeader,
   CardTitle,
   Checkbox,
+  FuelLevelSelect,
   Input,
   Label,
 } from "@/components/ui";
@@ -65,6 +66,7 @@ export function NewLocationForm() {
   const [endTime, setEndTime] = useState("10:00");
   const [pricePerDay, setPricePerDay] = useState("");
   const [startOdometer, setStartOdometer] = useState("");
+  const [startFuelLevel, setStartFuelLevel] = useState("");
   const [endOdometer, setEndOdometer] = useState("");
   const [deposit, setDeposit] = useState("");
   const [notes, setNotes] = useState("");
@@ -119,6 +121,33 @@ export function NewLocationForm() {
     setPricePerDayVehicleId(vehicleId);
     setPricePerDay(selectedVehicle?.pricePerDay != null ? (selectedVehicle.pricePerDay / 100).toFixed(2) : "");
   }
+
+  // Sprint 24-1 : le kilométrage/carburant de départ du contrat prennent comme point de départ
+  // le dernier état connu du véhicule (getVehicleLastKnownState, src/lib/vehicles.ts — retombe
+  // lui-même sur Vehicle.currentOdometer/currentFuelLevel si le véhicule n'a encore jamais été
+  // loué/transféré/déplacé, Sprint 24) — même source que les formulaires de transfert/bon de
+  // déplacement. Contrairement à ces derniers, les champs restent modifiables ensuite (pas
+  // verrouillés) : un contrat capture un état réel au comptoir, qui peut légitimement différer de
+  // la dernière valeur enregistrée en base.
+  useEffect(() => {
+    if (!vehicleId) return;
+    let cancelled = false;
+    apiGet<{ odometer: number | null; fuelLevel: number | null }>(`/api/vehicles/${vehicleId}/last-known-state`)
+      .then((data) => {
+        if (cancelled) return;
+        setStartOdometer(data.odometer !== null ? String(data.odometer) : "");
+        setStartFuelLevel(data.fuelLevel !== null ? String(data.fuelLevel) : "");
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setStartOdometer("");
+          setStartFuelLevel("");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [vehicleId]);
 
   const pricePerDayCentimes = useMemo(() => {
     if (!pricePerDay.trim()) return null;
@@ -282,6 +311,7 @@ export function NewLocationForm() {
         status,
         pricePerDay: pricePerDayCentimes,
         startOdometer: startOdometer ? Number(startOdometer) : undefined,
+        startFuelLevel: startFuelLevel ? Number(startFuelLevel) : undefined,
         endOdometer: endOdometer ? Number(endOdometer) : undefined,
         deposit: depositMad !== undefined ? Math.round(depositMad * 100) : undefined,
         payment,
@@ -492,7 +522,10 @@ export function NewLocationForm() {
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="startOdometer">
-                  Kilométrage départ <span className="text-muted-foreground">— optionnel</span>
+                  Kilométrage départ{" "}
+                  <span className="text-muted-foreground">
+                    — optionnel, prérempli depuis le dernier état connu du véhicule
+                  </span>
                 </Label>
                 <Input
                   id="startOdometer"
@@ -502,16 +535,23 @@ export function NewLocationForm() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="endOdometer">
-                  Kilométrage retour <span className="text-muted-foreground">— optionnel</span>
+                <Label htmlFor="startFuelLevel">
+                  Carburant départ <span className="text-muted-foreground">— optionnel</span>
                 </Label>
-                <Input
-                  id="endOdometer"
-                  type="number"
-                  value={endOdometer}
-                  onChange={(e) => setEndOdometer(e.target.value)}
-                />
+                <FuelLevelSelect id="startFuelLevel" value={startFuelLevel} onChange={setStartFuelLevel} />
               </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="endOdometer">
+                Kilométrage retour <span className="text-muted-foreground">— optionnel</span>
+              </Label>
+              <Input
+                id="endOdometer"
+                type="number"
+                value={endOdometer}
+                onChange={(e) => setEndOdometer(e.target.value)}
+              />
             </div>
 
             <div className="flex flex-col gap-1.5">

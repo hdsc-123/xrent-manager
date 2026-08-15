@@ -106,7 +106,7 @@ describe("Sprint 15 — permissions granulaires (cash_register.create_entry)", (
     const response = await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: grantedMember.sessionCookie },
-      body: JSON.stringify({ type: "ENTRY", amount: 1000 }),
+body: JSON.stringify({ type: "ENTRY", amount: 1000, description: "Test permission accordée" }),
     });
     expect(response.status).toBe(201);
   });
@@ -129,7 +129,7 @@ describe("Sprint 15 — permissions granulaires (cash_register.create_entry)", (
       const response = await apiFetch("/api/cash-register", {
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
-        body: JSON.stringify({ type: "ENTRY", amount: 1000 }),
+        body: JSON.stringify({ type: "ENTRY", amount: 1000, description: "Test bypass ADMIN" }),
       });
       expect(response.status).toBe(201);
     } finally {
@@ -164,7 +164,7 @@ describe("POST /api/cash-register", () => {
     const response = await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ type: "ENTRY", amount: -500 }),
+      body: JSON.stringify({ type: "ENTRY", amount: -500, description: "Montant invalide test" }),
     });
     expect(response.status).toBe(400);
   });
@@ -203,7 +203,7 @@ describe("POST /api/cash-register", () => {
     const response = await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ type: "EXPENSE", category: "Carburant", amount: 3_000 }),
+body: JSON.stringify({ type: "EXPENSE", category: "Carburant", amount: 3_000, description: "Plein carburant test" }),
     });
     expect(response.status).toBe(201);
 
@@ -223,12 +223,90 @@ describe("POST /api/cash-register", () => {
   });
 });
 
+describe("Sprint 24-1 — description obligatoire pour toute écriture de caisse manuelle", () => {
+  it("refuse une entrée sans description (absente, vide, ou uniquement des espaces)", async () => {
+    const missing = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", amount: 1000 }),
+    });
+    expect(missing.status).toBe(400);
+
+    const empty = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", amount: 1000, description: "" }),
+    });
+    expect(empty.status).toBe(400);
+
+    const blank = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", amount: 1000, description: "   " }),
+    });
+    expect(blank.status).toBe(400);
+  });
+
+  it("refuse une dépense sans description", async () => {
+    const response = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "EXPENSE", category: "Divers", amount: 500 }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("la vérification d'autorisation reste prioritaire : un MEMBER sans permission est refusé (403), pas 400, même sans description", async () => {
+    const restrictedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `NoDescPerm-${runId}`, permissions: ["cash_register.view"] }),
+    });
+    const restrictedGroupId = (await restrictedGroupResponse.json()).group.id;
+
+    const restrictedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "No Desc Perm Member",
+      email: `no-desc-perm-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: restrictedGroupId }),
+    });
+
+    const response = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: restrictedMember.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", amount: 1000 }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it("accepte une entrée/dépense avec une description non vide", async () => {
+    const entry = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "ENTRY", amount: 1000, description: "Versement client" }),
+    });
+    expect(entry.status).toBe(201);
+
+    const expense = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "EXPENSE", category: "Divers", amount: 500, description: "Achat fournitures" }),
+    });
+    expect(expense.status).toBe(201);
+  });
+});
+
 describe("PATCH/DELETE /api/cash-register/[id] (Sprint 19 — écritures manuelles uniquement)", () => {
   async function createManualEntry(overrides: Record<string, unknown> = {}) {
     const response = await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 5_000, ...overrides }),
+body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 5_000, description: "Écriture manuelle de test", ...overrides }),
     });
     return (await response.json()).entry as { id: string };
   }
@@ -353,18 +431,18 @@ describe("Sprint 19 — séparation espèces/carte des entrées (DOMAINRULES.md 
     await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ type: "ENTRY", amount: 4_000, paymentMethod: "CASH" }),
+body: JSON.stringify({ type: "ENTRY", amount: 4_000, paymentMethod: "CASH", description: "Entrée espèces test" }),
     });
     await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ type: "ENTRY", amount: 6_000, paymentMethod: "CARD" }),
+body: JSON.stringify({ type: "ENTRY", amount: 6_000, paymentMethod: "CARD", description: "Entrée carte test" }),
     });
     // Sans paymentMethod : compté dans monthEntries mais ni cash ni card.
     await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ type: "ENTRY", amount: 1_000 }),
+body: JSON.stringify({ type: "ENTRY", amount: 1_000, description: "Entrée sans mode test" }),
     });
 
     const after = await (
@@ -382,12 +460,12 @@ describe("GET /api/cash-register/entries et /expenses", () => {
     await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ type: "ENTRY", category: "COMMISSION", amount: 1_500 }),
+body: JSON.stringify({ type: "ENTRY", category: "COMMISSION", amount: 1_500, description: "Commission test" }),
     });
     await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ type: "EXPENSE", category: "Entretien", amount: 800 }),
+body: JSON.stringify({ type: "EXPENSE", category: "Entretien", amount: 800, description: "Entretien test" }),
     });
 
     const entriesResponse = await apiFetch("/api/cash-register/entries", {
@@ -465,12 +543,12 @@ describe("Sprint 22 — solde par agence (DOMAINRULES.md section 23, révisée)"
     await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 50_000, agencyId }),
+body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 50_000, agencyId, description: "Versement agence test" }),
     });
     await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ type: "EXPENSE", category: "Fournitures", amount: 20_000, agencyId }),
+body: JSON.stringify({ type: "EXPENSE", category: "Fournitures", amount: 20_000, agencyId, description: "Fournitures test" }),
     });
 
     const balances = await getCashBalanceByAgency(adminA.tenantId, null);
@@ -606,12 +684,12 @@ describe("Sprint 24 — GET /api/cash-register scopé par périmètre (correctio
     await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 70_000, agencyId: agencyOneId }),
+body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 70_000, agencyId: agencyOneId, description: "Versement agence 1 test" }),
     });
     await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 130_000, agencyId: agencyTwoId }),
+body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 130_000, agencyId: agencyTwoId, description: "Versement agence 2 test" }),
     });
 
     // ADMIN : solde consolidé — reflète les deux agences (au moins 200 000, d'autres tests du

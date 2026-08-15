@@ -43,6 +43,11 @@ export function NewExpenseForm({ categories, canManageCategories = false, agenci
       return;
     }
 
+    if (!description.trim()) {
+      setError("La description est obligatoire.");
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       if (canManageCategories && showNewCategory && newCategoryName.trim()) {
@@ -61,7 +66,7 @@ export function NewExpenseForm({ categories, canManageCategories = false, agenci
         type: "EXPENSE",
         category: effectiveCategory,
         amount: Math.round(amountMad * 100),
-        description: description || undefined,
+        description: description.trim(),
         agencyId: agencyId || undefined,
       });
       toast.success("Dépense enregistrée.");
@@ -152,8 +157,13 @@ export function NewExpenseForm({ categories, canManageCategories = false, agenci
           )}
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="expense-description">Description (optionnel)</Label>
-            <Input id="expense-description" value={description} onChange={(e) => setDescription(e.target.value)} />
+            <Label htmlFor="expense-description" required>Description</Label>
+            <Input
+              id="expense-description"
+              required
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
           </div>
 
           <Button type="submit" disabled={isSubmitting}>

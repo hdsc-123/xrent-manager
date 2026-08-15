@@ -11,6 +11,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  FuelLevelSelect,
   Input,
   Label,
 } from "@/components/ui";
@@ -54,6 +55,9 @@ interface EditVehicleFormProps {
   initialAc: boolean;
   initialGps: boolean;
   initialImageUrl: string | null;
+  /** Sprint 24-1 — kilométrage/carburant actuels, désormais modifiables après création. */
+  initialCurrentOdometer: number | null;
+  initialCurrentFuelLevel: number | null;
   /** Sprint 19 (DOMAINRULES.md section 37) — alertes proactives, tous optionnels. */
   initialInsuranceExpiryDate: string | null;
   initialVignetteExpiryDate: string | null;
@@ -82,6 +86,8 @@ export function EditVehicleForm({
   initialAc,
   initialGps,
   initialImageUrl,
+  initialCurrentOdometer,
+  initialCurrentFuelLevel,
   initialInsuranceExpiryDate,
   initialVignetteExpiryDate,
   initialTechnicalInspectionExpiryDate,
@@ -112,6 +118,12 @@ export function EditVehicleForm({
   const [ac, setAc] = useState(initialAc);
   const [gps, setGps] = useState(initialGps);
   const [imageUrl, setImageUrl] = useState(initialImageUrl ?? "");
+  const [currentOdometer, setCurrentOdometer] = useState(
+    initialCurrentOdometer !== null ? String(initialCurrentOdometer) : ""
+  );
+  const [currentFuelLevel, setCurrentFuelLevel] = useState(
+    initialCurrentFuelLevel !== null ? String(initialCurrentFuelLevel) : ""
+  );
   const [insuranceExpiryDate, setInsuranceExpiryDate] = useState(initialInsuranceExpiryDate ?? "");
   const [vignetteExpiryDate, setVignetteExpiryDate] = useState(initialVignetteExpiryDate ?? "");
   const [technicalInspectionExpiryDate, setTechnicalInspectionExpiryDate] = useState(
@@ -127,6 +139,20 @@ export function EditVehicleForm({
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
+
+    // Sprint 24-1 : même garde que NewVehicleForm.tsx (Sprint 18) — jusqu'ici cette page
+    // n'imposait ces 7 champs ni côté client ni côté serveur, contrairement au formulaire de
+    // création : une modification via ce formulaire pouvait donc effacer silencieusement une
+    // fiche technique saisie à la création. Bloqué ici, côté client. **Décision délibérée** :
+    // pas de rejet serveur strict sur un effacement (PATCH /api/vehicles/[id]/route.ts) — ces
+    // champs restent nullables à l'API par design (Sprint 12A, DOMAINRULES.md section 5,
+    // rétrocompatibilité), requis seulement au niveau de ce formulaire.
+    if (!chassisNumber || !color || !doors || !seats || !horsepower || !powerKW || !engineSize) {
+      setError(
+        "Numéro de châssis, couleur, portes, places, chevaux, kW et cylindrée sont requis."
+      );
+      return;
+    }
 
     let pricePerDayCentimes: number | null = null;
     if (pricePerDay.trim()) {
@@ -157,6 +183,8 @@ export function EditVehicleForm({
         engineSize: engineSize ? Number(engineSize.replace(",", ".")) : null,
         ac,
         gps,
+        currentOdometer: currentOdometer ? Number(currentOdometer) : null,
+        currentFuelLevel: currentFuelLevel ? Number(currentFuelLevel) : null,
         imageUrl: imageUrl || null,
         insuranceExpiryDate: insuranceExpiryDate || null,
         vignetteExpiryDate: vignetteExpiryDate || null,
@@ -207,9 +235,10 @@ export function EditVehicleForm({
               <Input id="ww" value={ww} onChange={(e) => setWw(e.target.value)} />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="chassisNumber">Numéro de châssis</Label>
+              <Label htmlFor="chassisNumber" required>Numéro de châssis</Label>
               <Input
                 id="chassisNumber"
+                required
                 value={chassisNumber}
                 onChange={(e) => setChassisNumber(e.target.value)}
               />
@@ -218,16 +247,16 @@ export function EditVehicleForm({
 
           <div className="grid grid-cols-3 gap-3">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="color">Couleur</Label>
-              <Input id="color" value={color} onChange={(e) => setColor(e.target.value)} />
+              <Label htmlFor="color" required>Couleur</Label>
+              <Input id="color" required value={color} onChange={(e) => setColor(e.target.value)} />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="doors">Portes</Label>
-              <Input id="doors" type="number" value={doors} onChange={(e) => setDoors(e.target.value)} />
+              <Label htmlFor="doors" required>Portes</Label>
+              <Input id="doors" type="number" required value={doors} onChange={(e) => setDoors(e.target.value)} />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="seats">Places</Label>
-              <Input id="seats" type="number" value={seats} onChange={(e) => setSeats(e.target.value)} />
+              <Label htmlFor="seats" required>Places</Label>
+              <Input id="seats" type="number" required value={seats} onChange={(e) => setSeats(e.target.value)} />
             </div>
           </div>
 
@@ -266,28 +295,31 @@ export function EditVehicleForm({
 
           <div className="grid grid-cols-3 gap-3">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="horsepower">Chevaux fiscaux</Label>
+              <Label htmlFor="horsepower" required>Chevaux fiscaux</Label>
               <Input
                 id="horsepower"
                 type="number"
+                required
                 value={horsepower}
                 onChange={(e) => setHorsepower(e.target.value)}
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="powerKW">Puissance (kW)</Label>
+              <Label htmlFor="powerKW" required>Puissance (kW)</Label>
               <Input
                 id="powerKW"
                 type="number"
+                required
                 value={powerKW}
                 onChange={(e) => setPowerKW(e.target.value)}
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="engineSize">Cylindrée (L)</Label>
+              <Label htmlFor="engineSize" required>Cylindrée (L)</Label>
               <Input
                 id="engineSize"
                 inputMode="decimal"
+                required
                 value={engineSize}
                 onChange={(e) => setEngineSize(e.target.value)}
               />
@@ -303,6 +335,26 @@ export function EditVehicleForm({
               <input type="checkbox" checked={gps} onChange={(e) => setGps(e.target.checked)} />
               GPS intégré
             </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="currentOdometer">
+                Kilométrage actuel <span className="text-muted-foreground">— optionnel</span>
+              </Label>
+              <Input
+                id="currentOdometer"
+                inputMode="numeric"
+                value={currentOdometer}
+                onChange={(e) => setCurrentOdometer(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="currentFuelLevel">
+                Carburant actuel <span className="text-muted-foreground">— optionnel</span>
+              </Label>
+              <FuelLevelSelect id="currentFuelLevel" value={currentFuelLevel} onChange={setCurrentFuelLevel} />
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">

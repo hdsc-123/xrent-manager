@@ -537,7 +537,7 @@ describe("Sprint 15 — nouvelles clés de permission (maintenances/alerts/cash_
     const grantedResponse = await apiFetch("/api/cash-register", {
       method: "POST",
       headers: { Cookie: restrictedMember.sessionCookie },
-      body: JSON.stringify({ type: "ENTRY", amount: 1000 }),
+      body: JSON.stringify({ type: "ENTRY", amount: 1000, description: "Test permission accordée" }),
     });
     expect(grantedResponse.status).toBe(201);
   });

@@ -101,6 +101,18 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: "invitations.revoke", label: "Révoquer des invitations", category: "Invitations" },
 
   { key: "audit.view", label: "Voir le journal d'audit", category: "Audit" },
+  // Sprint 24-1 : suppression du journal d'audit (unité, en masse, purge totale du tenant),
+  // strictement réservée ADMIN — voir PATCH /api/audit/[id]/route.ts et le commentaire sur
+  // requireAuditDeleteAccess. Contrairement à audit.view (décorative, DOMAINRULES.md section 22
+  // — l'accès en lecture reste un contrôle de rôle strict, jamais can()), cette clé est une
+  // vraie permission vérifiée : l'accès exige à la fois role === "ADMIN" ET can(user,
+  // "audit.delete"). Un ADMIN a par construction toujours cette permission (can() court-circuite
+  // sur le rôle avant toute consultation de PermissionGroup/UserPermission, comme pour toutes les
+  // autres clés) ; un non-ADMIN qui se la verrait accorder via un groupe personnalisé reste
+  // bloqué par la vérification de rôle, qui est évaluée en plus, jamais à la place. N'est
+  // accordée à aucun groupe par défaut (DEFAULT_GROUPS ci-dessous) — capacité nouvelle, pas un
+  // comportement préexistant à préserver.
+  { key: "audit.delete", label: "Supprimer des entrées du journal d'audit", category: "Audit" },
 
   { key: "maintenances.view", label: "Voir les maintenances", category: "Maintenances" },
   { key: "maintenances.create", label: "Planifier des maintenances", category: "Maintenances" },

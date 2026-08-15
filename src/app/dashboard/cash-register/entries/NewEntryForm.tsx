@@ -43,13 +43,18 @@ export function NewEntryForm({ agencies = [] }: NewEntryFormProps) {
       return;
     }
 
+    if (!description.trim()) {
+      setError("La description est obligatoire.");
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       await apiPost("/api/cash-register", {
         type: "ENTRY",
         category,
         amount: Math.round(amountMad * 100),
-        description: description || undefined,
+        description: description.trim(),
         clientName: clientName || undefined,
         paymentMethod,
         agencyId: agencyId || undefined,
@@ -142,8 +147,13 @@ export function NewEntryForm({ agencies = [] }: NewEntryFormProps) {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="entry-description">Description (optionnel)</Label>
-            <Input id="entry-description" value={description} onChange={(e) => setDescription(e.target.value)} />
+            <Label htmlFor="entry-description" required>Description</Label>
+            <Input
+              id="entry-description"
+              required
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
           </div>
 
           <Button type="submit" disabled={isSubmitting}>

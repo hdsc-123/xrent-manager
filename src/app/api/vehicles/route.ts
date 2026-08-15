@@ -141,6 +141,18 @@ export async function POST(request: Request) {
     );
   }
 
+  // Sprint 24-1 : ces 7 champs sont présentés comme obligatoires côté UI (NewVehicleForm.tsx,
+  // astérisque rouge depuis le Sprint 18) mais restent volontairement **non** exigés ici — un
+  // rejet 400 systématique romprait la rétrocompatibilité explicitement actée au Sprint 12A
+  // (DOMAINRULES.md section 5 : "nullable au niveau schéma/API ... required au niveau du
+  // formulaire dashboard", précisément pour ne jamais invalider un appel API existant ou une
+  // fixture de test qui ne les fournit pas). Décision confirmée pour ce sprint : le
+  // renforcement porte sur (a) le client (déjà en place, plus EditVehicleForm.tsx ci-après) et
+  // (b) l'empêchement d'un effacement *silencieux* à la modification (voir PATCH
+  // /api/vehicles/[id]/route.ts) — pas sur un rejet strict à la création, qui casserait la
+  // quasi-totalité des fixtures de test existantes (aucune ne fournit ces champs aujourd'hui).
+  // Validation de format (si fourni) inchangée ci-dessous.
+
   // pricePerDay est optionnel depuis le Sprint 14A (purement informatif, voir
   // DOMAINRULES.md section 5/7) — validé uniquement s'il est fourni.
   if (pricePerDay !== undefined && (!Number.isInteger(pricePerDay) || pricePerDay <= 0)) {

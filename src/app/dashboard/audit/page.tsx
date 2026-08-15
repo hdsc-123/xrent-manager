@@ -1,126 +1,13 @@
 import Link from "next/link";
-import { Plus, Pencil, Trash2, Upload, ArrowRightLeft, CheckCircle2, Circle, type LucideIcon } from "lucide-react";
 import { getSessionUser } from "@/lib/authz";
+import { can } from "@/lib/permissions";
 import { getAuditLogs } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { ExportCsvButton } from "../reports/ExportCsvButton";
-
-const ACTION_LABELS: Record<string, string> = {
-  "user.role_changed": "Changement de rôle",
-  "user.agencies_changed": "Agences assignées modifiées",
-  "user.deleted": "Suppression d'utilisateur",
-  "user.profile_updated": "Profil modifié",
-  "user.permissions_changed": "Permissions modifiées",
-  "invitation.created": "Invitation créée",
-  "invitation.accepted": "Invitation acceptée",
-  "invitation.declined": "Invitation déclinée",
-  "invitation.revoked": "Invitation révoquée",
-  "vehicle.created": "Véhicule créé",
-  "vehicle.updated": "Véhicule modifié",
-  "vehicle.deleted": "Véhicule supprimé",
-  "location.created": "Location créée",
-  "location.updated": "Location modifiée",
-  "location.status_changed": "Statut de location modifié",
-  "location.deleted": "Location supprimée",
-  "client.created": "Client créé",
-  "client.updated": "Client modifié",
-  "client.deleted": "Client supprimé",
-  "client.duplicate_reused": "Client existant réutilisé (doublon)",
-  "invoice.created": "Facture créée",
-  "invoice.updated": "Facture modifiée",
-  "invoice.status_changed": "Statut de facture modifié",
-  "invoice.deleted": "Facture supprimée",
-  "payment.created": "Paiement enregistré",
-  "payment.updated": "Paiement modifié",
-  "payment.deleted": "Paiement supprimé",
-  "maintenance.created": "Maintenance planifiée",
-  "maintenance.updated": "Maintenance modifiée",
-  "maintenance.status_changed": "Statut de maintenance modifié",
-  "maintenance.deleted": "Maintenance supprimée",
-  "alert.acknowledged": "Alerte acquittée",
-  "alert.resolved": "Alerte résolue",
-  "reservation.created": "Réservation créée",
-  "reservation.updated": "Réservation modifiée",
-  "reservation.status_changed": "Statut de réservation modifié",
-  "reservation.deleted": "Réservation supprimée",
-  "reservation.imported": "Réservations importées (Excel)",
-  "reservation.converted": "Réservation convertie en contrat",
-  "permission_group.created": "Groupe de permissions créé",
-  "permission_group.updated": "Groupe de permissions modifié",
-  "permission_group.deleted": "Groupe de permissions supprimé",
-  // Sprint 15 : entrées manquantes pour des actions déjà journalisées depuis des sprints
-  // antérieurs (repli sur la clé brute jusqu'ici, voir le commentaire ACTION_ICONS ci-dessous)
-  // + nouvelles actions de ce sprint (agences, tenant, numérotation, création d'utilisateur
-  // via invitation, réinitialisation de données).
-  "cashEntry.created": "Entrée de caisse enregistrée",
-  "cashExpense.created": "Dépense de caisse enregistrée",
-  "expenseCategory.created": "Catégorie de dépense créée",
-  "vehicle_transfer.created": "Transfert de véhicule lancé",
-  "vehicle_transfer.validated": "Transfert de véhicule validé",
-  "vehicle_transfer.cancelled": "Transfert de véhicule annulé",
-  "vehicle_trip.created": "Bon de déplacement créé",
-  "vehicle_trip.returned": "Retour de déplacement enregistré",
-  "vehicle_trip.cancelled": "Bon de déplacement annulé",
-  "data.reset": "Réinitialisation de données",
-  "data.reset_failed": "Tentative de réinitialisation refusée (confirmation invalide)",
-  "agency.created": "Agence créée",
-  "agency.updated": "Agence modifiée",
-  "agency.deleted": "Agence supprimée",
-  "user.created": "Utilisateur créé",
-  "tenant.updated": "Tenant modifié",
-  // Sprint 16 (audit sécurité) : action sensible jusqu'ici non journalisée (voir
-  // src/app/api/users/[id]/route.ts, PATCH).
-  "user.password_reset": "Mot de passe réinitialisé (par un administrateur)",
-};
-
-const RESOURCE_LABELS: Record<string, string> = {
-  User: "Utilisateur",
-  Invitation: "Invitation",
-  Vehicle: "Véhicule",
-  Location: "Location",
-  Client: "Client",
-  Invoice: "Facture",
-  Payment: "Paiement",
-  Maintenance: "Maintenance",
-  Alert: "Alerte",
-  Reservation: "Réservation",
-  PermissionGroup: "Groupe de permissions",
-  Agency: "Agence",
-  Tenant: "Tenant",
-  CashEntry: "Écriture de caisse",
-  CashRegister: "Caisse",
-  ExpenseCategory: "Catégorie de dépense",
-  VehicleTransfer: "Transfert de véhicule",
-  VehicleTrip: "Bon de déplacement",
-};
-
-/** Icône + couleur par type d'action (section 6 du sprint), dérivées du suffixe verbal de
- * l'action plutôt que d'une carte exhaustive par action — reste correct pour toute nouvelle
- * action suivant la convention "<ressource>.<verbe>" (DOMAINRULES.md section 16). */
-function getActionStyle(action: string): { icon: LucideIcon; className: string } {
-  if (action.endsWith(".created") || action.endsWith(".imported")) {
-    return { icon: Plus, className: "text-success" };
-  }
-  if (action.endsWith(".deleted") || action.endsWith(".revoked") || action.endsWith(".declined")) {
-    return { icon: Trash2, className: "text-destructive" };
-  }
-  if (action.endsWith(".converted")) {
-    return { icon: ArrowRightLeft, className: "text-primary" };
-  }
-  if (action.endsWith(".acknowledged") || action.endsWith(".resolved") || action.endsWith(".accepted")) {
-    return { icon: CheckCircle2, className: "text-success" };
-  }
-  if (
-    action.endsWith(".updated") ||
-    action.endsWith(".status_changed") ||
-    action.endsWith("_changed") ||
-    action.endsWith("_reused")
-  ) {
-    return { icon: action.endsWith("_reused") ? Upload : Pencil, className: "text-primary" };
-  }
-  return { icon: Circle, className: "text-muted-foreground" };
-}
+import { ACTION_LABELS, RESOURCE_LABELS } from "./audit-labels";
+import { AuditLogTable } from "./AuditLogTable";
+import { AuditPurgeCard } from "./AuditPurgeCard";
 
 interface PageProps {
   searchParams: Promise<{ resource?: string; action?: string; userId?: string; from?: string; to?: string }>;
@@ -175,6 +62,22 @@ export default async function AuditPage({ searchParams }: PageProps) {
 
   const actorNameById = new Map(tenantUsers.map((actor) => [actor.id, actor.name]));
   const hasFilters = Boolean(params.resource || params.action || params.userId || params.from || params.to);
+
+  // Sprint 24-1 : suppression du journal d'audit — double garde (role === "ADMIN", déjà vérifié
+  // plus haut, ET can(user, "audit.delete")), voir le commentaire sur la clé dans
+  // src/lib/permissions.ts. Recalculée côté serveur uniquement — la vérification réelle vit dans
+  // les routes /api/audit/[id], /api/audit/bulk-delete, /api/audit/purge ; ce booléen ne fait que
+  // masquer l'UI en conséquence.
+  const canDeleteAudit = await can(user, "audit.delete");
+
+  const auditRows = logs.map((log) => ({
+    id: log.id,
+    createdAt: log.createdAt.toISOString(),
+    action: log.action,
+    resource: log.resource,
+    resourceId: log.resourceId,
+    actorLabel: log.userId ? (actorNameById.get(log.userId) ?? "Utilisateur supprimé") : "Système",
+  }));
 
   return (
     <div className="flex flex-col gap-4">
@@ -294,49 +197,11 @@ export default async function AuditPage({ searchParams }: PageProps) {
 
       <Card>
         <CardContent className="p-0">
-          {logs.length === 0 ? (
-            <p className="p-4 text-sm text-muted-foreground">Aucune entrée pour l&apos;instant.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50 text-left text-muted-foreground">
-                  <tr>
-                    <th className="h-10 px-3 align-middle font-medium whitespace-nowrap">Date</th>
-                    <th className="h-10 px-3 align-middle font-medium whitespace-nowrap">Action</th>
-                    <th className="h-10 px-3 align-middle font-medium whitespace-nowrap">Ressource</th>
-                    <th className="h-10 px-3 align-middle font-medium whitespace-nowrap">Acteur</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {logs.map((log) => {
-                    const { icon: ActionIcon, className } = getActionStyle(log.action);
-                    return (
-                      <tr key={log.id} className="border-t border-border">
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          {new Date(log.createdAt).toLocaleString("fr-FR")}
-                        </td>
-                        <td className="px-3 py-2">
-                          <span className={`inline-flex items-center gap-1.5 ${className}`}>
-                            <ActionIcon className="size-3.5 shrink-0" />
-                            {ACTION_LABELS[log.action] ?? log.action}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2">
-                          {RESOURCE_LABELS[log.resource] ?? log.resource}
-                          {log.resourceId ? ` (${log.resourceId})` : ""}
-                        </td>
-                        <td className="px-3 py-2">
-                          {log.userId ? (actorNameById.get(log.userId) ?? "Utilisateur supprimé") : "Système"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <AuditLogTable logs={auditRows} canDelete={canDeleteAudit} />
         </CardContent>
       </Card>
+
+      {canDeleteAudit && <AuditPurgeCard />}
     </div>
   );
 }

@@ -655,3 +655,118 @@ describe("Sprint 24 — kilométrage/carburant actuels à la création véhicule
     expect(body.fuelLevel).toBe(60);
   });
 });
+
+describe("Sprint 24-1 — kilométrage/carburant actuels modifiables après création (PATCH)", () => {
+  it("accepte de définir currentOdometer/currentFuelLevel sur un véhicule qui n'en avait pas", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicle = (await createResponse.json()).vehicle;
+    expect(vehicle.currentOdometer).toBeNull();
+
+    const response = await apiFetch(`/api/vehicles/${vehicle.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ currentOdometer: 12000, currentFuelLevel: 50 }),
+    });
+    expect(response.status).toBe(200);
+    const updated = (await response.json()).vehicle;
+    expect(updated.currentOdometer).toBe(12000);
+    expect(updated.currentFuelLevel).toBe(50);
+  });
+
+  it("refuse un currentOdometer négatif ou un currentFuelLevel hors 0-100 en modification", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id, { currentOdometer: 1000, currentFuelLevel: 50 });
+    const vehicle = (await createResponse.json()).vehicle;
+
+    const negative = await apiFetch(`/api/vehicles/${vehicle.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ currentOdometer: -5 }),
+    });
+    expect(negative.status).toBe(400);
+
+    const outOfRange = await apiFetch(`/api/vehicles/${vehicle.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ currentFuelLevel: 101 }),
+    });
+    expect(outOfRange.status).toBe(400);
+  });
+
+  it("accepte de remettre currentOdometer/currentFuelLevel à null explicitement (champs informatifs, pas techniques)", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id, { currentOdometer: 1000, currentFuelLevel: 50 });
+    const vehicle = (await createResponse.json()).vehicle;
+
+    const response = await apiFetch(`/api/vehicles/${vehicle.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ currentOdometer: null, currentFuelLevel: null }),
+    });
+    expect(response.status).toBe(200);
+    const updated = (await response.json()).vehicle;
+    expect(updated.currentOdometer).toBeNull();
+    expect(updated.currentFuelLevel).toBeNull();
+  });
+});
+
+describe("Sprint 24-1 — champs techniques obligatoires (EditVehicleForm.tsx, client) + non-régression Sprint 12A (API)", () => {
+  // Sprint 24-1 : EditVehicleForm.tsx exige désormais ces 7 champs (astérisque rouge + refus de
+  // soumission côté client, même garde que NewVehicleForm.tsx) — comportement client, non
+  // exerçable par ces tests d'intégration HTTP (voir TESTREPORT.md, limite déjà documentée pour
+  // tout comportement React pur ailleurs dans le projet). Un rejet *serveur* strict sur un
+  // effacement (null) a été délibérément écarté : il casserait le contrat API Sprint 12A ci-dessous
+  // (déjà testé, jamais remis en cause), ces champs étant nullables à l'API par design
+  // (DOMAINRULES.md section 5), requis seulement au niveau du formulaire dashboard.
+  it("l'API continue d'autoriser l'effacement explicite de ces champs (comportement Sprint 12A inchangé, non régressé par ce sprint)", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id, {
+      chassisNumber: "VF1AB000000000001",
+      color: "Bleu",
+      doors: 5,
+      seats: 5,
+      horsepower: 6,
+      powerKW: 70,
+      engineSize: 1.5,
+    });
+    const vehicle = (await createResponse.json()).vehicle;
+
+    const response = await apiFetch(`/api/vehicles/${vehicle.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ chassisNumber: null, color: null, doors: null }),
+    });
+    expect(response.status).toBe(200);
+    const updated = (await response.json()).vehicle;
+    expect(updated.chassisNumber).toBeNull();
+    expect(updated.color).toBeNull();
+    expect(updated.doors).toBeNull();
+  });
+
+  it("une modification qui omet ces champs (jamais envoyés) laisse leur valeur existante inchangée", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id, { chassisNumber: "VF1XYZ000000000002", color: "Rouge" });
+    const vehicle = (await createResponse.json()).vehicle;
+
+    const response = await apiFetch(`/api/vehicles/${vehicle.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Renommée" }),
+    });
+    expect(response.status).toBe(200);
+    const updated = (await response.json()).vehicle;
+    expect(updated.chassisNumber).toBe("VF1XYZ000000000002");
+    expect(updated.color).toBe("Rouge");
+  });
+
+  it("une modification qui fournit une nouvelle valeur valide met bien à jour le champ", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id, { chassisNumber: "VF1OLD00000000003", color: "Blanc" });
+    const vehicle = (await createResponse.json()).vehicle;
+
+    const response = await apiFetch(`/api/vehicles/${vehicle.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ chassisNumber: "VF1NEW00000000004", color: "Noir" }),
+    });
+    expect(response.status).toBe(200);
+    const updated = (await response.json()).vehicle;
+    expect(updated.chassisNumber).toBe("VF1NEW00000000004");
+    expect(updated.color).toBe("Noir");
+  });
+});

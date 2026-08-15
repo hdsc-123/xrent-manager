@@ -59,3 +59,102 @@ export async function getAuditLogs(tenantId: string, filters: GetAuditLogsFilter
     skip: filters.skip ?? 0,
   });
 }
+
+export async function getAuditLogCount(tenantId: string): Promise<number> {
+  return prisma.auditLog.count({ where: { tenantId } });
+}
+
+/**
+ * Sprint 24-1 : suppression du journal d'audit, brief explicite du propriétaire du projet —
+ * strictement réservée ADMIN + permission dédiée audit.delete (src/lib/permissions.ts), vérifiée
+ * côté route (src/app/api/audit/[id]/route.ts, .../bulk-delete, .../purge), jamais ici. Ne
+ * supprime jamais que des lignes AuditLog : aucune de ces fonctions ne touche à une autre table.
+ */
+export class AuditLogNotFoundError extends Error {
+  constructor() {
+    super("Entrée du journal d'audit introuvable.");
+    this.name = "AuditLogNotFoundError";
+  }
+}
+
+/**
+ * Suppression d'une entrée unique — tenant-scopée par un `findFirst` préalable (jamais un id
+ * transmis tel quel à Prisma, même garde IDOR que le reste du CRUD, SECURITY.md section 7).
+ * Auto-journalisée après coup ("audit.log_deleted", décrivant l'entrée disparue sans en
+ * dupliquer tout le contenu) — cette nouvelle entrée est créée après la suppression, donc jamais
+ * elle-même supprimée par cet appel.
+ */
+export async function deleteAuditLogEntry(tenantId: string, id: string, actorUserId: string): Promise<void> {
+  const existing = await prisma.auditLog.findFirst({ where: { id, tenantId } });
+  if (!existing) {
+    throw new AuditLogNotFoundError();
+  }
+
+  await prisma.auditLog.delete({ where: { id } });
+
+  await logAction({
+    tenantId,
+    userId: actorUserId,
+    action: "audit.log_deleted",
+    resource: "AuditLog",
+    resourceId: id,
+    metadata: {
+      deletedAction: existing.action,
+      deletedResource: existing.resource,
+      deletedResourceId: existing.resourceId,
+      deletedCreatedAt: existing.createdAt.toISOString(),
+    } as unknown as Prisma.InputJsonValue,
+  });
+}
+
+/**
+ * Suppression en masse — mêmes garanties qu'unitaire ci-dessus, filtrée strictement par
+ * tenantId : un id d'un autre tenant glissé dans la liste est silencieusement ignoré (ni
+ * supprimé, ni cause d'échec pour les autres). Retourne le nombre réellement supprimé.
+ */
+export async function deleteAuditLogEntries(tenantId: string, ids: string[], actorUserId: string): Promise<number> {
+  if (ids.length === 0) {
+    return 0;
+  }
+
+  const result = await prisma.auditLog.deleteMany({ where: { id: { in: ids }, tenantId } });
+
+  if (result.count > 0) {
+    await logAction({
+      tenantId,
+      userId: actorUserId,
+      action: "audit.bulk_deleted",
+      resource: "AuditLog",
+      metadata: { count: result.count, requestedIds: ids.length } as unknown as Prisma.InputJsonValue,
+    });
+  }
+
+  return result.count;
+}
+
+/**
+ * Purge complète du journal d'audit du tenant courant — irréversible, jamais inter-tenant
+ * (`where: { tenantId }` uniquement, jamais un tenantId arbitraire). Même convention que
+ * `resetTenantData` (src/lib/data-reset.ts) : la purge et l'entrée d'audit qui la documente sont
+ * écrites dans une seule transaction Prisma (`tx.auditLog.create`, pas `logAction` — qui passe
+ * par le client Prisma global, hors de cette transaction) pour ne jamais purger sans laisser de
+ * trace, y compris en cas d'échec partiel. Cette entrée est créée après la purge : elle n'est
+ * donc jamais elle-même supprimée par cet appel.
+ */
+export async function purgeAuditLog(tenantId: string, actorUserId: string): Promise<number> {
+  return prisma.$transaction(async (tx) => {
+    const result = await tx.auditLog.deleteMany({ where: { tenantId } });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        userId: actorUserId,
+        action: "audit.purged",
+        resource: "AuditLog",
+        metadata: { count: result.count } as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    return result.count;
+  });
+}

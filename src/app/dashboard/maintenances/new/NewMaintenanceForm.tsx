@@ -40,9 +40,27 @@ export function NewMaintenanceForm() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Sprint 24-1 : un véhicule RENTED/ON_TRIP/TRANSFERRING n'est jamais sélectionnable ici — il
+  // est indisponible pour une intervention immédiate (contrairement au listing "État des
+  // véhicules" de cette même page, qui reste volontairement exhaustif). AVAILABLE et MAINTENANCE
+  // restent tous deux sélectionnables : planifier une intervention supplémentaire/future sur un
+  // véhicule déjà en maintenance est un cas d'usage légitime (brief explicite du propriétaire du
+  // projet). GET /api/vehicles ne filtre que sur un statut unique — deux appels fusionnés plutôt
+  // qu'un changement d'API pour rester proportionné.
   useEffect(() => {
-    apiGet<{ vehicles: Vehicle[] }>("/api/vehicles")
-      .then((data) => setVehicles(data.vehicles))
+    Promise.all([
+      apiGet<{ vehicles: Vehicle[] }>("/api/vehicles?status=AVAILABLE"),
+      apiGet<{ vehicles: Vehicle[] }>("/api/vehicles?status=MAINTENANCE"),
+    ])
+      .then(([available, inMaintenance]) => {
+        const seen = new Set<string>();
+        const merged = [...available.vehicles, ...inMaintenance.vehicles].filter((vehicle) => {
+          if (seen.has(vehicle.id)) return false;
+          seen.add(vehicle.id);
+          return true;
+        });
+        setVehicles(merged);
+      })
       .catch(() => setVehicles([]));
   }, []);
 

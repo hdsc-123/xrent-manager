@@ -92,6 +92,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
+  // Sprint 24-1 : jusqu'ici optionnelle, la description devient obligatoire pour toute écriture
+  // manuelle (entrée ou dépense) — sans elle, un mouvement d'espèces/carte en caisse n'a aucune
+  // trace de sa raison d'être, contrairement à une écriture liée à un contrat (contractId,
+  // clientName déjà renseignés automatiquement). Vérifiée après l'autorisation (pas avant) —
+  // même ordre que le reste des routes du projet, un appelant non autorisé ne doit jamais
+  // apprendre quoi que ce soit sur la validité de son corps de requête.
+  if (!body.description || !body.description.trim()) {
+    return NextResponse.json(
+      { error: "La description est obligatoire pour toute écriture de caisse manuelle." },
+      { status: 400 }
+    );
+  }
+
   if (body.paymentMethod && !PAYMENT_METHODS.includes(body.paymentMethod)) {
     return NextResponse.json({ error: "paymentMethod invalide." }, { status: 400 });
   }

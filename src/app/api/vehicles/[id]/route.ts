@@ -83,6 +83,10 @@ interface UpdateVehicleBody {
   ac?: boolean;
   gps?: boolean;
   imageUrl?: string | null;
+  /** Sprint 24-1 — kilométrage/carburant actuels, désormais modifiables après création (jusqu'ici
+   * uniquement capturables à la création du véhicule, voir CreateVehicleInput). */
+  currentOdometer?: number | null;
+  currentFuelLevel?: number | null;
   /** Sprint 19 (DOMAINRULES.md section 37) — alertes proactives, dates ISO (voir parseOptionalDate ci-dessous). */
   insuranceExpiryDate?: string | null;
   vignetteExpiryDate?: string | null;
@@ -159,6 +163,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "fuel invalide." }, { status: 400 });
   }
 
+  // Sprint 24-1 : ces 7 champs sont désormais requis côté client (EditVehicleForm.tsx, comme
+  // NewVehicleForm.tsx) — un rejet strict *serveur* sur un effacement explicite (null) a été
+  // envisagé puis délibérément écarté : `it("permet de modifier puis d'effacer un champ
+  // optionnel de la fiche technique (Sprint 12A)", ...)` (src/__tests__/vehicles.test.ts) prouve
+  // que cette nullabilité à l'API est un comportement Sprint 12A explicite et déjà testé (voir
+  // aussi DOMAINRULES.md section 5 : "nullable au niveau schéma/API ... required au niveau du
+  // formulaire dashboard"), pas un oubli. L'ajouter aurait cassé ce contrat API existant pour un
+  // gain de sécurité nul (ces champs ont toujours été nullables à l'API, seul le formulaire
+  // dashboard les impose). Validation de format (si fourni, y compris null) inchangée ci-dessous.
   for (const field of ["doors", "seats", "horsepower", "powerKW"] as const) {
     const fieldValue = body[field];
     if (fieldValue !== undefined && fieldValue !== null && (!Number.isInteger(fieldValue) || fieldValue <= 0)) {
@@ -180,6 +193,25 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     (!Number.isInteger(body.nextOilChangeKm) || body.nextOilChangeKm < 0)
   ) {
     return NextResponse.json({ error: "nextOilChangeKm doit être un entier positif ou nul." }, { status: 400 });
+  }
+
+  // Sprint 24-1 : mêmes bornes que POST /api/vehicles (création).
+  if (
+    body.currentOdometer !== undefined &&
+    body.currentOdometer !== null &&
+    (!Number.isInteger(body.currentOdometer) || body.currentOdometer < 0)
+  ) {
+    return NextResponse.json({ error: "currentOdometer doit être un entier positif ou nul." }, { status: 400 });
+  }
+  if (
+    body.currentFuelLevel !== undefined &&
+    body.currentFuelLevel !== null &&
+    (!Number.isInteger(body.currentFuelLevel) || body.currentFuelLevel < 0 || body.currentFuelLevel > 100)
+  ) {
+    return NextResponse.json(
+      { error: "currentFuelLevel doit être un entier entre 0 et 100." },
+      { status: 400 }
+    );
   }
 
   // Sprint 19 (DOMAINRULES.md section 37) : dates optionnelles/nullables des alertes proactives —

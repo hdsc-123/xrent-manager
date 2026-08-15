@@ -183,6 +183,8 @@ export default async function VehicleDetailPage({ params }: PageProps) {
           initialAc={vehicle.ac}
           initialGps={vehicle.gps}
           initialImageUrl={vehicle.imageUrl}
+          initialCurrentOdometer={vehicle.currentOdometer}
+          initialCurrentFuelLevel={vehicle.currentFuelLevel}
           initialInsuranceExpiryDate={vehicle.insuranceExpiryDate ? vehicle.insuranceExpiryDate.toISOString().slice(0, 10) : null}
           initialVignetteExpiryDate={vehicle.vignetteExpiryDate ? vehicle.vignetteExpiryDate.toISOString().slice(0, 10) : null}
           initialTechnicalInspectionExpiryDate={
