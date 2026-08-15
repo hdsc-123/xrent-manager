@@ -27,6 +27,20 @@ export class CashEntryNotEditableError extends Error {
   }
 }
 
+/** Sprint 25B (correction, DOMAINRULES.md/SECURITY.md — isolation par agence) : une écriture
+ * manuelle rattachée à une agence hors du périmètre accessible à l'appelant (voir
+ * getAccessibleAgencyIds, src/lib/authz.ts) ne peut être ni modifiée ni supprimée par un
+ * non-ADMIN, même si elle appartient au même tenant et même s'il détient
+ * cash_register.edit/delete — jusqu'ici seuls le tenant et la permission étaient vérifiés,
+ * jamais l'agence de l'écriture ciblée (SECURITY.md section 2). Message générique, sans
+ * détail sur l'agence réelle de l'écriture. */
+export class CashEntryAgencyAccessDeniedError extends Error {
+  constructor() {
+    super("Accès refusé à cette agence.");
+    this.name = "CashEntryAgencyAccessDeniedError";
+  }
+}
+
 /** Exportée (Sprint 17) pour src/lib/data-reset.ts — après une purge complète des CashEntry
  * d'un tenant, le solde recalculé est trivialement 0 (previousBalance/currentBalance), ce qui
  * permet de le poser directement dans la même transaction Prisma que la purge plutôt que
@@ -285,15 +299,30 @@ export interface UpdateCashEntryInput {
 
 /** Sprint 19 : modifie une écriture manuelle (contractId absent) — 404 (null) si introuvable
  * dans le tenant, CashEntryNotEditableError (409, voir la route) si elle est liée à un
- * paiement. Recalcule toujours le solde après coup, même principe que createCashEntry. */
+ * paiement. Recalcule toujours le solde après coup, même principe que createCashEntry.
+ *
+ * Sprint 25B : `accessibleAgencyIds` (voir getAccessibleAgencyIds, src/lib/authz.ts) — `null`
+ * pour un ADMIN (aucune restriction, comportement inchangé), sinon la liste des agences
+ * accessibles à l'appelant. Vérifié avant CashEntryNotEditableError ci-dessous (contrôle
+ * d'autorisation avant règle métier, même ordre que le reste du projet). Une écriture sans
+ * agence (`agencyId: null`) est refusée à tout non-ADMIN — même règle déjà appliquée par les
+ * vues scopées en lecture (getCashEntries/getCashRegisterSummaryForAgencies, dont le filtre
+ * `agencyId: { in: accessibleAgencyIds } }` n'inclut jamais `null`) — seul un ADMIN y accède. */
 export async function updateCashEntry(
   tenantId: string,
   entryId: string,
-  data: UpdateCashEntryInput
+  data: UpdateCashEntryInput,
+  accessibleAgencyIds: string[] | null
 ): Promise<CashEntry | null> {
   const existing = await prisma.cashEntry.findFirst({ where: { id: entryId, tenantId } });
   if (!existing) {
     return null;
+  }
+  if (
+    accessibleAgencyIds !== null &&
+    (existing.agencyId === null || !accessibleAgencyIds.includes(existing.agencyId))
+  ) {
+    throw new CashEntryAgencyAccessDeniedError();
   }
   if (existing.contractId) {
     throw new CashEntryNotEditableError();
@@ -317,11 +346,24 @@ export async function updateCashEntry(
 
 /** Sprint 19 : supprime une écriture manuelle (contractId absent) — mêmes garanties que
  * updateCashEntry ci-dessus (false si introuvable, CashEntryNotEditableError si liée à un
- * paiement). Recalcule toujours le solde après coup. */
-export async function deleteCashEntry(tenantId: string, entryId: string): Promise<boolean> {
+ * paiement). Recalcule toujours le solde après coup.
+ *
+ * Sprint 25B : `accessibleAgencyIds`, même contrat que updateCashEntry ci-dessus (`null` = ADMIN
+ * sans restriction ; une écriture sans agence est refusée à tout non-ADMIN). */
+export async function deleteCashEntry(
+  tenantId: string,
+  entryId: string,
+  accessibleAgencyIds: string[] | null
+): Promise<boolean> {
   const existing = await prisma.cashEntry.findFirst({ where: { id: entryId, tenantId } });
   if (!existing) {
     return false;
+  }
+  if (
+    accessibleAgencyIds !== null &&
+    (existing.agencyId === null || !accessibleAgencyIds.includes(existing.agencyId))
+  ) {
+    throw new CashEntryAgencyAccessDeniedError();
   }
   if (existing.contractId) {
     throw new CashEntryNotEditableError();

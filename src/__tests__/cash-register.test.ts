@@ -422,6 +422,191 @@ body: JSON.stringify({ type: "ENTRY", category: "VERSEMENT", amount: 5_000, desc
   });
 });
 
+describe("Sprint 25B — isolation par agence sur PATCH/DELETE d'une écriture manuelle (SECURITY.md section 2)", () => {
+  // Tenant/agences dédiés, isolés des autres describe de ce fichier — un ADMIN peut créer une
+  // écriture manuelle pour n'importe quelle agence de son tenant (canAccessAgency bypass rôle
+  // ADMIN, POST /api/cash-register), utilisé ici pour préparer les fixtures de chaque test.
+  let adminE: AuthenticatedTestUser;
+  let agencyA: string;
+  let agencyB: string;
+  let memberAgencyA: AuthenticatedTestUser;
+
+  beforeAll(async () => {
+    adminE = await registerTenantAdmin({
+      tenantName: "Cash Register Agency Isolation Test",
+      tenantSlug: `cash-register-test-e-${runId}`,
+      name: "Admin E",
+      email: `admin-e-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    createdTenantIds.push(adminE.tenantId);
+
+    const agencyAResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminE.sessionCookie },
+      body: JSON.stringify({ name: "Agence A", slug: `agency-a-${runId}` }),
+    });
+    agencyA = (await agencyAResponse.json()).agency.id;
+
+    const agencyBResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminE.sessionCookie },
+      body: JSON.stringify({ name: "Agence B", slug: `agency-b-${runId}` }),
+    });
+    agencyB = (await agencyBResponse.json()).agency.id;
+
+    memberAgencyA = await createAndLoginMember({
+      tenantId: adminE.tenantId,
+      name: "Member Agency A",
+      email: `member-agency-a-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: memberAgencyA.userId, agencyId: agencyA } });
+
+    const editDeleteGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminE.sessionCookie },
+      body: JSON.stringify({
+        name: `AgencyIsolationEditDelete-${runId}`,
+        permissions: ["cash_register.view", "cash_register.edit", "cash_register.delete"],
+      }),
+    });
+    const editDeleteGroupId = (await editDeleteGroupResponse.json()).group.id;
+    await apiFetch(`/api/users/${memberAgencyA.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminE.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: editDeleteGroupId }),
+    });
+  });
+
+  async function createManualEntryForAgency(agencyId: string | undefined, overrides: Record<string, unknown> = {}) {
+    const response = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminE.sessionCookie },
+      body: JSON.stringify({
+        type: "ENTRY",
+        category: "VERSEMENT",
+        amount: 3_000,
+        description: "Écriture Sprint 25B",
+        ...(agencyId ? { agencyId } : {}),
+        ...overrides,
+      }),
+    });
+    return (await response.json()).entry as { id: string };
+  }
+
+  it("1. MEMBER limité à l'agence A refuse de modifier une écriture de l'agence B (403)", async () => {
+    const entry = await createManualEntryForAgency(agencyB);
+    const response = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "PATCH",
+      headers: { Cookie: memberAgencyA.sessionCookie },
+      body: JSON.stringify({ amount: 9_999 }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it("2. MEMBER limité à l'agence A refuse de supprimer une écriture de l'agence B (403)", async () => {
+    const entry = await createManualEntryForAgency(agencyB);
+    const response = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "DELETE",
+      headers: { Cookie: memberAgencyA.sessionCookie },
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it("3. MEMBER modifie avec succès une écriture de sa propre agence (A)", async () => {
+    const entry = await createManualEntryForAgency(agencyA);
+    const response = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "PATCH",
+      headers: { Cookie: memberAgencyA.sessionCookie },
+      body: JSON.stringify({ amount: 4_500 }),
+    });
+    expect(response.status).toBe(200);
+    const { entry: updated } = await response.json();
+    expect(updated.amount).toBe(4_500);
+  });
+
+  it("4. MEMBER supprime avec succès une écriture de sa propre agence (A)", async () => {
+    const entry = await createManualEntryForAgency(agencyA);
+    const response = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "DELETE",
+      headers: { Cookie: memberAgencyA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it("5. ADMIN modifie avec succès une écriture d'une autre agence du même tenant", async () => {
+    const entry = await createManualEntryForAgency(agencyB);
+    const response = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminE.sessionCookie },
+      body: JSON.stringify({ amount: 7_000 }),
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it("6. ADMIN supprime avec succès une écriture d'une autre agence du même tenant", async () => {
+    const entry = await createManualEntryForAgency(agencyB);
+    const response = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "DELETE",
+      headers: { Cookie: adminE.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it("7. un utilisateur d'un autre tenant ne peut ni modifier ni supprimer (404, isolation tenant déjà garantie)", async () => {
+    const entry = await createManualEntryForAgency(agencyA);
+
+    const patchResponse = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminB.sessionCookie },
+      body: JSON.stringify({ amount: 1_000 }),
+    });
+    expect(patchResponse.status).toBe(404);
+
+    const deleteResponse = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "DELETE",
+      headers: { Cookie: adminB.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(404);
+  });
+
+  it("8. une écriture liée à un paiement reste protégée même si l'agence est accessible (409, pas 403)", async () => {
+    const entry = await createManualEntryForAgency(agencyA, { contractId: `fake-location-25b-${runId}` });
+
+    const patchResponse = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "PATCH",
+      headers: { Cookie: memberAgencyA.sessionCookie },
+      body: JSON.stringify({ amount: 1_000 }),
+    });
+    expect(patchResponse.status).toBe(409);
+
+    const deleteResponse = await apiFetch(`/api/cash-register/${entry.id}`, {
+      method: "DELETE",
+      headers: { Cookie: memberAgencyA.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(409);
+  });
+
+  it("une écriture sans agence (agencyId null) est hors du périmètre d'un MEMBER, mais reste accessible à l'ADMIN", async () => {
+    const noAgencyEntry = await createManualEntryForAgency(undefined, { description: "Écriture sans agence Sprint 25B" });
+
+    const memberResponse = await apiFetch(`/api/cash-register/${noAgencyEntry.id}`, {
+      method: "PATCH",
+      headers: { Cookie: memberAgencyA.sessionCookie },
+      body: JSON.stringify({ amount: 2_500 }),
+    });
+    expect(memberResponse.status).toBe(403);
+
+    const adminResponse = await apiFetch(`/api/cash-register/${noAgencyEntry.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminE.sessionCookie },
+      body: JSON.stringify({ amount: 2_500 }),
+    });
+    expect(adminResponse.status).toBe(200);
+  });
+});
+
 describe("Sprint 19 — séparation espèces/carte des entrées (DOMAINRULES.md section 37)", () => {
   it("monthCash/monthCard reflètent les entrées par mode de règlement, séparément de monthEntries", async () => {
     const before = await (

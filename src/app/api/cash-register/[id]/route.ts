@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
-import { updateCashEntry, deleteCashEntry, InvalidCashEntryAmountError, CashEntryNotEditableError } from "@/lib/cash-register";
+import {
+  updateCashEntry,
+  deleteCashEntry,
+  InvalidCashEntryAmountError,
+  CashEntryNotEditableError,
+  CashEntryAgencyAccessDeniedError,
+} from "@/lib/cash-register";
 import { logAction } from "@/lib/audit";
 
 interface RouteParams {
@@ -36,12 +42,22 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
   }
 
+  // Sprint 25B (correction) : un non-ADMIN ne doit pouvoir modifier qu'une écriture de son
+  // périmètre d'agences accessibles — jusqu'ici seuls le tenant et la permission étaient
+  // vérifiés (SECURITY.md section 2). `null` = ADMIN, aucune restriction (inchangé).
+  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+
   try {
-    const entry = await updateCashEntry(user.tenantId, id, {
-      category: body.category,
-      amount: body.amount,
-      description: body.description,
-    });
+    const entry = await updateCashEntry(
+      user.tenantId,
+      id,
+      {
+        category: body.category,
+        amount: body.amount,
+        description: body.description,
+      },
+      accessibleAgencyIds
+    );
 
     if (!entry) {
       return NextResponse.json({ error: "Écriture introuvable." }, { status: 404 });
@@ -60,6 +76,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   } catch (error) {
     if (error instanceof InvalidCashEntryAmountError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof CashEntryAgencyAccessDeniedError) {
+      return NextResponse.json({ error: error.message }, { status: 403 });
     }
     if (error instanceof CashEntryNotEditableError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
@@ -81,12 +100,18 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
 
   const { id } = await params;
 
+  // Sprint 25B (correction) : voir le commentaire équivalent sur PATCH ci-dessus.
+  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+
   try {
-    const deleted = await deleteCashEntry(user.tenantId, id);
+    const deleted = await deleteCashEntry(user.tenantId, id, accessibleAgencyIds);
     if (!deleted) {
       return NextResponse.json({ error: "Écriture introuvable." }, { status: 404 });
     }
   } catch (error) {
+    if (error instanceof CashEntryAgencyAccessDeniedError) {
+      return NextResponse.json({ error: error.message }, { status: 403 });
+    }
     if (error instanceof CashEntryNotEditableError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
