@@ -10,6 +10,7 @@ export default defineConfig(({ mode }) => ({
     env: loadEnv(mode, process.cwd(), ""),
     testTimeout: 20_000,
     hookTimeout: 60_000,
+    maxWorkers: 4,
   },
   resolve: {
     alias: {

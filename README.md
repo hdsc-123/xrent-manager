@@ -86,6 +86,13 @@ npm run test    # Suite de tests Vitest (206 tests, contre xrent_test) — valid
 
 `npm run test` démarre automatiquement un vrai serveur `next dev` de test (voir `vitest.global-setup.ts`) sur un port dédié, exécute la suite contre `xrent_test`, puis l'arrête — aucune donnée résiduelle n'est laissée après l'exécution (chaque suite nettoie les données qu'elle crée). Voir [TESTREPORT.md](./TESTREPORT.md) pour le détail de la couverture.
 
+Pour une exécution complète et fiable de la suite (recyclage préventif du serveur de test entre groupes de fichiers, résout INC-3 — voir [INCIDENTS.md](./INCIDENTS.md)), utiliser plutôt :
+
+```bash
+node scripts/test-grouped.mjs                       # recommandé — 610/610, ~150s
+node scripts/test-grouped.mjs --no-file-parallelism  # variante strictement séquentielle, ~195s
+```
+
 ## Règles importantes
 
 - Aucun montant financier ne doit être représenté en `float`.
