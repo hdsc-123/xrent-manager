@@ -499,6 +499,145 @@ describe("Sprint 17 — POST /api/payments avec lines (paiement mixte atomique d
   });
 });
 
+describe("Sprint 26A, Finding B — verrouillage concurrent (Σ Payment.amount <= Invoice.totalAmount)", () => {
+  async function getCashRegisterBalance(tenantId: string): Promise<number> {
+    const register = await prisma.cashRegister.findUnique({ where: { tenantId } });
+    return register?.currentBalance ?? 0;
+  }
+
+  it("deux POST concurrents sur la même facture, somme > solde : un seul succès, jamais deux, Σ Payment <= totalAmount", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId); // totalAmount = 15000
+    const balanceBefore = await getCashRegisterBalance(adminA.tenantId);
+
+    const [responseA, responseB] = await Promise.all([
+      apiFetch("/api/payments", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ invoiceId: invoice.id, amount: 10000, method: "CASH" }),
+      }),
+      apiFetch("/api/payments", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ invoiceId: invoice.id, amount: 10000, method: "CARD" }),
+      }),
+    ]);
+
+    // Chaque requête est individuellement valide (10000 <= 15000) : sans le verrou de ligne
+    // (Finding B), les deux passeraient la validation contre une lecture périmée du solde.
+    const statuses = [responseA.status, responseB.status].sort();
+    expect(statuses).toEqual([201, 409]);
+
+    const payments = await prisma.payment.findMany({ where: { invoiceId: invoice.id } });
+    expect(payments).toHaveLength(1);
+    expect(payments[0].amount).toBe(10000);
+    const paymentsSum = payments.reduce((sum, p) => sum + p.amount, 0);
+    expect(paymentsSum).toBeLessThanOrEqual(invoice.totalAmount);
+
+    const dbInvoice = await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+    expect(dbInvoice.amountPaid).toBe(paymentsSum);
+    expect(dbInvoice.status).toBe("PARTIALLY_PAID");
+
+    // CashEntry : une seule, correspondant exactement au paiement effectivement accepté —
+    // le refusé n'a jamais atteint recordPaymentCashEntry.
+    const cashEntries = await prisma.cashEntry.findMany({ where: { contractId: invoice.locationId } });
+    expect(cashEntries).toHaveLength(1);
+    expect(cashEntries[0].amount).toBe(10000);
+
+    // CashRegister : le solde tenant-wide progresse d'exactement le montant accepté, jamais
+    // des deux montants cumulés (vérifié en delta, le registre étant partagé par tout le fichier).
+    const balanceAfter = await getCashRegisterBalance(adminA.tenantId);
+    expect(balanceAfter - balanceBefore).toBe(10000);
+  });
+
+  it("deux PATCH concurrents sur deux paiements différents de la même facture, nouvelle somme > total : aucun dépassement", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId); // totalAmount = 15000
+
+    const create1 = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ invoiceId: invoice.id, amount: 3000, method: "CASH" }),
+    });
+    const payment1 = (await create1.json()).payment;
+    const create2 = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ invoiceId: invoice.id, amount: 3000, method: "CARD" }),
+    });
+    const payment2 = (await create2.json()).payment;
+    // amountPaid = 6000, remaining = 9000 — chaque PATCH à 9000 est individuellement valide
+    // (remainingExcludingThis = 15000 - (6000 - 3000) = 12000), mais les deux ensemble
+    // porteraient la somme à 18000 > 15000.
+
+    const [responseA, responseB] = await Promise.all([
+      apiFetch(`/api/payments/${payment1.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ amount: 9000 }),
+      }),
+      apiFetch(`/api/payments/${payment2.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ amount: 9000 }),
+      }),
+    ]);
+
+    const statuses = [responseA.status, responseB.status].sort();
+    expect(statuses).toEqual([200, 409]);
+
+    const payments = await prisma.payment.findMany({ where: { invoiceId: invoice.id } });
+    const paymentsSum = payments.reduce((sum, p) => sum + p.amount, 0);
+    expect(paymentsSum).toBeLessThanOrEqual(invoice.totalAmount);
+
+    const dbInvoice = await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+    expect(dbInvoice.amountPaid).toBe(paymentsSum);
+  });
+
+  it("un paiement mixte concurrent à un paiement simple sur la même facture : jamais de dépassement, aucune ligne partielle", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId); // totalAmount = 15000
+
+    const [responseSimple, responseMixed] = await Promise.all([
+      apiFetch("/api/payments", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ invoiceId: invoice.id, amount: 10000, method: "CASH" }),
+      }),
+      apiFetch("/api/payments", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({
+          invoiceId: invoice.id,
+          lines: [
+            { amount: 8000, method: "CASH" },
+            { amount: 2000, method: "CARD" },
+          ],
+        }),
+      }),
+    ]);
+
+    const statuses = [responseSimple.status, responseMixed.status].sort();
+    expect(statuses).toEqual([201, 409]);
+
+    const payments = await prisma.payment.findMany({ where: { invoiceId: invoice.id } });
+    const paymentsSum = payments.reduce((sum, p) => sum + p.amount, 0);
+    expect(paymentsSum).toBeLessThanOrEqual(invoice.totalAmount);
+
+    // Le gagnant s'identifie sans ambiguïté : le simple laisse exactement 1 Payment (10000),
+    // le mixte en laisse exactement 2 (8000 + 2000) — jamais 1 ligne orpheline d'un mixte perdant.
+    if (responseMixed.status === 201) {
+      expect(payments).toHaveLength(2);
+    } else {
+      expect(payments).toHaveLength(1);
+      expect(payments[0].amount).toBe(10000);
+    }
+
+    const dbInvoice = await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+    expect(dbInvoice.amountPaid).toBe(paymentsSum);
+
+    const cashEntries = await prisma.cashEntry.findMany({ where: { contractId: invoice.locationId } });
+    expect(cashEntries).toHaveLength(payments.length);
+  });
+});
+
 describe("Sprint 18 — paiement enregistré depuis la fiche facture alimente la caisse", () => {
   it("crée une écriture de caisse pour un paiement simple", async () => {
     const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);

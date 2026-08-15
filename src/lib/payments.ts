@@ -1,4 +1,4 @@
-import type { Payment, PaymentMethod, Prisma } from "@prisma/client";
+import type { Invoice, Payment, PaymentMethod, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getInvoiceById } from "@/lib/invoices";
 import { getLocationById } from "@/lib/locations";
@@ -75,6 +75,33 @@ async function recomputeInvoiceStatus(invoiceId: string, tx: Prisma.TransactionC
   });
 }
 
+/**
+ * Sprint 26A, Finding B : verrou de ligne explicite (`SELECT ... FOR UPDATE`) sur l'Invoice
+ * ciblée, posé avant toute lecture du solde restant — nécessaire car ni `updateMany`
+ * conditionné (motif du Finding A, inadapté ici : on ne transite pas un statut, on valide un
+ * montant contre une somme agrégée) ni contrainte SQL ne peuvent empêcher deux créations de
+ * paiement concurrentes de lire le même `amountPaid` périmé avant d'écrire. Une deuxième
+ * transaction concurrente sur la même facture attend ici le commit de la première, puis relit
+ * un `amountPaid` à jour — jamais l'inverse. Requête paramétrée via template tag Prisma (aucune
+ * concaténation de valeur utilisateur) ; ne doit être appelée que depuis une véritable
+ * transaction (`Prisma.TransactionClient` issue de `prisma.$transaction`), jamais sur le client
+ * global. La relecture après verrou passe par `getInvoiceById` (typée), pas par le résultat brut
+ * du `$queryRaw`.
+ */
+async function lockInvoiceForUpdate(
+  tenantId: string,
+  invoiceId: string,
+  tx: Prisma.TransactionClient
+): Promise<Invoice | null> {
+  const locked = await tx.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "Invoice" WHERE id = ${invoiceId} AND "tenantId" = ${tenantId} FOR UPDATE
+  `;
+  if (locked.length === 0) {
+    return null;
+  }
+  return getInvoiceById(tenantId, invoiceId, tx);
+}
+
 export interface PaymentFilters {
   invoiceId?: string;
   method?: PaymentMethod;
@@ -115,6 +142,14 @@ export interface CreatePaymentInput {
  *
  * `tx` optionnel (Sprint 26A, Finding A) — défaut au client Prisma global, comportement
  * inchangé pour tout appel sans transaction partagée (POST /api/payments, etc.).
+ *
+ * Sprint 26A, Finding B : sans `tx` fournie, ouvre désormais sa propre transaction interne
+ * (au lieu d'exécuter chaque étape en autocommit séparé) pour verrouiller l'Invoice avant de
+ * valider le solde restant (voir `lockInvoiceForUpdate` ci-dessus) — deux créations concurrentes
+ * sur la même facture ne peuvent plus toutes deux passer la validation contre une lecture
+ * périmée. Avec une `tx` fournie par l'appelant (ex. `processLocationPayment` dans la
+ * transaction du Finding A), aucune transaction n'est ouverte ici : le verrou est posé dans la
+ * transaction de l'appelant, sans imbrication.
  */
 export async function createPayment(
   data: CreatePaymentInput,
@@ -124,7 +159,14 @@ export async function createPayment(
     throw new InvalidPaymentAmountError("amount doit être un entier positif (plus petite unité monétaire).");
   }
 
-  const invoice = await getInvoiceById(data.tenantId, data.invoiceId, tx);
+  if (tx !== prisma) {
+    return createPaymentLocked(data, tx);
+  }
+  return prisma.$transaction((innerTx) => createPaymentLocked(data, innerTx));
+}
+
+async function createPaymentLocked(data: CreatePaymentInput, tx: Prisma.TransactionClient): Promise<Payment> {
+  const invoice = await lockInvoiceForUpdate(data.tenantId, data.invoiceId, tx);
   if (!invoice) {
     throw new PaymentInvoiceNotFoundError();
   }
@@ -204,12 +246,32 @@ export interface UpdatePaymentInput {
   notes?: string;
 }
 
+/**
+ * `tx` optionnel (Sprint 26A, Finding B) — même contrat que `createPayment` : sans `tx`
+ * fournie, ouvre une transaction interne ; avec une `tx` fournie par l'appelant, la réutilise
+ * sans imbrication. Le verrou (`lockInvoiceForUpdate`) n'est posé que si `amount` est modifié
+ * (seul cas où le solde restant est recalculé) — un changement de méthode/date/référence/notes
+ * seul ne verrouille rien. Ne touche jamais aux `CashEntry` (Finding D1, hors périmètre).
+ */
 export async function updatePayment(
   tenantId: string,
   paymentId: string,
-  data: UpdatePaymentInput
+  data: UpdatePaymentInput,
+  tx: Prisma.TransactionClient = prisma
 ): Promise<Payment | null> {
-  const existing = await getPaymentById(tenantId, paymentId);
+  if (tx !== prisma) {
+    return updatePaymentLocked(tenantId, paymentId, data, tx);
+  }
+  return prisma.$transaction((innerTx) => updatePaymentLocked(tenantId, paymentId, data, innerTx));
+}
+
+async function updatePaymentLocked(
+  tenantId: string,
+  paymentId: string,
+  data: UpdatePaymentInput,
+  tx: Prisma.TransactionClient
+): Promise<Payment | null> {
+  const existing = await tx.payment.findFirst({ where: { id: paymentId, tenantId } });
   if (!existing) {
     return null;
   }
@@ -219,7 +281,7 @@ export async function updatePayment(
       throw new InvalidPaymentAmountError("amount doit être un entier positif (plus petite unité monétaire).");
     }
 
-    const invoice = await getInvoiceById(tenantId, existing.invoiceId);
+    const invoice = await lockInvoiceForUpdate(tenantId, existing.invoiceId, tx);
     if (!invoice) {
       throw new PaymentInvoiceNotFoundError();
     }
@@ -231,7 +293,7 @@ export async function updatePayment(
     }
   }
 
-  const updated = await prisma.payment.update({
+  const updated = await tx.payment.update({
     where: { id: paymentId },
     data: {
       ...(data.amount !== undefined ? { amount: data.amount } : {}),
@@ -242,7 +304,7 @@ export async function updatePayment(
     },
   });
 
-  await recomputeInvoiceStatus(existing.invoiceId);
+  await recomputeInvoiceStatus(existing.invoiceId, tx);
   return updated;
 }
 
@@ -269,8 +331,21 @@ export interface CreateMixedPaymentsInput {
  * — jusqu'ici `InvoiceActions.tsx` revalidait côté client contre un solde figé au chargement de
  * la page, puis postait chaque ligne séparément : une baisse du solde réel entre l'ouverture du
  * dialogue et la soumission pouvait laisser la première ligne écrite avant que la seconde échoue).
+ *
+ * `tx` optionnel (Sprint 26A, Finding B) — même contrat que `createPayment`/`updatePayment` :
+ * sans `tx` fournie, ouvre une seule transaction interne pour toutes les lignes (jamais une par
+ * ligne) ; avec une `tx` fournie, la réutilise. Le verrou (`lockInvoiceForUpdate`) n'est posé
+ * qu'une fois, avant la validation globale du total — chaque `createPayment` interne (une par
+ * ligne, ci-dessous) reçoit ensuite cette même `tx` et réutilise donc le même verrou (déjà tenu
+ * par cette transaction : une réacquisition `FOR UPDATE` sur une ligne déjà verrouillée par la
+ * transaction courante est un no-op côté Postgres, jamais un blocage). La validation par ligne de
+ * `createPayment` reste inchangée et ne fait que confirmer, ligne après ligne, ce que la
+ * validation globale ci-dessous a déjà garanti pour le total.
  */
-export async function createMixedPayments(data: CreateMixedPaymentsInput): Promise<Payment[]> {
+export async function createMixedPayments(
+  data: CreateMixedPaymentsInput,
+  tx: Prisma.TransactionClient = prisma
+): Promise<Payment[]> {
   if (data.lines.length === 0) {
     throw new InvalidPaymentAmountError("Le paiement mixte nécessite au moins une ligne.");
   }
@@ -280,7 +355,17 @@ export async function createMixedPayments(data: CreateMixedPaymentsInput): Promi
     }
   }
 
-  const invoice = await getInvoiceById(data.tenantId, data.invoiceId);
+  if (tx !== prisma) {
+    return createMixedPaymentsLocked(data, tx);
+  }
+  return prisma.$transaction((innerTx) => createMixedPaymentsLocked(data, innerTx));
+}
+
+async function createMixedPaymentsLocked(
+  data: CreateMixedPaymentsInput,
+  tx: Prisma.TransactionClient
+): Promise<Payment[]> {
+  const invoice = await lockInvoiceForUpdate(data.tenantId, data.invoiceId, tx);
   if (!invoice) {
     throw new PaymentInvoiceNotFoundError();
   }
@@ -297,15 +382,18 @@ export async function createMixedPayments(data: CreateMixedPaymentsInput): Promi
   const payments: Payment[] = [];
   for (const line of data.lines) {
     payments.push(
-      await createPayment({
-        tenantId: data.tenantId,
-        invoiceId: data.invoiceId,
-        amount: line.amount,
-        method: line.method,
-        paidAt: data.paidAt,
-        reference: data.reference,
-        notes: data.notes,
-      })
+      await createPayment(
+        {
+          tenantId: data.tenantId,
+          invoiceId: data.invoiceId,
+          amount: line.amount,
+          method: line.method,
+          paidAt: data.paidAt,
+          reference: data.reference,
+          notes: data.notes,
+        },
+        tx
+      )
     );
   }
   return payments;
