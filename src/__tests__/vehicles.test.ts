@@ -30,6 +30,13 @@ async function createVehicle(
       year: 2022,
       category: "Citadine",
       pricePerDay: 4500,
+      chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+      color: "Blanc",
+      doors: 5,
+      seats: 5,
+      horsepower: 6,
+      powerKW: 75,
+      engineSize: 1.5,
       ...overrides,
     }),
   });
@@ -174,11 +181,10 @@ describe("POST /api/vehicles", () => {
     expect(body.vehicle.engineSize).toBe(1.5);
   });
 
-  it("accepte toujours une création minimale sans les nouveaux champs (rétrocompatibilité)", async () => {
+  it("Sprint 24-2 : ac/gps restent optionnels (défaut false) même avec les 7 champs techniques désormais obligatoires fournis", async () => {
     const response = await createVehicle(adminA, agencyA1Id);
     expect(response.status).toBe(201);
     const body = await response.json();
-    expect(body.vehicle.color).toBeNull();
     expect(body.vehicle.ac).toBe(false);
     expect(body.vehicle.gps).toBe(false);
   });
@@ -261,7 +267,7 @@ describe("PATCH /api/vehicles/[id]", () => {
     expect(body.vehicle.status).toBe("MAINTENANCE");
   });
 
-  it("permet de modifier puis d'effacer un champ optionnel de la fiche technique (Sprint 12A)", async () => {
+  it("Sprint 24-2 : permet de modifier un champ de la fiche technique désormais obligatoire, mais refuse de l'effacer", async () => {
     const createResponse = await createVehicle(adminA, agencyA1Id, { color: "Rouge" });
     const vehicleId = (await createResponse.json()).vehicle.id;
 
@@ -278,8 +284,12 @@ describe("PATCH /api/vehicles/[id]", () => {
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify({ color: null }),
     });
-    expect(clearResponse.status).toBe(200);
-    expect((await clearResponse.json()).vehicle.color).toBeNull();
+    expect(clearResponse.status).toBe(400);
+    // La valeur précédente (validée) n'a pas été écrasée par la tentative refusée.
+    const unchanged = await apiFetch(`/api/vehicles/${vehicleId}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect((await unchanged.json()).vehicle.color).toBe("Bleu");
   });
 
   it("Sprint 19 : persiste puis efface les champs d'alertes proactives (assurance/vignette/contrôle technique/vidange)", async () => {
@@ -633,6 +643,13 @@ describe("Sprint 24 — kilométrage/carburant actuels à la création véhicule
         model: "Clio",
         year: 2022,
         category: "Citadine",
+        chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
         currentOdometer: 5000,
         currentFuelLevel: 100,
       }),
@@ -708,65 +725,175 @@ describe("Sprint 24-1 — kilométrage/carburant actuels modifiables après cré
   });
 });
 
-describe("Sprint 24-1 — champs techniques obligatoires (EditVehicleForm.tsx, client) + non-régression Sprint 12A (API)", () => {
-  // Sprint 24-1 : EditVehicleForm.tsx exige désormais ces 7 champs (astérisque rouge + refus de
-  // soumission côté client, même garde que NewVehicleForm.tsx) — comportement client, non
-  // exerçable par ces tests d'intégration HTTP (voir TESTREPORT.md, limite déjà documentée pour
-  // tout comportement React pur ailleurs dans le projet). Un rejet *serveur* strict sur un
-  // effacement (null) a été délibérément écarté : il casserait le contrat API Sprint 12A ci-dessous
-  // (déjà testé, jamais remis en cause), ces champs étant nullables à l'API par design
-  // (DOMAINRULES.md section 5), requis seulement au niveau du formulaire dashboard.
-  it("l'API continue d'autoriser l'effacement explicite de ces champs (comportement Sprint 12A inchangé, non régressé par ce sprint)", async () => {
-    const createResponse = await createVehicle(adminA, agencyA1Id, {
-      chassisNumber: "VF1AB000000000001",
-      color: "Bleu",
-      doors: 5,
-      seats: 5,
-      horsepower: 6,
-      powerKW: 70,
-      engineSize: 1.5,
-    });
-    const vehicle = (await createResponse.json()).vehicle;
+describe("Sprint 24-2 — champs techniques obligatoires côté API (revient sur la décision Sprint 24-1, brief explicite du propriétaire du projet)", () => {
+  const VALID_TECHNICAL_FIELDS = {
+    chassisNumber: "VF1AB000000000001",
+    color: "Bleu",
+    doors: 5,
+    seats: 5,
+    horsepower: 70,
+    powerKW: 70,
+    engineSize: 1.5,
+  };
 
-    const response = await apiFetch(`/api/vehicles/${vehicle.id}`, {
-      method: "PATCH",
-      headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ chassisNumber: null, color: null, doors: null }),
+  describe("POST /api/vehicles — création refusée si un champ obligatoire est absent, null ou vide", () => {
+    it.each([
+      ["chassisNumber", undefined],
+      ["chassisNumber", null],
+      ["chassisNumber", ""],
+      ["chassisNumber", "   "],
+      ["color", undefined],
+      ["color", null],
+      ["color", ""],
+      ["doors", undefined],
+      ["doors", null],
+      ["seats", undefined],
+      ["seats", null],
+      ["horsepower", undefined],
+      ["horsepower", null],
+      ["powerKW", undefined],
+      ["powerKW", null],
+      ["engineSize", undefined],
+      ["engineSize", null],
+    ] as const)("refuse la création quand %s = %p", async (field, value) => {
+      const response = await createVehicle(adminA, agencyA1Id, { ...VALID_TECHNICAL_FIELDS, [field]: value });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toBeTruthy();
     });
-    expect(response.status).toBe(200);
-    const updated = (await response.json()).vehicle;
-    expect(updated.chassisNumber).toBeNull();
-    expect(updated.color).toBeNull();
-    expect(updated.doors).toBeNull();
+
+    it.each([
+      ["doors", 0],
+      ["doors", -1],
+      ["seats", 0],
+      ["horsepower", 0],
+      ["powerKW", -5],
+      ["engineSize", 0],
+      ["engineSize", -1.2],
+    ] as const)("refuse une valeur numérique invalide pour %s = %p", async (field, value) => {
+      const response = await createVehicle(adminA, agencyA1Id, { ...VALID_TECHNICAL_FIELDS, [field]: value });
+      expect(response.status).toBe(400);
+    });
+
+    it("crée le véhicule quand les 7 champs sont fournis avec des valeurs valides", async () => {
+      const response = await createVehicle(adminA, agencyA1Id, VALID_TECHNICAL_FIELDS);
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.vehicle.chassisNumber).toBe(VALID_TECHNICAL_FIELDS.chassisNumber);
+      expect(body.vehicle.color).toBe(VALID_TECHNICAL_FIELDS.color);
+      expect(body.vehicle.doors).toBe(VALID_TECHNICAL_FIELDS.doors);
+      expect(body.vehicle.seats).toBe(VALID_TECHNICAL_FIELDS.seats);
+      expect(body.vehicle.horsepower).toBe(VALID_TECHNICAL_FIELDS.horsepower);
+      expect(body.vehicle.powerKW).toBe(VALID_TECHNICAL_FIELDS.powerKW);
+      expect(body.vehicle.engineSize).toBe(VALID_TECHNICAL_FIELDS.engineSize);
+    });
+
+    it("le prix journalier (pricePerDay) reste facultatif malgré l'obligation des 7 champs techniques", async () => {
+      const response = await createVehicle(adminA, agencyA1Id, { ...VALID_TECHNICAL_FIELDS, pricePerDay: undefined });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.vehicle.pricePerDay).toBeNull();
+    });
   });
 
-  it("une modification qui omet ces champs (jamais envoyés) laisse leur valeur existante inchangée", async () => {
-    const createResponse = await createVehicle(adminA, agencyA1Id, { chassisNumber: "VF1XYZ000000000002", color: "Rouge" });
-    const vehicle = (await createResponse.json()).vehicle;
+  describe("PATCH /api/vehicles/[id] — modification refusée si un champ obligatoire est supprimé ou invalidé", () => {
+    async function createValidVehicle() {
+      const createResponse = await createVehicle(adminA, agencyA1Id, VALID_TECHNICAL_FIELDS);
+      return (await createResponse.json()).vehicle as { id: string };
+    }
 
-    const response = await apiFetch(`/api/vehicles/${vehicle.id}`, {
-      method: "PATCH",
-      headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ name: "Renommée" }),
+    it.each([
+      ["chassisNumber", null],
+      ["chassisNumber", ""],
+      ["chassisNumber", "   "],
+      ["color", null],
+      ["color", ""],
+      ["doors", null],
+      ["doors", 0],
+      ["doors", -2],
+      ["seats", null],
+      ["horsepower", null],
+      ["horsepower", -1],
+      ["powerKW", null],
+      ["engineSize", null],
+      ["engineSize", 0],
+    ] as const)("refuse d'écraser %s avec %p (suppression/invalidation)", async (field, value) => {
+      const vehicle = await createValidVehicle();
+      const response = await apiFetch(`/api/vehicles/${vehicle.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ [field]: value }),
+      });
+      expect(response.status).toBe(400);
+
+      // La valeur d'origine, valide, n'a pas été altérée par la tentative refusée.
+      const reloaded = await apiFetch(`/api/vehicles/${vehicle.id}`, { headers: { Cookie: adminA.sessionCookie } });
+      const reloadedVehicle = (await reloaded.json()).vehicle;
+      expect(reloadedVehicle[field]).toBe(VALID_TECHNICAL_FIELDS[field as keyof typeof VALID_TECHNICAL_FIELDS]);
     });
-    expect(response.status).toBe(200);
-    const updated = (await response.json()).vehicle;
-    expect(updated.chassisNumber).toBe("VF1XYZ000000000002");
-    expect(updated.color).toBe("Rouge");
+
+    it("une modification qui omet ces champs (jamais envoyés) laisse leur valeur existante inchangée", async () => {
+      const vehicle = await createValidVehicle();
+
+      const response = await apiFetch(`/api/vehicles/${vehicle.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ name: "Renommée" }),
+      });
+      expect(response.status).toBe(200);
+      const updated = (await response.json()).vehicle;
+      expect(updated.chassisNumber).toBe(VALID_TECHNICAL_FIELDS.chassisNumber);
+      expect(updated.color).toBe(VALID_TECHNICAL_FIELDS.color);
+    });
+
+    it("une modification qui fournit une nouvelle valeur valide pour un champ obligatoire met bien à jour le champ", async () => {
+      const vehicle = await createValidVehicle();
+
+      const response = await apiFetch(`/api/vehicles/${vehicle.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ chassisNumber: "VF1NEW00000000004", color: "Noir" }),
+      });
+      expect(response.status).toBe(200);
+      const updated = (await response.json()).vehicle;
+      expect(updated.chassisNumber).toBe("VF1NEW00000000004");
+      expect(updated.color).toBe("Noir");
+    });
+
+    it("le prix journalier (pricePerDay) reste modifiable indépendamment des champs techniques obligatoires", async () => {
+      const vehicle = await createValidVehicle();
+
+      const response = await apiFetch(`/api/vehicles/${vehicle.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ pricePerDay: null }),
+      });
+      expect(response.status).toBe(200);
+      expect((await response.json()).vehicle.pricePerDay).toBeNull();
+    });
   });
 
-  it("une modification qui fournit une nouvelle valeur valide met bien à jour le champ", async () => {
-    const createResponse = await createVehicle(adminA, agencyA1Id, { chassisNumber: "VF1OLD00000000003", color: "Blanc" });
-    const vehicle = (await createResponse.json()).vehicle;
-
-    const response = await apiFetch(`/api/vehicles/${vehicle.id}`, {
-      method: "PATCH",
-      headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ chassisNumber: "VF1NEW00000000004", color: "Noir" }),
+  describe("permissions et isolation tenant/agence conservées avec la validation stricte", () => {
+    it("un MEMBER non rattaché à l'agence est toujours refusé (403) même avec des valeurs valides", async () => {
+      const response = await createVehicle(memberA as unknown as AuthenticatedTestUser, agencyA2Id, VALID_TECHNICAL_FIELDS);
+      expect(response.status).toBe(403);
     });
-    expect(response.status).toBe(200);
-    const updated = (await response.json()).vehicle;
-    expect(updated.chassisNumber).toBe("VF1NEW00000000004");
-    expect(updated.color).toBe("Noir");
+
+    it("une agence d'un autre tenant est toujours refusée (403) même avec des valeurs valides", async () => {
+      const response = await createVehicle(adminA, agencyB1Id, VALID_TECHNICAL_FIELDS);
+      expect(response.status).toBe(403);
+    });
+
+    it("PATCH reste refusé (404) pour un véhicule d'un autre tenant, même avec un corps valide", async () => {
+      const otherTenantVehicle = await createVehicle(adminB, agencyB1Id, VALID_TECHNICAL_FIELDS);
+      const vehicleId = (await otherTenantVehicle.json()).vehicle.id;
+
+      const response = await apiFetch(`/api/vehicles/${vehicleId}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ color: "Vert" }),
+      });
+      expect(response.status).toBe(404);
+    });
   });
 });

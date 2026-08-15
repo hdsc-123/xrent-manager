@@ -600,6 +600,13 @@ body: JSON.stringify({ type: "EXPENSE", category: "Fournitures", amount: 20_000,
         year: 2022,
         category: "Citadine",
         pricePerDay: 5000,
+        chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
       }),
     });
     const vehicle = (await vehicleResponse.json()).vehicle;

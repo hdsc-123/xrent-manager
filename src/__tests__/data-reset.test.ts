@@ -400,6 +400,64 @@ describe("POST /api/data-reset", () => {
     expect(otherVehicleCount).toBe(1);
   });
 
+  it("Sprint 24-2 — non-régression : un véhicule créé via l'API (avec les 7 champs techniques désormais obligatoires) est purgé sans orphelin par le reset", async () => {
+    const admin = await registerTenantAdmin({
+      tenantName: "Reset Sprint24-2 Vehicle",
+      tenantSlug: `reset-s242-vehicle-${runId}`,
+      name: "Admin",
+      email: `reset-s242-vehicle-${runId}@test.local`,
+      password,
+    });
+    createdTenantIds.push(admin.tenantId);
+
+    const agencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ name: "Agence Reset S24-2", slug: `agence-reset-s242-${runId}` }),
+    });
+    const agencyId = (await agencyResponse.json()).agency.id;
+
+    // Passe par la route API réelle (POST /api/vehicles), désormais stricte sur ces 7 champs —
+    // vérifie que le reset continue de purger un véhicule créé par le chemin normal de
+    // production, pas seulement un véhicule injecté directement en base via prisma.vehicle.create
+    // comme le fait seedFullTenantData ci-dessus.
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({
+        agencyId,
+        name: "Clio",
+        licensePlate: `RESET-S242-${runId}`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        chassisNumber: `VF1RESET${runId}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
+      }),
+    });
+    expect(vehicleResponse.status).toBe(201);
+
+    expect(await prisma.vehicle.count({ where: { tenantId: admin.tenantId } })).toBe(1);
+
+    const deleted = await resetTenantData({
+      tenantId: admin.tenantId,
+      userId: admin.userId,
+      confirmTenantName: "Reset Sprint24-2 Vehicle",
+      includeAuditLog: false,
+    });
+    expect(deleted.vehicle).toBe(1);
+    expect(await prisma.vehicle.count({ where: { tenantId: admin.tenantId } })).toBe(0);
+    // L'agence (configuration) reste en place, aucune donnée orpheline ne référence le véhicule
+    // supprimé.
+    expect(await prisma.agency.count({ where: { tenantId: admin.tenantId } })).toBe(1);
+  });
+
   it("supprime aussi le journal d'audit existant quand includeAuditLog est vrai, mais garde une trace du reset", async () => {
     const admin = await registerTenantAdmin({
       tenantName: "Reset POST Full Audit",

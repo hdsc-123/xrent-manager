@@ -372,6 +372,13 @@ describe("PATCH /api/users/[id] — agencyIds (Sprint 13C)", () => {
         year: 2023,
         category: "Berline",
         pricePerDay: 5000,
+        chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
       }),
     });
     expect(vehicleResponse.status).toBe(201);

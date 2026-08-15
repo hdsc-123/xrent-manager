@@ -163,28 +163,45 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "fuel invalide." }, { status: 400 });
   }
 
-  // Sprint 24-1 : ces 7 champs sont désormais requis côté client (EditVehicleForm.tsx, comme
-  // NewVehicleForm.tsx) — un rejet strict *serveur* sur un effacement explicite (null) a été
-  // envisagé puis délibérément écarté : `it("permet de modifier puis d'effacer un champ
-  // optionnel de la fiche technique (Sprint 12A)", ...)` (src/__tests__/vehicles.test.ts) prouve
-  // que cette nullabilité à l'API est un comportement Sprint 12A explicite et déjà testé (voir
-  // aussi DOMAINRULES.md section 5 : "nullable au niveau schéma/API ... required au niveau du
-  // formulaire dashboard"), pas un oubli. L'ajouter aurait cassé ce contrat API existant pour un
-  // gain de sécurité nul (ces champs ont toujours été nullables à l'API, seul le formulaire
-  // dashboard les impose). Validation de format (si fourni, y compris null) inchangée ci-dessous.
+  // Sprint 24-2 (brief explicite du propriétaire du projet, revient sur la décision Sprint 24-1
+  // ci-dessus, qui avait délibérément écarté un rejet serveur strict sur un effacement explicite) :
+  // ces 7 champs de fiche technique sont désormais obligatoires côté API — un champ **fourni**
+  // (clé présente dans le corps de la requête) doit être valide et non vide/nul ; un champ **omis**
+  // (absent du corps) laisse la valeur existante inchangée, sémantique PATCH standard déjà en
+  // vigueur pour tous les autres champs de cette route. Voir DOMAINRULES.md section 42.
+  if (
+    body.chassisNumber !== undefined &&
+    (typeof body.chassisNumber !== "string" || body.chassisNumber.trim() === "")
+  ) {
+    return NextResponse.json(
+      { error: "chassisNumber est obligatoire et ne peut pas être vide ou effacé." },
+      { status: 400 }
+    );
+  }
+  if (body.color !== undefined && (typeof body.color !== "string" || body.color.trim() === "")) {
+    return NextResponse.json(
+      { error: "color est obligatoire et ne peut pas être vide ou effacé." },
+      { status: 400 }
+    );
+  }
   for (const field of ["doors", "seats", "horsepower", "powerKW"] as const) {
     const fieldValue = body[field];
-    if (fieldValue !== undefined && fieldValue !== null && (!Number.isInteger(fieldValue) || fieldValue <= 0)) {
-      return NextResponse.json({ error: `${field} doit être un entier positif.` }, { status: 400 });
+    if (fieldValue !== undefined && (fieldValue === null || !Number.isInteger(fieldValue) || fieldValue <= 0)) {
+      return NextResponse.json(
+        { error: `${field} est obligatoire et doit être un entier positif (ne peut pas être effacé).` },
+        { status: 400 }
+      );
     }
   }
 
   if (
     body.engineSize !== undefined &&
-    body.engineSize !== null &&
-    (!Number.isFinite(body.engineSize) || body.engineSize <= 0)
+    (body.engineSize === null || !Number.isFinite(body.engineSize) || body.engineSize <= 0)
   ) {
-    return NextResponse.json({ error: "engineSize doit être un nombre positif." }, { status: 400 });
+    return NextResponse.json(
+      { error: "engineSize est obligatoire et doit être un nombre positif (ne peut pas être effacé)." },
+      { status: 400 }
+    );
   }
 
   if (

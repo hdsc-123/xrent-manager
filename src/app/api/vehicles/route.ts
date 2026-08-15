@@ -141,17 +141,39 @@ export async function POST(request: Request) {
     );
   }
 
-  // Sprint 24-1 : ces 7 champs sont présentés comme obligatoires côté UI (NewVehicleForm.tsx,
-  // astérisque rouge depuis le Sprint 18) mais restent volontairement **non** exigés ici — un
-  // rejet 400 systématique romprait la rétrocompatibilité explicitement actée au Sprint 12A
-  // (DOMAINRULES.md section 5 : "nullable au niveau schéma/API ... required au niveau du
-  // formulaire dashboard", précisément pour ne jamais invalider un appel API existant ou une
-  // fixture de test qui ne les fournit pas). Décision confirmée pour ce sprint : le
-  // renforcement porte sur (a) le client (déjà en place, plus EditVehicleForm.tsx ci-après) et
-  // (b) l'empêchement d'un effacement *silencieux* à la modification (voir PATCH
-  // /api/vehicles/[id]/route.ts) — pas sur un rejet strict à la création, qui casserait la
-  // quasi-totalité des fixtures de test existantes (aucune ne fournit ces champs aujourd'hui).
-  // Validation de format (si fourni) inchangée ci-dessous.
+  // Sprint 24-2 (brief explicite du propriétaire du projet, revient sur la décision Sprint 24-1
+  // ci-dessus, qui avait délibérément écarté un rejet serveur strict pour ne pas casser le
+  // contrat API Sprint 12A) : ces 7 champs de fiche technique deviennent obligatoires côté API,
+  // à la création comme en modification — absents/null/vides refusés explicitement, jamais
+  // remplacés par une valeur par défaut. `pricePerDay` reste volontairement en dehors de cette
+  // liste (DOMAINRULES.md section 5 : purement informatif, jamais requis). Voir DOMAINRULES.md
+  // section 42 pour le détail complet de ce revirement assumé.
+  if (typeof body.chassisNumber !== "string" || body.chassisNumber.trim() === "") {
+    return NextResponse.json({ error: "chassisNumber est requis." }, { status: 400 });
+  }
+  if (typeof body.color !== "string" || body.color.trim() === "") {
+    return NextResponse.json({ error: "color est requis." }, { status: 400 });
+  }
+  for (const field of ["doors", "seats", "horsepower", "powerKW"] as const) {
+    const fieldValue = body[field];
+    if (fieldValue === undefined || fieldValue === null || !Number.isInteger(fieldValue) || fieldValue <= 0) {
+      return NextResponse.json(
+        { error: `${field} est requis et doit être un entier positif.` },
+        { status: 400 }
+      );
+    }
+  }
+  if (
+    body.engineSize === undefined ||
+    body.engineSize === null ||
+    !Number.isFinite(body.engineSize) ||
+    body.engineSize <= 0
+  ) {
+    return NextResponse.json(
+      { error: "engineSize est requis et doit être un nombre positif." },
+      { status: 400 }
+    );
+  }
 
   // pricePerDay est optionnel depuis le Sprint 14A (purement informatif, voir
   // DOMAINRULES.md section 5/7) — validé uniquement s'il est fourni.
@@ -185,17 +207,6 @@ export async function POST(request: Request) {
 
   if (body.fuel && !FUEL_TYPES.includes(body.fuel)) {
     return NextResponse.json({ error: "fuel invalide." }, { status: 400 });
-  }
-
-  for (const field of ["doors", "seats", "horsepower", "powerKW"] as const) {
-    const fieldValue = body[field];
-    if (fieldValue !== undefined && (!Number.isInteger(fieldValue) || fieldValue <= 0)) {
-      return NextResponse.json({ error: `${field} doit être un entier positif.` }, { status: 400 });
-    }
-  }
-
-  if (body.engineSize !== undefined && (!Number.isFinite(body.engineSize) || body.engineSize <= 0)) {
-    return NextResponse.json({ error: "engineSize doit être un nombre positif." }, { status: 400 });
   }
 
   if (

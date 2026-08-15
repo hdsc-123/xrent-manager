@@ -73,6 +73,13 @@ beforeAll(async () => {
       year: 2022,
       category: "Citadine",
       pricePerDay: 5000,
+      chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+      color: "Blanc",
+      doors: 5,
+      seats: 5,
+      horsepower: 6,
+      powerKW: 75,
+      engineSize: 1.5,
     }),
   });
   const vehicleAId = (await vehicleAResponse.json()).vehicle.id;
@@ -89,6 +96,13 @@ beforeAll(async () => {
       year: 2022,
       category: "Citadine",
       pricePerDay: 4000,
+      chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+      color: "Blanc",
+      doors: 5,
+      seats: 5,
+      horsepower: 6,
+      powerKW: 75,
+      engineSize: 1.5,
     }),
   });
   const vehicleBId = (await vehicleBResponse.json()).vehicle.id;

@@ -2,7 +2,7 @@
 
 Ce document trace les incidents **techniques/projet** (bugs, pannes, régressions) rencontrés au cours du développement de XRent Manager. Il ne concerne pas les incidents métier liés à une location (dommage véhicule, accident, litige client) — ceux-ci relèveront d'un module métier dédié, dont les règles sont à définir dans [DOMAINRULES.md](./DOMAINRULES.md).
 
-Deux incidents sont enregistrés ci-dessous : INC-1 (technique/process, environnement de développement, Sprint 15) et INC-2 (bug applicatif de stabilité, hydration mismatch, Sprint 21).
+Trois incidents sont enregistrés ci-dessous : INC-1 (technique/process, environnement de développement, Sprint 15), INC-2 (bug applicatif de stabilité, hydration mismatch, Sprint 21) et INC-3 (infrastructure de test, blocage intermittent du serveur `next dev` partagé, Sprint 24-2).
 
 ## Structure d'un incident
 
@@ -24,6 +24,19 @@ Chaque incident futur devra être consigné ci-dessous en suivant ce gabarit :
 ```
 
 ## Journal des incidents
+
+## INC-3 — Blocage intermittent et total du serveur `next dev` de test partagé (suite de tests, `npm test`)
+
+- **Date** : 2026-08-15
+- **Environnement** : test (suite Vitest locale, serveur `next dev` de test dédié sur le port 3811, base `xrent_test`) — jamais observé en développement (`npm run dev`) ni en production
+- **Gravité** : mineure pour le produit (aucun code applicatif ni utilisateur final concerné), mais gênante pour la fiabilité de la suite de tests (résultats `npm test` intermittents)
+- **Description** : lors de l'exécution de la suite complète (610 tests, ~30 fichiers), certaines exécutions échouent avec des `Test timed out in 20000ms`/`Hook timed out in 60000ms` répartis sur un ensemble de fichiers différent à chaque run, sans jamais d'échec d'assertion. Signalé initialement sur `location-payment.test.ts` (hook `beforeAll`) et `e2e-full.test.ts`.
+- **Impact** : aucun impact produit/production. Impact sur la suite de tests uniquement : `npm test` (parallélisme par défaut ou `--no-file-parallelism`) peut échouer de façon non déterministe sans qu'aucune régression de code n'existe réellement, ce qui oblige à relancer/isoler pour distinguer un vrai échec d'un faux positif d'infrastructure.
+- **Cause** : confirmée par investigation (voir TESTREPORT.md, « Tests Sprint 24-2 », paragraphe « Investigation complémentaire ») — le serveur `next dev` unique et de longue durée partagé par toute la suite (nécessaire car `next/headers`, utilisé par NextAuth, exige un contexte de requête HTTP réel) entre parfois, sous charge soutenue (~610 tests, milliers de requêtes sur un seul processus tournant plusieurs minutes), dans un état de blocage complet où **toutes** les requêtes HTTP échouent (confirmé par watchdog externe : serveur totalement injoignable, pas seulement lent, jusqu'à plus de 4 minutes d'affilée dans le pire cas observé). Profilage du processus (`ps`, `sample`) pendant un blocage : 0 % CPU (processus réellement bloqué, pas en boucle infinie), 36 threads du processus tous parqués dans une attente de variable de condition noyau (`pthread_cond_wait`), avec le binding natif du moteur de requêtes Prisma présent dans au moins une des piles observées — piste plausible mais non confirmée avec certitude absolue (attribution de pile peu fiable sur binaire Rust optimisé sans symboles). `DATABASE_URL` de test ne définit aucun `connection_limit`/`pool_timeout` Prisma explicite.
+- **Correction** : aucune appliquée. Cause identifiée comme infrastructurelle et hors périmètre du sprint en cours (Sprint 24-2, dont le brief demandait explicitement de ne pas modifier la configuration globale de test sans cause certaine et démontrée) — un correctif nécessiterait une décision architecturale (restart périodique du serveur de test, plusieurs serveurs en parallèle, `connection_limit`/`pool_timeout` explicites sur `DATABASE_URL` de test, etc.) à valider par le propriétaire du projet.
+- **Test de non-régression** : sans objet (incident d'infrastructure de test, pas un bug de code applicatif) — non-régression du Sprint 24-2 confirmée à la place par exécution isolée des fichiers concernés (`vehicles.test.ts`/`data-reset.test.ts`, 100 % verts dans les 4 exécutions complètes et toutes les exécutions ciblées).
+- **Statut** : ouvert (documenté, non corrigé — cause hors périmètre du sprint qui l'a mise en évidence)
+- **Validation finale** : diagnostic jugé suffisamment rigoureux et concluant par investigation directe (reproduction isolée, 4 exécutions complètes, watchdog HTTP externe, profilage processus `ps`/`sample`) ; aucune validation de correctif car aucun correctif n'a été appliqué — décision de correction à prendre par le propriétaire du projet lors d'un futur sprint dédié à l'infrastructure de test.
 
 ## INC-2 — Hydration mismatch sur les icônes SVG du dashboard (extension navigateur Dark Reader)
 

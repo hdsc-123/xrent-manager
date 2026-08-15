@@ -89,6 +89,13 @@ beforeAll(async () => {
       year: 2022,
       category: "Citadine",
       pricePerDay: 5000,
+      chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+      color: "Blanc",
+      doors: 5,
+      seats: 5,
+      horsepower: 6,
+      powerKW: 75,
+      engineSize: 1.5,
     }),
   });
   vehicleAId = (await vehicleAResponse.json()).vehicle.id;
@@ -105,6 +112,13 @@ beforeAll(async () => {
       year: 2022,
       category: "Citadine",
       pricePerDay: 4000,
+      chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+      color: "Blanc",
+      doors: 5,
+      seats: 5,
+      horsepower: 6,
+      powerKW: 75,
+      engineSize: 1.5,
     }),
   });
   vehicleBId = (await vehicleBResponse.json()).vehicle.id;
@@ -435,6 +449,13 @@ describe("POST /api/locations", () => {
           model: "Sandero",
           year: 2023,
           category: "Citadine",
+          chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+          color: "Blanc",
+          doors: 5,
+          seats: 5,
+          horsepower: 6,
+          powerKW: 75,
+          engineSize: 1.5,
         }),
       });
       vehicleNoPriceId = (await response.json()).vehicle.id;
