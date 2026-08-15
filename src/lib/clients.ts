@@ -1,4 +1,4 @@
-import type { Client, IdType } from "@prisma/client";
+import type { Client, IdType, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -32,8 +32,14 @@ export async function getClients(tenantId: string, search?: string): Promise<Cli
   });
 }
 
-export async function getClientById(tenantId: string, clientId: string): Promise<Client | null> {
-  return prisma.client.findFirst({ where: { id: clientId, tenantId } });
+/** `tx` optionnel (Sprint 26A, Finding A) — voir le commentaire équivalent sur
+ * `getReservationById`, src/lib/reservations.ts. */
+export async function getClientById(
+  tenantId: string,
+  clientId: string,
+  tx: Prisma.TransactionClient = prisma
+): Promise<Client | null> {
+  return tx.client.findFirst({ where: { id: clientId, tenantId } });
 }
 
 export interface CreateClientInput {
@@ -55,8 +61,11 @@ export interface CreateClientInput {
   notes?: string;
 }
 
-export async function createClient(data: CreateClientInput): Promise<Client> {
-  return prisma.client.create({ data });
+export async function createClient(
+  data: CreateClientInput,
+  tx: Prisma.TransactionClient = prisma
+): Promise<Client> {
+  return tx.client.create({ data });
 }
 
 export interface UpdateClientInput {
@@ -80,14 +89,15 @@ export interface UpdateClientInput {
 export async function updateClient(
   tenantId: string,
   clientId: string,
-  data: UpdateClientInput
+  data: UpdateClientInput,
+  tx: Prisma.TransactionClient = prisma
 ): Promise<Client | null> {
-  const existing = await getClientById(tenantId, clientId);
+  const existing = await getClientById(tenantId, clientId, tx);
   if (!existing) {
     return null;
   }
 
-  return prisma.client.update({ where: { id: clientId }, data });
+  return tx.client.update({ where: { id: clientId }, data });
 }
 
 /** Même principe que deleteVehicle (src/lib/vehicles.ts) : historique de location jamais perdu par une suppression de client. */
@@ -162,10 +172,11 @@ function levenshteinDistance(a: string, b: string): number {
 
 export async function findDuplicateClient(
   tenantId: string,
-  input: FindDuplicateClientInput
+  input: FindDuplicateClientInput,
+  tx: Prisma.TransactionClient = prisma
 ): Promise<ClientDuplicateMatch | null> {
   if (input.email) {
-    const match = await prisma.client.findFirst({
+    const match = await tx.client.findFirst({
       where: { tenantId, email: { equals: input.email, mode: "insensitive" } },
     });
     if (match) {
@@ -175,7 +186,7 @@ export async function findDuplicateClient(
 
   if (input.phone) {
     const normalized = normalizePhone(input.phone);
-    const candidates = await prisma.client.findMany({
+    const candidates = await tx.client.findMany({
       where: { tenantId, OR: [{ phone: { not: null } }, { altPhone: { not: null } }] },
     });
     const match = candidates.find(
@@ -189,14 +200,14 @@ export async function findDuplicateClient(
   }
 
   if (input.idNumber) {
-    const match = await prisma.client.findFirst({ where: { tenantId, idNumber: input.idNumber } });
+    const match = await tx.client.findFirst({ where: { tenantId, idNumber: input.idNumber } });
     if (match) {
       return { client: match, matchType: "exact", field: "idNumber" };
     }
   }
 
   if (input.licenseNumber) {
-    const match = await prisma.client.findFirst({ where: { tenantId, licenseNumber: input.licenseNumber } });
+    const match = await tx.client.findFirst({ where: { tenantId, licenseNumber: input.licenseNumber } });
     if (match) {
       return { client: match, matchType: "exact", field: "licenseNumber" };
     }
@@ -204,7 +215,7 @@ export async function findDuplicateClient(
 
   if (input.firstName && input.lastName) {
     const fullName = `${input.firstName} ${input.lastName}`.trim().toLowerCase();
-    const candidates = await prisma.client.findMany({ where: { tenantId } });
+    const candidates = await tx.client.findMany({ where: { tenantId } });
     for (const candidate of candidates) {
       const candidateName = (
         candidate.firstName && candidate.lastName

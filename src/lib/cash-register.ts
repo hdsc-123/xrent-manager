@@ -53,20 +53,34 @@ function startOfMonthUtc(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
 }
 
-/** Récupère la caisse du tenant, en la créant si elle n'existe pas encore (un seul CashRegister par tenant, @@unique tenantId). */
-export async function getOrCreateCashRegister(tenantId: string): Promise<CashRegister> {
-  const existing = await prisma.cashRegister.findUnique({ where: { tenantId } });
+/**
+ * Récupère la caisse du tenant, en la créant si elle n'existe pas encore (un seul
+ * CashRegister par tenant, @@unique tenantId).
+ *
+ * `tx` optionnel (Sprint 26A, Finding A) — défaut au client Prisma global, comportement
+ * inchangé pour tout appel sans transaction partagée. Limite documentée (même principe que
+ * `createLocation`/`createInvoice`, src/lib/locations.ts/invoices.ts) : le rattrapage sur
+ * collision (P2002, uniquement en cas de toute première écriture de caisse d'un tenant
+ * créée par deux requêtes concurrentes) n'est retenté qu'en dehors d'une transaction
+ * partagée explicite — une transaction Postgres ne permet pas de rattraper une erreur de
+ * contrainte et de continuer d'écrire sans SAVEPOINT.
+ */
+export async function getOrCreateCashRegister(
+  tenantId: string,
+  tx: Prisma.TransactionClient = prisma
+): Promise<CashRegister> {
+  const existing = await tx.cashRegister.findUnique({ where: { tenantId } });
   if (existing) {
     return existing;
   }
 
   try {
-    return await prisma.cashRegister.create({
+    return await tx.cashRegister.create({
       data: { tenantId, currentMonth: monthKey(new Date()) },
     });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      return prisma.cashRegister.findUniqueOrThrow({ where: { tenantId } });
+    if (tx === prisma && error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return tx.cashRegister.findUniqueOrThrow({ where: { tenantId } });
     }
     throw error;
   }
@@ -99,8 +113,12 @@ export interface CashRegisterSummary {
  * point le plus ancien de la chaîne — jamais réinjectée dans `currentBalance`, qui continue de
  * se dériver de `previousBalance` seul, pour ne jamais compter le solde de départ deux fois.
  */
-async function getAgencyStartingBalanceSum(tenantId: string, agencyIds: string[] | null): Promise<number> {
-  const agg = await prisma.agency.aggregate({
+async function getAgencyStartingBalanceSum(
+  tenantId: string,
+  agencyIds: string[] | null,
+  tx: Prisma.TransactionClient = prisma
+): Promise<number> {
+  const agg = await tx.agency.aggregate({
     where: { tenantId, ...(agencyIds ? { id: { in: agencyIds } } : {}) },
     _sum: { cashStartingBalance: true },
   });
@@ -118,36 +136,43 @@ async function getAgencyStartingBalanceSum(tenantId: string, agencyIds: string[]
  * sont déjà des CashEntry ENTRY/EXPENSE ordinaires — comptées ici sans traitement séparé, sans
  * risque de double comptage avec le solde de départ. Appelée après chaque création d'écriture,
  * même principe que recomputeInvoiceStatus (src/lib/payments.ts).
+ *
+ * `tx` optionnel (Sprint 26A, Finding A) — défaut au client Prisma global, comportement et
+ * formule inchangés pour tout appel sans transaction partagée. Aucune modification de la
+ * formule de calcul elle-même (Sprint 25A) dans ce correctif.
  */
-export async function recomputeCashRegisterBalance(tenantId: string): Promise<CashRegisterSummary> {
-  const register = await getOrCreateCashRegister(tenantId);
+export async function recomputeCashRegisterBalance(
+  tenantId: string,
+  tx: Prisma.TransactionClient = prisma
+): Promise<CashRegisterSummary> {
+  const register = await getOrCreateCashRegister(tenantId, tx);
   const now = new Date();
   const monthStart = startOfMonthUtc(now);
 
   const [startingBalanceSum, priorEntries, priorExpenses, monthEntriesAgg, monthExpensesAgg, monthCashAgg, monthCardAgg] =
     await Promise.all([
-      getAgencyStartingBalanceSum(tenantId, null),
-      prisma.cashEntry.aggregate({
+      getAgencyStartingBalanceSum(tenantId, null, tx),
+      tx.cashEntry.aggregate({
         where: { tenantId, type: "ENTRY", createdAt: { lt: monthStart } },
         _sum: { amount: true },
       }),
-      prisma.cashEntry.aggregate({
+      tx.cashEntry.aggregate({
         where: { tenantId, type: "EXPENSE", createdAt: { lt: monthStart } },
         _sum: { amount: true },
       }),
-      prisma.cashEntry.aggregate({
+      tx.cashEntry.aggregate({
         where: { tenantId, type: "ENTRY", createdAt: { gte: monthStart } },
         _sum: { amount: true },
       }),
-      prisma.cashEntry.aggregate({
+      tx.cashEntry.aggregate({
         where: { tenantId, type: "EXPENSE", createdAt: { gte: monthStart } },
         _sum: { amount: true },
       }),
-      prisma.cashEntry.aggregate({
+      tx.cashEntry.aggregate({
         where: { tenantId, type: "ENTRY", paymentMethod: "CASH", createdAt: { gte: monthStart } },
         _sum: { amount: true },
       }),
-      prisma.cashEntry.aggregate({
+      tx.cashEntry.aggregate({
         where: { tenantId, type: "ENTRY", paymentMethod: "CARD", createdAt: { gte: monthStart } },
         _sum: { amount: true },
       }),
@@ -159,7 +184,7 @@ export async function recomputeCashRegisterBalance(tenantId: string): Promise<Ca
   const currentMonth = monthKey(now);
   const currentBalance = previousBalance + monthEntries - monthExpenses;
 
-  await prisma.cashRegister.update({
+  await tx.cashRegister.update({
     where: { id: register.id },
     data: { previousBalance, currentMonth, currentBalance },
   });
@@ -261,15 +286,24 @@ export interface CreateCashEntryInput {
   createdAt?: Date;
 }
 
-/** Écriture de caisse append-only : pas de update/delete (même principe que Alert, DOMAINRULES section 19). */
-export async function createCashEntry(data: CreateCashEntryInput): Promise<CashEntry> {
+/**
+ * Écriture de caisse append-only : pas de update/delete (même principe que Alert, DOMAINRULES
+ * section 19).
+ *
+ * `tx` optionnel (Sprint 26A, Finding A) — défaut au client Prisma global, comportement
+ * inchangé pour tout appel sans transaction partagée (POST /api/cash-register, etc.).
+ */
+export async function createCashEntry(
+  data: CreateCashEntryInput,
+  tx: Prisma.TransactionClient = prisma
+): Promise<CashEntry> {
   if (!Number.isInteger(data.amount) || data.amount <= 0) {
     throw new InvalidCashEntryAmountError("amount doit être un entier positif (plus petite unité monétaire).");
   }
 
-  const register = await getOrCreateCashRegister(data.tenantId);
+  const register = await getOrCreateCashRegister(data.tenantId, tx);
 
-  const entry = await prisma.cashEntry.create({
+  const entry = await tx.cashEntry.create({
     data: {
       tenantId: data.tenantId,
       cashRegisterId: register.id,
@@ -287,7 +321,7 @@ export async function createCashEntry(data: CreateCashEntryInput): Promise<CashE
     },
   });
 
-  await recomputeCashRegisterBalance(data.tenantId);
+  await recomputeCashRegisterBalance(data.tenantId, tx);
   return entry;
 }
 

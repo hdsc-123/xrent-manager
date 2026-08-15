@@ -1,4 +1,4 @@
-import type { Payment, PaymentMethod } from "@prisma/client";
+import type { Payment, PaymentMethod, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getInvoiceById } from "@/lib/invoices";
 import { getLocationById } from "@/lib/locations";
@@ -48,9 +48,11 @@ export class PaymentExceedsRemainingBalanceError extends Error {
  * décrémenté directement : toujours recalculé pour éviter toute dérive (SECURITY.md
  * section 4, cohérence des montants financiers).
  */
-async function recomputeInvoiceStatus(invoiceId: string): Promise<void> {
-  const invoice = await prisma.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
-  const aggregate = await prisma.payment.aggregate({
+/** `tx` optionnel (Sprint 26A, Finding A) — voir le commentaire équivalent sur
+ * `getReservationById`, src/lib/reservations.ts. */
+async function recomputeInvoiceStatus(invoiceId: string, tx: Prisma.TransactionClient = prisma): Promise<void> {
+  const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
+  const aggregate = await tx.payment.aggregate({
     where: { invoiceId },
     _sum: { amount: true },
   });
@@ -67,7 +69,7 @@ async function recomputeInvoiceStatus(invoiceId: string): Promise<void> {
             ? "SENT"
             : invoice.status;
 
-  await prisma.invoice.update({
+  await tx.invoice.update({
     where: { id: invoiceId },
     data: { amountPaid, status: nextStatus },
   });
@@ -110,13 +112,19 @@ export interface CreatePaymentInput {
 /**
  * currency n'est jamais fourni par le client : toujours dérivée de l'Invoice ciblée,
  * pour empêcher tout paiement enregistré dans une devise incohérente avec la facture.
+ *
+ * `tx` optionnel (Sprint 26A, Finding A) — défaut au client Prisma global, comportement
+ * inchangé pour tout appel sans transaction partagée (POST /api/payments, etc.).
  */
-export async function createPayment(data: CreatePaymentInput): Promise<Payment> {
+export async function createPayment(
+  data: CreatePaymentInput,
+  tx: Prisma.TransactionClient = prisma
+): Promise<Payment> {
   if (!Number.isInteger(data.amount) || data.amount <= 0) {
     throw new InvalidPaymentAmountError("amount doit être un entier positif (plus petite unité monétaire).");
   }
 
-  const invoice = await getInvoiceById(data.tenantId, data.invoiceId);
+  const invoice = await getInvoiceById(data.tenantId, data.invoiceId, tx);
   if (!invoice) {
     throw new PaymentInvoiceNotFoundError();
   }
@@ -130,7 +138,7 @@ export async function createPayment(data: CreatePaymentInput): Promise<Payment> 
     throw new PaymentExceedsRemainingBalanceError(remainingBalance, invoice.currency);
   }
 
-  const payment = await prisma.payment.create({
+  const payment = await tx.payment.create({
     data: {
       tenantId: data.tenantId,
       invoiceId: data.invoiceId,
@@ -143,8 +151,8 @@ export async function createPayment(data: CreatePaymentInput): Promise<Payment> 
     },
   });
 
-  await recomputeInvoiceStatus(data.invoiceId);
-  await recordPaymentCashEntry(data.tenantId, invoice.locationId, payment);
+  await recomputeInvoiceStatus(data.invoiceId, tx);
+  await recordPaymentCashEntry(data.tenantId, invoice.locationId, payment, tx);
   return payment;
 }
 
@@ -156,26 +164,36 @@ export async function createPayment(data: CreatePaymentInput): Promise<Payment> 
  * jamais, alors que c'est le flux normal documenté (paiement « au retour » réglé après coup).
  * Centralisé ici (plutôt que dupliqué par chaque appelant) pour que tout paiement, quel que
  * soit son point d'entrée, ait la même garantie.
+ *
+ * `tx` optionnel (Sprint 26A, Finding A) — voir le commentaire équivalent sur `createPayment`.
  */
-async function recordPaymentCashEntry(tenantId: string, locationId: string, payment: Payment): Promise<void> {
-  const location = await getLocationById(tenantId, locationId);
+async function recordPaymentCashEntry(
+  tenantId: string,
+  locationId: string,
+  payment: Payment,
+  tx: Prisma.TransactionClient = prisma
+): Promise<void> {
+  const location = await getLocationById(tenantId, locationId, tx);
   const contractNumber = location?.contractNumber ?? null;
-  const clientName = location ? (await getClientById(tenantId, location.clientId))?.name : undefined;
+  const clientName = location ? (await getClientById(tenantId, location.clientId, tx))?.name : undefined;
 
-  await createCashEntry({
-    tenantId,
-    type: "ENTRY",
-    category: "VERSEMENT",
-    amount: payment.amount,
-    description: `Paiement location ${contractNumber ?? `#${locationId.slice(-8)}`}`,
-    contractId: locationId,
-    contractNumber,
-    clientName,
-    paymentMethod: payment.method,
-    // Sprint 22 : agence d'origine de l'écriture, dérivée de la Location réglée — permet de
-    // calculer un solde/CA par agence en plus du solde global (voir src/lib/cash-register.ts).
-    agencyId: location?.agencyId,
-  });
+  await createCashEntry(
+    {
+      tenantId,
+      type: "ENTRY",
+      category: "VERSEMENT",
+      amount: payment.amount,
+      description: `Paiement location ${contractNumber ?? `#${locationId.slice(-8)}`}`,
+      contractId: locationId,
+      contractNumber,
+      clientName,
+      paymentMethod: payment.method,
+      // Sprint 22 : agence d'origine de l'écriture, dérivée de la Location réglée — permet de
+      // calculer un solde/CA par agence en plus du solde global (voir src/lib/cash-register.ts).
+      agencyId: location?.agencyId,
+    },
+    tx
+  );
 }
 
 export interface UpdatePaymentInput {

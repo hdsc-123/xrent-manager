@@ -1,4 +1,4 @@
-import type { Reservation, ReservationStatus } from "@prisma/client";
+import type { Reservation, ReservationStatus, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 /** Longueur maximale raisonnable pour `source` en texte libre (Sprint 15) — évite qu'un
@@ -168,8 +168,18 @@ export async function getReservations(
   });
 }
 
-export async function getReservationById(tenantId: string, reservationId: string): Promise<Reservation | null> {
-  return prisma.reservation.findFirst({ where: { id: reservationId, tenantId } });
+/**
+ * `tx` optionnel (Sprint 26A, Finding A) — défaut au client Prisma global, comportement
+ * inchangé pour tout appelant existant. Un appelant à l'intérieur d'une transaction Prisma
+ * partagée (voir POST /api/reservations/[id]/convert) doit le fournir explicitement pour
+ * voir les écritures déjà faites dans cette même transaction, non encore commitées.
+ */
+export async function getReservationById(
+  tenantId: string,
+  reservationId: string,
+  tx: Prisma.TransactionClient = prisma
+): Promise<Reservation | null> {
+  return tx.reservation.findFirst({ where: { id: reservationId, tenantId } });
 }
 
 export interface ReservationInputFields {
@@ -813,18 +823,75 @@ export async function deleteReservation(tenantId: string, reservationId: string)
   return true;
 }
 
+/**
+ * Sprint 26A (Finding A) : réserve atomiquement une conversion, AVANT toute création de
+ * donnée dépendante (client/second conducteur/location/facture/paiement/caisse) — toujours
+ * appelée en tout premier à l'intérieur de la transaction Prisma partagée de
+ * POST /api/reservations/[id]/convert (voir src/app/api/reservations/[id]/convert/route.ts).
+ * Passe uniquement `status` à CONVERTED via un `updateMany` conditionné sur le statut
+ * courant (même motif que `updateReservation`/`markReservationConverted` ci-dessous) —
+ * `convertedLocationId` n'est pas encore connu à ce stade (la Location n'existe pas encore)
+ * et est rattaché séparément par `markReservationConverted` une fois créée. Une deuxième
+ * conversion concurrente de la même réservation obtient `count === 0` (la première a déjà
+ * commité — ou est en train de committer — son passage à CONVERTED, verrou ligne Postgres)
+ * et échoue proprement avant d'avoir rien créé, avec la même erreur que la machine à états
+ * normale (`InvalidReservationStatusTransitionError`, 409).
+ */
+export async function claimReservationConversion(
+  tenantId: string,
+  reservationId: string,
+  tx: Prisma.TransactionClient
+): Promise<Reservation> {
+  const existing = await getReservationById(tenantId, reservationId, tx);
+  if (!existing) {
+    throw new ReservationNotFoundError();
+  }
+
+  if (!canTransition(existing.status, "CONVERTED")) {
+    throw new InvalidReservationStatusTransitionError(existing.status, "CONVERTED");
+  }
+
+  const { count } = await tx.reservation.updateMany({
+    where: { id: reservationId, status: existing.status },
+    data: { status: "CONVERTED" },
+  });
+  if (count === 0) {
+    throw new InvalidReservationStatusTransitionError(existing.status, "CONVERTED");
+  }
+  return tx.reservation.findUniqueOrThrow({ where: { id: reservationId } });
+}
+
 /** Marque la réservation CONVERTED et l'associe à la Location créée (voir la route
  * POST /api/reservations/[id]/convert pour l'orchestration complète : résolution/création
  * du client, dérivation de l'agence depuis le véhicule choisi, création de la Location
- * puis de la facture — même répartition route/lib que POST /api/locations, Sprint 12B). */
+ * puis de la facture — même répartition route/lib que POST /api/locations, Sprint 12B).
+ *
+ * `tx` optionnel (Sprint 26A, défaut au client Prisma global) — comportement inchangé pour
+ * tout appel sans transaction partagée : transition + rattachement de `convertedLocationId`
+ * en une seule écriture atomique conditionnée, comme avant ce sprint. Nouvelle branche : si
+ * la réservation est déjà CONVERTED mais sans `convertedLocationId` (réservée juste avant,
+ * dans la même transaction, par `claimReservationConversion` ci-dessus), la transition est
+ * déjà acquise — cet appel ne fait alors que rattacher la Location, sans revalider
+ * `canTransition` (qui refuserait à tort CONVERTED → CONVERTED).
+ */
 export async function markReservationConverted(
   tenantId: string,
   reservationId: string,
-  locationId: string
+  locationId: string,
+  tx: Prisma.TransactionClient = prisma
 ): Promise<Reservation | null> {
-  const existing = await getReservationById(tenantId, reservationId);
+  const existing = await getReservationById(tenantId, reservationId, tx);
   if (!existing) {
     return null;
+  }
+
+  const alreadyClaimedByThisConversion = existing.status === "CONVERTED" && existing.convertedLocationId === null;
+
+  if (alreadyClaimedByThisConversion) {
+    return tx.reservation.update({
+      where: { id: reservationId },
+      data: { convertedLocationId: locationId },
+    });
   }
 
   if (!canTransition(existing.status, "CONVERTED")) {
@@ -834,12 +901,12 @@ export async function markReservationConverted(
   // Sprint 23 : même garde atomique que updateReservation ci-dessus — une conversion et une
   // action rapide (Annuler/No Show) quasi simultanées sur la même réservation ne doivent
   // jamais toutes deux réussir.
-  const { count } = await prisma.reservation.updateMany({
+  const { count } = await tx.reservation.updateMany({
     where: { id: reservationId, status: existing.status },
     data: { status: "CONVERTED", convertedLocationId: locationId },
   });
   if (count === 0) {
     throw new InvalidReservationStatusTransitionError(existing.status, "CONVERTED");
   }
-  return prisma.reservation.findUniqueOrThrow({ where: { id: reservationId } });
+  return tx.reservation.findUniqueOrThrow({ where: { id: reservationId } });
 }

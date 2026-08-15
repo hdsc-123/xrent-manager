@@ -1,7 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import ExcelJS from "exceljs";
 import { prisma } from "@/lib/prisma";
-import { RESERVATION_IMPORT_COLUMNS, RESERVATION_IMPORT_COLUMN_MAP } from "@/lib/reservations";
+import {
+  RESERVATION_IMPORT_COLUMNS,
+  RESERVATION_IMPORT_COLUMN_MAP,
+  claimReservationConversion,
+  markReservationConverted,
+} from "@/lib/reservations";
+import { createClient } from "@/lib/clients";
+import { createLocation } from "@/lib/locations";
+import { createInvoice } from "@/lib/invoices";
+import { createPayment, PaymentExceedsRemainingBalanceError } from "@/lib/payments";
 import { apiFetch } from "./helpers/http";
 import { TEST_BASE_URL } from "./helpers/testServer";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
@@ -1368,6 +1377,485 @@ describe("POST /api/reservations/[id]/convert", () => {
     expect(convertResponse.status).toBe(201);
     const convertJson = await convertResponse.json();
     expect(convertJson.reservation.status).toBe("CONVERTED");
+  });
+});
+
+describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous concurrence", () => {
+  let convertBodyCounter = 0;
+
+  /** Même forme que `convertBody` du describe précédent (réimplémentée localement, hors de
+   * portée) — corps minimal valide (véhicule + dates + identité client complète). */
+  function convertBody(
+    reservation: { startDate: string; endDate: string; clientFirstName: string; clientLastName: string },
+    overrides: Record<string, unknown> = {}
+  ) {
+    convertBodyCounter += 1;
+    return {
+      vehicleId: vehicleAId,
+      startDate: reservation.startDate,
+      endDate: reservation.endDate,
+      client: {
+        firstName: reservation.clientFirstName,
+        lastName: reservation.clientLastName,
+        address: "12 rue des Fleurs",
+        city: "Casablanca",
+        country: "Maroc",
+        idNumber: `S26A-${runId}-${convertBodyCounter}`,
+        licenseNumber: `S26AP-${runId}-${convertBodyCounter}`,
+        licenseIssueDate: "2020-01-01",
+        licenseExpiryDate: "2030-01-01",
+      },
+      ...overrides,
+    };
+  }
+
+  async function countMoneyRows(locationIds: string[]) {
+    const [locations, invoices, payments, cashEntries] = await Promise.all([
+      prisma.location.count({ where: { id: { in: locationIds.length > 0 ? locationIds : ["__none__"] } } }),
+      prisma.invoice.count({ where: { locationId: { in: locationIds.length > 0 ? locationIds : ["__none__"] } } }),
+      prisma.payment.count({
+        where: { invoice: { locationId: { in: locationIds.length > 0 ? locationIds : ["__none__"] } } },
+      }),
+      prisma.cashEntry.count({ where: { contractId: { in: locationIds.length > 0 ? locationIds : ["__none__"] } } }),
+    ]);
+    return { locations, invoices, payments, cashEntries };
+  }
+
+  it("1/2/3/4/5 — deux conversions concurrentes de la même réservation sans paiement : une seule réussit, une seule Location/Invoice créée", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "Concurrent",
+      clientLastName: `SansPaiement-${runId}`,
+      startDate: "2031-01-05",
+      endDate: "2031-01-07",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const body = convertBody(reservation, { clientFirstName: "Concurrent", clientLastName: `SansPaiement-${runId}` });
+    const [responseA, responseB] = await Promise.all([
+      apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      }),
+      apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      }),
+    ]);
+
+    const statuses = [responseA.status, responseB.status].sort();
+    expect(statuses).toEqual([201, 409]);
+
+    const [jsonA, jsonB] = await Promise.all([responseA.json(), responseB.json()]);
+    const winnerJson = responseA.status === 201 ? jsonA : jsonB;
+
+    // Vérification en base, pas seulement les codes HTTP.
+    const finalReservation = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+    expect(finalReservation.status).toBe("CONVERTED");
+    expect(finalReservation.convertedLocationId).toBe(winnerJson.location.id);
+
+    const locationsForVehicle = await prisma.location.findMany({
+      where: { vehicleId: vehicleAId, startDate: new Date("2031-01-05") },
+    });
+    expect(locationsForVehicle).toHaveLength(1);
+    expect(locationsForVehicle[0].id).toBe(winnerJson.location.id);
+
+    const counts = await countMoneyRows([winnerJson.location.id]);
+    expect(counts.locations).toBe(1);
+    expect(counts.invoices).toBe(1);
+    expect(counts.payments).toBe(0);
+    expect(counts.cashEntries).toBe(0);
+  });
+
+  it("2/3/6/7 — deux conversions concurrentes avec paiement simple : un seul Payment, une seule CashEntry créés", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "Concurrent",
+      clientLastName: `AvecPaiement-${runId}`,
+      startDate: "2031-01-10",
+      endDate: "2031-01-11",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const body = convertBody(reservation, {
+      clientFirstName: "Concurrent",
+      clientLastName: `AvecPaiement-${runId}`,
+      payment: { method: "CASH", partial: false },
+    });
+    const [responseA, responseB] = await Promise.all([
+      apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      }),
+      apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      }),
+    ]);
+
+    const statuses = [responseA.status, responseB.status].sort();
+    expect(statuses).toEqual([201, 409]);
+
+    const winnerResponse = responseA.status === 201 ? responseA : responseB;
+    const winnerJson = await winnerResponse.json();
+    expect(winnerJson.paymentError).toBeNull();
+    expect(winnerJson.payments).toHaveLength(1);
+    expect(winnerJson.invoice.status).toBe("PAID");
+
+    const counts = await countMoneyRows([winnerJson.location.id]);
+    expect(counts.locations).toBe(1);
+    expect(counts.invoices).toBe(1);
+    expect(counts.payments).toBe(1);
+    expect(counts.cashEntries).toBe(1);
+
+    // Aucun client orphelin issu de la conversion perdante : un seul client "Concurrent
+    // AvecPaiement-<runId>" doit exister au total (la conversion perdante n'a jamais atteint
+    // l'étape de résolution du client, refusée dès le claim de la réservation).
+    const matchingClients = await prisma.client.findMany({
+      where: { tenantId: adminA.tenantId, lastName: `AvecPaiement-${runId}` },
+    });
+    expect(matchingClients).toHaveLength(1);
+  });
+
+  it("8 — rollback complet si une étape échoue après le claim (véhicule devenu indisponible)", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "Rollback",
+      clientLastName: `Echec-${runId}`,
+      startDate: "2031-02-01",
+      endDate: "2031-02-03",
+    });
+    const reservation = (await createResponse.json()).reservation;
+    expect(reservation.status).toBe("PENDING");
+
+    // Un contrat déjà confirmé occupe le véhicule sur exactement la même période — createLocation
+    // (appelée après le claim, à l'intérieur de la transaction) échouera donc avec
+    // VehicleNotAvailableError, après que claimReservationConversion a déjà réservé la conversion.
+    const conflictingLocationResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: vehicleAId,
+        clientId: (
+          await (
+            await apiFetch("/api/clients", {
+              method: "POST",
+              headers: { Cookie: adminA.sessionCookie },
+              body: JSON.stringify({ name: `Occupant-${runId}` }),
+            })
+          ).json()
+        ).client.id,
+        startDate: "2031-02-01",
+        endDate: "2031-02-03",
+        status: "CONFIRMED",
+      }),
+    });
+    expect(conflictingLocationResponse.status).toBe(201);
+
+    const clientCountBefore = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBody(reservation, { clientFirstName: "Rollback", clientLastName: `Echec-${runId}` })),
+    });
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).toContain("disponible");
+
+    // Rollback complet : la réservation redevient PENDING (jamais restée bloquée à CONVERTED
+    // sans Location associée), aucun client/Location/Invoice n'a été créé par cette tentative.
+    const finalReservation = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+    expect(finalReservation.status).toBe("PENDING");
+    expect(finalReservation.convertedLocationId).toBeNull();
+
+    const clientCountAfter = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+    expect(clientCountAfter).toBe(clientCountBefore);
+
+    const locationsForThisAttempt = await prisma.location.findMany({
+      where: { vehicleId: vehicleAId, startDate: new Date("2031-02-01"), status: { not: "CONFIRMED" } },
+    });
+    expect(locationsForThisAttempt).toHaveLength(0);
+  });
+
+  it("9 — non-régression : une conversion simple valide fonctionne toujours de bout en bout", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "NonRegression",
+      clientLastName: `Simple-${runId}`,
+      startDate: "2031-03-01",
+      endDate: "2031-03-03",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, { clientFirstName: "NonRegression", clientLastName: `Simple-${runId}` })
+      ),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.reservation.status).toBe("CONVERTED");
+    expect(body.reservation.convertedLocationId).toBe(body.location.id);
+    expect(body.location.vehicleId).toBe(vehicleAId);
+    expect(body.location.agencyId).toBe(agencyA1Id);
+    expect(body.invoice).not.toBeNull();
+    expect(body.invoice.locationId).toBe(body.location.id);
+    expect(body.paymentError).toBeNull();
+  });
+
+  it("10 — isolation tenant/agence et permission préservées après le passage à la transaction partagée", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "Isolation",
+      clientLastName: `Tenant-${runId}`,
+      startDate: "2031-04-01",
+      endDate: "2031-04-03",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    // Tenant B (aucun accès à cette réservation ni à ce véhicule) ne peut pas la convertir.
+    const crossTenantResponse = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminB.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, { clientFirstName: "Isolation", clientLastName: `Tenant-${runId}` })
+      ),
+    });
+    expect(crossTenantResponse.status).toBe(404);
+
+    // La réservation reste intacte (jamais réclamée par une transaction qui échoue avant le
+    // claim, faute d'accès) et reste convertible normalement par le bon tenant ensuite.
+    const untouchedReservation = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+    expect(untouchedReservation.status).toBe("PENDING");
+
+    // Sans la permission reservations.convert (groupe personnalisé sans cette clé — un
+    // nouveau MEMBER sans groupe assigné retombe par défaut sur le groupe MEMBER, qui
+    // accorde reservations.convert, DOMAINRULES.md section 15/22 : il faut un groupe
+    // explicite pour tester un vrai refus de permission), refus avant même l'ouverture de la
+    // transaction.
+    const noConvertGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `NoConvert-${runId}`, permissions: ["reservations.view"] }),
+    });
+    const noConvertGroupId = (await noConvertGroupResponse.json()).group.id;
+
+    const noPermissionMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "No Convert Permission",
+      email: `no-convert-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await apiFetch(`/api/users/${noPermissionMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: noConvertGroupId }),
+    });
+
+    const noPermissionResponse = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: noPermissionMember.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, { clientFirstName: "Isolation", clientLastName: `Tenant-${runId}` })
+      ),
+    });
+    expect(noPermissionResponse.status).toBe(403);
+
+    const stillUntouchedReservation = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+    expect(stillUntouchedReservation.status).toBe("PENDING");
+
+    // Conversion normale par adminA, toujours fonctionnelle.
+    const okResponse = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, { clientFirstName: "Isolation", clientLastName: `Tenant-${runId}` })
+      ),
+    });
+    expect(okResponse.status).toBe(201);
+  });
+
+  it("11 — rollback après échec d'un paiement simple (montant délibérément supérieur au solde restant) : réservation CONFIRMED restaurée, aucune donnée orpheline", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "RollbackPaiement",
+      clientLastName: `Simple-${runId}`,
+      startDate: "2031-05-01",
+      endDate: "2031-05-03",
+    });
+    const reservation = (await createResponse.json()).reservation;
+    expect(reservation.status).toBe("PENDING");
+
+    // La réservation est initialement CONFIRMED (exigence du scénario).
+    const confirmResponse = await apiFetch(`/api/reservations/${reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    expect(confirmResponse.status).toBe(200);
+    expect((await confirmResponse.json()).reservation.status).toBe("CONFIRMED");
+
+    const clientCountBefore = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+    const registerBefore = await prisma.cashRegister.findUnique({ where: { tenantId: adminA.tenantId } });
+
+    // Montant délibérément et déterministement supérieur au total facturé (véhicule à
+    // 5000 centimes/jour × 2 jours = 10000) — déclenche, à l'intérieur de la transaction, le
+    // contrôle de solde de processLocationPayment *après* que la Location et l'Invoice aient
+    // déjà été créées (étapes 7/9 de la transaction de conversion), sans dépendre d'un
+    // timing ni d'une concurrence réelle : ce montant dépasse le solde quel que soit l'ordre
+    // d'exécution.
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          clientFirstName: "RollbackPaiement",
+          clientLastName: `Simple-${runId}`,
+          payment: { method: "CASH", partial: true, amount: 999_999 },
+        })
+      ),
+    });
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).toContain("dépasse");
+
+    // Rollback complet : la réservation redevient CONFIRMED (son statut initial, jamais
+    // restée bloquée à CONVERTED), aucune Location/Invoice/Payment/CashEntry issue de cette
+    // tentative ne subsiste, aucun client créé uniquement pour elle ne reste, et le solde de
+    // caisse persisté n'a pas bougé (comparé sans appeler recomputeCashRegisterBalance entre
+    // les deux relevés, pour vérifier l'état brut réellement persisté).
+    const finalReservation = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+    expect(finalReservation.status).toBe("CONFIRMED");
+    expect(finalReservation.convertedLocationId).toBeNull();
+
+    const locationsForThisAttempt = await prisma.location.findMany({
+      where: { vehicleId: vehicleAId, startDate: new Date("2031-05-01") },
+    });
+    expect(locationsForThisAttempt).toHaveLength(0);
+
+    const clientCountAfter = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+    expect(clientCountAfter).toBe(clientCountBefore);
+
+    const registerAfter = await prisma.cashRegister.findUnique({ where: { tenantId: adminA.tenantId } });
+    expect(registerAfter?.currentBalance).toBe(registerBefore?.currentBalance);
+    expect(registerAfter?.previousBalance).toBe(registerBefore?.previousBalance);
+  });
+
+  it("12 — rollback après échec de la 2e ligne d'un paiement mixte : la 1re ligne réellement écrite dans la transaction est annulée avec le reste", async () => {
+    // processLocationPayment (src/lib/location-payment.ts) valide le total d'un paiement
+    // mixte contre le solde restant *avant* d'écrire la moindre ligne (correctif Sprint
+    // 14B) — un scénario « 1re ligne déjà écrite, 2e ligne refusée » n'est donc plus jamais
+    // atteignable via POST /api/reservations/[id]/convert lui-même, par construction (et par
+    // conception : c'est précisément ce que ce correctif empêche, indépendamment du Finding
+    // A — hors périmètre de modification ici, voir Finding B). Pour vérifier que le
+    // mécanisme de rollback transactionnel du Finding A couvre bien ce cas si une 2e écriture
+    // de paiement mixte échouait pour toute autre raison, ce test reproduit fidèlement —
+    // avec les mêmes fonctions de production et sous la même transaction Prisma partagée que
+    // la route — l'assemblage réel de la conversion jusqu'au paiement, puis appelle
+    // createPayment deux fois directement : la 1re ligne (6000) est un montant valide qui
+    // s'écrit réellement dans la transaction encore ouverte ; la 2e ligne (5000) dépasse
+    // délibérément le solde restant exact (10000 - 6000 = 4000), déclenchant de façon
+    // déterministe et isolée PaymentExceedsRemainingBalanceError — sans dépendre d'un timing
+    // ni d'une concurrence réelle.
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "RollbackMixte",
+      clientLastName: `Ligne2-${runId}`,
+      startDate: "2031-06-01",
+      endDate: "2031-06-03",
+    });
+    const reservation = (await createResponse.json()).reservation;
+    expect(reservation.status).toBe("PENDING");
+
+    const confirmResponse = await apiFetch(`/api/reservations/${reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    expect(confirmResponse.status).toBe(200);
+
+    const clientCountBefore = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+    const registerBefore = await prisma.cashRegister.findUnique({ where: { tenantId: adminA.tenantId } });
+
+    let thrownError: unknown;
+    try {
+      await prisma.$transaction(async (tx) => {
+        await claimReservationConversion(adminA.tenantId, reservation.id, tx);
+
+        const client = await createClient(
+          {
+            tenantId: adminA.tenantId,
+            name: `RollbackMixte Ligne2-${runId}`,
+            firstName: "RollbackMixte",
+            lastName: `Ligne2-${runId}`,
+          },
+          tx
+        );
+
+        const location = await createLocation(
+          {
+            tenantId: adminA.tenantId,
+            agencyId: agencyA1Id,
+            vehicleId: vehicleAId,
+            clientId: client.id,
+            startDate: new Date("2031-06-01"),
+            endDate: new Date("2031-06-03"),
+          },
+          tx
+        );
+
+        await markReservationConverted(adminA.tenantId, reservation.id, location.id, tx);
+
+        const invoice = await createInvoice({ tenantId: adminA.tenantId, locationId: location.id }, tx);
+
+        // Ligne 1 : montant valide, écrite pour de vrai dans cette transaction encore ouverte.
+        await createPayment(
+          { tenantId: adminA.tenantId, invoiceId: invoice.id, amount: 6_000, method: "CASH" },
+          tx
+        );
+
+        // Ligne 2 : dépasse délibérément le solde restant exact (10000 - 6000 = 4000).
+        await createPayment(
+          { tenantId: adminA.tenantId, invoiceId: invoice.id, amount: 5_000, method: "CARD" },
+          tx
+        );
+      });
+    } catch (error) {
+      thrownError = error;
+    }
+
+    expect(thrownError).toBeInstanceOf(PaymentExceedsRemainingBalanceError);
+
+    // Rollback complet, y compris de la 1re ligne pourtant réellement écrite avant l'échec
+    // de la 2e : réservation restaurée à CONFIRMED, aucune Location/Client/Payment/CashEntry
+    // issus de cette tentative ne subsistent, et le solde de caisse brut persisté est inchangé.
+    const finalReservation = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+    expect(finalReservation.status).toBe("CONFIRMED");
+    expect(finalReservation.convertedLocationId).toBeNull();
+
+    const locationsForThisAttempt = await prisma.location.findMany({
+      where: { vehicleId: vehicleAId, startDate: new Date("2031-06-01") },
+    });
+    expect(locationsForThisAttempt).toHaveLength(0);
+
+    const clientCountAfter = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+    expect(clientCountAfter).toBe(clientCountBefore);
+
+    // Aucune trace de la 1re ligne (6000, CASH) réellement écrite dans la transaction avant
+    // l'échec de la 2e — Invoice.amountPaid/status n'existent même plus (l'Invoice elle-même
+    // a été annulée avec le reste, jamais laissée dans un état "partiellement payé").
+    const paymentsForThisAttempt = await prisma.payment.count({
+      where: { tenantId: adminA.tenantId, amount: 6_000, method: "CASH" },
+    });
+    expect(paymentsForThisAttempt).toBe(0);
+    const cashEntriesForThisAttempt = await prisma.cashEntry.count({
+      where: { tenantId: adminA.tenantId, amount: 6_000, paymentMethod: "CASH" },
+    });
+    expect(cashEntriesForThisAttempt).toBe(0);
+
+    const registerAfter = await prisma.cashRegister.findUnique({ where: { tenantId: adminA.tenantId } });
+    expect(registerAfter?.currentBalance).toBe(registerBefore?.currentBalance);
+    expect(registerAfter?.previousBalance).toBe(registerBefore?.previousBalance);
   });
 });
 

@@ -1,4 +1,4 @@
-import type { Invoice, InvoiceStatus } from "@prisma/client";
+import type { Invoice, InvoiceStatus, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getLocationById } from "@/lib/locations";
 
@@ -93,9 +93,13 @@ function validateAmountInputs(taxRate: number, discountAmount: number): void {
  * pour ce tenant. Pas de table de séquence dédiée (À DÉCIDER si le volume l'exige) :
  * en cas de collision sous forte concurrence, createInvoice réessaie (voir plus bas).
  */
-async function generateInvoiceNumber(tenantId: string, year: number): Promise<string> {
+async function generateInvoiceNumber(
+  tenantId: string,
+  year: number,
+  tx: Prisma.TransactionClient = prisma
+): Promise<string> {
   const prefix = `INV-${year}-`;
-  const count = await prisma.invoice.count({
+  const count = await tx.invoice.count({
     where: { tenantId, number: { startsWith: prefix } },
   });
   return `${prefix}${String(count + 1).padStart(5, "0")}`;
@@ -134,8 +138,14 @@ export async function getInvoices(tenantId: string, filters: InvoiceFilters = {}
   });
 }
 
-export async function getInvoiceById(tenantId: string, invoiceId: string): Promise<Invoice | null> {
-  return prisma.invoice.findFirst({ where: { id: invoiceId, tenantId } });
+/** `tx` optionnel (Sprint 26A, Finding A) — voir le commentaire équivalent sur
+ * `getReservationById`, src/lib/reservations.ts. */
+export async function getInvoiceById(
+  tenantId: string,
+  invoiceId: string,
+  tx: Prisma.TransactionClient = prisma
+): Promise<Invoice | null> {
+  return tx.invoice.findFirst({ where: { id: invoiceId, tenantId } });
 }
 
 export interface CreateInvoiceInput {
@@ -149,12 +159,21 @@ export interface CreateInvoiceInput {
 
 const MAX_NUMBER_GENERATION_ATTEMPTS = 5;
 
-export async function createInvoice(data: CreateInvoiceInput): Promise<Invoice> {
+/**
+ * `tx` optionnel (Sprint 26A, Finding A) — défaut au client Prisma global, comportement
+ * inchangé pour tout appel sans transaction partagée (ex. POST /api/locations). Même limite
+ * documentée que `createLocation` (src/lib/locations.ts) sur le réessai de numérotation :
+ * désactivé à l'intérieur d'une transaction partagée explicite (une seule tentative).
+ */
+export async function createInvoice(
+  data: CreateInvoiceInput,
+  tx: Prisma.TransactionClient = prisma
+): Promise<Invoice> {
   const taxRate = data.taxRate ?? 0;
   const discountAmount = data.discountAmount ?? 0;
   validateAmountInputs(taxRate, discountAmount);
 
-  const location = await getLocationById(data.tenantId, data.locationId);
+  const location = await getLocationById(data.tenantId, data.locationId, tx);
   if (!location) {
     throw new InvoiceLocationNotFoundError();
   }
@@ -163,10 +182,12 @@ export async function createInvoice(data: CreateInvoiceInput): Promise<Invoice> 
   const { taxAmount, totalAmount } = computeInvoiceTotals(subtotal, taxRate, discountAmount);
   const year = new Date().getFullYear();
 
-  for (let attempt = 0; attempt < MAX_NUMBER_GENERATION_ATTEMPTS; attempt++) {
-    const number = await generateInvoiceNumber(data.tenantId, year);
+  const allowRetry = tx === prisma;
+  const maxAttempts = allowRetry ? MAX_NUMBER_GENERATION_ATTEMPTS : 1;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const number = await generateInvoiceNumber(data.tenantId, year, tx);
     try {
-      return await prisma.invoice.create({
+      return await tx.invoice.create({
         data: {
           tenantId: data.tenantId,
           agencyId: location.agencyId,
@@ -184,7 +205,7 @@ export async function createInvoice(data: CreateInvoiceInput): Promise<Invoice> 
         },
       });
     } catch (error) {
-      if (isUniqueConstraintError(error) && attempt < MAX_NUMBER_GENERATION_ATTEMPTS - 1) {
+      if (isUniqueConstraintError(error) && attempt < maxAttempts - 1) {
         continue;
       }
       throw error;

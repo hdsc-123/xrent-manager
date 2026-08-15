@@ -1,4 +1,5 @@
-import type { Invoice, Payment, PaymentMethod } from "@prisma/client";
+import type { Invoice, Payment, PaymentMethod, Prisma } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
 import { createPayment } from "@/lib/payments";
 import { getInvoiceById } from "@/lib/invoices";
 import { logAction } from "@/lib/audit";
@@ -93,8 +94,17 @@ export interface ProcessLocationPaymentResult {
  * (entier brut de centimes, voir PaymentExceedsRemainingBalanceError). Le message est
  * désormais toujours exprimé dans la devise de la facture (formatMoney), jamais un nombre brut.
  */
+/**
+ * `tx` optionnel (Sprint 26A, Finding A) — défaut au client Prisma global, comportement
+ * inchangé pour tout appel sans transaction partagée (POST /api/locations). Transmis à
+ * `createPayment` (donc à `recomputeInvoiceStatus`/`recordPaymentCashEntry`/`createCashEntry`
+ * en cascade) et à la relecture finale de la facture. `logAction` (audit, ci-dessous) reste
+ * volontairement hors transaction, comme avant ce sprint — best-effort, jamais bloquant,
+ * hors périmètre de ce correctif (Finding A porte sur Location/Invoice/Payment/CashEntry).
+ */
 export async function processLocationPayment(
-  input: ProcessLocationPaymentInput
+  input: ProcessLocationPaymentInput,
+  tx: Prisma.TransactionClient = prisma
 ): Promise<ProcessLocationPaymentResult> {
   const { tenantId, userId, payment } = input;
   let invoice = input.invoice;
@@ -136,12 +146,15 @@ export async function processLocationPayment(
 
   try {
     for (const line of lines) {
-      const created = await createPayment({
-        tenantId,
-        invoiceId: invoice.id,
-        amount: line.amount,
-        method: line.method,
-      });
+      const created = await createPayment(
+        {
+          tenantId,
+          invoiceId: invoice.id,
+          amount: line.amount,
+          method: line.method,
+        },
+        tx
+      );
       payments.push(created);
       await logAction({
         tenantId,
@@ -161,7 +174,7 @@ export async function processLocationPayment(
   // (recomputeInvoiceStatus, src/lib/payments.ts) ; la variable locale `invoice` doit être
   // relue pour refléter ce nouveau statut, sinon l'appelant renverrait à tort DRAFT/SENT.
   if (payments.length > 0) {
-    const refreshed = await getInvoiceById(tenantId, invoice.id);
+    const refreshed = await getInvoiceById(tenantId, invoice.id, tx);
     if (refreshed) {
       invoice = refreshed;
     }

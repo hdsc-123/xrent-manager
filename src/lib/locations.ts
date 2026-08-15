@@ -1,4 +1,4 @@
-import type { Location, LocationStatus } from "@prisma/client";
+import type { Location, LocationStatus, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getVehicleById, checkAvailability } from "@/lib/vehicles";
 import { getClientById } from "@/lib/clients";
@@ -167,9 +167,15 @@ function isUniqueConstraintError(error: unknown): boolean {
  * atomiquement (UPDATE ... SET n = n + 1 côté Postgres, donc sans condition de course même
  * sous forte concurrence) — nécessaire pour permettre de le redéfinir manuellement depuis les
  * paramètres de l'agence.
+ *
+ * `tx` optionnel (Sprint 26A, Finding A) — comportement inchangé pour tout appel sans
+ * transaction partagée.
  */
-export async function generateContractNumber(agencyId: string): Promise<string> {
-  const agency = await prisma.agency.update({
+export async function generateContractNumber(
+  agencyId: string,
+  tx: Prisma.TransactionClient = prisma
+): Promise<string> {
+  const agency = await tx.agency.update({
     where: { id: agencyId },
     data: { lastContractNumber: { increment: 1 } },
     select: { lastContractNumber: true, contractNumberPrefix: true },
@@ -202,8 +208,14 @@ export async function getLocations(tenantId: string, filters: LocationFilters = 
   });
 }
 
-export async function getLocationById(tenantId: string, locationId: string): Promise<Location | null> {
-  return prisma.location.findFirst({ where: { id: locationId, tenantId } });
+/** `tx` optionnel (Sprint 26A, Finding A) — voir le commentaire équivalent sur
+ * `getReservationById`, src/lib/reservations.ts. */
+export async function getLocationById(
+  tenantId: string,
+  locationId: string,
+  tx: Prisma.TransactionClient = prisma
+): Promise<Location | null> {
+  return tx.location.findFirst({ where: { id: locationId, tenantId } });
 }
 
 export interface ContractOverviewRow {
@@ -326,7 +338,28 @@ export interface CreateLocationInput {
  * (snapshot immuable : un changement ultérieur du tarif du véhicule ne doit pas modifier
  * rétroactivement une location existante).
  */
-export async function createLocation(data: CreateLocationInput): Promise<Location> {
+/**
+ * `tx` optionnel (Sprint 26A, Finding A) — défaut au client Prisma global, comportement
+ * inchangé pour tout appel sans transaction partagée (ex. POST /api/locations). `Vehicle`
+ * n'étant jamais écrit par cette fonction, `getVehicleById`/`checkAvailability`
+ * (src/lib/vehicles.ts, non modifié) restent volontairement sur le client global même à
+ * l'intérieur d'une transaction partagée — aucun problème de cohérence transactionnelle
+ * (lecture seule d'une table non modifiée dans cette même transaction). En revanche
+ * `getClientById` doit voir un client venant d'être créé/modifié dans la même transaction
+ * non commitée (voir POST /api/reservations/[id]/convert) — d'où `tx` explicitement transmis.
+ *
+ * Limite technique documentée (voir le plan d'implémentation, pas une régression) : le
+ * réessai automatique sur collision de numéro de contrat (rarissime, uniquement après
+ * redéfinition manuelle du compteur d'une agence) reste actif pour tout appel sans `tx`
+ * explicite ; à l'intérieur d'une transaction Prisma interactive partagée, une seule
+ * tentative est faite (une transaction Postgres ne permet pas de rattraper une erreur de
+ * contrainte et de continuer d'écrire sans SAVEPOINT) — une collision y fait échouer
+ * proprement toute la conversion (rollback complet), une nouvelle requête fonctionnera.
+ */
+export async function createLocation(
+  data: CreateLocationInput,
+  tx: Prisma.TransactionClient = prisma
+): Promise<Location> {
   if (data.endDate <= data.startDate) {
     throw new InvalidDateRangeError();
   }
@@ -336,13 +369,13 @@ export async function createLocation(data: CreateLocationInput): Promise<Locatio
     throw new VehicleNotFoundError();
   }
 
-  const client = await getClientById(data.tenantId, data.clientId);
+  const client = await getClientById(data.tenantId, data.clientId, tx);
   if (!client) {
     throw new ClientNotFoundError();
   }
 
   if (data.secondDriverId) {
-    const secondDriver = await getClientById(data.tenantId, data.secondDriverId);
+    const secondDriver = await getClientById(data.tenantId, data.secondDriverId, tx);
     if (!secondDriver) {
       throw new SecondDriverNotFoundError();
     }
@@ -363,11 +396,14 @@ export async function createLocation(data: CreateLocationInput): Promise<Locatio
 
   const totalPrice = data.totalPrice ?? calculateTotalPrice(pricePerDay, data.startDate, data.endDate);
 
-  const MAX_CONTRACT_NUMBER_ATTEMPTS = 5;
+  // Réessai sur collision désactivé à l'intérieur d'une transaction partagée explicite
+  // (voir le commentaire de la fonction ci-dessus) — une seule tentative dans ce cas.
+  const allowRetry = tx === prisma;
+  const MAX_CONTRACT_NUMBER_ATTEMPTS = allowRetry ? 5 : 1;
   for (let attempt = 0; attempt < MAX_CONTRACT_NUMBER_ATTEMPTS; attempt++) {
-    const contractNumber = await generateContractNumber(data.agencyId);
+    const contractNumber = await generateContractNumber(data.agencyId, tx);
     try {
-      return await prisma.location.create({
+      return await tx.location.create({
         data: {
           tenantId: data.tenantId,
           agencyId: data.agencyId,

@@ -1,14 +1,17 @@
 import { NextResponse } from "next/server";
 import type { IdType } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
 import { getSessionUser, canAccessAgency, canAccessReservationAgencies, canEditReservationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getVehicleById } from "@/lib/vehicles";
-import { getClientById, createClient, updateClient, findDuplicateClient } from "@/lib/clients";
+import { getClientById, createClient, updateClient, findDuplicateClient, type ClientDuplicateMatch } from "@/lib/clients";
 import {
   getReservationById,
+  claimReservationConversion,
   markReservationConverted,
   canTransition,
   InvalidReservationStatusTransitionError,
+  ReservationNotFoundError,
 } from "@/lib/reservations";
 import {
   createLocation,
@@ -73,6 +76,32 @@ interface ConvertBody {
 }
 
 /**
+ * Sprint 26A (Finding A) : un doublon client détecté pendant la conversion (sans
+ * `forceCreateClient`) doit interrompre toute la transaction — y compris la réservation déjà
+ * réclamée par `claimReservationConversion` juste avant, qui doit redevenir son statut
+ * d'origine — pour renvoyer exactement la même réponse `409 { duplicate }` qu'avant ce
+ * sprint, sans jamais avoir écrit quoi que ce soit entre-temps.
+ */
+class ConversionClientDuplicateError extends Error {
+  duplicate: ClientDuplicateMatch;
+  constructor(duplicate: ClientDuplicateMatch) {
+    super("Un client correspondant existe déjà.");
+    this.name = "ConversionClientDuplicateError";
+    this.duplicate = duplicate;
+  }
+}
+
+/**
+ * Sprint 26A (Finding A) : `processLocationPayment` reste résiliente par construction (ne
+ * lève jamais, comportement partagé et inchangé avec POST /api/locations — voir
+ * src/lib/location-payment.ts) ; c'est cette route, spécifiquement, qui transforme un
+ * `paymentError` non nul en échec de la transaction, pour ne jamais laisser un contrat/une
+ * facture créés sans le paiement demandé par l'agent (atomicité complète du flux de
+ * conversion, DOMAINRULES.md — décision validée explicitement pour ce flux uniquement).
+ */
+class ConversionPaymentError extends Error {}
+
+/**
  * Convertit une réservation en contrat (Location + Invoice + Payment(s)) — Sprint 13D,
  * refonte complète du flux (voir DOMAINRULES.md section 26). Le formulaire de conversion
  * (`/dashboard/reservations/[id]/convert`) pré-remplit ses champs depuis la réservation, mais
@@ -80,6 +109,17 @@ interface ConvertBody {
  * (dérivée du véhicule, jamais fournie séparément par le client — voir plus bas) et renseigne
  * le paiement, exactement comme le formulaire de création directe de location (Sprint 13A,
  * src/lib/location-payment.ts, réutilisé tel quel).
+ *
+ * Sprint 26A (Finding A, DOMAINRULES.md — plan d'implémentation validé) : les étapes 5 à 11
+ * (résolution/création du client principal et du second conducteur, Location, rattachement
+ * Reservation.convertedLocationId, Invoice, Payment(s), CashEntry) s'exécutent désormais
+ * toutes dans une seule transaction Prisma partagée, dont le tout premier écrit est
+ * `claimReservationConversion` — une réservation atomique de la conversion, conditionnée sur
+ * le statut courant, avant toute création dépendante. Une conversion concurrente perdante
+ * n'écrit donc plus jamais rien (ni client, ni location, ni facture, ni paiement, ni écriture
+ * de caisse) ; un échec à n'importe quelle étape ultérieure (véhicule indisponible, doublon
+ * client, facture, paiement) fait rollback de toute la transaction, y compris la réservation
+ * déjà réclamée. Comportement inchangé pour POST /api/locations (non touché par ce sprint).
  */
 export async function POST(request: Request, { params }: RouteParams) {
   const user = await getSessionUser();
@@ -101,9 +141,11 @@ export async function POST(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Seule l'agence de départ peut convertir cette réservation." }, { status: 403 });
   }
 
-  // Vérifiée ici, avant toute création de Location, pour éviter de créer une Location
-  // orpheline si la réservation est déjà CONVERTED/CANCELLED (markReservationConverted
-  // revérifie de toute façon la transition juste avant d'écrire le statut).
+  // Contrôle rapide non transactionnel (fast-fail, avant toute validation du corps de
+  // requête) : l'enforcement réel et atomique reste claimReservationConversion, exécuté à
+  // l'intérieur de la transaction ci-dessous — celui-ci évite seulement d'ouvrir une
+  // transaction et de valider tout le corps de requête pour une réservation déjà
+  // manifestement CONVERTED/CANCELLED/NO_SHOW.
   if (!canTransition(reservation.status, "CONVERTED")) {
     return NextResponse.json(
       { error: `Transition de statut invalide : ${reservation.status} → CONVERTED.` },
@@ -190,183 +232,238 @@ export async function POST(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Accès refusé à cette agence." }, { status: 403 });
   }
 
-  // Résolution du client (même logique de doublons que POST /api/clients, voir
-  // DOMAINRULES.md section 9) — sur les valeurs saisies/vérifiées dans le formulaire de
-  // conversion, pas sur les champs bruts (possiblement incomplets) de la réservation importée.
-  let clientId: string;
-  if (body.useExistingClientId) {
-    const existingClient = await getClientById(user.tenantId, body.useExistingClientId);
-    if (!existingClient) {
-      return NextResponse.json({ error: "Client introuvable." }, { status: 404 });
-    }
-
-    const derivedName =
-      clientInput.firstName || clientInput.lastName
-        ? [clientInput.firstName ?? existingClient.firstName, clientInput.lastName ?? existingClient.lastName]
-            .filter(Boolean)
-            .join(" ")
-            .trim() || undefined
-        : undefined;
-
-    await updateClient(user.tenantId, existingClient.id, {
-      ...(derivedName ? { name: derivedName } : {}),
-      ...(clientInput.firstName !== undefined ? { firstName: clientInput.firstName } : {}),
-      ...(clientInput.lastName !== undefined ? { lastName: clientInput.lastName } : {}),
-      ...(clientInput.email !== undefined ? { email: clientInput.email } : {}),
-      ...(clientInput.phone !== undefined ? { phone: clientInput.phone } : {}),
-      ...(clientInput.address !== undefined ? { address: clientInput.address } : {}),
-      ...(clientInput.city !== undefined ? { city: clientInput.city } : {}),
-      ...(clientInput.country !== undefined ? { country: clientInput.country } : {}),
-      ...(clientInput.idNumber !== undefined ? { idNumber: clientInput.idNumber } : {}),
-      ...(clientInput.idType !== undefined ? { idType: clientInput.idType } : {}),
-      ...(clientInput.licenseNumber !== undefined ? { licenseNumber: clientInput.licenseNumber } : {}),
-      ...(clientInput.licenseIssueDate !== undefined
-        ? { licenseIssueDate: new Date(clientInput.licenseIssueDate) }
-        : {}),
-      ...(clientInput.licenseExpiryDate !== undefined
-        ? { licenseExpiryDate: new Date(clientInput.licenseExpiryDate) }
-        : {}),
-    });
-    clientId = existingClient.id;
-  } else {
-    const duplicate = await findDuplicateClient(user.tenantId, {
-      email: clientInput.email,
-      phone: clientInput.phone,
-      idNumber: clientInput.idNumber,
-      licenseNumber: clientInput.licenseNumber,
-      firstName: clientInput.firstName,
-      lastName: clientInput.lastName,
-    });
-
-    if (duplicate && !body.forceCreateClient) {
-      return NextResponse.json(
-        { duplicate: { client: duplicate.client, matchType: duplicate.matchType, field: duplicate.field } },
-        { status: 409 }
-      );
-    }
-
-    const name = `${clientInput.firstName} ${clientInput.lastName}`.trim();
-    const notes = duplicate
-      ? `Créé malgré une correspondance possible avec ${duplicate.client.name} (conversion de la réservation ${reservation.voucherNumber}).`
-      : undefined;
-
-    const newClient = await createClient({
-      tenantId: user.tenantId,
-      name,
-      firstName: clientInput.firstName,
-      lastName: clientInput.lastName,
-      email: clientInput.email,
-      phone: clientInput.phone,
-      address: clientInput.address,
-      city: clientInput.city,
-      country: clientInput.country,
-      idNumber: clientInput.idNumber,
-      idType: clientInput.idType,
-      licenseNumber: clientInput.licenseNumber,
-      licenseIssueDate: clientInput.licenseIssueDate ? new Date(clientInput.licenseIssueDate) : undefined,
-      licenseExpiryDate: clientInput.licenseExpiryDate ? new Date(clientInput.licenseExpiryDate) : undefined,
-      notes,
-    });
-    clientId = newClient.id;
-  }
-
-  // Sprint 19 — second conducteur : toujours un nouveau Client, pas de détection de doublon
-  // (moindre enjeu qu'un client principal — voir ConvertSecondDriverInput ci-dessus).
-  let secondDriverId: string | undefined;
-  if (body.secondDriver?.firstName && body.secondDriver?.lastName) {
-    const secondDriverClient = await createClient({
-      tenantId: user.tenantId,
-      name: `${body.secondDriver.firstName} ${body.secondDriver.lastName}`.trim(),
-      firstName: body.secondDriver.firstName,
-      lastName: body.secondDriver.lastName,
-      phone: body.secondDriver.phone,
-      idNumber: body.secondDriver.idNumber,
-      licenseNumber: body.secondDriver.licenseNumber,
-      notes: `Second conducteur (conversion de la réservation ${reservation.voucherNumber}).`,
-    });
-    secondDriverId = secondDriverClient.id;
-  }
-
   try {
-    // L'agence du contrat est dérivée du véhicule choisi côté serveur, jamais d'un champ
-    // agencyId fourni par le client — même règle que POST /api/locations (SECURITY.md
-    // section 4) : le sélecteur d'agence du formulaire de conversion ne sert qu'à filtrer
-    // la liste de véhicules proposée, pas à fixer l'agence indépendamment du véhicule choisi.
-    const location = await createLocation({
-      tenantId: user.tenantId,
-      agencyId: vehicle.agencyId,
-      secondDriverId,
-      totalPrice: body.totalPrice,
-      // Sprint 19 : reprend l'agence de retour résolue de la réservation (dropoffAgencyId,
-      // voir src/lib/reservations.ts) — ignorée par createLocation si égale à agencyId, voir
-      // DOMAINRULES.md section 37.
-      dropoffAgencyId: reservation.dropoffAgencyId,
-      vehicleId: vehicle.id,
-      clientId,
-      startDate,
-      endDate,
-      notes: body.notes ?? reservation.notes ?? undefined,
-      deposit: body.deposit,
-      pricePerDay: body.pricePerDay,
+    const result = await prisma.$transaction(async (tx) => {
+      // Étape 4 : réservation atomique de la conversion, avant toute écriture dépendante
+      // (Sprint 26A, Finding A) — une conversion concurrente perdante échoue ici, avant
+      // d'avoir rien créé.
+      await claimReservationConversion(user.tenantId, reservation.id, tx);
+
+      // Étape 5 : résolution du client (même logique de doublons que POST /api/clients, voir
+      // DOMAINRULES.md section 9) — sur les valeurs saisies/vérifiées dans le formulaire de
+      // conversion, pas sur les champs bruts (possiblement incomplets) de la réservation
+      // importée. Toujours dans la transaction : une création/mise à jour de client qui ne
+      // serait pas suivie d'une Location réussie ne doit jamais rester orpheline.
+      let clientId: string;
+      if (body.useExistingClientId) {
+        const existingClient = await getClientById(user.tenantId, body.useExistingClientId, tx);
+        if (!existingClient) {
+          throw new ClientNotFoundError();
+        }
+
+        const derivedName =
+          clientInput.firstName || clientInput.lastName
+            ? [clientInput.firstName ?? existingClient.firstName, clientInput.lastName ?? existingClient.lastName]
+                .filter(Boolean)
+                .join(" ")
+                .trim() || undefined
+            : undefined;
+
+        await updateClient(
+          user.tenantId,
+          existingClient.id,
+          {
+            ...(derivedName ? { name: derivedName } : {}),
+            ...(clientInput.firstName !== undefined ? { firstName: clientInput.firstName } : {}),
+            ...(clientInput.lastName !== undefined ? { lastName: clientInput.lastName } : {}),
+            ...(clientInput.email !== undefined ? { email: clientInput.email } : {}),
+            ...(clientInput.phone !== undefined ? { phone: clientInput.phone } : {}),
+            ...(clientInput.address !== undefined ? { address: clientInput.address } : {}),
+            ...(clientInput.city !== undefined ? { city: clientInput.city } : {}),
+            ...(clientInput.country !== undefined ? { country: clientInput.country } : {}),
+            ...(clientInput.idNumber !== undefined ? { idNumber: clientInput.idNumber } : {}),
+            ...(clientInput.idType !== undefined ? { idType: clientInput.idType } : {}),
+            ...(clientInput.licenseNumber !== undefined ? { licenseNumber: clientInput.licenseNumber } : {}),
+            ...(clientInput.licenseIssueDate !== undefined
+              ? { licenseIssueDate: new Date(clientInput.licenseIssueDate) }
+              : {}),
+            ...(clientInput.licenseExpiryDate !== undefined
+              ? { licenseExpiryDate: new Date(clientInput.licenseExpiryDate) }
+              : {}),
+          },
+          tx
+        );
+        clientId = existingClient.id;
+      } else {
+        const duplicate = await findDuplicateClient(
+          user.tenantId,
+          {
+            email: clientInput.email,
+            phone: clientInput.phone,
+            idNumber: clientInput.idNumber,
+            licenseNumber: clientInput.licenseNumber,
+            firstName: clientInput.firstName,
+            lastName: clientInput.lastName,
+          },
+          tx
+        );
+
+        if (duplicate && !body.forceCreateClient) {
+          throw new ConversionClientDuplicateError(duplicate);
+        }
+
+        const name = `${clientInput.firstName} ${clientInput.lastName}`.trim();
+        const notes = duplicate
+          ? `Créé malgré une correspondance possible avec ${duplicate.client.name} (conversion de la réservation ${reservation.voucherNumber}).`
+          : undefined;
+
+        const newClient = await createClient(
+          {
+            tenantId: user.tenantId,
+            name,
+            firstName: clientInput.firstName,
+            lastName: clientInput.lastName,
+            email: clientInput.email,
+            phone: clientInput.phone,
+            address: clientInput.address,
+            city: clientInput.city,
+            country: clientInput.country,
+            idNumber: clientInput.idNumber,
+            idType: clientInput.idType,
+            licenseNumber: clientInput.licenseNumber,
+            licenseIssueDate: clientInput.licenseIssueDate ? new Date(clientInput.licenseIssueDate) : undefined,
+            licenseExpiryDate: clientInput.licenseExpiryDate ? new Date(clientInput.licenseExpiryDate) : undefined,
+            notes,
+          },
+          tx
+        );
+        clientId = newClient.id;
+      }
+
+      // Étape 6 — second conducteur : toujours un nouveau Client, pas de détection de doublon
+      // (moindre enjeu qu'un client principal — voir ConvertSecondDriverInput ci-dessus).
+      let secondDriverId: string | undefined;
+      if (body.secondDriver?.firstName && body.secondDriver?.lastName) {
+        const secondDriverClient = await createClient(
+          {
+            tenantId: user.tenantId,
+            name: `${body.secondDriver.firstName} ${body.secondDriver.lastName}`.trim(),
+            firstName: body.secondDriver.firstName,
+            lastName: body.secondDriver.lastName,
+            phone: body.secondDriver.phone,
+            idNumber: body.secondDriver.idNumber,
+            licenseNumber: body.secondDriver.licenseNumber,
+            notes: `Second conducteur (conversion de la réservation ${reservation.voucherNumber}).`,
+          },
+          tx
+        );
+        secondDriverId = secondDriverClient.id;
+      }
+
+      // Étape 7 : l'agence du contrat est dérivée du véhicule choisi côté serveur, jamais
+      // d'un champ agencyId fourni par le client — même règle que POST /api/locations
+      // (SECURITY.md section 4) : le sélecteur d'agence du formulaire de conversion ne sert
+      // qu'à filtrer la liste de véhicules proposée, pas à fixer l'agence indépendamment du
+      // véhicule choisi.
+      const location = await createLocation(
+        {
+          tenantId: user.tenantId,
+          agencyId: vehicle.agencyId,
+          secondDriverId,
+          totalPrice: body.totalPrice,
+          // Sprint 19 : reprend l'agence de retour résolue de la réservation
+          // (dropoffAgencyId, voir src/lib/reservations.ts) — ignorée par createLocation si
+          // égale à agencyId, voir DOMAINRULES.md section 37.
+          dropoffAgencyId: reservation.dropoffAgencyId,
+          vehicleId: vehicle.id,
+          clientId,
+          startDate,
+          endDate,
+          notes: body.notes ?? reservation.notes ?? undefined,
+          deposit: body.deposit,
+          pricePerDay: body.pricePerDay,
+        },
+        tx
+      );
+
+      // Étape 8 : rattachement Reservation.convertedLocationId (la réservation est déjà
+      // CONVERTED depuis l'étape 4, dans cette même transaction non commitée).
+      const updatedReservation = await markReservationConverted(user.tenantId, reservation.id, location.id, tx);
+
+      // Étape 9 — génération de facture : plus de résilience dans ce flux précis (Sprint 26A,
+      // Finding A) — un échec fait désormais rollback de toute la conversion, contrairement à
+      // POST /api/locations (Sprint 12B, non touché par ce sprint, toujours résilient).
+      const invoice = await createInvoice({ tenantId: user.tenantId, locationId: location.id }, tx);
+
+      // Étape 10-11 — paiement intégré éventuel (même logique que POST /api/locations,
+      // Sprint 13A — src/lib/location-payment.ts, comportement interne inchangé). Un
+      // paymentError (ex. solde dépassé) est ici transformé en échec de la transaction —
+      // aucun contrat/facture créés sans le paiement demandé par l'agent, sans jamais avoir
+      // modifié processLocationPayment/createPayment eux-mêmes (voir ConversionPaymentError
+      // ci-dessus).
+      let payments: Awaited<ReturnType<typeof processLocationPayment>>["payments"] = [];
+      let finalInvoice = invoice;
+      if (body.payment && !body.payment.deferred) {
+        const paymentResult = await processLocationPayment(
+          { tenantId: user.tenantId, userId: user.id, invoice, payment: body.payment },
+          tx
+        );
+        if (paymentResult.paymentError) {
+          throw new ConversionPaymentError(paymentResult.paymentError);
+        }
+        finalInvoice = paymentResult.invoice;
+        payments = paymentResult.payments;
+      }
+
+      return { reservation: updatedReservation, location, invoice: finalInvoice, payments };
     });
 
-    const updatedReservation = await markReservationConverted(user.tenantId, reservation.id, location.id);
-
+    // Étape 12 : la transaction a commité avec succès — journalisation après coup uniquement
+    // (jamais avant l'ouverture/pendant la transaction), pour ne jamais journaliser une
+    // entité qui aurait été annulée par un rollback. payment.created reste journalisé à
+    // l'intérieur de processLocationPayment (best-effort, non transactionnel, inchangé).
     await logAction({
       tenantId: user.tenantId,
       userId: user.id,
       action: "reservation.converted",
       resource: "Reservation",
       resourceId: reservation.id,
-      metadata: { locationId: location.id, clientId },
+      metadata: { locationId: result.location.id, clientId: result.location.clientId },
     });
     await logAction({
       tenantId: user.tenantId,
       userId: user.id,
       action: "location.created",
       resource: "Location",
-      resourceId: location.id,
-      metadata: { vehicleId: location.vehicleId, clientId: location.clientId, fromReservationId: reservation.id },
+      resourceId: result.location.id,
+      metadata: {
+        vehicleId: result.location.vehicleId,
+        clientId: result.location.clientId,
+        fromReservationId: reservation.id,
+      },
+    });
+    await logAction({
+      tenantId: user.tenantId,
+      userId: user.id,
+      action: "invoice.created",
+      resource: "Invoice",
+      resourceId: result.invoice.id,
+      metadata: { number: result.invoice.number, locationId: result.invoice.locationId, auto: true },
     });
 
-    // Génération automatique de facture, résiliente — même principe que POST /api/locations
-    // (Sprint 12B) : un échec ne doit jamais faire échouer la conversion elle-même.
-    let invoice = null;
-    try {
-      invoice = await createInvoice({ tenantId: user.tenantId, locationId: location.id });
-      await logAction({
-        tenantId: user.tenantId,
-        userId: user.id,
-        action: "invoice.created",
-        resource: "Invoice",
-        resourceId: invoice.id,
-        metadata: { number: invoice.number, locationId: invoice.locationId, auto: true },
-      });
-    } catch (error) {
-      console.error("Erreur lors de la génération automatique de la facture :", error);
-    }
-
-    // Paiement intégré au formulaire de conversion (même logique que POST /api/locations,
-    // Sprint 13A — src/lib/location-payment.ts).
-    let payments: Awaited<ReturnType<typeof processLocationPayment>>["payments"] = [];
-    let paymentSaveError: string | null = null;
-    if (invoice && body.payment && !body.payment.deferred) {
-      const result = await processLocationPayment({
-        tenantId: user.tenantId,
-        userId: user.id,
-        invoice,
-        payment: body.payment,
-      });
-      invoice = result.invoice;
-      payments = result.payments;
-      paymentSaveError = result.paymentError;
-    }
-
     return NextResponse.json(
-      { reservation: updatedReservation, location, invoice, payments, paymentError: paymentSaveError },
+      {
+        reservation: result.reservation,
+        location: result.location,
+        invoice: result.invoice,
+        payments: result.payments,
+        paymentError: null,
+      },
       { status: 201 }
     );
   } catch (error) {
+    if (error instanceof ConversionClientDuplicateError) {
+      return NextResponse.json(
+        {
+          duplicate: {
+            client: error.duplicate.client,
+            matchType: error.duplicate.matchType,
+            field: error.duplicate.field,
+          },
+        },
+        { status: 409 }
+      );
+    }
     if (error instanceof InvalidDateRangeError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
@@ -382,8 +479,14 @@ export async function POST(request: Request, { params }: RouteParams) {
     if (error instanceof InvalidReservationStatusTransitionError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
+    if (error instanceof ReservationNotFoundError) {
+      return NextResponse.json({ error: error.message }, { status: 404 });
+    }
     if (error instanceof MissingPriceError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof ConversionPaymentError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
     console.error("Erreur lors de la conversion de la réservation :", error);
     return NextResponse.json({ error: "Erreur interne." }, { status: 500 });
