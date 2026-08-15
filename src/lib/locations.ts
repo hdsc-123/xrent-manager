@@ -1,6 +1,6 @@
 import type { Location, LocationStatus, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getVehicleById, checkAvailability } from "@/lib/vehicles";
+import { checkAvailability, lockVehicleForUpdate } from "@/lib/vehicles";
 import { getClientById } from "@/lib/clients";
 import { recomputeCashRegisterBalance } from "@/lib/cash-register";
 
@@ -332,29 +332,56 @@ export interface CreateLocationInput {
   totalPrice?: number;
 }
 
+/** Sprint 26C, Finding C : noms de savepoint fixes (jamais construits à partir d'une valeur
+ * utilisateur/requête) — un par tentative de génération de numéro de contrat, voir
+ * `createLocationLocked` ci-dessous. Un identifiant SQL (contrairement à une valeur) ne peut
+ * pas être lié via un paramètre `$1` ; ces littéraux fixes, énumérés au nombre exact de
+ * `MAX_CONTRACT_NUMBER_ATTEMPTS`, sont la façon sûre d'obtenir un SAVEPOINT distinct par
+ * tentative sans jamais concaténer de donnée externe dans le SQL. */
+const CONTRACT_NUMBER_SAVEPOINTS = [
+  "location_contract_sp_0",
+  "location_contract_sp_1",
+  "location_contract_sp_2",
+  "location_contract_sp_3",
+  "location_contract_sp_4",
+] as const;
+const MAX_CONTRACT_NUMBER_ATTEMPTS = CONTRACT_NUMBER_SAVEPOINTS.length;
+
+/** Sprint 26C, Finding C : au-delà du code `P2002` générique (`isUniqueConstraintError`),
+ * vérifie que la contrainte violée est bien `[tenantId, contractNumber]` — la seule contrainte
+ * unique de `Location` (voir prisma/schema.prisma) — avant de la traiter comme une collision de
+ * numéro de contrat à réessayer. Toute autre erreur (y compris un autre `P2002` improbable)
+ * n'est jamais réinterprétée comme une simple collision : elle se propage telle quelle. */
+function isContractNumberCollision(error: unknown): boolean {
+  if (!isUniqueConstraintError(error)) {
+    return false;
+  }
+  const target = (error as { meta?: { target?: unknown } }).meta?.target;
+  if (Array.isArray(target)) {
+    return target.includes("contractNumber");
+  }
+  if (typeof target === "string") {
+    return target.includes("contractNumber");
+  }
+  // Repli conservateur si Prisma ne renseigne pas meta.target (comportement historique,
+  // P2002 seul suffisait) — Location n'ayant qu'une seule contrainte unique, ce cas ne peut de
+  // toute façon désigner qu'elle.
+  return true;
+}
+
 /**
  * Vérifie la disponibilité du véhicule et calcule totalPrice à partir du pricePerDay effectif
  * (fourni explicitement, sinon celui — informatif — du véhicule) au moment de la création
  * (snapshot immuable : un changement ultérieur du tarif du véhicule ne doit pas modifier
  * rétroactivement une location existante).
- */
-/**
- * `tx` optionnel (Sprint 26A, Finding A) — défaut au client Prisma global, comportement
- * inchangé pour tout appel sans transaction partagée (ex. POST /api/locations). `Vehicle`
- * n'étant jamais écrit par cette fonction, `getVehicleById`/`checkAvailability`
- * (src/lib/vehicles.ts, non modifié) restent volontairement sur le client global même à
- * l'intérieur d'une transaction partagée — aucun problème de cohérence transactionnelle
- * (lecture seule d'une table non modifiée dans cette même transaction). En revanche
- * `getClientById` doit voir un client venant d'être créé/modifié dans la même transaction
- * non commitée (voir POST /api/reservations/[id]/convert) — d'où `tx` explicitement transmis.
  *
- * Limite technique documentée (voir le plan d'implémentation, pas une régression) : le
- * réessai automatique sur collision de numéro de contrat (rarissime, uniquement après
- * redéfinition manuelle du compteur d'une agence) reste actif pour tout appel sans `tx`
- * explicite ; à l'intérieur d'une transaction Prisma interactive partagée, une seule
- * tentative est faite (une transaction Postgres ne permet pas de rattraper une erreur de
- * contrainte et de continuer d'écrire sans SAVEPOINT) — une collision y fait échouer
- * proprement toute la conversion (rollback complet), une nouvelle requête fonctionnera.
+ * `tx` optionnel (Sprint 26A, Finding A) — défaut au client Prisma global, comportement
+ * inchangé pour tout appel sans transaction partagée (ex. POST /api/locations) : ouvre alors sa
+ * propre transaction interne (voir `createLocationLocked` ci-dessous), même principe que
+ * `createPayment` (Sprint 26B, Finding B, src/lib/payments.ts). Avec une `tx` fournie par
+ * l'appelant (ex. POST /api/reservations/[id]/convert, transaction partagée du Finding A),
+ * aucune transaction n'est ouverte ici : le verrou Vehicle (Finding C) est posé dans la
+ * transaction de l'appelant, sans imbrication.
  */
 export async function createLocation(
   data: CreateLocationInput,
@@ -364,7 +391,22 @@ export async function createLocation(
     throw new InvalidDateRangeError();
   }
 
-  const vehicle = await getVehicleById(data.tenantId, data.vehicleId);
+  if (tx !== prisma) {
+    return createLocationLocked(data, tx);
+  }
+  return prisma.$transaction((innerTx) => createLocationLocked(data, innerTx));
+}
+
+/**
+ * Sprint 26C, Finding C : verrou explicite du Vehicle ciblé (`lockVehicleForUpdate`,
+ * src/lib/vehicles.ts, `SELECT ... FOR UPDATE`) posé avant `checkAvailability`, dans la même
+ * transaction que la création de la Location — une deuxième création/conversion concurrente sur
+ * le même véhicule attend ici le commit (ou rollback) de la première avant de relire une
+ * disponibilité à jour, au lieu de lire (comme avant ce sprint) un instantané potentiellement
+ * périmé pendant que l'autre écrit encore.
+ */
+async function createLocationLocked(data: CreateLocationInput, tx: Prisma.TransactionClient): Promise<Location> {
+  const vehicle = await lockVehicleForUpdate(data.tenantId, data.vehicleId, tx);
   if (!vehicle) {
     throw new VehicleNotFoundError();
   }
@@ -384,7 +426,14 @@ export async function createLocation(
   validateFuelLevel(data.startFuelLevel);
   validateFuelLevel(data.endFuelLevel);
 
-  const availability = await checkAvailability(data.tenantId, data.vehicleId, data.startDate, data.endDate);
+  const availability = await checkAvailability(
+    data.tenantId,
+    data.vehicleId,
+    data.startDate,
+    data.endDate,
+    undefined,
+    tx
+  );
   if (!availability?.available) {
     throw new VehicleNotAvailableError(availability?.conflictingLocations ?? []);
   }
@@ -396,14 +445,20 @@ export async function createLocation(
 
   const totalPrice = data.totalPrice ?? calculateTotalPrice(pricePerDay, data.startDate, data.endDate);
 
-  // Réessai sur collision désactivé à l'intérieur d'une transaction partagée explicite
-  // (voir le commentaire de la fonction ci-dessus) — une seule tentative dans ce cas.
-  const allowRetry = tx === prisma;
-  const MAX_CONTRACT_NUMBER_ATTEMPTS = allowRetry ? 5 : 1;
+  // Sprint 26C, Finding C : la création s'exécute désormais toujours à l'intérieur d'une
+  // transaction (partagée ou ouverte ci-dessus, voir createLocation) — un réessai naïf sur
+  // collision y aurait avorté toute la transaction dès la première erreur de contrainte
+  // (limite déjà documentée pour l'appel partagé du Finding A). Un SAVEPOINT distinct par
+  // tentative (voir CONTRACT_NUMBER_SAVEPOINTS ci-dessus) isole chaque essai : une collision
+  // (isContractNumberCollision) annule uniquement la tentative en cours via
+  // `ROLLBACK TO SAVEPOINT`, jamais la transaction principale (aucun `COMMIT`/`ROLLBACK`
+  // exécuté ici) — comportement des 5 tentatives strictement inchangé pour l'appelant.
   for (let attempt = 0; attempt < MAX_CONTRACT_NUMBER_ATTEMPTS; attempt++) {
     const contractNumber = await generateContractNumber(data.agencyId, tx);
+    const savepoint = CONTRACT_NUMBER_SAVEPOINTS[attempt];
+    await tx.$executeRawUnsafe(`SAVEPOINT ${savepoint}`);
     try {
-      return await tx.location.create({
+      const location = await tx.location.create({
         data: {
           tenantId: data.tenantId,
           agencyId: data.agencyId,
@@ -426,15 +481,25 @@ export async function createLocation(
           contractNumber,
         },
       });
+      await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${savepoint}`);
+      return location;
     } catch (error) {
+      // Toute erreur qui n'est pas précisément une collision de numéro de contrat se propage
+      // telle quelle, sans y toucher : la transaction principale (partagée ou non) sera
+      // intégralement annulée par Prisma à la sortie de ce bloc, comme n'importe quelle autre
+      // erreur de ce flux (rollback complet garanti par $transaction, aucune Location partielle).
+      if (!isContractNumberCollision(error)) {
+        throw error;
+      }
       // Collision possible uniquement si lastContractNumber a été redéfini manuellement en
       // arrière depuis les paramètres (voir generateContractNumber) — jamais en usage normal
       // (compteur toujours strictement croissant). Réessaie avec le numéro suivant plutôt que
       // d'échouer, même principe que generateInvoiceNumber (src/lib/invoices.ts).
-      if (isUniqueConstraintError(error) && attempt < MAX_CONTRACT_NUMBER_ATTEMPTS - 1) {
-        continue;
+      await tx.$executeRawUnsafe(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+      await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${savepoint}`);
+      if (attempt === MAX_CONTRACT_NUMBER_ATTEMPTS - 1) {
+        throw error;
       }
-      throw error;
     }
   }
 
@@ -511,32 +576,12 @@ export async function updateLocation(
     throw new InvalidDateRangeError();
   }
 
-  if (data.startDate || data.endDate) {
-    const availability = await checkAvailability(
-      tenantId,
-      existing.vehicleId,
-      nextStart,
-      nextEnd,
-      existing.id
-    );
-    if (!availability?.available) {
-      throw new VehicleNotAvailableError(availability?.conflictingLocations ?? []);
-    }
-  }
+  const datesChanging = Boolean(data.startDate || data.endDate);
+  const statusChanging = data.status !== undefined && data.status !== existing.status;
 
-  if (
-    data.status &&
-    data.status !== existing.status &&
-    !canTransition(existing.status, data.status) &&
-    !data.adminOverride
-  ) {
-    throw new InvalidStatusTransitionError(existing.status, data.status);
-  }
-
-  const totalPrice =
-    data.startDate || data.endDate
-      ? calculateTotalPrice(existing.pricePerDay, nextStart, nextEnd)
-      : existing.totalPrice;
+  const totalPrice = datesChanging
+    ? calculateTotalPrice(existing.pricePerDay, nextStart, nextEnd)
+    : existing.totalPrice;
 
   const updateData = {
     startDate: nextStart,
@@ -554,20 +599,58 @@ export async function updateLocation(
 
   // Sprint 23 (DOMAINRULES.md section 39, étend le correctif Sprint 22 — DOMAINRULES.md
   // section 38 point 3(c) — aux « flux similaires concernés ») : une transition de statut passe
-  // désormais par un `updateMany` conditionné sur `status: existing.status`, atomique côté
-  // base — deux transitions quasi simultanées sur le même contrat (ex. un agent clique
-  // "Terminée" pendant qu'un admin clique "Annuler") ne peuvent plus toutes deux réussir. Une
-  // modification qui ne change pas le statut n'a pas besoin de cette garde.
-  if (data.status !== undefined && data.status !== existing.status) {
+  // par un `updateMany` conditionné sur `status: existing.status`, atomique côté base — deux
+  // transitions quasi simultanées sur le même contrat (ex. un agent clique "Terminée" pendant
+  // qu'un admin clique "Annuler") ne peuvent plus toutes deux réussir.
+  //
+  // Sprint 26C, Finding C : un changement de dates rejoint désormais la même transaction —
+  // verrou explicite du Vehicle concerné (`lockVehicleForUpdate`, src/lib/vehicles.ts) posé
+  // avant de revérifier la disponibilité (`checkAvailability`, avec `tx` et `excludeLocationId:
+  // existing.id` pour ne jamais entrer en conflit avec la location qu'on modifie elle-même),
+  // dans la même transaction que l'écriture finale — même ordre de validation qu'avant ce
+  // sprint (disponibilité, puis transition de statut). Une modification qui ne touche ni les
+  // dates ni le statut n'a besoin d'aucune des deux gardes.
+  if (datesChanging || statusChanging) {
     return prisma.$transaction(async (tx) => {
-      const { count } = await tx.location.updateMany({
-        where: { id: locationId, status: existing.status },
-        data: updateData,
-      });
-      if (count === 0) {
-        throw new LocationStatusConflictError();
+      if (datesChanging) {
+        const vehicle = await lockVehicleForUpdate(tenantId, existing.vehicleId, tx);
+        if (!vehicle) {
+          throw new VehicleNotFoundError();
+        }
+        const availability = await checkAvailability(
+          tenantId,
+          existing.vehicleId,
+          nextStart,
+          nextEnd,
+          existing.id,
+          tx
+        );
+        if (!availability?.available) {
+          throw new VehicleNotAvailableError(availability?.conflictingLocations ?? []);
+        }
       }
-      return tx.location.findUniqueOrThrow({ where: { id: locationId } });
+
+      if (
+        data.status &&
+        data.status !== existing.status &&
+        !canTransition(existing.status, data.status) &&
+        !data.adminOverride
+      ) {
+        throw new InvalidStatusTransitionError(existing.status, data.status);
+      }
+
+      if (statusChanging) {
+        const { count } = await tx.location.updateMany({
+          where: { id: locationId, status: existing.status },
+          data: updateData,
+        });
+        if (count === 0) {
+          throw new LocationStatusConflictError();
+        }
+        return tx.location.findUniqueOrThrow({ where: { id: locationId } });
+      }
+
+      return tx.location.update({ where: { id: locationId }, data: updateData });
     });
   }
 

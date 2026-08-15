@@ -349,6 +349,166 @@ describe("Sprint 23 — correctif de concurrence sur updateLocation (DOMAINRULES
   });
 });
 
+describe("Sprint 26C, Finding C — verrou Vehicle contre le double booking concurrent", () => {
+  it("Test 1 — deux POST /api/locations concurrents, même véhicule, dates chevauchantes : une seule réussite, une seule Location bloquante persistée", async () => {
+    const [responseA, responseB] = await Promise.all([
+      createLocation(adminA, { startDate: "2033-01-10", endDate: "2033-01-15" }),
+      createLocation(adminA, { startDate: "2033-01-12", endDate: "2033-01-18" }),
+    ]);
+
+    const statuses = [responseA.status, responseB.status].sort();
+    expect(statuses).toEqual([201, 409]);
+
+    const winnerResponse = responseA.status === 201 ? responseA : responseB;
+    const loserResponse = responseA.status === 201 ? responseB : responseA;
+    const winnerBody = await winnerResponse.json();
+    const loserBody = await loserResponse.json();
+    expect(Array.isArray(loserBody.conflictingLocations)).toBe(true);
+
+    const persisted = await prisma.location.findMany({
+      where: {
+        vehicleId: vehicleAId,
+        status: { in: ["PENDING", "CONFIRMED", "ACTIVE"] },
+        startDate: { lt: new Date("2033-01-18") },
+        endDate: { gt: new Date("2033-01-10") },
+      },
+    });
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0].id).toBe(winnerBody.location.id);
+  });
+
+  it("Test 4 — PATCH concurrent vers une période conflictuelle et création directe sur le même véhicule : aucun chevauchement final persisté", async () => {
+    // `otherLocation` démarre sur une période totalement indépendante de la cible visée par les
+    // deux tentatives concurrentes ci-dessous, pour n'entrer en conflit qu'avec elles (et pas
+    // avec elle-même avant sa propre modification).
+    const otherResponse = await createLocation(adminA, { startDate: "2033-03-20", endDate: "2033-03-25" });
+    const otherLocation = (await otherResponse.json()).location;
+
+    const [patchResponse, createResponse] = await Promise.all([
+      apiFetch(`/api/locations/${otherLocation.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ startDate: "2033-03-02", endDate: "2033-03-06" }),
+      }),
+      createLocation(adminA, { startDate: "2033-03-02", endDate: "2033-03-06" }),
+    ]);
+
+    const statuses = [patchResponse.status, createResponse.status].sort();
+    expect(statuses).toEqual([201, 409]);
+
+    const blocking = await prisma.location.findMany({
+      where: {
+        vehicleId: vehicleAId,
+        status: { in: ["PENDING", "CONFIRMED", "ACTIVE"] },
+        startDate: { lt: new Date("2033-03-06") },
+        endDate: { gt: new Date("2033-03-02") },
+      },
+    });
+    expect(blocking).toHaveLength(1);
+  });
+
+  it("Test 5 — non-régression séquentielle : disponibilité sans conflit, conflit existant, bornes de dates, statuts bloquants, exclusion de la Location courante en modification", async () => {
+    const free = await createLocation(adminA, { startDate: "2033-02-01", endDate: "2033-02-05" });
+    expect(free.status).toBe(201);
+
+    // Conflit existant (chevauchement strict).
+    const conflict = await createLocation(adminA, { startDate: "2033-02-03", endDate: "2033-02-08" });
+    expect(conflict.status).toBe(409);
+
+    // Borne de date : une reprise le jour même de la restitution n'est pas un conflit.
+    const adjacent = await createLocation(adminA, { startDate: "2033-02-05", endDate: "2033-02-08" });
+    expect(adjacent.status).toBe(201);
+    const adjacentLocation = (await adjacent.json()).location;
+
+    // Statuts bloquants : CANCELLED ne bloque plus la période qu'elle occupait.
+    const cancelResponse = await apiFetch(`/api/locations/${adjacentLocation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+    expect(cancelResponse.status).toBe(200);
+    const afterCancel = await createLocation(adminA, { startDate: "2033-02-05", endDate: "2033-02-08" });
+    expect(afterCancel.status).toBe(201);
+    const afterCancelLocation = (await afterCancel.json()).location;
+
+    // Exclusion de la Location courante lors d'une modification de ses propres dates (PATCH sur
+    // elle-même) : ne doit jamais se heurter à son propre enregistrement.
+    const selfPatch = await apiFetch(`/api/locations/${afterCancelLocation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ startDate: "2033-02-05", endDate: "2033-02-09" }),
+    });
+    expect(selfPatch.status).toBe(200);
+
+    // Un vrai conflit (avec `free`, toujours PENDING) reste bien détecté après ce changement.
+    const realConflict = await apiFetch(`/api/locations/${afterCancelLocation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ startDate: "2033-02-01", endDate: "2033-02-03" }),
+    });
+    expect(realConflict.status).toBe(409);
+  });
+
+  it("Isolation tenant — lockVehicleForUpdate ne verrouille jamais un véhicule d'un autre tenant", async () => {
+    const { lockVehicleForUpdate } = await import("@/lib/vehicles");
+    const result = await prisma.$transaction((tx) => lockVehicleForUpdate(adminB.tenantId, vehicleAId, tx));
+    expect(result).toBeNull();
+  });
+
+  it("Isolation tenant — POST /api/locations refuse un véhicule d'un autre tenant (404, avant toute tentative de verrou)", async () => {
+    const response = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminB.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: vehicleAId,
+        clientId: clientBId,
+        startDate: "2033-04-01",
+        endDate: "2033-04-03",
+      }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("Rollback — un échec après acquisition du verrou (MissingPriceError) ne laisse aucune Location partiellement persistée", async () => {
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: agencyA1Id,
+        name: "Sans prix Finding C",
+        licensePlate: `LOC-S26C-NOPRICE-${runId}`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
+      }),
+    });
+    const noPriceVehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const response = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: noPriceVehicleId,
+        clientId: clientAId,
+        startDate: "2033-05-01",
+        endDate: "2033-05-03",
+      }),
+    });
+    expect(response.status).toBe(400);
+
+    const persisted = await prisma.location.findMany({ where: { vehicleId: noPriceVehicleId } });
+    expect(persisted).toHaveLength(0);
+  });
+});
+
 afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   // Sprint 23 — les tests d'annulation admin avec réversibilité créent des Payment/CashEntry

@@ -1,4 +1,4 @@
-import type { Vehicle, VehicleStatus, TransmissionType, FuelType } from "@prisma/client";
+import type { Vehicle, VehicleStatus, TransmissionType, FuelType, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 /** Statuts d'une Location qui occupent effectivement le véhicule sur sa période. */
@@ -161,14 +161,22 @@ export interface AvailabilityResult {
  * disponibilité, y compris à un appelant n'ayant que locations.create/edit sans
  * locations.view. Avant ce correctif, le enregistrement Location complet (prix, caution,
  * notes, clientId) fuitait dans ce cas, contournant de fait le gate locations.view.
+ *
+ * `tx` optionnel (Sprint 26C, Finding C) — défaut au client Prisma global, comportement
+ * inchangé pour tout appel sans transaction partagée (ex. GET /api/vehicles/[id]/availability,
+ * simple lecture d'affichage, jamais suivie d'une écriture). Un appelant à l'intérieur d'une
+ * transaction Prisma partagée (createLocation/updateLocation, src/lib/locations.ts) doit le
+ * fournir explicitement pour lire l'état réellement à jour une fois le verrou Vehicle acquis
+ * (voir lockVehicleForUpdate ci-dessous).
  */
 function findConflictingLocations(
   vehicleId: string,
   start: Date,
   end: Date,
-  excludeLocationId?: string
+  excludeLocationId?: string,
+  tx: Prisma.TransactionClient = prisma
 ) {
-  return prisma.location.findMany({
+  return tx.location.findMany({
     where: {
       vehicleId,
       status: { in: [...BLOCKING_LOCATION_STATUSES] },
@@ -186,22 +194,59 @@ function findConflictingLocations(
  * (chevauchement strict — une reprise le jour même de la restitution d'une autre
  * location n'est pas considérée comme un conflit). Seules les locations aux statuts
  * PENDING/CONFIRMED/ACTIVE bloquent la disponibilité (CANCELLED/COMPLETED ne comptent pas).
+ *
+ * `tx` optionnel (Sprint 26C, Finding C) — voir le commentaire de findConflictingLocations
+ * ci-dessus. Une vérification faite via ce paramètre, à l'intérieur d'une transaction où le
+ * véhicule est déjà verrouillé (lockVehicleForUpdate), lit un état garanti à jour vis-à-vis de
+ * toute autre transaction concurrente visant le même véhicule (celle-ci reste bloquée sur le
+ * verrou tant que la transaction courante n'a pas committé ou annulé). Sans ce verrou préalable
+ * (ex. GET /api/vehicles/[id]/availability, lecture pure jamais suivie d'écriture), cette
+ * fonction reste un simple instantané non garanti contre une écriture concurrente — jamais
+ * utilisée seule comme fondement d'une décision d'écriture (voir createLocation/updateLocation).
  */
 export async function checkAvailability(
   tenantId: string,
   vehicleId: string,
   start: Date,
   end: Date,
-  excludeLocationId?: string
+  excludeLocationId?: string,
+  tx: Prisma.TransactionClient = prisma
 ): Promise<AvailabilityResult | null> {
-  const vehicle = await getVehicleById(tenantId, vehicleId);
+  const vehicle = await tx.vehicle.findFirst({ where: { id: vehicleId, tenantId } });
   if (!vehicle) {
     return null;
   }
 
-  const conflictingLocations = await findConflictingLocations(vehicleId, start, end, excludeLocationId);
+  const conflictingLocations = await findConflictingLocations(vehicleId, start, end, excludeLocationId, tx);
 
   return { available: conflictingLocations.length === 0, conflictingLocations };
+}
+
+/**
+ * Sprint 26C, Finding C : verrou de ligne explicite (`SELECT ... FOR UPDATE`) sur le Vehicle
+ * ciblé, posé avant toute vérification de disponibilité — nécessaire car il n'existe, avant
+ * l'écriture, aucune ligne Location à verrouiller (le conflit ne prend forme qu'au moment de la
+ * création/modification elle-même) : c'est donc le Vehicle qui sert de point de sérialisation
+ * commun entre deux créations/modifications concurrentes visant le même véhicule. Une deuxième
+ * transaction concurrente sur le même véhicule attend ici le commit (ou le rollback) de la
+ * première avant de pouvoir lire un état de disponibilité à jour — jamais l'inverse. Requête
+ * paramétrée via template tag Prisma (aucune concaténation de valeur utilisateur), tenant
+ * explicitement scopé dans la clause WHERE ; ne doit être appelée que depuis une véritable
+ * transaction (`Prisma.TransactionClient` issue de `prisma.$transaction`), jamais sur le client
+ * global — même principe que `lockInvoiceForUpdate`, src/lib/payments.ts (Finding B).
+ */
+export async function lockVehicleForUpdate(
+  tenantId: string,
+  vehicleId: string,
+  tx: Prisma.TransactionClient
+): Promise<Vehicle | null> {
+  const locked = await tx.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "Vehicle" WHERE id = ${vehicleId} AND "tenantId" = ${tenantId} FOR UPDATE
+  `;
+  if (locked.length === 0) {
+    return null;
+  }
+  return tx.vehicle.findFirst({ where: { id: vehicleId, tenantId } });
 }
 
 export interface VehicleLastKnownState {

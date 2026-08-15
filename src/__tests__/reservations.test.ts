@@ -1859,6 +1859,172 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
   });
 });
 
+describe("Sprint 26C, Finding C — verrou Vehicle en conversion, sous concurrence avec une création directe ou une autre conversion", () => {
+  let convertBodyCounter = 0;
+
+  /** Même forme que `convertBody` du describe Finding A ci-dessus (réimplémentée localement,
+   * hors de portée) — corps minimal valide (véhicule + dates + identité client complète). */
+  function convertBody(
+    reservation: { startDate: string; endDate: string; clientFirstName: string; clientLastName: string },
+    overrides: Record<string, unknown> = {}
+  ) {
+    convertBodyCounter += 1;
+    return {
+      vehicleId: vehicleAId,
+      startDate: reservation.startDate,
+      endDate: reservation.endDate,
+      client: {
+        firstName: reservation.clientFirstName,
+        lastName: reservation.clientLastName,
+        address: "12 rue des Fleurs",
+        city: "Casablanca",
+        country: "Maroc",
+        idNumber: `S26C-${runId}-${convertBodyCounter}`,
+        licenseNumber: `S26CP-${runId}-${convertBodyCounter}`,
+        licenseIssueDate: "2020-01-01",
+        licenseExpiryDate: "2030-01-01",
+      },
+      ...overrides,
+    };
+  }
+
+  it("Test 2 — conversion concurrente avec une création directe, même véhicule, dates chevauchantes : une seule réussite, aucune Location orpheline, écritures liées cohérentes", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "ConvertVsDirect",
+      clientLastName: `${runId}`,
+      startDate: "2032-01-05",
+      endDate: "2032-01-07",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const directClient = await createClient({
+      tenantId: adminA.tenantId,
+      name: `Direct Client ${runId}`,
+      firstName: "Direct",
+      lastName: `Client-${runId}`,
+    });
+
+    const [convertResponse, directResponse] = await Promise.all([
+      apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation)),
+      }),
+      apiFetch("/api/locations", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({
+          vehicleId: vehicleAId,
+          clientId: directClient.id,
+          startDate: "2032-01-06",
+          endDate: "2032-01-09",
+        }),
+      }),
+    ]);
+
+    const statuses = [convertResponse.status, directResponse.status].sort();
+    expect(statuses).toEqual([201, 409]);
+
+    const finalReservation = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+
+    if (convertResponse.status === 201) {
+      const convertedBody = await convertResponse.json();
+      expect(finalReservation.status).toBe("CONVERTED");
+      expect(finalReservation.convertedLocationId).toBe(convertedBody.location.id);
+
+      // Écritures liées : exactement une Location et une Invoice pour ce contrat (aucun
+      // paiement demandé dans ce scénario, donc pas de Payment/CashEntry à vérifier ici).
+      const [locationCount, invoiceCount] = await Promise.all([
+        prisma.location.count({ where: { id: convertedBody.location.id } }),
+        prisma.invoice.count({ where: { locationId: convertedBody.location.id } }),
+      ]);
+      expect(locationCount).toBe(1);
+      expect(invoiceCount).toBe(1);
+    } else {
+      // La conversion a perdu : rollback complet — la réservation n'est ni CONVERTED ni
+      // partiellement rattachée à une Location (aucune Location orpheline pour cette tentative).
+      expect(finalReservation.status).not.toBe("CONVERTED");
+      expect(finalReservation.convertedLocationId).toBeNull();
+    }
+
+    // Dans les deux cas : une seule Location bloquante pour ce véhicule sur cette fenêtre.
+    const blocking = await prisma.location.findMany({
+      where: {
+        vehicleId: vehicleAId,
+        status: { in: ["PENDING", "CONFIRMED", "ACTIVE"] },
+        startDate: { lt: new Date("2032-01-09") },
+        endDate: { gt: new Date("2032-01-05") },
+      },
+    });
+    expect(blocking).toHaveLength(1);
+  });
+
+  it("Test 3 — deux conversions de réservations distinctes concurrentes, même véhicule, dates chevauchantes : une seule réussite, état des réservations cohérent", async () => {
+    const [createResponse1, createResponse2] = await Promise.all([
+      createReservation(adminA, {
+        clientFirstName: "ConvertVsConvert1",
+        clientLastName: `${runId}`,
+        startDate: "2032-02-05",
+        endDate: "2032-02-07",
+      }),
+      createReservation(adminA, {
+        clientFirstName: "ConvertVsConvert2",
+        clientLastName: `${runId}`,
+        startDate: "2032-02-06",
+        endDate: "2032-02-09",
+      }),
+    ]);
+    const reservation1 = (await createResponse1.json()).reservation;
+    const reservation2 = (await createResponse2.json()).reservation;
+
+    const [response1, response2] = await Promise.all([
+      apiFetch(`/api/reservations/${reservation1.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation1)),
+      }),
+      apiFetch(`/api/reservations/${reservation2.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation2)),
+      }),
+    ]);
+
+    const statuses = [response1.status, response2.status].sort();
+    expect(statuses).toEqual([201, 409]);
+
+    const [finalReservation1, finalReservation2] = await Promise.all([
+      prisma.reservation.findUniqueOrThrow({ where: { id: reservation1.id } }),
+      prisma.reservation.findUniqueOrThrow({ where: { id: reservation2.id } }),
+    ]);
+
+    const winner = response1.status === 201 ? finalReservation1 : finalReservation2;
+    const loser = response1.status === 201 ? finalReservation2 : finalReservation1;
+
+    expect(winner.status).toBe("CONVERTED");
+    expect(winner.convertedLocationId).not.toBeNull();
+
+    // Rollback complet côté perdant : réservation revenue à son état d'avant tentative (jamais
+    // CONVERTED, jamais rattachée) — preuve que claimReservationConversion (Finding A), pourtant
+    // acquis avec succès pour les deux réservations distinctes (aucune contention entre elles,
+    // deux lignes Reservation différentes), est bien défait quand le verrou Vehicle partagé
+    // (Finding C) échoue plus loin dans la même transaction.
+    expect(loser.status).toBe("PENDING");
+    expect(loser.convertedLocationId).toBeNull();
+
+    const blocking = await prisma.location.findMany({
+      where: {
+        vehicleId: vehicleAId,
+        status: { in: ["PENDING", "CONFIRMED", "ACTIVE"] },
+        startDate: { lt: new Date("2032-02-09") },
+        endDate: { gt: new Date("2032-02-05") },
+      },
+    });
+    expect(blocking).toHaveLength(1);
+    expect(blocking[0].id).toBe(winner.convertedLocationId);
+  });
+});
+
 describe("Sprint 24 — reservations.confirm/cancel/no_show séparées de reservations.edit", () => {
   /** Crée un groupe portant exactement `permissions`, un MEMBER rattaché à agencyA1Id et
    * assigné à ce groupe — même pattern que le test "convertOnlyMember" ci-dessus. */
