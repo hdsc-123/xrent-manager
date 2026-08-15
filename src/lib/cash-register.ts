@@ -77,19 +77,42 @@ export interface CashRegisterSummary {
 }
 
 /**
+ * Sprint 25A (correction, décision métier confirmée par le propriétaire du projet — revient
+ * sur la décision Sprint 19/22/24 qui gardait `Agency.cashStartingBalance` purement informatif,
+ * jamais mêlé au solde réel) : somme des soldes de départ des agences du périmètre demandé
+ * (toutes les agences du tenant si `agencyIds` est `null` — vue ADMIN ; uniquement les agences
+ * listées sinon — vue scopée). Intégrée une seule fois, dans `previousBalance` (le report), au
+ * point le plus ancien de la chaîne — jamais réinjectée dans `currentBalance`, qui continue de
+ * se dériver de `previousBalance` seul, pour ne jamais compter le solde de départ deux fois.
+ */
+async function getAgencyStartingBalanceSum(tenantId: string, agencyIds: string[] | null): Promise<number> {
+  const agg = await prisma.agency.aggregate({
+    where: { tenantId, ...(agencyIds ? { id: { in: agencyIds } } : {}) },
+    _sum: { cashStartingBalance: true },
+  });
+  return agg._sum.cashStartingBalance ?? 0;
+}
+
+/**
  * Recalcule entièrement previousBalance/currentMonth/currentBalance à partir des CashEntry
- * réels (jamais un compteur incrémenté) : previousBalance = solde avant le 1er du mois en
- * cours, monthEntries/monthExpenses = somme des écritures du mois en cours, currentBalance =
- * previousBalance + monthEntries - monthExpenses (= solde final). Appelée après chaque
- * création d'écriture, même principe que recomputeInvoiceStatus (src/lib/payments.ts).
+ * réels (jamais un compteur incrémenté) et des soldes de départ des agences du tenant (Sprint
+ * 25A, voir getAgencyStartingBalanceSum) : previousBalance = Σ Agency.cashStartingBalance +
+ * solde avant le 1er du mois en cours, monthEntries/monthExpenses = somme des écritures du
+ * mois en cours, currentBalance = previousBalance + monthEntries - monthExpenses (= solde
+ * final). Un remboursement (ex. compensation d'annulation, category "ANNULATION_CONTRAT",
+ * src/lib/locations.ts) ou une correction manuelle (POST /api/cash-register, catégorie libre)
+ * sont déjà des CashEntry ENTRY/EXPENSE ordinaires — comptées ici sans traitement séparé, sans
+ * risque de double comptage avec le solde de départ. Appelée après chaque création d'écriture,
+ * même principe que recomputeInvoiceStatus (src/lib/payments.ts).
  */
 export async function recomputeCashRegisterBalance(tenantId: string): Promise<CashRegisterSummary> {
   const register = await getOrCreateCashRegister(tenantId);
   const now = new Date();
   const monthStart = startOfMonthUtc(now);
 
-  const [priorEntries, priorExpenses, monthEntriesAgg, monthExpensesAgg, monthCashAgg, monthCardAgg] =
+  const [startingBalanceSum, priorEntries, priorExpenses, monthEntriesAgg, monthExpensesAgg, monthCashAgg, monthCardAgg] =
     await Promise.all([
+      getAgencyStartingBalanceSum(tenantId, null),
       prisma.cashEntry.aggregate({
         where: { tenantId, type: "ENTRY", createdAt: { lt: monthStart } },
         _sum: { amount: true },
@@ -116,7 +139,7 @@ export async function recomputeCashRegisterBalance(tenantId: string): Promise<Ca
       }),
     ]);
 
-  const previousBalance = (priorEntries._sum.amount ?? 0) - (priorExpenses._sum.amount ?? 0);
+  const previousBalance = startingBalanceSum + (priorEntries._sum.amount ?? 0) - (priorExpenses._sum.amount ?? 0);
   const monthEntries = monthEntriesAgg._sum.amount ?? 0;
   const monthExpenses = monthExpensesAgg._sum.amount ?? 0;
   const currentMonth = monthKey(now);
@@ -159,8 +182,9 @@ export async function getCashRegisterSummaryForAgencies(
   const monthStart = startOfMonthUtc(now);
   const agencyFilter = { agencyId: { in: agencyIds } };
 
-  const [priorEntries, priorExpenses, monthEntriesAgg, monthExpensesAgg, monthCashAgg, monthCardAgg] =
+  const [startingBalanceSum, priorEntries, priorExpenses, monthEntriesAgg, monthExpensesAgg, monthCashAgg, monthCardAgg] =
     await Promise.all([
+      getAgencyStartingBalanceSum(tenantId, agencyIds),
       prisma.cashEntry.aggregate({
         where: { tenantId, type: "ENTRY", createdAt: { lt: monthStart }, ...agencyFilter },
         _sum: { amount: true },
@@ -187,7 +211,7 @@ export async function getCashRegisterSummaryForAgencies(
       }),
     ]);
 
-  const previousBalance = (priorEntries._sum.amount ?? 0) - (priorExpenses._sum.amount ?? 0);
+  const previousBalance = startingBalanceSum + (priorEntries._sum.amount ?? 0) - (priorExpenses._sum.amount ?? 0);
   const monthEntries = monthEntriesAgg._sum.amount ?? 0;
   const monthExpenses = monthExpensesAgg._sum.amount ?? 0;
   const currentBalance = previousBalance + monthEntries - monthExpenses;

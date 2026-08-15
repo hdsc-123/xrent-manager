@@ -650,6 +650,264 @@ body: JSON.stringify({ type: "EXPENSE", category: "Fournitures", amount: 20_000,
   });
 });
 
+describe("Sprint 25A — solde de départ des agences intégré au Report/Solde actuel (DOMAINRULES.md section 23, révisée)", () => {
+  // Tenant dédié et isolé (assertions en valeur exacte, jamais relatives) — même principe que
+  // adminA/adminB en tête de fichier, pour ne dépendre d'aucun état cumulé par les describe
+  // précédents de ce fichier.
+  let adminC: AuthenticatedTestUser;
+  let agencyFes: string;
+  let agencyRak: string;
+  let agencyThird: string;
+  let memberFes: AuthenticatedTestUser;
+  let memberRak: AuthenticatedTestUser;
+  let memberFesAndThird: AuthenticatedTestUser;
+
+  beforeAll(async () => {
+    adminC = await registerTenantAdmin({
+      tenantName: "Cash Register Starting Balance Test",
+      tenantSlug: `cash-register-test-c-${runId}`,
+      name: "Admin C",
+      email: `admin-c-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    createdTenantIds.push(adminC.tenantId);
+
+    const fesResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminC.sessionCookie },
+      body: JSON.stringify({ name: "FEZ", slug: `fes-${runId}` }),
+    });
+    agencyFes = (await fesResponse.json()).agency.id;
+    await apiFetch(`/api/agencies/${agencyFes}`, {
+      method: "PATCH",
+      headers: { Cookie: adminC.sessionCookie },
+      body: JSON.stringify({ cashStartingBalance: 20_000 }), // 200,00 MAD — reproduit le cas réel Fès
+    });
+
+    const rakResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminC.sessionCookie },
+      body: JSON.stringify({ name: "RAK", slug: `rak-${runId}` }),
+    });
+    agencyRak = (await rakResponse.json()).agency.id;
+    await apiFetch(`/api/agencies/${agencyRak}`, {
+      method: "PATCH",
+      headers: { Cookie: adminC.sessionCookie },
+      body: JSON.stringify({ cashStartingBalance: 20_000 }), // 200,00 MAD — reproduit le cas réel RAK
+    });
+
+    const thirdResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminC.sessionCookie },
+      body: JSON.stringify({ name: "AGADIR", slug: `agadir-${runId}` }),
+    });
+    agencyThird = (await thirdResponse.json()).agency.id;
+    await apiFetch(`/api/agencies/${agencyThird}`, {
+      method: "PATCH",
+      headers: { Cookie: adminC.sessionCookie },
+      body: JSON.stringify({ cashStartingBalance: 12_345 }), // 123,45 MAD — précision décimale
+    });
+
+    memberFes = await createAndLoginMember({
+      tenantId: adminC.tenantId,
+      name: "Member Fes",
+      email: `member-fes-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: memberFes.userId, agencyId: agencyFes } });
+
+    memberRak = await createAndLoginMember({
+      tenantId: adminC.tenantId,
+      name: "Member Rak",
+      email: `member-rak-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: memberRak.userId, agencyId: agencyRak } });
+
+    memberFesAndThird = await createAndLoginMember({
+      tenantId: adminC.tenantId,
+      name: "Member Fes Agadir",
+      email: `member-fes-agadir-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: memberFesAndThird.userId, agencyId: agencyFes } });
+    await prisma.userAgency.create({ data: { userId: memberFesAndThird.userId, agencyId: agencyThird } });
+
+    // Les MEMBER par défaut n'ont pas forcément cash_register.view selon l'environnement de
+    // test — même pattern que le describe Sprint 24 ci-dessous : groupe dédié explicite.
+    const viewGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminC.sessionCookie },
+      body: JSON.stringify({ name: `StartingBalanceView-${runId}`, permissions: ["cash_register.view"] }),
+    });
+    const viewGroupId = (await viewGroupResponse.json()).group.id;
+    for (const member of [memberFes, memberRak, memberFesAndThird]) {
+      await apiFetch(`/api/users/${member.userId}/permissions`, {
+        method: "PATCH",
+        headers: { Cookie: adminC.sessionCookie },
+        body: JSON.stringify({ permissionGroupId: viewGroupId }),
+      });
+    }
+  });
+
+  it("une agence avec solde de départ mais aucun mouvement : Report = Solde actuel = solde de départ", async () => {
+    const response = await apiFetch("/api/cash-register", { headers: { Cookie: memberFes.sessionCookie } });
+    expect(response.status).toBe(200);
+    const { summary } = await response.json();
+    expect(summary.previousBalance).toBe(20_000);
+    expect(summary.currentBalance).toBe(20_000);
+    expect(summary.monthEntries).toBe(0);
+    expect(summary.monthExpenses).toBe(0);
+  });
+
+  it("plusieurs agences accessibles : les soldes de départ s'additionnent, sans doublon", async () => {
+    const response = await apiFetch("/api/cash-register", { headers: { Cookie: memberFesAndThird.sessionCookie } });
+    expect(response.status).toBe(200);
+    const { summary } = await response.json();
+    // Fès (20 000) + Agadir (12 345) — jamais RAK, hors périmètre de ce user.
+    expect(summary.previousBalance).toBe(32_345);
+    expect(summary.currentBalance).toBe(32_345);
+  });
+
+  it("agrégation super admin : somme réelle des soldes de départ de toutes les agences du tenant", async () => {
+    const response = await apiFetch("/api/cash-register", { headers: { Cookie: adminC.sessionCookie } });
+    expect(response.status).toBe(200);
+    const { summary } = await response.json();
+    // Fès (20 000) + RAK (20 000) + Agadir (12 345), aucun mouvement encore à ce stade du describe.
+    expect(summary.previousBalance).toBe(52_345);
+    expect(summary.currentBalance).toBe(52_345);
+  });
+
+  it("filtrage utilisateur local : un MEMBER restreint à RAK ne voit ni le solde de départ ni les mouvements de Fès/Agadir", async () => {
+    const response = await apiFetch("/api/cash-register", { headers: { Cookie: memberRak.sessionCookie } });
+    expect(response.status).toBe(200);
+    const { summary } = await response.json();
+    expect(summary.previousBalance).toBe(20_000);
+    expect(summary.currentBalance).toBe(20_000);
+  });
+
+  it("entrées et sorties du mois s'ajoutent au solde de départ, jamais à la place de celui-ci", async () => {
+    await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminC.sessionCookie },
+      body: JSON.stringify({
+        type: "ENTRY",
+        category: "VERSEMENT",
+        amount: 5_000,
+        agencyId: agencyFes,
+        description: "Entrée Fès test 25A",
+      }),
+    });
+    await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminC.sessionCookie },
+      body: JSON.stringify({
+        type: "EXPENSE",
+        category: "Fournitures",
+        amount: 1_500,
+        agencyId: agencyFes,
+        description: "Sortie Fès test 25A",
+      }),
+    });
+
+    const response = await apiFetch("/api/cash-register", { headers: { Cookie: memberFes.sessionCookie } });
+    const { summary } = await response.json();
+    // Cohérence des périodes comptables : les écritures créées aujourd'hui tombent dans le
+    // mois en cours, donc dans monthEntries/monthExpenses — jamais dans previousBalance (le
+    // report d'avant ce mois, qui doit rester inchangé). Solde actuel = 20 000 (solde de
+    // départ, dans previousBalance) + 5 000 (entrée) - 1 500 (sortie) = 23 500.
+    expect(summary.previousBalance).toBe(20_000);
+    expect(summary.currentBalance).toBe(23_500);
+    expect(summary.monthEntries).toBe(5_000);
+    expect(summary.monthExpenses).toBe(1_500);
+  });
+
+  it("remboursement (EXPENSE de compensation) et correction manuelle sont comptés sans double compter le solde de départ", async () => {
+    const before = await (
+      await apiFetch("/api/cash-register", { headers: { Cookie: memberRak.sessionCookie } })
+    ).json();
+
+    // Remboursement — même modélisation que la compensation d'annulation admin
+    // (category "ANNULATION_CONTRAT", src/lib/locations.ts) : une CashEntry EXPENSE ordinaire.
+    await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminC.sessionCookie },
+      body: JSON.stringify({
+        type: "EXPENSE",
+        category: "ANNULATION_CONTRAT",
+        amount: 2_000,
+        agencyId: agencyRak,
+        description: "Remboursement test 25A",
+      }),
+    });
+    // Correction manuelle — une CashEntry ENTRY ordinaire avec une catégorie « correction ».
+    await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminC.sessionCookie },
+      body: JSON.stringify({
+        type: "ENTRY",
+        category: "CORRECTION",
+        amount: 800,
+        agencyId: agencyRak,
+        description: "Correction caisse test 25A",
+      }),
+    });
+
+    const after = await (
+      await apiFetch("/api/cash-register", { headers: { Cookie: memberRak.sessionCookie } })
+    ).json();
+    // Cohérence des périodes comptables : ces deux écritures sont créées aujourd'hui (mois en
+    // cours) — previousBalance (report d'avant ce mois, incluant le solde de départ) reste
+    // inchangé ; seul currentBalance (solde actuel) encaisse la différence entrée - sortie
+    // (800 - 2 000 = -1 200), sans jamais réappliquer le solde de départ une seconde fois.
+    expect(after.summary.previousBalance).toBe(before.summary.previousBalance);
+    expect(after.summary.currentBalance).toBe(before.summary.currentBalance - 2_000 + 800);
+  });
+
+  it("montants décimaux précis : le solde de départ à centimes non ronds (123,45 MAD) est reporté sans arrondi ni dérive", async () => {
+    const response = await apiFetch("/api/cash-register", { headers: { Cookie: adminC.sessionCookie } });
+    const { summary } = await response.json();
+    // Agadir contribue exactement 12 345 centimes — vérifié en isolant son périmètre.
+    const agadirOnly = await apiFetch(`/api/agencies/${agencyThird}`, { headers: { Cookie: adminC.sessionCookie } });
+    expect((await agadirOnly.json()).agency.cashStartingBalance).toBe(12_345);
+    expect(Number.isInteger(summary.currentBalance)).toBe(true);
+    expect(Number.isInteger(summary.previousBalance)).toBe(true);
+  });
+
+  it("isolation tenant : le solde de départ des agences d'un autre tenant ne fuite jamais dans ce calcul", async () => {
+    const otherAdmin = await registerTenantAdmin({
+      tenantName: "Cash Register Starting Balance Other Tenant",
+      tenantSlug: `cash-register-test-d-${runId}`,
+      name: "Admin D",
+      email: `admin-d-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    createdTenantIds.push(otherAdmin.tenantId);
+
+    const otherAgencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: otherAdmin.sessionCookie },
+      body: JSON.stringify({ name: "Autre Tenant Agence", slug: `other-tenant-agence-${runId}` }),
+    });
+    const otherAgencyId = (await otherAgencyResponse.json()).agency.id;
+    await apiFetch(`/api/agencies/${otherAgencyId}`, {
+      method: "PATCH",
+      headers: { Cookie: otherAdmin.sessionCookie },
+      body: JSON.stringify({ cashStartingBalance: 999_999 }),
+    });
+
+    const otherResponse = await apiFetch("/api/cash-register", { headers: { Cookie: otherAdmin.sessionCookie } });
+    const { summary: otherSummary } = await otherResponse.json();
+    expect(otherSummary.currentBalance).toBe(999_999);
+
+    // Le tenant C (adminC) ne doit voir aucune trace du solde de départ (999 999) du tenant D.
+    const cResponse = await apiFetch("/api/cash-register", { headers: { Cookie: adminC.sessionCookie } });
+    const { summary: cSummary } = await cResponse.json();
+    expect(cSummary.currentBalance).not.toBe(999_999);
+    expect(cSummary.currentBalance).toBeLessThan(999_999);
+  });
+});
+
 describe("Sprint 24 — GET /api/cash-register scopé par périmètre (correction : solde tenant-wide affiché à tort à tout rôle)", () => {
   it("un ADMIN voit le solde consolidé de toutes les agences ; un MEMBER restreint ne voit que le sien", async () => {
     const agencyOneResponse = await apiFetch("/api/agencies", {

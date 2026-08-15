@@ -79,6 +79,11 @@ export default async function CashRegisterPage() {
         <CardHeader>
           <CardDescription>Solde actuel</CardDescription>
           <CardTitle className="text-4xl">{formatMoney(summary.currentBalance, summary.currency)}</CardTitle>
+          <CardDescription className="mt-1 text-xs">
+            Solde de départ des agences de votre périmètre + mouvements réels (entrées − dépenses,
+            remboursements et corrections inclus) — voir « Report » et « Mouvements de la période »
+            ci-dessous pour le détail.
+          </CardDescription>
         </CardHeader>
       </Card>
 
@@ -88,7 +93,8 @@ export default async function CashRegisterPage() {
             <CardTitle>Pilotage financier par agence</CardTitle>
             <CardDescription>
               Solde de départ + entrées − dépenses de chaque agence (la caisse reste commune à tout
-              le tenant pour le solde global ci-dessus — voir DOMAINRULES.md section 23).
+              le tenant, mais le « Solde actuel » ci-dessus intègre désormais ces mêmes soldes de
+              départ, scopés à votre périmètre — voir DOMAINRULES.md section 23).
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -127,11 +133,13 @@ export default async function CashRegisterPage() {
         </Card>
       )}
 
+      <p className="text-sm font-medium text-muted-foreground">Mouvements de la période</p>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
         <Card>
           <CardHeader>
-            <CardDescription>Report du mois précédent</CardDescription>
+            <CardDescription>Report (avant ce mois)</CardDescription>
             <CardTitle className="text-xl">{formatMoney(summary.previousBalance, summary.currency)}</CardTitle>
+            <CardDescription className="mt-1 text-xs">Solde de départ + mouvements avant le 1er du mois</CardDescription>
           </CardHeader>
         </Card>
         <Card>
@@ -148,11 +156,12 @@ export default async function CashRegisterPage() {
             <CardTitle className="text-xl text-destructive">
               -{formatMoney(summary.monthExpenses, summary.currency)}
             </CardTitle>
+            <CardDescription className="mt-1 text-xs">Sorties, remboursements et corrections négatives</CardDescription>
           </CardHeader>
         </Card>
         <Card>
           <CardHeader>
-            <CardDescription>Solde final</CardDescription>
+            <CardDescription>Solde final (= Solde actuel)</CardDescription>
             <CardTitle className="text-xl">{formatMoney(summary.finalBalance, summary.currency)}</CardTitle>
           </CardHeader>
         </Card>
