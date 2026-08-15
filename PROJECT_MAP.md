@@ -211,6 +211,7 @@ xrent-manager/
 │   │       │   └── [id]/route.ts           # GET/PATCH/DELETE — recalcule systématiquement amountPaid/status de la facture
 │   │       ├── cash-register/              # (Sprint 13A)
 │   │       │   ├── route.ts                # GET (solde recalculé + répartition/jour + 10 dernières opérations)/POST (crée une écriture ENTRY/EXPENSE)
+│   │       │   ├── [id]/route.ts           # (Sprint 19, nouveau) PATCH/DELETE — écriture manuelle uniquement (écriture liée à un paiement protégée, `CashEntryNotEditableError`) ; (Sprint 25B) `accessibleAgencyIds` (voir `getAccessibleAgencyIds`, `src/lib/authz.ts`) vérifié avant le contrôle métier existant — refuse (`CashEntryAgencyAccessDeniedError`, 403) toute écriture hors de l'agence accessible à l'appelant, ADMIN (accès transverse) inchangé
 │   │       │   ├── entries/route.ts        # GET — écritures ENTRY, filtres catégorie/dates
 │   │       │   ├── expenses/route.ts       # GET — écritures EXPENSE, filtres catégorie/dates
 │   │       │   └── categories/route.ts     # GET (liste)/POST (création) — ExpenseCategory, pas de PATCH/DELETE
