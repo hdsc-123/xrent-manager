@@ -270,8 +270,18 @@ describe("Journal d'audit exhaustif sur le CRUD métier (Sprint 10)", () => {
     });
     expect((await findLog("Payment", paymentId)).some((log) => log.action === "payment.updated")).toBe(true);
 
-    await apiFetch(`/api/payments/${paymentId}`, { method: "DELETE", headers: { Cookie: adminA.sessionCookie } });
-    expect((await findLog("Payment", paymentId)).some((log) => log.action === "payment.deleted")).toBe(true);
+    // Sprint 26D (Finding D1) : ce paiement est déjà reflété en caisse (CashEntry créée par
+    // recordPaymentCashEntry) — sa suppression physique est désormais refusée (409, voir
+    // PaymentHasCashEntryError, src/lib/payments.ts) ; aucune écriture d'audit
+    // "payment.deleted" n'est donc produite pour ce cas, la route retournant avant même
+    // d'appeler logAction. La couverture d'audit de payment.deleted (cas résiduel — un
+    // paiement jamais reflété en caisse) reste testée dans payments.test.ts.
+    const deleteResponse = await apiFetch(`/api/payments/${paymentId}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(409);
+    expect((await findLog("Payment", paymentId)).some((log) => log.action === "payment.deleted")).toBe(false);
 
     const maintenanceResponse = await apiFetch("/api/maintenances", {
       method: "POST",

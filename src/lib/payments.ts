@@ -3,8 +3,10 @@ import { prisma } from "@/lib/prisma";
 import { getInvoiceById } from "@/lib/invoices";
 import { getLocationById } from "@/lib/locations";
 import { getClientById } from "@/lib/clients";
-import { createCashEntry } from "@/lib/cash-register";
+import { createCashEntry, createCorrectionCashEntry, CorrectionReasonRequiredError } from "@/lib/cash-register";
 import { formatMoney } from "@/lib/format";
+
+export { CorrectionReasonRequiredError };
 
 export class PaymentInvoiceNotFoundError extends Error {
   constructor() {
@@ -39,6 +41,46 @@ export class PaymentExceedsRemainingBalanceError extends Error {
     super(`Le montant dépasse le solde restant dû (${formatMoney(remainingBalance, currency)}).`);
     this.name = "PaymentExceedsRemainingBalanceError";
     this.remainingBalance = remainingBalance;
+  }
+}
+
+/** Sprint 26D (Finding D1) : un Payment REFUNDED (remboursé via l'annulation admin d'un
+ * contrat, adminCancelValidatedLocation) est terminal — ni correction ni nouveau
+ * remboursement ne sont plus permis. */
+export class PaymentAlreadyRefundedError extends Error {
+  constructor() {
+    super("Ce paiement a déjà été remboursé et ne peut plus être modifié.");
+    this.name = "PaymentAlreadyRefundedError";
+  }
+}
+
+/** Sprint 26D (Finding D1) : une correction de montant/moyen doit toujours s'appuyer sur
+ * l'écriture de caisse d'origine (paymentId + parentEntryId null) pour créer sa
+ * compensation liée — jamais une correspondance devinée par montant/date/moyen. Un
+ * paiement antérieur au Sprint 18 (avant que createPayment n'alimente systématiquement
+ * la caisse) peut ne jamais avoir eu de CashEntry : la correction est alors refusée
+ * plutôt que de créer une compensation orpheline. */
+export class PaymentCashEntryNotFoundError extends Error {
+  constructor() {
+    super(
+      "Aucune écriture de caisse d'origine n'est liée à ce paiement — correction refusée " +
+        "(pas de compensation possible sans écriture à compenser)."
+    );
+    this.name = "PaymentCashEntryNotFoundError";
+  }
+}
+
+/** Sprint 26D (Finding D1) : un paiement déjà reflété en caisse (au moins une CashEntry,
+ * originale ou compensation, liée par paymentId) ne peut plus être supprimé
+ * physiquement — seul le flux de remboursement (annulation de contrat) permet de le
+ * neutraliser, en le conservant et en le marquant REFUNDED. */
+export class PaymentHasCashEntryError extends Error {
+  constructor() {
+    super(
+      "Ce paiement est déjà reflété en caisse : suppression physique impossible. " +
+        "Utilisez le remboursement via l'annulation du contrat."
+    );
+    this.name = "PaymentHasCashEntryError";
   }
 }
 
@@ -233,6 +275,10 @@ async function recordPaymentCashEntry(
       // Sprint 22 : agence d'origine de l'écriture, dérivée de la Location réglée — permet de
       // calculer un solde/CA par agence en plus du solde global (voir src/lib/cash-register.ts).
       agencyId: location?.agencyId,
+      // Sprint 26D (Finding D1) : lien fiable vers ce Payment — condition nécessaire pour
+      // qu'une future correction/un futur remboursement retrouve cette écriture sans jamais
+      // deviner par montant/date/moyen (voir updatePaymentLocked/adminCancelValidatedLocation).
+      paymentId: payment.id,
     },
     tx
   );
@@ -244,6 +290,13 @@ export interface UpdatePaymentInput {
   paidAt?: Date;
   reference?: string;
   notes?: string;
+  /** Sprint 26D (Finding D1) : obligatoire dès que amount/method/paidAt change réellement
+   * (par rapport à la valeur actuelle) — jamais requis pour un simple changement de
+   * reference/notes. */
+  reason?: string;
+  /** Sprint 26D (Finding D1) : agent à l'origine de la correction — toujours fourni par la
+   * route authentifiée (user.id), utilisé uniquement quand une compensation est créée. */
+  performedByUserId?: string;
 }
 
 /**
@@ -251,7 +304,18 @@ export interface UpdatePaymentInput {
  * fournie, ouvre une transaction interne ; avec une `tx` fournie par l'appelant, la réutilise
  * sans imbrication. Le verrou (`lockInvoiceForUpdate`) n'est posé que si `amount` est modifié
  * (seul cas où le solde restant est recalculé) — un changement de méthode/date/référence/notes
- * seul ne verrouille rien. Ne touche jamais aux `CashEntry` (Finding D1, hors périmètre).
+ * seul ne verrouille rien de plus.
+ *
+ * Sprint 26D (Finding D1) : toute correction qui change réellement amount/method/paidAt exige
+ * désormais un motif (`reason`) — refusé sinon (`CorrectionReasonRequiredError`). Un changement
+ * de amount et/ou method crée une CashEntry de compensation liée à l'écriture d'origine
+ * (jamais une modification/suppression de celle-ci, voir createCorrectionCashEntry,
+ * src/lib/cash-register.ts) : un delta unique si seul amount change, une paire sortie/entrée
+ * si method change (avec ou sans changement de amount simultané, jamais un delta mélangeant
+ * deux moyens). Un changement de paidAt seul ne crée aucune CashEntry (rien à compenser
+ * financièrement) — uniquement journalisé côté route (ancien/nouveau paidAt), voir
+ * PATCH /api/payments/[id]/route.ts. Un Payment REFUNDED (remboursé via l'annulation de
+ * contrat) ne peut plus être corrigé (`PaymentAlreadyRefundedError`).
  */
 export async function updatePayment(
   tenantId: string,
@@ -271,25 +335,76 @@ async function updatePaymentLocked(
   data: UpdatePaymentInput,
   tx: Prisma.TransactionClient
 ): Promise<Payment | null> {
-  const existing = await tx.payment.findFirst({ where: { id: paymentId, tenantId } });
+  let existing = await tx.payment.findFirst({ where: { id: paymentId, tenantId } });
   if (!existing) {
     return null;
   }
 
-  if (data.amount !== undefined) {
-    if (!Number.isInteger(data.amount) || data.amount <= 0) {
-      throw new InvalidPaymentAmountError("amount doit être un entier positif (plus petite unité monétaire).");
-    }
+  if (existing.status === "REFUNDED") {
+    throw new PaymentAlreadyRefundedError();
+  }
 
-    const invoice = await lockInvoiceForUpdate(tenantId, existing.invoiceId, tx);
+  // Évaluation préliminaire (lecture non verrouillée) — suffisante pour savoir si un motif
+  // est exigé, mais jamais pour calculer la compensation elle-même (voir la relecture
+  // verrouillée ci-dessous).
+  const isCorrection =
+    (data.amount !== undefined && data.amount !== existing.amount) ||
+    (data.method !== undefined && data.method !== existing.method) ||
+    (data.paidAt !== undefined && data.paidAt.getTime() !== existing.paidAt.getTime());
+
+  if (isCorrection && (!data.reason?.trim() || !data.performedByUserId)) {
+    throw new CorrectionReasonRequiredError();
+  }
+
+  let invoice: Invoice | null = null;
+  if (isCorrection) {
+    // Sprint 26D (Finding D1) : toute correction (montant, moyen ou date — pas seulement le
+    // montant comme pour le Finding B) verrouille désormais l'Invoice, même point de
+    // sérialisation déjà utilisé par createPayment/createMixedPayments. Nécessaire ici au-delà
+    // du seul Finding B : deux PATCH concurrents sur le *même* Payment doivent être sérialisés
+    // pour que la relecture ci-dessous (existing) soit garantie à jour au moment du calcul de
+    // la compensation — une lecture non verrouillée pourrait sinon rester périmée si un premier
+    // PATCH concurrent committait entre cette lecture initiale et l'écriture finale.
+    invoice = await lockInvoiceForUpdate(tenantId, existing.invoiceId, tx);
     if (!invoice) {
       throw new PaymentInvoiceNotFoundError();
     }
 
+    const refreshed = await tx.payment.findFirst({ where: { id: paymentId, tenantId } });
+    if (!refreshed) {
+      throw new PaymentInvoiceNotFoundError();
+    }
+    if (refreshed.status === "REFUNDED") {
+      throw new PaymentAlreadyRefundedError();
+    }
+    existing = refreshed;
+  }
+
+  const amountChanging = data.amount !== undefined && data.amount !== existing.amount;
+  const methodChanging = data.method !== undefined && data.method !== existing.method;
+
+  if (amountChanging) {
+    if (!Number.isInteger(data.amount) || (data.amount as number) <= 0) {
+      throw new InvalidPaymentAmountError("amount doit être un entier positif (plus petite unité monétaire).");
+    }
+
+    // `invoice` est garanti non nul ici : amountChanging ne peut être vrai que si isCorrection
+    // l'était déjà à la relecture, qui a déjà posé le verrou ci-dessus.
     // Solde restant en excluant ce paiement lui-même, pour permettre d'ajuster son propre montant.
-    const remainingExcludingThis = invoice.totalAmount - (invoice.amountPaid - existing.amount);
-    if (data.amount > remainingExcludingThis) {
-      throw new PaymentExceedsRemainingBalanceError(remainingExcludingThis, invoice.currency);
+    const remainingExcludingThis = invoice!.totalAmount - (invoice!.amountPaid - existing.amount);
+    if ((data.amount as number) > remainingExcludingThis) {
+      throw new PaymentExceedsRemainingBalanceError(remainingExcludingThis, invoice!.currency);
+    }
+  }
+
+  // Toute correction affectant amount/method doit pouvoir s'appuyer sur l'écriture de caisse
+  // d'origine de ce Payment — validé avant la moindre écriture (jamais de compensation
+  // orpheline, jamais de correspondance devinée par montant/date/moyen, Finding D1).
+  let originalEntry: Awaited<ReturnType<typeof tx.cashEntry.findFirst>> = null;
+  if (amountChanging || methodChanging) {
+    originalEntry = await tx.cashEntry.findFirst({ where: { paymentId: existing.id, parentEntryId: null } });
+    if (!originalEntry) {
+      throw new PaymentCashEntryNotFoundError();
     }
   }
 
@@ -304,7 +419,71 @@ async function updatePaymentLocked(
     },
   });
 
-  await recomputeInvoiceStatus(existing.invoiceId, tx);
+  if (originalEntry) {
+    const newAmount = data.amount ?? existing.amount;
+    const newMethod = data.method ?? existing.method;
+    const reason = data.reason!.trim();
+    const performedByUserId = data.performedByUserId!;
+    const sharedCorrectionFields = {
+      tenantId,
+      parentEntryId: originalEntry.id,
+      paymentId: existing.id,
+      category: "CORRECTION_PAIEMENT",
+      reason,
+      performedByUserId,
+      agencyId: originalEntry.agencyId ?? undefined,
+      contractId: originalEntry.contractId ?? undefined,
+      contractNumber: originalEntry.contractNumber,
+      clientName: originalEntry.clientName ?? undefined,
+    };
+
+    if (methodChanging) {
+      // Changement de moyen (avec ou sans changement de montant simultané) : toujours une
+      // paire sortie complète de l'ancien moyen / entrée complète du nouveau moyen — jamais
+      // un delta unique, pour ne jamais mélanger deux moyens dans une même ligne et pour que
+      // la ventilation CASH/CARD (monthCash/monthCard) reste exacte.
+      await createCorrectionCashEntry(
+        {
+          ...sharedCorrectionFields,
+          type: "EXPENSE",
+          amount: existing.amount,
+          paymentMethod: existing.method,
+          description: `Correction paiement — réallocation hors ${existing.method}`,
+        },
+        tx
+      );
+      await createCorrectionCashEntry(
+        {
+          ...sharedCorrectionFields,
+          type: "ENTRY",
+          amount: newAmount,
+          paymentMethod: newMethod,
+          description: `Correction paiement — réallocation vers ${newMethod}`,
+        },
+        tx
+      );
+    } else {
+      // Moyen inchangé, seul le montant change : un delta unique.
+      const delta = newAmount - existing.amount;
+      await createCorrectionCashEntry(
+        {
+          ...sharedCorrectionFields,
+          type: delta > 0 ? "ENTRY" : "EXPENSE",
+          amount: Math.abs(delta),
+          paymentMethod: newMethod,
+          description:
+            `Correction du montant du paiement (${formatMoney(existing.amount, existing.currency)} → ` +
+            `${formatMoney(newAmount, existing.currency)})`,
+        },
+        tx
+      );
+    }
+  }
+
+  if (amountChanging) {
+    await recomputeInvoiceStatus(existing.invoiceId, tx);
+  }
+
   return updated;
 }
 
@@ -399,13 +578,46 @@ async function createMixedPaymentsLocked(
   return payments;
 }
 
-export async function deletePayment(tenantId: string, paymentId: string): Promise<boolean> {
-  const existing = await getPaymentById(tenantId, paymentId);
+/**
+ * Sprint 26D (Finding D1) : suppression physique désormais réservée aux paiements
+ * jamais reflétés en caisse (aucune CashEntry — originale ou compensation — liée par
+ * `paymentId`) ; cas résiduel/défensif, la quasi-totalité des paiements en ont une
+ * depuis le Sprint 18 (recordPaymentCashEntry, systématique dans createPayment). Dès
+ * qu'une CashEntry existe, la suppression physique est refusée
+ * (`PaymentHasCashEntryError`, 409) — le paiement encaissé doit passer par le flux de
+ * remboursement (annulation de contrat, voir adminCancelValidatedLocation), qui le
+ * conserve et le marque REFUNDED plutôt que de le supprimer.
+ *
+ * `tx` optionnel, même contrat que `createPayment`/`updatePayment` — sans `tx` fournie,
+ * ouvre sa propre transaction ; avec une `tx` fournie, la réutilise sans imbrication.
+ */
+export async function deletePayment(
+  tenantId: string,
+  paymentId: string,
+  tx: Prisma.TransactionClient = prisma
+): Promise<boolean> {
+  if (tx !== prisma) {
+    return deletePaymentLocked(tenantId, paymentId, tx);
+  }
+  return prisma.$transaction((innerTx) => deletePaymentLocked(tenantId, paymentId, innerTx));
+}
+
+async function deletePaymentLocked(
+  tenantId: string,
+  paymentId: string,
+  tx: Prisma.TransactionClient
+): Promise<boolean> {
+  const existing = await tx.payment.findFirst({ where: { id: paymentId, tenantId } });
   if (!existing) {
     return false;
   }
 
-  await prisma.payment.delete({ where: { id: paymentId } });
-  await recomputeInvoiceStatus(existing.invoiceId);
+  const linkedEntry = await tx.cashEntry.findFirst({ where: { paymentId: existing.id } });
+  if (linkedEntry) {
+    throw new PaymentHasCashEntryError();
+  }
+
+  await tx.payment.delete({ where: { id: paymentId } });
+  await recomputeInvoiceStatus(existing.invoiceId, tx);
   return true;
 }

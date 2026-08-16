@@ -116,6 +116,8 @@ model User {
   userPermissions             UserPermission[]
   vehicleTransfersResponsible VehicleTransfer[] @relation("VehicleTransferResponsible")
   vehicleTrips                VehicleTrip[]
+  // Sprint 26D (Finding D1) : agent à l'origine d'une correction/compensation de caisse.
+  cashEntriesPerformed        CashEntry[]       @relation("CashEntryPerformedBy")
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -400,6 +402,17 @@ model Invoice {
   @@index([status])
 }
 
+// Sprint 26D (Finding D1) : ACTIVE = paiement encaissé normal, jamais modifié par ce
+// statut lui-même. REFUNDED = le contrat a été annulé (adminCancelValidatedLocation,
+// src/lib/locations.ts) et ce paiement a été remboursé au client — le Payment reste
+// conservé tel quel (amount/method/paidAt inchangés, jamais supprimé physiquement),
+// seul ce statut change. Un Payment REFUNDED ne peut plus être corrigé ni remboursé
+// une seconde fois (voir updatePaymentLocked/adminCancelValidatedLocation).
+enum PaymentStatus {
+  ACTIVE
+  REFUNDED
+}
+
 // Un paiement enregistré manuellement (pas d'intégration Stripe/PayPal — décision
 // explicite Sprint 6) contre une facture. Aucune donnée de carte bancaire n'est
 // jamais saisie ni stockée ici (SECURITY.md) : `method`/`reference` ne décrivent que
@@ -414,11 +427,14 @@ model Payment {
   paidAt    DateTime      @default(now())
   reference String?
   notes     String?
+  // Sprint 26D (Finding D1) : voir PaymentStatus ci-dessus.
+  status    PaymentStatus @default(ACTIVE)
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
 
-  tenant  Tenant  @relation(fields: [tenantId], references: [id])
-  invoice Invoice @relation(fields: [invoiceId], references: [id])
+  tenant      Tenant      @relation(fields: [tenantId], references: [id])
+  invoice     Invoice     @relation(fields: [invoiceId], references: [id])
+  cashEntries CashEntry[]
 
   @@index([tenantId])
   @@index([invoiceId])
@@ -905,15 +921,37 @@ model CashEntry {
   paymentMethod  PaymentMethod?
   createdAt      DateTime       @default(now())
 
-  tenant       Tenant       @relation(fields: [tenantId], references: [id])
-  cashRegister CashRegister @relation(fields: [cashRegisterId], references: [id])
-  agency       Agency?      @relation(fields: [agencyId], references: [id])
+  // Sprint 26D (Finding D1) : lien fiable vers le Payment source — contrairement à
+  // contractId (volontairement sans FK, voir plus haut), ces colonnes bénéficient
+  // d'une contrainte réelle : Payment/CashEntry ne sont jamais supprimés physiquement
+  // une fois reflétés en caisse (append-only), l'intégrité référentielle est donc sans
+  // risque pour l'historique. paymentId = le Payment concerné (original ET
+  // compensations). parentEntryId = la CashEntry originale que cette ligne compense ;
+  // NULL sur une écriture originale, renseigné uniquement sur une compensation — jamais
+  // l'inverse (une écriture originale n'est jamais modifiée, seule une nouvelle ligne
+  // liée est ajoutée). reason/performedByUserId ne sont renseignés que sur les
+  // compensations (motif obligatoire applicatif, voir src/lib/payments.ts) — NULL sur
+  // toute écriture d'origine (versement normal, jamais de motif à saisir).
+  paymentId         String?
+  parentEntryId     String?
+  reason            String?
+  performedByUserId String?
+
+  tenant          Tenant       @relation(fields: [tenantId], references: [id])
+  cashRegister    CashRegister @relation(fields: [cashRegisterId], references: [id])
+  agency          Agency?      @relation(fields: [agencyId], references: [id])
+  payment         Payment?     @relation(fields: [paymentId], references: [id])
+  parentEntry     CashEntry?   @relation("CashEntryCorrections", fields: [parentEntryId], references: [id])
+  corrections     CashEntry[]  @relation("CashEntryCorrections")
+  performedByUser User?        @relation("CashEntryPerformedBy", fields: [performedByUserId], references: [id])
 
   @@index([tenantId])
   @@index([cashRegisterId])
   @@index([type])
   @@index([createdAt])
   @@index([agencyId])
+  @@index([paymentId])
+  @@index([parentEntryId])
 }
 
 model ExpenseCategory {

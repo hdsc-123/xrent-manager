@@ -1,8 +1,10 @@
-import type { Location, LocationStatus, Prisma } from "@prisma/client";
+import type { Location, LocationStatus, PaymentMethod, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { checkAvailability, lockVehicleForUpdate } from "@/lib/vehicles";
 import { getClientById } from "@/lib/clients";
-import { recomputeCashRegisterBalance } from "@/lib/cash-register";
+import { createCorrectionCashEntry, CorrectionReasonRequiredError } from "@/lib/cash-register";
+
+export { CorrectionReasonRequiredError };
 
 export class InvalidDateRangeError extends Error {
   constructor() {
@@ -711,27 +713,54 @@ export interface AdminCancelLocationResult {
   cancelledInvoiceIds: string[];
   reversedPaymentCount: number;
   reversedAmountTotal: number;
+  /** Sprint 26D (Finding D1) : paiements marqués REFUNDED qui n'avaient aucune CashEntry
+   * d'origine à compenser (legacy — jamais reflétés en caisse) — comptés séparément,
+   * jamais mélangés à reversedPaymentCount/reversedAmountTotal. */
+  refundedWithoutCashEntryCount: number;
+  /** Sprint 26D (Finding D1) : détail par paiement remboursé, pour journalisation précise
+   * côté route (notamment un éventuel overrideRefundMethod). */
+  refunds: Array<{ paymentId: string; amount: number; originalMethod: PaymentMethod; appliedMethod: PaymentMethod | null }>;
+}
+
+export interface AdminCancelLocationOptions {
+  /** Sprint 26D (Finding D1) : motif obligatoire — porté par la compensation de chaque
+   * paiement remboursé et par le journal d'audit (voir la route). */
+  reason: string;
+  performedByUserId: string;
+  /** Sprint 26D (Finding D1) : moyen de remboursement forcé, distinct du moyen d'origine de
+   * chaque Payment — n'affecte jamais Payment.method (jamais réécrit), uniquement le
+   * paymentMethod de la CashEntry de compensation. Réservé à `payments.override_refund_method`,
+   * vérifié côté route avant l'appel — cette fonction fait confiance à l'appelant. */
+  overrideRefundMethod?: PaymentMethod;
 }
 
 /**
  * Annulation d'un contrat déjà validé, réservée à un ADMIN (dérivé côté route uniquement,
  * jamais un champ de corps de requête — DOMAINRULES.md section 39) : orchestre en une seule
  * transaction Prisma (1) le passage atomique de la Location à CANCELLED (même garde
- * `updateMany` conditionnée que le reste de ce fichier), (2) l'annulation de toute Invoice non
- * déjà CANCELLED de ce contrat — y compris depuis PAID/PARTIALLY_PAID, un cas que la machine à
- * états normale d'Invoice (src/lib/invoices.ts, canTransition) n'autorise jamais autrement,
- * jamais exposé par la route PATCH générique des factures — (3) pour chaque Payment de ces
- * factures, une CashEntry de compensation (jamais une modification/suppression du Payment ou
- * de la CashEntry d'origine, qui restent la source de vérité immuable — DOMAINRULES.md
- * sections 10/23) de type inversé et de même montant, pour que le solde de caisse redevienne
- * exact sans jamais réécrire l'historique. Le contrat lui-même n'est jamais supprimé (reste
+ * `updateMany` conditionnée que le reste de ce fichier — c'est cette garde qui rend l'ensemble
+ * de l'opération idempotente : un second appel, séquentiel ou concurrent, échoue ici avant
+ * d'atteindre la boucle paiements/factures, voir LocationStatusConflictError/le test Sprint 23),
+ * (2) l'annulation de toute Invoice non déjà CANCELLED de ce contrat — y compris depuis
+ * PAID/PARTIALLY_PAID, un cas que la machine à états normale d'Invoice (src/lib/invoices.ts,
+ * canTransition) n'autorise jamais autrement, jamais exposé par la route PATCH générique des
+ * factures — (3) pour chaque Payment de ces factures, marqué REFUNDED (Sprint 26D — jamais
+ * supprimé, jamais réécrit dans son amount/method/paidAt) et une CashEntry de compensation liée
+ * (paymentId/parentEntryId, Sprint 26D) de type EXPENSE et de même montant que le paiement
+ * d'origine, pour que le solde de caisse redevienne exact sans jamais réécrire l'historique
+ * (DOMAINRULES.md sections 10/23). Le contrat lui-même n'est jamais supprimé (reste
  * consultable, mention « Contrat annulé ») — voir LocationHasInvoiceError pour la suppression,
  * volontairement non assouplie après cette opération (une facture CANCELLED reste `!== DRAFT`).
  */
 export async function adminCancelValidatedLocation(
   tenantId: string,
-  locationId: string
+  locationId: string,
+  options: AdminCancelLocationOptions
 ): Promise<AdminCancelLocationResult | null> {
+  if (!options.reason.trim()) {
+    throw new CorrectionReasonRequiredError();
+  }
+
   const existing = await getLocationById(tenantId, locationId);
   if (!existing) {
     return null;
@@ -767,42 +796,62 @@ export async function adminCancelValidatedLocation(
 
     let reversedPaymentCount = 0;
     let reversedAmountTotal = 0;
-
-    // Un tenant ayant déjà encaissé un paiement a nécessairement déjà une CashRegister (créée
-    // par createCashEntry/getOrCreateCashRegister au premier paiement) — recherchée une seule
-    // fois avant la boucle, jamais recréée ici (pas de getOrCreateCashRegister transactionnel).
-    const register =
-      invoicesToCancel.length > 0 ? await tx.cashRegister.findUnique({ where: { tenantId } }) : null;
+    let refundedWithoutCashEntryCount = 0;
+    const refunds: AdminCancelLocationResult["refunds"] = [];
 
     for (const invoice of invoicesToCancel) {
       await tx.invoice.update({ where: { id: invoice.id }, data: { status: "CANCELLED" } });
 
-      if (!register) continue;
-
       const payments = await tx.payment.findMany({ where: { invoiceId: invoice.id } });
       for (const payment of payments) {
-        await tx.cashEntry.create({
-          data: {
+        // Idempotence en défense en profondeur (Sprint 26D) : la garde updateMany sur
+        // Location.status ci-dessus empêche déjà structurellement un second appel d'atteindre
+        // cette boucle (voir le commentaire de la fonction) — ce garde-fou supplémentaire ne
+        // devrait donc jamais se déclencher en pratique, mais évite tout double remboursement
+        // si l'invariant ci-dessus était un jour affaibli.
+        if (payment.status === "REFUNDED") {
+          continue;
+        }
+
+        // Un Payment antérieur au Sprint 18 (avant que createPayment n'alimente
+        // systématiquement la caisse) peut n'avoir jamais eu de CashEntry — le client est
+        // remboursé (status REFUNDED) sans qu'il existe d'écriture à compenser (rien à
+        // inverser, jamais de compensation orpheline).
+        const originalEntry = await tx.cashEntry.findFirst({
+          where: { paymentId: payment.id, parentEntryId: null },
+        });
+
+        if (!originalEntry) {
+          await tx.payment.update({ where: { id: payment.id }, data: { status: "REFUNDED" } });
+          refundedWithoutCashEntryCount += 1;
+          refunds.push({ paymentId: payment.id, amount: payment.amount, originalMethod: payment.method, appliedMethod: null });
+          continue;
+        }
+
+        const appliedMethod = options.overrideRefundMethod ?? payment.method;
+        await createCorrectionCashEntry(
+          {
             tenantId,
-            cashRegisterId: register.id,
-            // Un Payment alimente toujours une CashEntry de type ENTRY/VERSEMENT
-            // (recordPaymentCashEntry, src/lib/payments.ts — aucun remboursement/paiement
-            // négatif ne se modélise ailleurs dans le projet, DOMAINRULES.md section 10) : la
-            // compensation est donc toujours une sortie (EXPENSE) de même montant, sans jamais
-            // toucher à l'écriture d'origine (append-only, DOMAINRULES.md section 23).
+            parentEntryId: originalEntry.id,
+            paymentId: payment.id,
             type: "EXPENSE",
-            category: "ANNULATION_CONTRAT",
             amount: payment.amount,
-            currency: payment.currency,
+            paymentMethod: appliedMethod,
+            category: "ANNULATION_CONTRAT",
             description: `Annulation contrat ${location.contractNumber ?? `#${location.id.slice(-8)}`} — compensation du paiement du ${payment.paidAt.toISOString().slice(0, 10)}`,
+            reason: options.reason.trim(),
+            performedByUserId: options.performedByUserId,
             agencyId: location.agencyId,
             contractId: location.id,
             contractNumber: location.contractNumber,
-            paymentMethod: payment.method,
           },
-        });
+          tx
+        );
+        await tx.payment.update({ where: { id: payment.id }, data: { status: "REFUNDED" } });
+
         reversedPaymentCount += 1;
         reversedAmountTotal += payment.amount;
+        refunds.push({ paymentId: payment.id, amount: payment.amount, originalMethod: payment.method, appliedMethod });
       }
     }
 
@@ -811,15 +860,10 @@ export async function adminCancelValidatedLocation(
       cancelledInvoiceIds: invoicesToCancel.map((invoice) => invoice.id),
       reversedPaymentCount,
       reversedAmountTotal,
+      refundedWithoutCashEntryCount,
+      refunds,
     };
   });
-
-  // Hors transaction, même principe que createCashEntry (src/lib/cash-register.ts) : le solde
-  // n'est jamais qu'une valeur dérivée des CashEntry réelles, jamais la source de vérité —
-  // un échec ici ne laisse rien d'incohérent (le prochain recalcul, quel qu'il soit, corrige).
-  if (result.reversedPaymentCount > 0) {
-    await recomputeCashRegisterBalance(tenantId);
-  }
 
   return result;
 }

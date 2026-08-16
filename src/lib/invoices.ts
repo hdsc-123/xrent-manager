@@ -40,6 +40,21 @@ export class InvoiceNotDeletableError extends Error {
   }
 }
 
+/** Sprint 26D (Finding D1) : la facture finale (transition DRAFT → SENT) ne peut être émise
+ * que lorsque le solde est intégralement réglé (amountPaid === totalAmount) — les paiements
+ * partiels ne génèrent pas encore de facture finale, seulement la ligne Invoice DRAFT interne
+ * qui suit déjà le contrat depuis sa création (inchangé). Ne s'applique jamais à une facture à
+ * totalAmount === 0, qui atterrit directement en PAID (comportement Sprint 18 inchangé). */
+export class InvoiceNotFullyPaidError extends Error {
+  constructor() {
+    super(
+      "La facture finale ne peut être émise (DRAFT → SENT) que lorsque le solde est " +
+        "intégralement réglé (amountPaid = totalAmount)."
+    );
+    this.name = "InvoiceNotFullyPaidError";
+  }
+}
+
 /**
  * Transitions manuelles autorisées via PATCH. PARTIALLY_PAID et PAID ne sont jamais
  * atteints par une transition manuelle : ils sont dérivés automatiquement de la somme
@@ -250,6 +265,14 @@ export async function updateInvoice(
   const { taxAmount, totalAmount } = wantsAmountChange
     ? computeInvoiceTotals(existing.subtotal, taxRate, discountAmount)
     : { taxAmount: existing.taxAmount, totalAmount: existing.totalAmount };
+
+  // Sprint 26D (Finding D1) : la facture finale (SENT) n'est émise qu'une fois le solde
+  // intégralement réglé — vérifié sur le totalAmount fraîchement recalculé ci-dessus (pas
+  // l'ancien existing.totalAmount) pour rester cohérent si taxRate/discountAmount changent
+  // dans le même appel que la finalisation.
+  if (data.status === "SENT" && totalAmount > 0 && existing.amountPaid < totalAmount) {
+    throw new InvoiceNotFullyPaidError();
+  }
 
   // Une facture à 0 (remise à 100 %) n'a par construction jamais de Payment (createPayment
   // refuse tout montant contre un solde restant nul) : recomputeInvoiceStatus

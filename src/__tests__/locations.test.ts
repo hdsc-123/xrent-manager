@@ -217,11 +217,12 @@ describe("Sprint 23 — annulation d'un contrat validé, réservée ADMIN, avec 
     const response = await apiFetch(`/api/locations/${pendingLocation.id}/admin-cancel`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Test — contrat encore PENDING" }),
     });
     expect(response.status).toBe(409);
   });
 
-  it("annule un contrat CONFIRMED avec facture PAID : facture annulée, écriture de compensation créée, solde de caisse revenu à sa valeur d'origine, Payment inchangé", async () => {
+  it("annule un contrat CONFIRMED avec facture PAID : facture annulée, écriture de compensation créée, solde de caisse revenu à sa valeur d'origine, Payment conservé et marqué REFUNDED", async () => {
     const balanceBefore = await apiFetch("/api/cash-register", { headers: { Cookie: adminA.sessionCookie } });
     const currentBalanceBefore = (await balanceBefore.json()).currentBalance as number;
 
@@ -235,6 +236,7 @@ describe("Sprint 23 — annulation d'un contrat validé, réservée ADMIN, avec 
     const response = await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Client — annulation de contrat" }),
     });
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -246,10 +248,23 @@ describe("Sprint 23 — annulation d'un contrat validé, réservée ADMIN, avec 
     const invoiceAfter = await prisma.invoice.findUnique({ where: { id: invoice.id } });
     expect(invoiceAfter?.status).toBe("CANCELLED");
 
-    // Le Payment d'origine n'est jamais modifié ni supprimé (append-only, DOMAINRULES.md
-    // section 10/23) — seule une écriture de compensation est ajoutée en caisse.
+    // Le Payment d'origine n'est jamais supprimé, ni réécrit dans son amount/method/paidAt
+    // (append-only, DOMAINRULES.md section 10/23) — seul son statut passe à REFUNDED (Sprint
+    // 26D, Finding D1) ; une écriture de compensation est ajoutée en caisse, liée à l'écriture
+    // et au Payment d'origine.
     const paymentsAfter = await prisma.payment.findMany({ where: { invoiceId: invoice.id } });
-    expect(paymentsAfter).toEqual(paymentsBefore);
+    expect(paymentsAfter).toHaveLength(1);
+    expect(paymentsAfter[0].amount).toBe(paymentsBefore[0].amount);
+    expect(paymentsAfter[0].method).toBe(paymentsBefore[0].method);
+    expect(paymentsAfter[0].paidAt).toEqual(paymentsBefore[0].paidAt);
+    expect(paymentsBefore[0].status).toBe("ACTIVE");
+    expect(paymentsAfter[0].status).toBe("REFUNDED");
+
+    const originalEntry = await prisma.cashEntry.findFirst({
+      where: { paymentId: paymentsAfter[0].id, parentEntryId: null },
+    });
+    expect(originalEntry).not.toBeNull();
+    expect(originalEntry?.amount).toBe(paymentAmount);
 
     const compensationEntry = await prisma.cashEntry.findFirst({
       where: { contractId: location.id, category: "ANNULATION_CONTRAT" },
@@ -257,6 +272,10 @@ describe("Sprint 23 — annulation d'un contrat validé, réservée ADMIN, avec 
     expect(compensationEntry).not.toBeNull();
     expect(compensationEntry?.type).toBe("EXPENSE");
     expect(compensationEntry?.amount).toBe(paymentAmount);
+    expect(compensationEntry?.paymentId).toBe(paymentsAfter[0].id);
+    expect(compensationEntry?.parentEntryId).toBe(originalEntry?.id);
+    expect(compensationEntry?.reason).toBe("Client — annulation de contrat");
+    expect(compensationEntry?.performedByUserId).toBe(adminA.userId);
 
     const balanceAfter = await apiFetch("/api/cash-register", { headers: { Cookie: adminA.sessionCookie } });
     const currentBalanceAfter = (await balanceAfter.json()).currentBalance as number;
@@ -269,14 +288,49 @@ describe("Sprint 23 — annulation d'un contrat validé, réservée ADMIN, avec 
     const first = await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Premier appel" }),
     });
     expect(first.status).toBe(200);
 
     const second = await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Second appel — doit échouer" }),
     });
     expect(second.status).toBe(409);
+  });
+
+  it("Sprint 26D (Finding D1) — idempotence : un second appel (retry) ne rembourse jamais deux fois le même Payment", async () => {
+    const { location, invoice } = await createConfirmedLocationWithPayment(adminA);
+    const paymentsBefore = await prisma.payment.findMany({ where: { invoiceId: invoice.id } });
+    expect(paymentsBefore).toHaveLength(1);
+    const paymentId = paymentsBefore[0].id;
+
+    const first = await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Premier remboursement" }),
+    });
+    expect(first.status).toBe(200);
+
+    const paymentAfterFirst = await prisma.payment.findUniqueOrThrow({ where: { id: paymentId } });
+    expect(paymentAfterFirst.status).toBe("REFUNDED");
+    const compensationsAfterFirst = await prisma.cashEntry.findMany({ where: { paymentId, parentEntryId: { not: null } } });
+    expect(compensationsAfterFirst).toHaveLength(1);
+
+    const second = await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Retry — ne doit rien changer" }),
+    });
+    expect(second.status).toBe(409);
+
+    // Conservé tel quel — jamais un second remboursement, jamais une seconde compensation.
+    const paymentAfterSecond = await prisma.payment.findUniqueOrThrow({ where: { id: paymentId } });
+    expect(paymentAfterSecond).toEqual(paymentAfterFirst);
+    const compensationsAfterSecond = await prisma.cashEntry.findMany({ where: { paymentId, parentEntryId: { not: null } } });
+    expect(compensationsAfterSecond).toHaveLength(1);
+    expect(compensationsAfterSecond[0].id).toBe(compensationsAfterFirst[0].id);
   });
 
   it("un contrat annulé avec historique financier reste bloqué à la suppression (LocationHasInvoiceError, décision documentée section 3.3 du plan Sprint 23)", async () => {
@@ -284,6 +338,7 @@ describe("Sprint 23 — annulation d'un contrat validé, réservée ADMIN, avec 
     await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Annulation avant suppression" }),
     });
 
     const deleteResponse = await apiFetch(`/api/locations/${location.id}`, {
@@ -311,6 +366,7 @@ describe("Sprint 23 — annulation d'un contrat validé, réservée ADMIN, avec 
     await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Annulation — CA réalisé" }),
     });
 
     const after = await getTopVehicles(adminA.tenantId, 50);
@@ -909,6 +965,7 @@ describe("DELETE /api/locations/[id]", () => {
     const adminCancelResponse = await apiFetch(`/api/locations/${locationId}/admin-cancel`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Annulation — pas de paiement enregistré" }),
     });
     expect(adminCancelResponse.status).toBe(200);
 

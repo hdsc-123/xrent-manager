@@ -83,6 +83,17 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: "payments.view", label: "Voir les paiements", category: "Paiements" },
   { key: "payments.create", label: "Créer des paiements", category: "Paiements" },
   { key: "payments.delete", label: "Supprimer des paiements", category: "Paiements" },
+  // Sprint 26D (Finding D1) : payments.correct remplace le détournement historique de
+  // payments.create sur PATCH /api/payments/[id] (correction de montant/moyen/date d'un
+  // paiement déjà encaissé, avec compensation de caisse) — clé dédiée, plus précise. La route
+  // accepte encore payments.create en alternative (voir son commentaire) pour ne retirer
+  // silencieusement l'accès à aucun groupe personnalisé existant.
+  { key: "payments.correct", label: "Corriger un paiement (montant, moyen, date)", category: "Paiements" },
+  // Sprint 26D (Finding D1) : action exceptionnelle — par défaut, le remboursement lié à
+  // l'annulation d'un contrat reprend automatiquement le moyen du paiement d'origine
+  // (jamais modifiable). Cette clé permet de forcer un autre moyen de remboursement ; non
+  // accordée à aucun groupe par défaut (même politique que audit.delete).
+  { key: "payments.override_refund_method", label: "Modifier le moyen de remboursement", category: "Paiements" },
 
   { key: "reports.view", label: "Voir les rapports", category: "Rapports" },
   // Sprint 23 (DOMAINRULES.md section 39) : deux nouveaux onglets de reporting métier —
@@ -207,6 +218,9 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "invoices.delete",
       "payments.view",
       "payments.create",
+      // Sprint 26D : voir le commentaire sur PERMISSIONS ci-dessus (remplace le détournement
+      // historique de payments.create sur la correction de paiement).
+      "payments.correct",
       "payments.delete",
       "reports.view",
       // Sprint 23 : deux nouveaux onglets de reporting (listing contrats/performance
@@ -254,6 +268,8 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "invoices.delete",
       "payments.view",
       "payments.create",
+      // Sprint 26D : voir le commentaire équivalent sur MEMBER ci-dessus.
+      "payments.correct",
       "payments.delete",
       "reports.view",
       // Sprint 23 : voir le commentaire équivalent sur MEMBER ci-dessus.
@@ -310,6 +326,8 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "invoices.edit",
       "payments.view",
       "payments.create",
+      // Sprint 26D : voir le commentaire équivalent sur MEMBER ci-dessus.
+      "payments.correct",
       "contracts_overview.view",
       "vehicle_performance.view",
       "maintenances.view",
@@ -371,6 +389,8 @@ export const PAST_PERMISSION_BACKFILLS: Record<string, string[]> = {
     "locations.delete",
     "invoices.delete",
     "payments.delete",
+    // Sprint 26D (Finding D1) : voir le commentaire sur DEFAULT_GROUPS.
+    "payments.correct",
     "maintenances.view",
     "maintenances.create",
     "maintenances.edit",
@@ -425,6 +445,8 @@ export const PAST_PERMISSION_BACKFILLS: Record<string, string[]> = {
     "invoices.edit",
     "payments.view",
     "payments.create",
+    // Sprint 26D (Finding D1) : voir le commentaire sur DEFAULT_GROUPS.
+    "payments.correct",
     "maintenances.view",
     "maintenances.create",
     "maintenances.edit",
@@ -456,7 +478,8 @@ export const PAST_PERMISSION_BACKFILLS: Record<string, string[]> = {
   ],
   // Sprint 23 : COMPTABILITÉ n'avait jamais eu d'entrée dans ce dictionnaire (resserré, jamais
   // étendu, depuis le Sprint 15) — première extension pour ce groupe.
-  COMPTABILITÉ: ["contracts_overview.view", "vehicle_performance.view"],
+  // Sprint 26D (Finding D1) : payments.correct — voir le commentaire sur DEFAULT_GROUPS.
+  COMPTABILITÉ: ["contracts_overview.view", "vehicle_performance.view", "payments.correct"],
 };
 
 /**

@@ -16,6 +16,16 @@ export class ExpenseCategoryNameInUseError extends Error {
   }
 }
 
+/** Sprint 26D (Finding D1) : motif obligatoire pour toute compensation (correction de
+ * paiement, remboursement) — jamais exigé pour une écriture manuelle ordinaire
+ * (createCashEntry). */
+export class CorrectionReasonRequiredError extends Error {
+  constructor() {
+    super("Un motif est obligatoire pour toute correction affectant le montant, le moyen ou le remboursement d'un paiement.");
+    this.name = "CorrectionReasonRequiredError";
+  }
+}
+
 /** Sprint 19 : une écriture issue d'un paiement (contractId renseigné, voir
  * recordPaymentCashEntry dans src/lib/payments.ts) reste définitivement append-only —
  * seules les écritures manuelles (contractId absent, créées directement via ce module)
@@ -284,6 +294,10 @@ export interface CreateCashEntryInput {
   clientName?: string;
   paymentMethod?: PaymentMethod;
   createdAt?: Date;
+  /** Sprint 26D (Finding D1) — voir le commentaire du champ dans prisma/schema.prisma :
+   * renseigné uniquement pour l'écriture originale d'un Payment (recordPaymentCashEntry,
+   * src/lib/payments.ts), jamais pour une écriture manuelle. */
+  paymentId?: string;
 }
 
 /**
@@ -317,7 +331,73 @@ export async function createCashEntry(
       contractNumber: data.contractNumber,
       clientName: data.clientName,
       paymentMethod: data.paymentMethod,
+      paymentId: data.paymentId,
       ...(data.createdAt ? { createdAt: data.createdAt } : {}),
+    },
+  });
+
+  await recomputeCashRegisterBalance(data.tenantId, tx);
+  return entry;
+}
+
+export interface CreateCorrectionCashEntryInput {
+  tenantId: string;
+  /** L'écriture originale que cette compensation corrige — jamais modifiée elle-même
+   * (append-only, DOMAINRULES.md section 23). */
+  parentEntryId: string;
+  paymentId: string;
+  type: CashEntryType;
+  amount: number;
+  paymentMethod: PaymentMethod;
+  category: string;
+  description?: string;
+  reason: string;
+  performedByUserId: string;
+  agencyId?: string;
+  contractId?: string;
+  contractNumber?: string | null;
+  clientName?: string;
+}
+
+/**
+ * Sprint 26D (Finding D1) : crée une CashEntry de compensation liée à une écriture
+ * originale (parentEntryId) et à son Payment (paymentId) — jamais une modification ou
+ * une suppression de l'originale, qui reste la source de vérité immuable. Contrairement
+ * à createCashEntry (écritures manuelles), motif et agent sont ici obligatoires : une
+ * compensation sans motif ou sans agent identifié n'a pas de sens métier (elle doit
+ * toujours être traçable jusqu'à la correction/l'annulation qui l'a produite).
+ */
+export async function createCorrectionCashEntry(
+  data: CreateCorrectionCashEntryInput,
+  tx: Prisma.TransactionClient = prisma
+): Promise<CashEntry> {
+  if (!Number.isInteger(data.amount) || data.amount <= 0) {
+    throw new InvalidCashEntryAmountError("amount doit être un entier positif (plus petite unité monétaire).");
+  }
+  if (!data.reason.trim()) {
+    throw new CorrectionReasonRequiredError();
+  }
+
+  const register = await getOrCreateCashRegister(data.tenantId, tx);
+
+  const entry = await tx.cashEntry.create({
+    data: {
+      tenantId: data.tenantId,
+      cashRegisterId: register.id,
+      type: data.type,
+      category: data.category,
+      amount: data.amount,
+      currency: register.currency,
+      description: data.description,
+      agencyId: data.agencyId,
+      contractId: data.contractId,
+      contractNumber: data.contractNumber,
+      clientName: data.clientName,
+      paymentMethod: data.paymentMethod,
+      paymentId: data.paymentId,
+      parentEntryId: data.parentEntryId,
+      reason: data.reason.trim(),
+      performedByUserId: data.performedByUserId,
     },
   });
 

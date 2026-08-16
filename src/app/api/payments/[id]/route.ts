@@ -10,6 +10,10 @@ import {
   InvalidPaymentAmountError,
   PaymentExceedsRemainingBalanceError,
   PaymentInvoiceNotFoundError,
+  CorrectionReasonRequiredError,
+  PaymentAlreadyRefundedError,
+  PaymentCashEntryNotFoundError,
+  PaymentHasCashEntryError,
 } from "@/lib/payments";
 import { logAction } from "@/lib/audit";
 
@@ -59,6 +63,9 @@ interface UpdatePaymentBody {
   paidAt?: string;
   reference?: string;
   notes?: string;
+  /** Sprint 26D (Finding D1) : obligatoire dès que amount/method/paidAt change réellement —
+   * voir CorrectionReasonRequiredError, src/lib/payments.ts. */
+  reason?: string;
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
@@ -67,10 +74,12 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
   }
-  // Pas de clé payments.edit dans le catalogue (voir src/lib/permissions.ts) : PATCH est
-  // une modification complète du paiement (montant, méthode, date, référence, notes), donc
-  // la clé la plus proche est payments.create, pas payments.delete.
-  if (!(await can(user, "payments.create"))) {
+  // Sprint 26D (Finding D1) : payments.correct est la clé dédiée pour cette action
+  // (correction de montant/moyen/date d'un paiement déjà encaissé, avec compensation de
+  // caisse) — payments.create reste accepté en alternative pour ne retirer silencieusement
+  // l'accès à aucun groupe personnalisé existant qui n'aurait pas encore payments.correct
+  // (voir DEFAULT_GROUPS/PAST_PERMISSION_BACKFILLS, src/lib/permissions.ts).
+  if (!(await can(user, "payments.correct")) && !(await can(user, "payments.create"))) {
     return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
 
@@ -107,21 +116,41 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       paidAt,
       reference: body.reference,
       notes: body.notes,
+      reason: body.reason,
+      performedByUserId: user.id,
     });
+    // Sprint 26D (Finding D1) : ancien/nouveau montant, moyen et date capturés explicitement
+    // (pas seulement `changes: body`) pour que le motif de correction soit exploitable tel
+    // quel dans le journal d'audit, y compris pour une correction de date seule (aucune
+    // CashEntry créée dans ce cas — voir updatePaymentLocked, src/lib/payments.ts).
     await logAction({
       tenantId: user.tenantId,
       userId: user.id,
       action: "payment.updated",
       resource: "Payment",
       resourceId: payment.id,
-      metadata: { changes: body } as unknown as Prisma.InputJsonValue,
+      metadata: {
+        changes: body,
+        previousAmount: payment.amount,
+        newAmount: updated?.amount,
+        previousMethod: payment.method,
+        newMethod: updated?.method,
+        previousPaidAt: payment.paidAt.toISOString(),
+        newPaidAt: updated?.paidAt.toISOString(),
+        reason: body.reason,
+      } as unknown as Prisma.InputJsonValue,
     });
     return NextResponse.json({ payment: updated });
   } catch (error) {
-    if (error instanceof InvalidPaymentAmountError) {
+    if (error instanceof InvalidPaymentAmountError || error instanceof CorrectionReasonRequiredError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
-    if (error instanceof PaymentExceedsRemainingBalanceError || error instanceof PaymentInvoiceNotFoundError) {
+    if (
+      error instanceof PaymentExceedsRemainingBalanceError ||
+      error instanceof PaymentInvoiceNotFoundError ||
+      error instanceof PaymentAlreadyRefundedError ||
+      error instanceof PaymentCashEntryNotFoundError
+    ) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
 
@@ -147,7 +176,19 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Paiement introuvable." }, { status: 404 });
   }
 
-  await deletePayment(user.tenantId, payment.id);
+  // Sprint 26D (Finding D1) : suppression physique refusée dès qu'une CashEntry est liée à
+  // ce paiement (voir PaymentHasCashEntryError, src/lib/payments.ts) — le flux normal pour
+  // un paiement déjà encaissé est désormais le remboursement (annulation du contrat),
+  // jamais une suppression qui effacerait l'historique financier.
+  try {
+    await deletePayment(user.tenantId, payment.id);
+  } catch (error) {
+    if (error instanceof PaymentHasCashEntryError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    console.error("Erreur lors de la suppression du paiement :", error);
+    return NextResponse.json({ error: "Erreur interne." }, { status: 500 });
+  }
 
   await logAction({
     tenantId: user.tenantId,

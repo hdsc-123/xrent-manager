@@ -21,6 +21,18 @@ async function createInvoice(admin: AuthenticatedTestUser, overrides: Record<str
   });
 }
 
+/** Sprint 26D (Finding D1) : la transition DRAFT → SENT (facture finale) exige désormais
+ * amountPaid === totalAmount (InvoiceNotFullyPaidError sinon) — règle un paiement complet
+ * avant de tester la finalisation elle-même. */
+async function payInvoiceInFull(admin: AuthenticatedTestUser, invoiceId: string, amount: number) {
+  const response = await apiFetch("/api/payments", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ invoiceId, amount, method: "CASH" }),
+  });
+  expect(response.status).toBe(201);
+}
+
 beforeAll(async () => {
   adminA = await registerTenantAdmin({
     tenantName: "Invoices Test A",
@@ -148,6 +160,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  // Sprint 26D (Finding D1) : ce fichier encaisse désormais de vrais paiements
+  // (payInvoiceInFull) pour tester le gating DRAFT → SENT — CashEntry/CashRegister doivent
+  // être purgées avant Payment/Tenant, même ordre que payments.test.ts.
+  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -255,18 +272,68 @@ describe("PATCH /api/invoices/[id]", () => {
     expect(response.status).toBe(404);
   });
 
-  it("autorise la transition DRAFT → SENT", async () => {
+  // Sprint 26D (Finding D1) : la transition manuelle DRAFT → SENT exige désormais
+  // amountPaid === totalAmount. Sous l'invariant existant de recomputeInvoiceStatus
+  // (src/lib/payments.ts, Finding B, inchangé) — une facture ne reste JAMAIS en DRAFT dès
+  // qu'elle a reçu un paiement (elle passe directement à PARTIALLY_PAID ou PAID) — une
+  // facture est donc en DRAFT si et seulement si amountPaid === 0. En conséquence, pour
+  // toute facture à totalAmount > 0, la transition manuelle SENT est désormais toujours
+  // refusée : soit amountPaid = 0 (encore DRAFT) → refusée par la nouvelle garde
+  // (InvoiceNotFullyPaidError) ; soit un paiement est déjà intervenu → le statut a déjà
+  // quitté DRAFT (PARTIALLY_PAID/PAID), refusée par la machine à états existante
+  // (InvalidInvoiceStatusTransitionError, canTransition, inchangée). Testé ci-dessous dans
+  // les deux cas. Conséquence à confirmer avec le propriétaire du projet : la transition
+  // manuelle SENT (bouton « Finaliser ») devient de fait inatteignable pour toute facture à
+  // montant non nul — signalé, non résolu unilatéralement (voir le résumé de fin de sprint).
+  it("Sprint 26D (Finding D1) — refuse DRAFT → SENT sans aucun paiement (solde non atteint)", async () => {
     const createResponse = await createInvoice(adminA);
-    const invoiceId = (await createResponse.json()).invoice.id;
+    const invoice = (await createResponse.json()).invoice;
 
-    const response = await apiFetch(`/api/invoices/${invoiceId}`, {
+    const response = await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify({ status: "SENT" }),
     });
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    expect(body.invoice.status).toBe("SENT");
+    expect(response.status).toBe(409);
+    const responseBody = await response.json();
+    expect(responseBody.error).toMatch(/solde/i);
+
+    const unchanged = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect((await unchanged.json()).invoice.status).toBe("DRAFT");
+  });
+
+  it("Sprint 26D (Finding D1) — un paiement complet fait passer directement DRAFT → PAID (jamais SENT)", async () => {
+    const createResponse = await createInvoice(adminA);
+    const invoice = (await createResponse.json()).invoice;
+    await payInvoiceInFull(adminA, invoice.id, invoice.totalAmount);
+
+    const afterPayment = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect((await afterPayment.json()).invoice.status).toBe("PAID");
+
+    // Une tentative de SENT après coup est refusée par la machine à états existante
+    // (PAID n'a aucune transition sortante, canTransition/ALLOWED_TRANSITIONS, inchangée).
+    const response = await apiFetch(`/api/invoices/${invoice.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "SENT" }),
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it("Sprint 26D (Finding D1) — refuse DRAFT → SENT avec un paiement partiel", async () => {
+    const createResponse = await createInvoice(adminA);
+    const invoice = (await createResponse.json()).invoice;
+    await payInvoiceInFull(adminA, invoice.id, Math.floor(invoice.totalAmount / 2));
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "SENT" }),
+    });
+    expect(response.status).toBe(409);
+
+    const unchanged = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect((await unchanged.json()).invoice.status).toBe("PARTIALLY_PAID");
   });
 
   it("refuse une transition manuelle vers PARTIALLY_PAID/PAID (dérivées des paiements)", async () => {
@@ -283,15 +350,13 @@ describe("PATCH /api/invoices/[id]", () => {
 
   it("refuse de modifier taxRate/discountAmount après DRAFT", async () => {
     const createResponse = await createInvoice(adminA);
-    const invoiceId = (await createResponse.json()).invoice.id;
+    const invoice = (await createResponse.json()).invoice;
+    // Sprint 26D (Finding D1) : un paiement complet fait passer la facture directement à
+    // PAID (jamais SENT, voir le describe ci-dessus) — suffisant pour quitter DRAFT et
+    // exercer la garde testée ici (InvoiceNotEditableError, inchangée).
+    await payInvoiceInFull(adminA, invoice.id, invoice.totalAmount);
 
-    await apiFetch(`/api/invoices/${invoiceId}`, {
-      method: "PATCH",
-      headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "SENT" }),
-    });
-
-    const response = await apiFetch(`/api/invoices/${invoiceId}`, {
+    const response = await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify({ taxRate: 1000 }),
@@ -330,17 +395,14 @@ describe("DELETE /api/invoices/[id]", () => {
     expect(response.status).toBe(200);
   });
 
-  it("refuse la suppression d'une facture SENT", async () => {
+  it("refuse la suppression d'une facture payée (non-DRAFT)", async () => {
     const createResponse = await createInvoice(adminA);
-    const invoiceId = (await createResponse.json()).invoice.id;
+    const invoice = (await createResponse.json()).invoice;
+    // Sprint 26D (Finding D1) : voir le commentaire équivalent ci-dessus (PATCH) — un
+    // paiement complet suffit à quitter DRAFT (directement vers PAID).
+    await payInvoiceInFull(adminA, invoice.id, invoice.totalAmount);
 
-    await apiFetch(`/api/invoices/${invoiceId}`, {
-      method: "PATCH",
-      headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "SENT" }),
-    });
-
-    const response = await apiFetch(`/api/invoices/${invoiceId}`, {
+    const response = await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "DELETE",
       headers: { Cookie: adminA.sessionCookie },
     });

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { updatePayment } from "@/lib/payments";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -280,7 +281,8 @@ describe("PATCH/DELETE /api/payments/[id]", () => {
     const patchResponse = await apiFetch(`/api/payments/${paymentId}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ amount: invoice.totalAmount }),
+      // Sprint 26D (Finding D1) : motif obligatoire dès que amount change réellement.
+      body: JSON.stringify({ amount: invoice.totalAmount, reason: "Solde ajusté au retour du véhicule" }),
     });
     expect(patchResponse.status).toBe(200);
 
@@ -289,7 +291,12 @@ describe("PATCH/DELETE /api/payments/[id]", () => {
     expect(updatedBody.invoice.status).toBe("PAID");
   });
 
-  it("recalcule amountPaid/status de la facture après suppression d'un paiement (jamais un retour à DRAFT)", async () => {
+  // Sprint 26D (Finding D1) : deletePayment est désormais réservé aux paiements jamais
+  // reflétés en caisse — un paiement créé via POST /api/payments a toujours une CashEntry
+  // (recordPaymentCashEntry, systématique depuis le Sprint 18), donc sa suppression physique
+  // est refusée (409) ; le scénario "recalcul après suppression" pour un paiement sans
+  // CashEntry est couvert séparément (describe "Sprint 26D, Finding D1" plus bas).
+  it("refuse la suppression physique d'un paiement déjà reflété en caisse (409) — jamais un retour à DRAFT ni une perte d'historique", async () => {
     const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
     const createResponse = await apiFetch("/api/payments", {
       method: "POST",
@@ -302,15 +309,16 @@ describe("PATCH/DELETE /api/payments/[id]", () => {
       method: "DELETE",
       headers: { Cookie: adminA.sessionCookie },
     });
-    expect(deleteResponse.status).toBe(200);
+    expect(deleteResponse.status).toBe(409);
 
     const updated = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
     const updatedBody = await updated.json();
-    expect(updatedBody.invoice.amountPaid).toBe(0);
-    // Une fois payée, une facture ne revient jamais à DRAFT (ce qui rouvrirait l'édition
-    // de taxRate/discountAmount) même si son dernier paiement est supprimé — voir
-    // recomputeInvoiceStatus dans src/lib/payments.ts.
-    expect(updatedBody.invoice.status).toBe("SENT");
+    // Facture inchangée — la suppression a été refusée avant toute écriture.
+    expect(updatedBody.invoice.amountPaid).toBe(invoice.totalAmount);
+    expect(updatedBody.invoice.status).toBe("PAID");
+
+    const paymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: paymentId } });
+    expect(paymentAfter.status).toBe("ACTIVE");
   });
 });
 
@@ -572,12 +580,12 @@ describe("Sprint 26A, Finding B — verrouillage concurrent (Σ Payment.amount <
       apiFetch(`/api/payments/${payment1.id}`, {
         method: "PATCH",
         headers: { Cookie: adminA.sessionCookie },
-        body: JSON.stringify({ amount: 9000 }),
+        body: JSON.stringify({ amount: 9000, reason: "Ajustement concurrent 1" }),
       }),
       apiFetch(`/api/payments/${payment2.id}`, {
         method: "PATCH",
         headers: { Cookie: adminA.sessionCookie },
-        body: JSON.stringify({ amount: 9000 }),
+        body: JSON.stringify({ amount: 9000, reason: "Ajustement concurrent 2" }),
       }),
     ]);
 
@@ -673,5 +681,335 @@ describe("Sprint 18 — paiement enregistré depuis la fiche facture alimente la
     const cashEntries = await prisma.cashEntry.findMany({ where: { contractId: invoice.locationId } });
     expect(cashEntries).toHaveLength(2);
     expect(cashEntries.map((entry) => entry.amount).sort((a, b) => a - b)).toEqual([5000, 10000]);
+  });
+});
+
+describe("Sprint 26D, Finding D1 — corrections de paiement (compensation append-only)", () => {
+  async function createPayment(amount: number, method: "CASH" | "CARD" = "CASH") {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    const response = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ invoiceId: invoice.id, amount, method }),
+    });
+    const payment = (await response.json()).payment as { id: string; invoiceId: string; amount: number };
+    return { invoice, payment };
+  }
+
+  async function getOriginalEntry(paymentId: string) {
+    return prisma.cashEntry.findFirstOrThrow({ where: { paymentId, parentEntryId: null } });
+  }
+
+  it("diminution du montant : compensation négative, écriture d'origine inchangée, solde correct", async () => {
+    const { payment } = await createPayment(500);
+    const original = await getOriginalEntry(payment.id);
+
+    const patchResponse = await apiFetch(`/api/payments/${payment.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ amount: 300, reason: "Erreur de saisie" }),
+    });
+    expect(patchResponse.status).toBe(200);
+
+    const paymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(paymentAfter.amount).toBe(300);
+    expect(paymentAfter.status).toBe("ACTIVE");
+
+    const originalAfter = await prisma.cashEntry.findUniqueOrThrow({ where: { id: original.id } });
+    expect(originalAfter.amount).toBe(500);
+    expect(originalAfter.type).toBe("ENTRY");
+
+    const compensations = await prisma.cashEntry.findMany({ where: { parentEntryId: original.id } });
+    expect(compensations).toHaveLength(1);
+    expect(compensations[0].type).toBe("EXPENSE");
+    expect(compensations[0].amount).toBe(200);
+    expect(compensations[0].paymentId).toBe(payment.id);
+    expect(compensations[0].reason).toBe("Erreur de saisie");
+    expect(compensations[0].performedByUserId).toBe(adminA.userId);
+
+    const invoiceAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: payment.invoiceId } });
+    expect(invoiceAfter.amountPaid).toBe(300);
+  });
+
+  it("augmentation du montant : compensation positive", async () => {
+    const { payment } = await createPayment(500);
+    const original = await getOriginalEntry(payment.id);
+
+    const patchResponse = await apiFetch(`/api/payments/${payment.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ amount: 700, reason: "Complément réglé au retour" }),
+    });
+    expect(patchResponse.status).toBe(200);
+
+    const paymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(paymentAfter.amount).toBe(700);
+
+    const compensations = await prisma.cashEntry.findMany({ where: { parentEntryId: original.id } });
+    expect(compensations).toHaveLength(1);
+    expect(compensations[0].type).toBe("ENTRY");
+    expect(compensations[0].amount).toBe(200);
+
+    const invoiceAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: payment.invoiceId } });
+    expect(invoiceAfter.amountPaid).toBe(700);
+  });
+
+  it("refuse une correction de montant sans motif (400), aucune écriture créée", async () => {
+    const { payment } = await createPayment(500);
+    const original = await getOriginalEntry(payment.id);
+
+    const patchResponse = await apiFetch(`/api/payments/${payment.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ amount: 300 }),
+    });
+    expect(patchResponse.status).toBe(400);
+
+    const paymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(paymentAfter.amount).toBe(500);
+    const compensations = await prisma.cashEntry.findMany({ where: { parentEntryId: original.id } });
+    expect(compensations).toHaveLength(0);
+  });
+
+  it("changement de moyen seul : deux compensations liées (sortie ancien moyen, entrée nouveau moyen), montant inchangé", async () => {
+    const { payment } = await createPayment(500, "CASH");
+    const original = await getOriginalEntry(payment.id);
+
+    const patchResponse = await apiFetch(`/api/payments/${payment.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ method: "CARD", reason: "Le client a finalement réglé par carte" }),
+    });
+    expect(patchResponse.status).toBe(200);
+
+    const paymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(paymentAfter.amount).toBe(500);
+    expect(paymentAfter.method).toBe("CARD");
+
+    const compensations = await prisma.cashEntry.findMany({ where: { parentEntryId: original.id }, orderBy: { createdAt: "asc" } });
+    expect(compensations).toHaveLength(2);
+    expect(compensations[0].type).toBe("EXPENSE");
+    expect(compensations[0].amount).toBe(500);
+    expect(compensations[0].paymentMethod).toBe("CASH");
+    expect(compensations[1].type).toBe("ENTRY");
+    expect(compensations[1].amount).toBe(500);
+    expect(compensations[1].paymentMethod).toBe("CARD");
+    expect(compensations.every((entry) => entry.paymentId === payment.id)).toBe(true);
+
+    // Solde global inchangé (réallocation pure), mais la ventilation CASH/CARD est corrigée.
+    const invoiceAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: payment.invoiceId } });
+    expect(invoiceAfter.amountPaid).toBe(500);
+  });
+
+  it("changement simultané de montant et de moyen : sortie complète ancien montant/moyen, entrée complète nouveau montant/moyen", async () => {
+    const { payment } = await createPayment(500, "CASH");
+    const original = await getOriginalEntry(payment.id);
+
+    const patchResponse = await apiFetch(`/api/payments/${payment.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ amount: 700, method: "CARD", reason: "Complément réglé par carte" }),
+    });
+    expect(patchResponse.status).toBe(200);
+
+    const compensations = await prisma.cashEntry.findMany({ where: { parentEntryId: original.id }, orderBy: { createdAt: "asc" } });
+    expect(compensations).toHaveLength(2);
+    expect(compensations[0].type).toBe("EXPENSE");
+    expect(compensations[0].amount).toBe(500);
+    expect(compensations[0].paymentMethod).toBe("CASH");
+    expect(compensations[1].type).toBe("ENTRY");
+    expect(compensations[1].amount).toBe(700);
+    expect(compensations[1].paymentMethod).toBe("CARD");
+
+    const invoiceAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: payment.invoiceId } });
+    expect(invoiceAfter.amountPaid).toBe(700);
+  });
+
+  it("correction de date seule : aucune CashEntry créée, AuditLog contient ancien/nouveau paidAt et le motif", async () => {
+    const { payment } = await createPayment(500);
+    const original = await getOriginalEntry(payment.id);
+    const newPaidAt = new Date(Date.UTC(2029, 5, 15));
+
+    const patchResponse = await apiFetch(`/api/payments/${payment.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ paidAt: newPaidAt.toISOString(), reason: "Date de règlement corrigée" }),
+    });
+    expect(patchResponse.status).toBe(200);
+
+    const paymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(paymentAfter.paidAt.toISOString()).toBe(newPaidAt.toISOString());
+
+    // Aucune compensation — rien à corriger financièrement pour une date seule.
+    const compensations = await prisma.cashEntry.findMany({ where: { parentEntryId: original.id } });
+    expect(compensations).toHaveLength(0);
+    // L'écriture d'origine reste sur son createdAt réel (immuable) — jamais réalignée sur le
+    // nouveau paidAt (voir le commentaire sur updatePaymentLocked, src/lib/payments.ts).
+    const originalAfter = await prisma.cashEntry.findUniqueOrThrow({ where: { id: original.id } });
+    expect(originalAfter.createdAt).toEqual(original.createdAt);
+
+    const log = await prisma.auditLog.findFirst({
+      where: { tenantId: adminA.tenantId, resource: "Payment", resourceId: payment.id, action: "payment.updated" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(log).not.toBeNull();
+    const metadata = log?.metadata as Record<string, unknown>;
+    expect(metadata.reason).toBe("Date de règlement corrigée");
+    expect(metadata.newPaidAt).toBe(newPaidAt.toISOString());
+    expect(typeof metadata.previousPaidAt).toBe("string");
+  });
+
+  it("un paiement déjà REFUNDED ne peut plus être corrigé (409)", async () => {
+    // Contrat validé + paiement + annulation admin (flux de remboursement, describe Sprint 23
+    // de locations.test.ts) pour atteindre l'état REFUNDED.
+    const locationResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: vehicleAId,
+        clientId: clientAId,
+        startDate: "2029-09-01",
+        endDate: "2029-09-04",
+        status: "CONFIRMED",
+        payment: { method: "CASH", partial: false },
+      }),
+    });
+    const { location, invoice } = await locationResponse.json();
+    const [payment] = await prisma.payment.findMany({ where: { invoiceId: invoice.id } });
+
+    const cancelResponse = await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Test REFUNDED — préparation" }),
+    });
+    expect(cancelResponse.status).toBe(200);
+
+    const refundedPayment = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(refundedPayment.status).toBe("REFUNDED");
+
+    const patchResponse = await apiFetch(`/api/payments/${payment.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ amount: 1000, reason: "Tentative après remboursement" }),
+    });
+    expect(patchResponse.status).toBe(409);
+
+    const unchanged = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(unchanged.amount).toBe(refundedPayment.amount);
+  });
+
+  it("un paiement sans CashEntry d'origine (legacy) refuse la correction (409), aucune compensation orpheline", async () => {
+    const { payment } = await createPayment(500);
+    // Simule un paiement antérieur au Sprint 18 : sa CashEntry n'a jamais existé.
+    await prisma.cashEntry.deleteMany({ where: { paymentId: payment.id } });
+
+    const patchResponse = await apiFetch(`/api/payments/${payment.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ amount: 300, reason: "Correction sans historique de caisse" }),
+    });
+    expect(patchResponse.status).toBe(409);
+
+    const unchanged = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(unchanged.amount).toBe(500);
+    const anyEntry = await prisma.cashEntry.findFirst({ where: { paymentId: payment.id } });
+    expect(anyEntry).toBeNull();
+  });
+
+  it("suppression physique refusée (409) si une CashEntry est liée — Payment et CashEntry inchangés", async () => {
+    const { payment } = await createPayment(500);
+
+    const deleteResponse = await apiFetch(`/api/payments/${payment.id}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(409);
+
+    const stillThere = await prisma.payment.findUnique({ where: { id: payment.id } });
+    expect(stillThere).not.toBeNull();
+    const entry = await prisma.cashEntry.findFirst({ where: { paymentId: payment.id } });
+    expect(entry).not.toBeNull();
+  });
+
+  it("suppression physique autorisée si aucune CashEntry n'est liée (legacy) — facture recalculée", async () => {
+    const { payment, invoice } = await createPayment(500);
+    await prisma.cashEntry.deleteMany({ where: { paymentId: payment.id } });
+
+    const deleteResponse = await apiFetch(`/api/payments/${payment.id}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(200);
+
+    const gone = await prisma.payment.findUnique({ where: { id: payment.id } });
+    expect(gone).toBeNull();
+    const invoiceAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+    expect(invoiceAfter.amountPaid).toBe(0);
+  });
+
+  it("rollback : un échec après la correction du paiement annule Payment, CashEntry, Invoice et CashRegister", async () => {
+    const { payment, invoice } = await createPayment(500);
+    const registerBefore = await prisma.cashRegister.findUniqueOrThrow({ where: { tenantId: adminA.tenantId } });
+
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await updatePayment(
+          adminA.tenantId,
+          payment.id,
+          { amount: 300, reason: "Test rollback", performedByUserId: adminA.userId },
+          tx
+        );
+        throw new Error("Échec forcé après la correction du paiement");
+      })
+    ).rejects.toThrow("Échec forcé");
+
+    const paymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(paymentAfter.amount).toBe(500);
+
+    const compensations = await prisma.cashEntry.findMany({
+      where: { paymentId: payment.id, parentEntryId: { not: null } },
+    });
+    expect(compensations).toHaveLength(0);
+
+    const invoiceAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+    expect(invoiceAfter.amountPaid).toBe(500);
+
+    const registerAfter = await prisma.cashRegister.findUniqueOrThrow({ where: { tenantId: adminA.tenantId } });
+    expect(registerAfter.currentBalance).toBe(registerBefore.currentBalance);
+  });
+
+  it("deux PATCH concurrents sur le même paiement : sérialisés par le verrou Invoice, jamais de double compensation", async () => {
+    const { payment, invoice } = await createPayment(1000);
+    const original = await getOriginalEntry(payment.id);
+
+    const [r1, r2] = await Promise.all([
+      apiFetch(`/api/payments/${payment.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ amount: 600, reason: "Correction concurrente 1" }),
+      }),
+      apiFetch(`/api/payments/${payment.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ amount: 800, reason: "Correction concurrente 2" }),
+      }),
+    ]);
+
+    // Les deux montants demandés sont individuellement valides (<= totalAmount de la
+    // facture) : le verrou Invoice sérialise les deux transactions, chacune relit l'état à
+    // jour avant de calculer sa compensation — les deux peuvent donc réussir.
+    expect([r1.status, r2.status].every((s) => s === 200)).toBe(true);
+
+    const paymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect([600, 800]).toContain(paymentAfter.amount);
+
+    // Exactement une compensation par PATCH réussi — jamais plus, jamais une compensation
+    // calculée sur un montant déjà périmé par l'autre transaction (voir le commentaire sur
+    // updatePaymentLocked, src/lib/payments.ts).
+    const compensations = await prisma.cashEntry.findMany({ where: { parentEntryId: original.id } });
+    expect(compensations).toHaveLength(2);
+
+    const invoiceAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+    expect(invoiceAfter.amountPaid).toBe(paymentAfter.amount);
   });
 });
