@@ -88,7 +88,28 @@ async function stopServer(proc: ChildProcess): Promise<void> {
   }
 }
 
+async function cleanupResidualTestServer(): Promise<void> {
+  // Un arrêt brutal de Vitest (SIGKILL, timeout externe, double interruption) ne laisse
+  // aucune chance au teardown de ce fichier de s'exécuter — le serveur `next dev` détaché
+  // (voir startServer plus bas) peut alors survivre indéfiniment et bloquer le port de test
+  // au prochain lancement (EADDRINUSE). Nettoyage préventif idempotent avant chaque spawn,
+  // pattern strictement borné au port de test (jamais le port 3000 de développement).
+  // Complémentaire au filet de sécurité déjà présent dans scripts/test-grouped.mjs, pas un
+  // remplacement.
+  await new Promise<void>((resolve) => {
+    const proc = spawn("pkill", ["-f", `next dev.*-p ${TEST_PORT}`]);
+    proc.on("exit", () => resolve());
+    proc.on("error", () => resolve());
+  });
+  // pkill retourne dès l'envoi du signal, pas après la sortie effective du process ciblé —
+  // cette pause laisse le temps à un éventuel résiduel de terminer sa sortie et de libérer
+  // le port avant le spawn suivant.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+}
+
 async function startServer(): Promise<ChildProcess> {
+  await cleanupResidualTestServer();
+
   const testEnv: Record<string, string> = {};
   loadDotenv({ path: ".env.test", processEnv: testEnv });
 
