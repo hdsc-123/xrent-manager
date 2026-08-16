@@ -21,10 +21,20 @@ async function createInvoice(admin: AuthenticatedTestUser, overrides: Record<str
   });
 }
 
-/** Sprint 26D (Finding D1) : la transition DRAFT → SENT (facture finale) exige désormais
- * amountPaid === totalAmount (InvoiceNotFullyPaidError sinon) — règle un paiement complet
- * avant de tester la finalisation elle-même. */
+/** Finding F : un paiement ne peut être enregistré que sur une facture finalisée (SENT ou
+ * au-delà, InvoiceNotFinalizedError sinon sur une facture encore DRAFT) — finalise d'abord la
+ * facture avant tout paiement direct via POST /api/payments. */
+async function finalizeInvoice(admin: AuthenticatedTestUser, invoiceId: string) {
+  const response = await apiFetch(`/api/invoices/${invoiceId}`, {
+    method: "PATCH",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ status: "SENT" }),
+  });
+  expect(response.status).toBe(200);
+}
+
 async function payInvoiceInFull(admin: AuthenticatedTestUser, invoiceId: string, amount: number) {
+  await finalizeInvoice(admin, invoiceId);
   const response = await apiFetch("/api/payments", {
     method: "POST",
     headers: { Cookie: admin.sessionCookie },
@@ -272,20 +282,15 @@ describe("PATCH /api/invoices/[id]", () => {
     expect(response.status).toBe(404);
   });
 
-  // Sprint 26D (Finding D1) : la transition manuelle DRAFT → SENT exige désormais
-  // amountPaid === totalAmount. Sous l'invariant existant de recomputeInvoiceStatus
-  // (src/lib/payments.ts, Finding B, inchangé) — une facture ne reste JAMAIS en DRAFT dès
-  // qu'elle a reçu un paiement (elle passe directement à PARTIALLY_PAID ou PAID) — une
-  // facture est donc en DRAFT si et seulement si amountPaid === 0. En conséquence, pour
-  // toute facture à totalAmount > 0, la transition manuelle SENT est désormais toujours
-  // refusée : soit amountPaid = 0 (encore DRAFT) → refusée par la nouvelle garde
-  // (InvoiceNotFullyPaidError) ; soit un paiement est déjà intervenu → le statut a déjà
-  // quitté DRAFT (PARTIALLY_PAID/PAID), refusée par la machine à états existante
-  // (InvalidInvoiceStatusTransitionError, canTransition, inchangée). Testé ci-dessous dans
-  // les deux cas. Conséquence à confirmer avec le propriétaire du projet : la transition
-  // manuelle SENT (bouton « Finaliser ») devient de fait inatteignable pour toute facture à
-  // montant non nul — signalé, non résolu unilatéralement (voir le résumé de fin de sprint).
-  it("Sprint 26D (Finding D1) — refuse DRAFT → SENT sans aucun paiement (solde non atteint)", async () => {
+  // Finding F (Sprint 26F) : le gate Sprint 26D (InvoiceNotFullyPaidError) rendait SENT
+  // structurellement inatteignable — recomputeInvoiceStatus (src/lib/payments.ts, Finding B,
+  // inchangée) fait déjà passer une facture directement de DRAFT à PARTIALLY_PAID/PAID dès le
+  // premier paiement, sans jamais s'arrêter à SENT, ce qui rendait la garde « solde intégral
+  // requis » systématiquement vraie pour toute facture DRAFT. Retiré sur décision explicite du
+  // propriétaire du projet : SENT signifie désormais « facture finalisée, verrouillée, en
+  // attente de paiement », jamais « facture soldée » — la transition DRAFT → SENT est
+  // inconditionnelle vis-à-vis du solde.
+  it("Finding F — autorise DRAFT → SENT sans aucun paiement (facture finalisée, en attente de règlement)", async () => {
     const createResponse = await createInvoice(adminA);
     const invoice = (await createResponse.json()).invoice;
 
@@ -294,17 +299,16 @@ describe("PATCH /api/invoices/[id]", () => {
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify({ status: "SENT" }),
     });
-    expect(response.status).toBe(409);
-    const responseBody = await response.json();
-    expect(responseBody.error).toMatch(/solde/i);
-
-    const unchanged = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
-    expect((await unchanged.json()).invoice.status).toBe("DRAFT");
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.invoice.status).toBe("SENT");
+    expect(body.invoice.amountPaid).toBe(0);
   });
 
-  it("Sprint 26D (Finding D1) — un paiement complet fait passer directement DRAFT → PAID (jamais SENT)", async () => {
+  it("Finding F — un paiement complet sur une facture SENT fait passer PAID", async () => {
     const createResponse = await createInvoice(adminA);
     const invoice = (await createResponse.json()).invoice;
+    // payInvoiceInFull finalise (DRAFT → SENT) puis paie intégralement (SENT → PAID, dérivé).
     await payInvoiceInFull(adminA, invoice.id, invoice.totalAmount);
 
     const afterPayment = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
@@ -320,10 +324,14 @@ describe("PATCH /api/invoices/[id]", () => {
     expect(response.status).toBe(409);
   });
 
-  it("Sprint 26D (Finding D1) — refuse DRAFT → SENT avec un paiement partiel", async () => {
+  it("Finding F — un paiement partiel sur une facture SENT fait passer PARTIALLY_PAID", async () => {
     const createResponse = await createInvoice(adminA);
     const invoice = (await createResponse.json()).invoice;
+    // payInvoiceInFull finalise (DRAFT → SENT) puis paie partiellement (SENT → PARTIALLY_PAID).
     await payInvoiceInFull(adminA, invoice.id, Math.floor(invoice.totalAmount / 2));
+
+    const afterPayment = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect((await afterPayment.json()).invoice.status).toBe("PARTIALLY_PAID");
 
     const response = await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
@@ -331,9 +339,25 @@ describe("PATCH /api/invoices/[id]", () => {
       body: JSON.stringify({ status: "SENT" }),
     });
     expect(response.status).toBe(409);
+  });
+
+  it("Finding F — refuse un paiement direct sur une facture encore DRAFT (non finalisée)", async () => {
+    const createResponse = await createInvoice(adminA);
+    const invoice = (await createResponse.json()).invoice;
+
+    const response = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ invoiceId: invoice.id, amount: invoice.totalAmount, method: "CASH" }),
+    });
+    expect(response.status).toBe(409);
+    const responseBody = await response.json();
+    expect(responseBody.error).toMatch(/finalis/i);
 
     const unchanged = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
-    expect((await unchanged.json()).invoice.status).toBe("PARTIALLY_PAID");
+    const unchangedBody = await unchanged.json();
+    expect(unchangedBody.invoice.status).toBe("DRAFT");
+    expect(unchangedBody.invoice.amountPaid).toBe(0);
   });
 
   it("refuse une transition manuelle vers PARTIALLY_PAID/PAID (dérivées des paiements)", async () => {
@@ -351,9 +375,9 @@ describe("PATCH /api/invoices/[id]", () => {
   it("refuse de modifier taxRate/discountAmount après DRAFT", async () => {
     const createResponse = await createInvoice(adminA);
     const invoice = (await createResponse.json()).invoice;
-    // Sprint 26D (Finding D1) : un paiement complet fait passer la facture directement à
-    // PAID (jamais SENT, voir le describe ci-dessus) — suffisant pour quitter DRAFT et
-    // exercer la garde testée ici (InvoiceNotEditableError, inchangée).
+    // payInvoiceInFull finalise (DRAFT → SENT) puis paie intégralement (SENT → PAID) —
+    // suffisant pour quitter DRAFT et exercer la garde testée ici (InvoiceNotEditableError,
+    // inchangée : non éditable dès SENT, pas seulement à partir de PAID).
     await payInvoiceInFull(adminA, invoice.id, invoice.totalAmount);
 
     const response = await apiFetch(`/api/invoices/${invoice.id}`, {

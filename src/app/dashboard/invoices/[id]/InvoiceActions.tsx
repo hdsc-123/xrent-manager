@@ -166,7 +166,11 @@ export function InvoiceActions({
   // Filtrage par permission : CANCELLED s'apparente à une suppression (invoices.delete), les
   // autres transitions (ex. DRAFT → SENT) à une modification (invoices.edit).
   const visibleNextStatuses = nextStatuses.filter((next) => (next === "CANCELLED" ? canDelete : canEdit));
-  const canRecordPayment = remainingBalance > 0 && status !== "CANCELLED" && canCreatePayment;
+  // Finding F : un paiement ne peut être enregistré que sur une facture finalisée (SENT ou
+  // au-delà) — DRAFT exclu, sinon le clic aboutirait systématiquement à un 409
+  // (InvoiceNotFinalizedError, src/lib/payments.ts).
+  const canRecordPayment =
+    remainingBalance > 0 && status !== "CANCELLED" && status !== "DRAFT" && canCreatePayment;
 
   return (
     <Card>

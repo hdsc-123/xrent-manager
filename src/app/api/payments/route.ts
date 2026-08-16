@@ -12,6 +12,7 @@ import {
   type MixedPaymentLine,
   PaymentInvoiceNotFoundError,
   InvoiceCancelledError,
+  InvoiceNotFinalizedError,
   InvalidPaymentAmountError,
   PaymentExceedsRemainingBalanceError,
 } from "@/lib/payments";
@@ -166,7 +167,11 @@ export async function POST(request: Request) {
       if (error instanceof InvalidPaymentAmountError) {
         return NextResponse.json({ error: error.message }, { status: 400 });
       }
-      if (error instanceof InvoiceCancelledError || error instanceof PaymentExceedsRemainingBalanceError) {
+      if (
+        error instanceof InvoiceCancelledError ||
+        error instanceof InvoiceNotFinalizedError ||
+        error instanceof PaymentExceedsRemainingBalanceError
+      ) {
         return NextResponse.json({ error: error.message }, { status: 409 });
       }
 
@@ -210,7 +215,11 @@ export async function POST(request: Request) {
     if (error instanceof InvalidPaymentAmountError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
-    if (error instanceof InvoiceCancelledError || error instanceof PaymentExceedsRemainingBalanceError) {
+    if (
+      error instanceof InvoiceCancelledError ||
+      error instanceof InvoiceNotFinalizedError ||
+      error instanceof PaymentExceedsRemainingBalanceError
+    ) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
 

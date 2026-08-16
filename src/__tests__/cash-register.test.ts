@@ -822,6 +822,14 @@ body: JSON.stringify({ type: "EXPENSE", category: "Fournitures", amount: 20_000,
     });
     const invoice = (await invoiceResponse.json()).invoice;
 
+    // Finding F : un paiement direct est refusé sur une facture encore DRAFT — finalise
+    // d'abord (DRAFT → SENT, inconditionnel vis-à-vis du solde).
+    await apiFetch(`/api/invoices/${invoice.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "SENT" }),
+    });
+
     await apiFetch("/api/payments", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },

@@ -14,7 +14,10 @@ let adminB: AuthenticatedTestUser;
 // pour ne jamais entrer en conflit avec les locations déjà créées sur le même véhicule.
 let freshInvoiceDateOffset = 0;
 
-/** Crée une nouvelle location + facture DRAFT (totalAmount = 15000) pour adminA, prête à recevoir des paiements. */
+/** Crée une nouvelle location + facture (totalAmount = 15000) pour adminA, finalisée (SENT),
+ * prête à recevoir des paiements. Finding F : un paiement direct (POST /api/payments) est
+ * refusé sur une facture encore DRAFT — la facture doit donc être finalisée avant d'être
+ * retournée par ce helper, utilisé par la quasi-totalité des tests de ce fichier. */
 async function createFreshInvoice(admin: AuthenticatedTestUser, vehicleId: string, clientId: string) {
   freshInvoiceDateOffset += 10;
   const base = new Date(Date.UTC(2029, 0, 1));
@@ -39,7 +42,43 @@ async function createFreshInvoice(admin: AuthenticatedTestUser, vehicleId: strin
     body: JSON.stringify({ locationId: location.id }),
   });
   const invoice = (await invoiceResponse.json()).invoice;
-  return invoice as { id: string; totalAmount: number; locationId: string };
+
+  const finalizeResponse = await apiFetch(`/api/invoices/${invoice.id}`, {
+    method: "PATCH",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ status: "SENT" }),
+  });
+  const finalized = (await finalizeResponse.json()).invoice;
+  return finalized as { id: string; totalAmount: number; locationId: string; status: string };
+}
+
+/** Crée une location + facture DRAFT (non finalisée) — pour les tests qui exercent
+ * spécifiquement le rejet d'un paiement direct sur DRAFT (Finding F). */
+async function createFreshDraftInvoice(admin: AuthenticatedTestUser, vehicleId: string, clientId: string) {
+  freshInvoiceDateOffset += 10;
+  const base = new Date(Date.UTC(2029, 0, 1));
+  const start = new Date(base.getTime() + freshInvoiceDateOffset * 24 * 60 * 60 * 1000);
+  const end = new Date(start.getTime() + 3 * 24 * 60 * 60 * 1000);
+
+  const locationResponse = await apiFetch("/api/locations", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({
+      vehicleId,
+      clientId,
+      startDate: start.toISOString().slice(0, 10),
+      endDate: end.toISOString().slice(0, 10),
+    }),
+  });
+  const location = (await locationResponse.json()).location;
+
+  const invoiceResponse = await apiFetch("/api/invoices", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ locationId: location.id }),
+  });
+  const invoice = (await invoiceResponse.json()).invoice;
+  return invoice as { id: string; totalAmount: number; locationId: string; status: string };
 }
 
 let agencyAId: string;
@@ -188,6 +227,39 @@ describe("POST /api/payments", () => {
       body: JSON.stringify({ invoiceId: invoiceBId, amount: 1000, method: "CASH" }),
     });
     expect(response.status).toBe(404);
+  });
+
+  it("Finding F — refuse un paiement direct sur une facture encore DRAFT (non finalisée)", async () => {
+    const invoice = await createFreshDraftInvoice(adminA, vehicleAId, clientAId);
+    const response = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ invoiceId: invoice.id, amount: invoice.totalAmount, method: "CASH" }),
+    });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatch(/finalis/i);
+
+    const paymentsResponse = await apiFetch(`/api/payments?invoiceId=${invoice.id}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect((await paymentsResponse.json()).payments).toHaveLength(0);
+
+    const invoiceResponse = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect((await invoiceResponse.json()).invoice.status).toBe("DRAFT");
+  });
+
+  it("Finding F — refuse un paiement mixte direct sur une facture encore DRAFT (non finalisée)", async () => {
+    const invoice = await createFreshDraftInvoice(adminA, vehicleAId, clientAId);
+    const response = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        invoiceId: invoice.id,
+        lines: [{ amount: invoice.totalAmount, method: "CASH" }],
+      }),
+    });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatch(/finalis/i);
   });
 
   it("refuse un montant dépassant le solde restant dû", async () => {
@@ -471,7 +543,7 @@ describe("Sprint 17 — POST /api/payments avec lines (paiement mixte atomique d
 
     const invoiceResponse = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
     const untouchedInvoice = (await invoiceResponse.json()).invoice;
-    expect(untouchedInvoice.status).toBe("DRAFT");
+    expect(untouchedInvoice.status).toBe("SENT");
     expect(untouchedInvoice.amountPaid).toBe(0);
   });
 

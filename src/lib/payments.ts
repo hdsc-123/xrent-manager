@@ -22,6 +22,19 @@ export class InvoiceCancelledError extends Error {
   }
 }
 
+/** Finding F : une facture DRAFT n'est pas encore finalisée (verrouillée, envoyée au
+ * client) — un paiement ne peut être enregistré qu'à partir de SENT. Le paiement intégré à
+ * la création d'un contrat/d'une location (processLocationPayment, src/lib/location-payment.ts)
+ * finalise automatiquement la facture avant d'appeler createPayment ; en dehors de ce flux, une
+ * finalisation manuelle (PATCH /api/invoices/[id], bouton « Finaliser ») est requise au
+ * préalable. */
+export class InvoiceNotFinalizedError extends Error {
+  constructor() {
+    super("Impossible d'enregistrer un paiement sur une facture non finalisée (DRAFT) — finalisez-la d'abord.");
+    this.name = "InvoiceNotFinalizedError";
+  }
+}
+
 export class InvalidPaymentAmountError extends Error {
   constructor(message: string) {
     super(message);
@@ -215,6 +228,9 @@ async function createPaymentLocked(data: CreatePaymentInput, tx: Prisma.Transact
 
   if (invoice.status === "CANCELLED") {
     throw new InvoiceCancelledError();
+  }
+  if (invoice.status === "DRAFT") {
+    throw new InvoiceNotFinalizedError();
   }
 
   const remainingBalance = invoice.totalAmount - invoice.amountPaid;
@@ -550,6 +566,9 @@ async function createMixedPaymentsLocked(
   }
   if (invoice.status === "CANCELLED") {
     throw new InvoiceCancelledError();
+  }
+  if (invoice.status === "DRAFT") {
+    throw new InvoiceNotFinalizedError();
   }
 
   const remainingBalance = invoice.totalAmount - invoice.amountPaid;

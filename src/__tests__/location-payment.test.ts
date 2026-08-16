@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
 import { registerTenantAdmin, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { processLocationPayment } from "@/lib/location-payment";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -187,6 +188,83 @@ describe("POST /api/locations — paiement intégré", () => {
     expect(payments).toEqual([]);
     const cashEntries = await prisma.cashEntry.findMany({ where: { contractId: body.location.id } });
     expect(cashEntries).toEqual([]);
+  });
+
+  it("Finding F — le paiement intégré finalise automatiquement la facture (DRAFT → SENT) avant de payer, journalisé", async () => {
+    const response = await createLocationWithPayment({ method: "CASH", partial: true, amount: 5_000 });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    // La facture n'est jamais restée DRAFT : un Payment n'existe que sur une facture déjà
+    // finalisée (InvoiceNotFinalizedError sinon, src/lib/payments.ts) — PARTIALLY_PAID ici
+    // prouve que la finalisation automatique (DRAFT → SENT) a bien eu lieu avant le paiement.
+    expect(body.invoice.status).toBe("PARTIALLY_PAID");
+
+    const auditLogs = await prisma.auditLog.findMany({
+      where: { resourceId: body.invoice.id, resource: "Invoice", action: "invoice.status_changed" },
+    });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].metadata).toMatchObject({ from: "DRAFT", to: "SENT", auto: true });
+
+    const paymentAuditLogs = await prisma.auditLog.findMany({
+      where: { resource: "Payment", resourceId: body.payments[0].id, action: "payment.created" },
+    });
+    expect(paymentAuditLogs).toHaveLength(1);
+  });
+
+  it("Finding F — paiement mixte : rollback complet (finalisation, 1ère ligne, CashEntry) si la 2e ligne échoue", async () => {
+    // Situation de course non reproductible de façon fiable via deux requêtes HTTP concurrentes
+    // dans un test d'intégration (tout se joue dans un seul appel POST /api/locations) : simulée
+    // ici en appelant processLocationPayment directement avec un `totalAmount` gonflé dans
+    // l'objet `invoice` passé en entrée (comme si le solde avait été mal évalué en amont). La
+    // pré-validation du total des lignes (processLocationPayment) se base sur cet objet fourni et
+    // laisse donc passer un total réel trop élevé ; `finalizeAndPay`, lui, ne fait ensuite
+    // confiance qu'à l'état réel en base à chaque étape (updateInvoice/createPayment relisent
+    // tout depuis `tx`) — la 1ère ligne (dans le vrai solde) réussit et écrit un Payment + une
+    // CashEntry *dans la transaction*, la 2e ligne (qui dépasse le vrai solde restant) échoue :
+    // toute la transaction doit alors être rollback, 1ère ligne comprise.
+    const created = await createLocationWithPayment({ deferred: true });
+    const createdBody = await created.json();
+    const realInvoice = createdBody.invoice; // DRAFT, amountPaid = 0, totalAmount réel = 15000
+    expect(realInvoice.totalAmount).toBe(15_000);
+    const staleInvoice = { ...realInvoice, totalAmount: 25_000 };
+    const before = new Date();
+
+    const result = await processLocationPayment({
+      tenantId: admin.tenantId,
+      userId: admin.userId,
+      invoice: staleInvoice,
+      payment: { mixed: true, method1: "CASH", amount1: 10_000, method2: "CARD", amount2: 10_000 },
+    });
+
+    expect(result.paymentError).toBeTruthy();
+    expect(result.payments).toEqual([]);
+
+    const dbInvoice = await prisma.invoice.findUniqueOrThrow({ where: { id: realInvoice.id } });
+    // La finalisation (DRAFT → SENT) et la 1ère ligne (10 000, CASH — valide isolément contre
+    // le vrai solde de 15000) ont bien été rollback avec le reste de la transaction : la facture
+    // n'est jamais restée SENT/PARTIALLY_PAID orpheline avec un paiement partiel.
+    expect(dbInvoice.status).toBe("DRAFT");
+    expect(dbInvoice.amountPaid).toBe(0);
+
+    const payments = await prisma.payment.findMany({ where: { invoiceId: realInvoice.id } });
+    expect(payments).toEqual([]);
+
+    const cashEntries = await prisma.cashEntry.findMany({ where: { contractId: realInvoice.locationId } });
+    expect(cashEntries).toEqual([]);
+
+    // Aucun AuditLog de succès ne doit exister pour une transaction rollback — la journalisation
+    // (invoice.status_changed / payment.created) n'intervient qu'après le succès complet de la
+    // transaction (voir src/lib/location-payment.ts).
+    const invoiceAuditLogs = await prisma.auditLog.findMany({
+      where: { resourceId: realInvoice.id, resource: "Invoice", action: "invoice.status_changed" },
+    });
+    expect(invoiceAuditLogs).toEqual([]);
+    // Aucun payment.created (même pour la 1ère ligne, rollback avec le reste) depuis le début
+    // de cette tentative — vérifié sans filtrer sur metadata (JSON), en bornant sur createdAt.
+    const paymentAuditLogs = await prisma.auditLog.findMany({
+      where: { tenantId: admin.tenantId, resource: "Payment", action: "payment.created", createdAt: { gte: before } },
+    });
+    expect(paymentAuditLogs).toEqual([]);
   });
 
   it("le solde de caisse reflète les paiements encaissés à la création des locations", async () => {

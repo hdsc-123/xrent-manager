@@ -10,7 +10,6 @@ import {
   InvoiceNotEditableError,
   InvalidInvoiceStatusTransitionError,
   InvoiceNotDeletableError,
-  InvoiceNotFullyPaidError,
 } from "@/lib/invoices";
 import { logAction } from "@/lib/audit";
 
@@ -107,11 +106,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     if (error instanceof InvalidInvoiceAmountError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
-    if (
-      error instanceof InvoiceNotEditableError ||
-      error instanceof InvalidInvoiceStatusTransitionError ||
-      error instanceof InvoiceNotFullyPaidError
-    ) {
+    if (error instanceof InvoiceNotEditableError || error instanceof InvalidInvoiceStatusTransitionError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
 

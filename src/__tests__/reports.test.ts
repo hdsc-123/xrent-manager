@@ -185,6 +185,14 @@ describe("getRevenueReport", () => {
     });
     const invoice = (await invoiceResponse.json()).invoice;
 
+    // Finding F : un paiement direct est refusé sur une facture encore DRAFT — finalise
+    // d'abord (DRAFT → SENT, inconditionnel vis-à-vis du solde).
+    await apiFetch(`/api/invoices/${invoice.id}`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ status: "SENT" }),
+    });
+
     await apiFetch("/api/payments", {
       method: "POST",
       headers: { Cookie: admin.sessionCookie },

@@ -160,6 +160,15 @@ describe("Scénario complet Sprint 10 : inscription → sélection de tenant →
     expect(invoiceResponse.status).toBe(201);
     const invoice = (await invoiceResponse.json()).invoice;
 
+    // Finding F : un paiement direct est refusé sur une facture encore DRAFT — finalise
+    // d'abord (DRAFT → SENT, inconditionnel vis-à-vis du solde).
+    const finalizeResponse = await apiFetch(`/api/invoices/${invoice.id}`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ status: "SENT" }),
+    });
+    expect(finalizeResponse.status).toBe(200);
+
     const paymentResponse = await apiFetch("/api/payments", {
       method: "POST",
       headers: { Cookie: admin.sessionCookie },

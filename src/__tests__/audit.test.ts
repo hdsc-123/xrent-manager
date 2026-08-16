@@ -255,6 +255,19 @@ describe("Journal d'audit exhaustif sur le CRUD métier (Sprint 10)", () => {
     const invoiceId = (await invoiceResponse.json()).invoice.id;
     expect((await findLog("Invoice", invoiceId)).some((log) => log.action === "invoice.created")).toBe(true);
 
+    // Finding F : un paiement direct (POST /api/payments) est refusé sur une facture encore
+    // DRAFT (InvoiceNotFinalizedError, src/lib/payments.ts) — finalise d'abord, et vérifie que
+    // cette finalisation manuelle reste bien journalisée (invoice.status_changed, inchangé).
+    const finalizeResponse = await apiFetch(`/api/invoices/${invoiceId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "SENT" }),
+    });
+    expect(finalizeResponse.status).toBe(200);
+    expect(
+      (await findLog("Invoice", invoiceId)).some((log) => log.action === "invoice.status_changed")
+    ).toBe(true);
+
     const paymentResponse = await apiFetch("/api/payments", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
@@ -325,6 +338,77 @@ describe("Journal d'audit exhaustif sur le CRUD métier (Sprint 10)", () => {
       headers: { Cookie: adminA.sessionCookie },
     });
     expect((await findLog("Alert", alert.id)).some((log) => log.action === "alert.resolved")).toBe(true);
+  });
+
+  it("Finding F — un paiement direct refusé sur une facture DRAFT ne journalise rien (ni payment.created, ni invoice.status_changed)", async () => {
+    const agencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence Audit Finding F", slug: `agence-audit-f-${runId}` }),
+    });
+    const agencyId = (await agencyResponse.json()).agency.id;
+
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId,
+        name: "Clio Finding F",
+        licensePlate: `FF-${Math.floor(Math.random() * 1_000_000)}-FF`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 5000,
+        chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
+      }),
+    });
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const clientResponse = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Client Finding F" }),
+    });
+    const clientId = (await clientResponse.json()).client.id;
+
+    const locationResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ vehicleId, clientId, startDate: "2029-02-10", endDate: "2029-02-13" }),
+    });
+    const locationId = (await locationResponse.json()).location.id;
+
+    const invoiceResponse = await apiFetch("/api/invoices", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ locationId }),
+    });
+    const invoiceId = (await invoiceResponse.json()).invoice.id;
+
+    const before = new Date();
+    const paymentResponse = await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ invoiceId, amount: 5000, method: "CASH" }),
+    });
+    expect(paymentResponse.status).toBe(409);
+
+    expect(
+      (await findLog("Invoice", invoiceId)).some(
+        (log) => log.action === "invoice.status_changed" && log.createdAt >= before
+      )
+    ).toBe(false);
+    const paymentLogsSince = await prisma.auditLog.findMany({
+      where: { tenantId: adminA.tenantId, resource: "Payment", action: "payment.created", createdAt: { gte: before } },
+    });
+    expect(paymentLogsSince).toEqual([]);
   });
 });
 

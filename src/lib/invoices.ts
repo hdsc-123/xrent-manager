@@ -40,21 +40,6 @@ export class InvoiceNotDeletableError extends Error {
   }
 }
 
-/** Sprint 26D (Finding D1) : la facture finale (transition DRAFT → SENT) ne peut être émise
- * que lorsque le solde est intégralement réglé (amountPaid === totalAmount) — les paiements
- * partiels ne génèrent pas encore de facture finale, seulement la ligne Invoice DRAFT interne
- * qui suit déjà le contrat depuis sa création (inchangé). Ne s'applique jamais à une facture à
- * totalAmount === 0, qui atterrit directement en PAID (comportement Sprint 18 inchangé). */
-export class InvoiceNotFullyPaidError extends Error {
-  constructor() {
-    super(
-      "La facture finale ne peut être émise (DRAFT → SENT) que lorsque le solde est " +
-        "intégralement réglé (amountPaid = totalAmount)."
-    );
-    this.name = "InvoiceNotFullyPaidError";
-  }
-}
-
 /**
  * Transitions manuelles autorisées via PATCH. PARTIALLY_PAID et PAID ne sont jamais
  * atteints par une transition manuelle : ils sont dérivés automatiquement de la somme
@@ -238,12 +223,17 @@ export interface UpdateInvoiceInput {
   notes?: string;
 }
 
+/** `tx` optionnel (Finding F) — permet d'appeler la finalisation DRAFT → SENT depuis une
+ * transaction partagée (voir `processLocationPayment`, src/lib/location-payment.ts), même
+ * convention que `createInvoice`/`getInvoiceById` (Sprint 26A, Finding A). Comportement
+ * inchangé pour tout appel sans transaction partagée (ex. PATCH /api/invoices/[id]). */
 export async function updateInvoice(
   tenantId: string,
   invoiceId: string,
-  data: UpdateInvoiceInput
+  data: UpdateInvoiceInput,
+  tx: Prisma.TransactionClient = prisma
 ): Promise<Invoice | null> {
-  const existing = await getInvoiceById(tenantId, invoiceId);
+  const existing = await getInvoiceById(tenantId, invoiceId, tx);
   if (!existing) {
     return null;
   }
@@ -266,13 +256,13 @@ export async function updateInvoice(
     ? computeInvoiceTotals(existing.subtotal, taxRate, discountAmount)
     : { taxAmount: existing.taxAmount, totalAmount: existing.totalAmount };
 
-  // Sprint 26D (Finding D1) : la facture finale (SENT) n'est émise qu'une fois le solde
-  // intégralement réglé — vérifié sur le totalAmount fraîchement recalculé ci-dessus (pas
-  // l'ancien existing.totalAmount) pour rester cohérent si taxRate/discountAmount changent
-  // dans le même appel que la finalisation.
-  if (data.status === "SENT" && totalAmount > 0 && existing.amountPaid < totalAmount) {
-    throw new InvoiceNotFullyPaidError();
-  }
+  // Finding F (Sprint 26F) : la finalisation manuelle ou automatique (DRAFT → SENT) est
+  // désormais inconditionnelle vis-à-vis du solde — SENT signifie « facture verrouillée, en
+  // attente de paiement », pas « soldée » (voir DOMAINRULES.md). Le gate Sprint 26D
+  // (InvoiceNotFullyPaidError) rendait SENT structurellement inatteignable puisque
+  // recomputeInvoiceStatus (src/lib/payments.ts, Finding B, inchangée) fait déjà passer une
+  // facture directement de DRAFT à PARTIALLY_PAID/PAID dès le premier paiement — retiré sur
+  // décision explicite du propriétaire du projet.
 
   // Une facture à 0 (remise à 100 %) n'a par construction jamais de Payment (createPayment
   // refuse tout montant contre un solde restant nul) : recomputeInvoiceStatus
@@ -282,7 +272,7 @@ export async function updateInvoice(
   // finalisée (DRAFT → SENT), un total nul la fait donc atterrir directement en PAID.
   const resolvedStatus = data.status === "SENT" && totalAmount === 0 ? "PAID" : data.status;
 
-  return prisma.invoice.update({
+  return tx.invoice.update({
     where: { id: invoiceId },
     data: {
       ...(resolvedStatus ? { status: resolvedStatus } : {}),

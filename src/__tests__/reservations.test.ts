@@ -9,7 +9,7 @@ import {
 } from "@/lib/reservations";
 import { createClient } from "@/lib/clients";
 import { createLocation } from "@/lib/locations";
-import { createInvoice } from "@/lib/invoices";
+import { createInvoice, updateInvoice } from "@/lib/invoices";
 import { createPayment, PaymentExceedsRemainingBalanceError } from "@/lib/payments";
 import { apiFetch } from "./helpers/http";
 import { TEST_BASE_URL } from "./helpers/testServer";
@@ -1752,7 +1752,8 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
     // mécanisme de rollback transactionnel du Finding A couvre bien ce cas si une 2e écriture
     // de paiement mixte échouait pour toute autre raison, ce test reproduit fidèlement —
     // avec les mêmes fonctions de production et sous la même transaction Prisma partagée que
-    // la route — l'assemblage réel de la conversion jusqu'au paiement, puis appelle
+    // la route — l'assemblage réel de la conversion jusqu'au paiement (Finding F : finalisation
+    // DRAFT → SENT incluse, désormais requise avant tout createPayment), puis appelle
     // createPayment deux fois directement : la 1re ligne (6000) est un montant valide qui
     // s'écrit réellement dans la transaction encore ouverte ; la 2e ligne (5000) dépasse
     // délibérément le solde restant exact (10000 - 6000 = 4000), déclenchant de façon
@@ -1807,6 +1808,11 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
         await markReservationConverted(adminA.tenantId, reservation.id, location.id, tx);
 
         const invoice = await createInvoice({ tenantId: adminA.tenantId, locationId: location.id }, tx);
+
+        // Finding F : un paiement direct est refusé sur une facture encore DRAFT
+        // (InvoiceNotFinalizedError) — finalise d'abord dans la même transaction, exactement
+        // ce que fait processLocationPayment/finalizeAndPay en production.
+        await updateInvoice(adminA.tenantId, invoice.id, { status: "SENT" }, tx);
 
         // Ligne 1 : montant valide, écrite pour de vrai dans cette transaction encore ouverte.
         await createPayment(
