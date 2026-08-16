@@ -1,4 +1,4 @@
-import type { Location, LocationStatus, PaymentMethod, Prisma } from "@prisma/client";
+import type { Location, LocationStatus, PaymentMethod, Prisma, Vehicle, VehicleStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { checkAvailability, lockVehicleForUpdate } from "@/lib/vehicles";
 import { getClientById } from "@/lib/clients";
@@ -32,6 +32,41 @@ export class SecondDriverNotFoundError extends Error {
   constructor() {
     super("Second conducteur introuvable.");
     this.name = "SecondDriverNotFoundError";
+  }
+}
+
+/**
+ * Sprint 28 (Finding E) : un véhicule MAINTENANCE/TRANSFERRING/ON_TRIP n'est pas disponible
+ * pour une nouvelle Location, indépendamment de tout conflit de dates avec une Location
+ * existante — jusqu'ici, checkAvailability (src/lib/vehicles.ts) ne vérifiait que les conflits
+ * de dates entre Location, jamais Vehicle.status, laissant un véhicule en mobilité réservable
+ * dès que ses dates ne chevauchaient aucune Location déjà enregistrée. Contrôle strict, sans
+ * exception ADMIN (voir assertVehicleStatusAllowsLocation ci-dessous) : distinct de
+ * LocationLockedError, qu'un ADMIN peut contourner via adminOverride (DOMAINRULES.md
+ * section 37) — la disponibilité réelle du véhicule n'est jamais un choix éditorial.
+ */
+export class VehicleUnavailableForLocationError extends Error {
+  vehicleStatus: VehicleStatus;
+
+  constructor(vehicleStatus: VehicleStatus) {
+    super(`Le véhicule n'est pas disponible pour une location (statut actuel : ${vehicleStatus}).`);
+    this.name = "VehicleUnavailableForLocationError";
+    this.vehicleStatus = vehicleStatus;
+  }
+}
+
+const VEHICLE_STATUSES_BLOCKING_LOCATION: VehicleStatus[] = ["MAINTENANCE", "TRANSFERRING", "ON_TRIP"];
+
+/**
+ * Appliqué immédiatement après lockVehicleForUpdate — création (toujours) et modification
+ * (uniquement quand les dates changent, seul cas où le véhicule est aujourd'hui reverrouillé/
+ * revérifié, voir updateLocation). Ne s'applique jamais rétroactivement à une Location déjà
+ * créée dont le véhicule change de statut ensuite (aucune fonction ne parcourt les Location
+ * existantes pour les annuler/suspendre) — comportement délibéré, DOMAINRULES.md section 30.
+ */
+function assertVehicleStatusAllowsLocation(vehicle: Vehicle): void {
+  if (VEHICLE_STATUSES_BLOCKING_LOCATION.includes(vehicle.status)) {
+    throw new VehicleUnavailableForLocationError(vehicle.status);
   }
 }
 
@@ -412,6 +447,7 @@ async function createLocationLocked(data: CreateLocationInput, tx: Prisma.Transa
   if (!vehicle) {
     throw new VehicleNotFoundError();
   }
+  assertVehicleStatusAllowsLocation(vehicle);
 
   const client = await getClientById(data.tenantId, data.clientId, tx);
   if (!client) {
@@ -619,6 +655,7 @@ export async function updateLocation(
         if (!vehicle) {
           throw new VehicleNotFoundError();
         }
+        assertVehicleStatusAllowsLocation(vehicle);
         const availability = await checkAvailability(
           tenantId,
           existing.vehicleId,

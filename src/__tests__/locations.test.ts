@@ -1377,3 +1377,144 @@ describe("Sprint 24 — locations.confirm/activate/complete/cancel séparées de
     expect(cancelResponse.status).toBe(200);
   });
 });
+
+describe("Sprint 28 (Finding E) — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP bloque la création/modification d'une Location", () => {
+  /** Statuts « en mobilité »/indisponibles posés automatiquement par vehicle-transfers.ts/
+   * vehicle-trips.ts (jamais assignables manuellement via POST/PATCH /api/vehicles*,
+   * DOMAINRULES.md section 30) — forcés directement en base pour isoler ce test du reste de
+   * l'infrastructure de transfert/déplacement, non concernée par ce sprint. */
+  async function createVehicleWithStatus(status: "MAINTENANCE" | "TRANSFERRING" | "ON_TRIP") {
+    const response = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: agencyA1Id,
+        name: "Véhicule Finding E",
+        licensePlate: `E-${status}-${runId}-${Math.floor(Math.random() * 100_000)}`,
+        make: "Dacia",
+        model: "Sandero",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 4000,
+        chassisNumber: `VF1TESTE${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 5,
+        powerKW: 55,
+        engineSize: 1.0,
+      }),
+    });
+    const vehicleId = (await response.json()).vehicle.id;
+    await prisma.vehicle.update({ where: { id: vehicleId }, data: { status } });
+    return vehicleId;
+  }
+
+  it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP"] as const)(
+    "refuse la création d'une Location (409) si le véhicule est %s",
+    async (status) => {
+      const vehicleId = await createVehicleWithStatus(status);
+
+      const response = await createLocation(adminA, {
+        vehicleId,
+        startDate: "2028-04-01",
+        endDate: "2028-04-03",
+      });
+      expect(response.status).toBe(409);
+      const body = await response.json();
+      expect(body.error).toContain(status);
+
+      const locationCount = await prisma.location.count({ where: { vehicleId } });
+      expect(locationCount).toBe(0);
+    }
+  );
+
+  it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP"] as const)(
+    "refuse la modification des dates d'une Location existante (409) si le véhicule est %s, même pour un ADMIN, sans annuler la Location automatiquement",
+    async (status) => {
+      const vehicleResponse = await apiFetch("/api/vehicles", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({
+          agencyId: agencyA1Id,
+          name: "Véhicule Finding E (modification)",
+          licensePlate: `E-MOD-${status}-${runId}-${Math.floor(Math.random() * 100_000)}`,
+          make: "Dacia",
+          model: "Sandero",
+          year: 2022,
+          category: "Citadine",
+          pricePerDay: 4000,
+          chassisNumber: `VF1TESTE${Math.floor(Math.random() * 1_000_000)}`,
+          color: "Blanc",
+          doors: 5,
+          seats: 5,
+          horsepower: 5,
+          powerKW: 55,
+          engineSize: 1.0,
+        }),
+      });
+      const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+      // Créé pendant que le véhicule est encore AVAILABLE (autorisé).
+      const locationResponse = await createLocation(adminA, {
+        vehicleId,
+        startDate: "2028-05-01",
+        endDate: "2028-05-03",
+      });
+      expect(locationResponse.status).toBe(201);
+      const location = (await locationResponse.json()).location;
+
+      await prisma.vehicle.update({ where: { id: vehicleId }, data: { status } });
+
+      // adminA est ADMIN (adminOverride dérivé de user.role côté route) — ce contrôle ne
+      // connaît aucune exception ADMIN, contrairement à LocationLockedError.
+      const patchResponse = await apiFetch(`/api/locations/${location.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ startDate: "2028-05-02", endDate: "2028-05-04" }),
+      });
+      expect(patchResponse.status).toBe(409);
+      const patchBody = await patchResponse.json();
+      expect(patchBody.error).toContain(status);
+
+      // La Location existante n'est ni annulée ni suspendue automatiquement par le changement
+      // de statut du véhicule après coup (DOMAINRULES.md section 30) — seule la tentative de
+      // modification est refusée, la Location reste inchangée dans son état d'origine.
+      const unchanged = await prisma.location.findUniqueOrThrow({ where: { id: location.id } });
+      expect(unchanged.status).toBe("PENDING");
+      expect(unchanged.startDate.toISOString()).toBe(new Date("2028-05-01").toISOString());
+    }
+  );
+
+  it("autorise la création d'une Location si le véhicule est AVAILABLE", async () => {
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: agencyA1Id,
+        name: "Véhicule Finding E (disponible)",
+        licensePlate: `E-AVAILABLE-${runId}`,
+        make: "Dacia",
+        model: "Sandero",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 4000,
+        chassisNumber: `VF1TESTE${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 5,
+        powerKW: 55,
+        engineSize: 1.0,
+      }),
+    });
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const response = await createLocation(adminA, {
+      vehicleId,
+      startDate: "2028-06-01",
+      endDate: "2028-06-03",
+    });
+    expect(response.status).toBe(201);
+  });
+});

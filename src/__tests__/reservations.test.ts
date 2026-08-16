@@ -1378,6 +1378,96 @@ describe("POST /api/reservations/[id]/convert", () => {
     const convertJson = await convertResponse.json();
     expect(convertJson.reservation.status).toBe("CONVERTED");
   });
+
+  /** Sprint 28 (Finding E) : la conversion réutilise createLocation (Finding A/C) — même garde
+   * véhicule MAINTENANCE/TRANSFERRING/ON_TRIP que POST /api/locations, aucune exception pour
+   * cette route. Statuts « en mobilité » forcés directement en base (jamais assignables
+   * manuellement via POST/PATCH /api/vehicles*, DOMAINRULES.md section 30), même convention que
+   * locations.test.ts. */
+  describe("Sprint 28 (Finding E) — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP bloque la conversion", () => {
+    async function createVehicleWithStatus(status: "MAINTENANCE" | "TRANSFERRING" | "ON_TRIP" | "AVAILABLE") {
+      const response = await apiFetch("/api/vehicles", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({
+          agencyId: agencyA1Id,
+          name: "Véhicule Finding E (conversion)",
+          licensePlate: `RES-E-${status}-${runId}-${Math.floor(Math.random() * 100_000)}`,
+          make: "Dacia",
+          model: "Sandero",
+          year: 2022,
+          category: "Citadine",
+          pricePerDay: 4000,
+          chassisNumber: `VF1TESTE${Math.floor(Math.random() * 1_000_000)}`,
+          color: "Blanc",
+          doors: 5,
+          seats: 5,
+          horsepower: 5,
+          powerKW: 55,
+          engineSize: 1.0,
+        }),
+      });
+      const vehicleId = (await response.json()).vehicle.id;
+      if (status !== "AVAILABLE") {
+        await prisma.vehicle.update({ where: { id: vehicleId }, data: { status } });
+      }
+      return vehicleId;
+    }
+
+    it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP"] as const)(
+      "refuse la conversion (409, VehicleUnavailableForLocationError) si le véhicule est %s — aucune Location ni conversion partielle",
+      async (status) => {
+        const vehicleId = await createVehicleWithStatus(status);
+        const createResponse = await createReservation(adminA, {
+          clientFirstName: "IndisponibleE",
+          clientLastName: `Client-${runId}-${status}`,
+          startDate: "2030-11-01",
+          endDate: "2030-11-03",
+        });
+        const reservation = (await createResponse.json()).reservation;
+
+        const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+          method: "POST",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify(convertBody(reservation, { vehicleId })),
+        });
+        expect(response.status).toBe(409);
+        const body = await response.json();
+        expect(body.error).toContain(status);
+
+        // Aucune conversion partielle : ni Location pour ce véhicule, ni réservation marquée
+        // CONVERTED (claimReservationConversion doit avoir été défaite par le rollback de la
+        // transaction, même garantie que le reste du Finding A).
+        const locationCount = await prisma.location.count({ where: { vehicleId } });
+        expect(locationCount).toBe(0);
+
+        const reservationAfter = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+        expect(reservationAfter.status).toBe("PENDING");
+        expect(reservationAfter.convertedLocationId).toBeNull();
+      }
+    );
+
+    it("autorise la conversion si le véhicule est AVAILABLE", async () => {
+      const vehicleId = await createVehicleWithStatus("AVAILABLE");
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "DisponibleE",
+        clientLastName: `Client-${runId}`,
+        startDate: "2030-11-05",
+        endDate: "2030-11-07",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation, { vehicleId })),
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.reservation.status).toBe("CONVERTED");
+      expect(body.location.vehicleId).toBe(vehicleId);
+    });
+  });
 });
 
 describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous concurrence", () => {

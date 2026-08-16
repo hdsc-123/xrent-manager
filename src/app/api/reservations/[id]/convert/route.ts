@@ -19,6 +19,7 @@ import {
   VehicleNotFoundError,
   ClientNotFoundError,
   VehicleNotAvailableError,
+  VehicleUnavailableForLocationError,
   MissingPriceError,
 } from "@/lib/locations";
 import { createInvoice } from "@/lib/invoices";
@@ -475,6 +476,11 @@ export async function POST(request: Request, { params }: RouteParams) {
         { error: error.message, conflictingLocations: error.conflictingLocations },
         { status: 409 }
       );
+    }
+    // Sprint 28 (Finding E) : la conversion réutilise createLocation (Finding A/C) — même
+    // garde véhicule MAINTENANCE/TRANSFERRING/ON_TRIP, aucune exception pour cette route.
+    if (error instanceof VehicleUnavailableForLocationError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
     if (error instanceof InvalidReservationStatusTransitionError) {
       return NextResponse.json({ error: error.message }, { status: 409 });

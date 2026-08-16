@@ -9,6 +9,7 @@ import {
   canTransition,
   InvalidDateRangeError,
   VehicleNotAvailableError,
+  VehicleUnavailableForLocationError,
   InvalidStatusTransitionError,
   LocationNotDeletableError,
   LocationHasInvoiceError,
@@ -218,6 +219,11 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         { error: error.message, conflictingLocations: error.conflictingLocations },
         { status: 409 }
       );
+    }
+    // Sprint 28 (Finding E) : véhicule MAINTENANCE/TRANSFERRING/ON_TRIP — s'applique à tout
+    // appelant, y compris ADMIN via adminOverride (qui ne contourne que LocationLockedError).
+    if (error instanceof VehicleUnavailableForLocationError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
 
     console.error("Erreur lors de la modification de la location :", error);

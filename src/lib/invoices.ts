@@ -1,6 +1,9 @@
-import type { Invoice, InvoiceStatus, Prisma } from "@prisma/client";
+import type { Invoice, InvoiceStatus, Payment, PaymentMethod, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getLocationById } from "@/lib/locations";
+import { createCorrectionCashEntry, CorrectionReasonRequiredError } from "@/lib/cash-register";
+
+export { CorrectionReasonRequiredError };
 
 /** taxRate est exprimé en points de base (ex. 2000 = 20,00 %), pas en pourcentage flottant. */
 const TAX_RATE_BASIS = 10_000;
@@ -37,6 +40,48 @@ export class InvoiceNotDeletableError extends Error {
   constructor() {
     super("Seule une facture DRAFT sans paiement peut être supprimée ; sinon, annulez-la (status).");
     this.name = "InvoiceNotDeletableError";
+  }
+}
+
+/**
+ * Sprint 28 (Finding D2) : une facture PARTIALLY_PAID a au moins un Payment réel — l'annuler
+ * directement via PATCH laisserait cet argent encaissé sans aucune trace de ce qu'il advient
+ * (ni compensation de caisse, ni Payment marqué REFUNDED). Distincte de
+ * LocationCancellationRequiresAdminError (src/lib/locations.ts, Sprint 23) : même principe
+ * (une transition sensible avec réversibilité financière doit passer par une route dédiée
+ * réservée ADMIN), appliqué ici au niveau facture plutôt que contrat. `SENT → CANCELLED` sans
+ * aucun Payment n'est pas concerné (rien à compenser) et reste inchangé via PATCH.
+ */
+export class InvoiceCancellationRequiresAdminError extends Error {
+  constructor() {
+    super(
+      "Seul un administrateur peut annuler une facture PARTIALLY_PAID " +
+        "(voir POST /api/invoices/[id]/admin-cancel)."
+    );
+    this.name = "InvoiceCancellationRequiresAdminError";
+  }
+}
+
+/** Sprint 28 (Finding D2) : adminCancelInvoice n'accepte qu'une facture PARTIALLY_PAID — DRAFT
+ * (rien à compenser, PATCH suffit), SENT sans paiement (idem), PAID (aucune transition manuelle
+ * possible vers CANCELLED, voir canTransition) et CANCELLED (déjà terminale) sont refusées. */
+export class InvoiceNotAdminCancellableError extends Error {
+  constructor() {
+    super(
+      "Seule une facture PARTIALLY_PAID peut être annulée avec compensation " +
+        "(DRAFT/SENT sans paiement s'annulent directement via PATCH ; PAID/CANCELLED sont refusées)."
+    );
+    this.name = "InvoiceNotAdminCancellableError";
+  }
+}
+
+/** Sprint 28 (Finding D2) : une autre requête a déjà annulé/modifié cette facture entre la
+ * lecture et la réclamation atomique (verrou + updateMany conditionné, voir adminCancelInvoice)
+ * — une seule annulation concurrente réussit, les autres reçoivent cette erreur (409). */
+export class InvoiceAdminCancelConflictError extends Error {
+  constructor() {
+    super("Cette facture a déjà été annulée ou modifiée entretemps — réessayez.");
+    this.name = "InvoiceAdminCancelConflictError";
   }
 }
 
@@ -284,6 +329,15 @@ export async function updateInvoice(
     return null;
   }
 
+  // Sprint 28 (Finding D2) : une facture PARTIALLY_PAID a un Payment réel — son annulation
+  // doit passer par POST /api/invoices/[id]/admin-cancel (adminCancelInvoice ci-dessous), qui
+  // orchestre la compensation de caisse et le remboursement des Payment dans une transaction
+  // unique. SENT → CANCELLED (aucun Payment, voir Finding F) reste inconditionnel ci-dessous,
+  // comportement inchangé.
+  if (data.status === "CANCELLED" && existing.status === "PARTIALLY_PAID") {
+    throw new InvoiceCancellationRequiresAdminError();
+  }
+
   const wantsAmountChange = data.taxRate !== undefined || data.discountAmount !== undefined;
   if (wantsAmountChange && existing.status !== "DRAFT") {
     throw new InvoiceNotEditableError();
@@ -364,11 +418,14 @@ export async function deleteInvoice(tenantId: string, invoiceId: string): Promis
  * primitive que lockInvoiceForUpdate (src/lib/payments.ts, Finding B), dupliquée ici plutôt
  * qu'importée : payments.ts importe déjà invoices.ts (getInvoiceById), un import inverse
  * créerait un cycle, et payments.ts (Findings B/D1/F) ne doit pas être modifié par ce sprint.
- * Sérialise le versionnement contre une création de paiement concurrente sur la même facture
- * (createPaymentLocked pose le même verrou avant d'écrire un Payment) : l'une des deux
- * opérations attend le commit de l'autre avant de relire un état à jour, jamais l'inverse.
+ * Sérialise le versionnement (Sprint 26E) et l'annulation ADMIN (Sprint 28, Finding D2) contre
+ * une création de paiement concurrente sur la même facture (createPaymentLocked pose le même
+ * verrou avant d'écrire un Payment) : l'une des deux opérations attend le commit de l'autre
+ * avant de relire un état à jour, jamais l'inverse. Renommée `lockInvoiceRow` (Sprint 28,
+ * initialement `lockInvoiceForVersioning`) car désormais partagée par `versionInvoice` et
+ * `adminCancelInvoice`.
  */
-async function lockInvoiceForVersioning(
+async function lockInvoiceRow(
   tenantId: string,
   invoiceId: string,
   tx: Prisma.TransactionClient
@@ -440,7 +497,7 @@ export async function versionInvoice(
   }
 
   return prisma.$transaction(async (tx) => {
-    const locked = await lockInvoiceForVersioning(tenantId, invoiceId, tx);
+    const locked = await lockInvoiceRow(tenantId, invoiceId, tx);
     if (!locked) {
       return null;
     }
@@ -520,5 +577,147 @@ export async function getInvoiceVersionHistory(tenantId: string, invoiceId: stri
   return prisma.invoice.findMany({
     where: { tenantId, OR: [{ id: rootId }, { rootInvoiceId: rootId }] },
     orderBy: { versionNumber: "asc" },
+  });
+}
+
+export interface AdminCancelInvoiceOptions {
+  reason: string;
+  performedByUserId: string;
+}
+
+export interface AdminCancelInvoiceRefund {
+  paymentId: string;
+  amount: number;
+  method: PaymentMethod;
+}
+
+export interface AdminCancelInvoiceResult {
+  invoice: Invoice;
+  reversedPaymentCount: number;
+  reversedAmountTotal: number;
+  refundedWithoutCashEntryCount: number;
+  refunds: AdminCancelInvoiceRefund[];
+}
+
+/**
+ * Sprint 28 (Finding D2) : annulation ADMIN d'une facture PARTIALLY_PAID avec réversibilité
+ * financière complète — même principe qu'adminCancelValidatedLocation (src/lib/locations.ts,
+ * Sprint 23/26D), appliqué au niveau facture plutôt que contrat, et **sans y toucher** : les
+ * deux flux restent indépendants (une facture annulée ici ne force jamais le statut de sa
+ * Location, contrairement à l'inverse). Une compensation de caisse ne modélise jamais un
+ * remboursement bancaire/espèces réel (DOMAINRULES.md section 10) — seul le solde de caisse est
+ * corrigé ; chaque Payment ACTIVE passe à REFUNDED (jamais réécrit dans amount/method/paidAt,
+ * jamais supprimé), même mécanisme que le Finding D1. Un Payment déjà REFUNDED est ignoré (rien
+ * à compenser une seconde fois) — filtré directement par la requête `status: "ACTIVE"`
+ * ci-dessous, jamais par une simple omission côté boucle.
+ *
+ * Éligibilité : seule une facture PARTIALLY_PAID est acceptée (InvoiceNotAdminCancellableError
+ * sinon) — DRAFT/SENT sans paiement n'ont rien à compenser (PATCH suffit, inchangé) ; PAID/
+ * CANCELLED sont des états terminaux (PAID n'a d'ailleurs aucune transition manuelle possible,
+ * voir canTransition). Concurrence : verrou de ligne (lockInvoiceRow) posé avant toute lecture
+ * d'éligibilité, puis `updateMany` conditionné sur `status: "PARTIALLY_PAID"` comme réclamation
+ * atomique — une seule annulation concurrente réussit, les autres 409
+ * (InvoiceAdminCancelConflictError), même double primitive que versionInvoice/
+ * adminCancelValidatedLocation. Atomicité : toute la boucle de compensation s'exécute dans la
+ * même transaction Prisma que le passage à CANCELLED — un échec à n'importe quelle itération
+ * (ex. createCorrectionCashEntry) annule l'intégralité de la transaction : le statut de la
+ * facture, les CashEntry déjà créées et les Payment déjà marqués REFUNDED dans ce même appel
+ * sont tous défaits par Prisma, jamais d'état partiel.
+ */
+export async function adminCancelInvoice(
+  tenantId: string,
+  invoiceId: string,
+  options: AdminCancelInvoiceOptions
+): Promise<AdminCancelInvoiceResult | null> {
+  if (!options.reason.trim()) {
+    throw new CorrectionReasonRequiredError();
+  }
+
+  const existing = await getInvoiceById(tenantId, invoiceId);
+  if (!existing) {
+    return null;
+  }
+
+  if (existing.status !== "PARTIALLY_PAID") {
+    throw new InvoiceNotAdminCancellableError();
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const locked = await lockInvoiceRow(tenantId, invoiceId, tx);
+    if (!locked) {
+      return null;
+    }
+
+    const { count } = await tx.invoice.updateMany({
+      where: { id: invoiceId, tenantId, status: "PARTIALLY_PAID" },
+      data: { status: "CANCELLED" },
+    });
+    if (count === 0) {
+      throw new InvoiceAdminCancelConflictError();
+    }
+
+    // Seul le contractNumber (affichage de la CashEntry, même convention que
+    // adminCancelValidatedLocation) est dérivé de la Location — locked.agencyId (dénormalisé
+    // sur Invoice) suffit pour la CashEntry elle-même, aucune dépendance fonctionnelle à cette
+    // lecture au-delà de l'affichage.
+    const location = await tx.location.findUnique({ where: { id: locked.locationId } });
+
+    const activePayments: Payment[] = await tx.payment.findMany({
+      where: { invoiceId, status: "ACTIVE" },
+      orderBy: { createdAt: "asc" },
+    });
+
+    let reversedPaymentCount = 0;
+    let reversedAmountTotal = 0;
+    let refundedWithoutCashEntryCount = 0;
+    const refunds: AdminCancelInvoiceRefund[] = [];
+
+    for (const payment of activePayments) {
+      // Un Payment antérieur au Sprint 18 (avant que createPayment n'alimente
+      // systématiquement la caisse) peut n'avoir jamais eu de CashEntry — même cas résiduel
+      // que adminCancelValidatedLocation : le Payment est marqué REFUNDED sans compensation
+      // créée (rien à inverser, jamais de compensation orpheline).
+      const originalEntry = await tx.cashEntry.findFirst({
+        where: { paymentId: payment.id, parentEntryId: null },
+      });
+
+      if (!originalEntry) {
+        await tx.payment.update({ where: { id: payment.id }, data: { status: "REFUNDED" } });
+        refundedWithoutCashEntryCount += 1;
+        refunds.push({ paymentId: payment.id, amount: payment.amount, method: payment.method });
+        continue;
+      }
+
+      await createCorrectionCashEntry(
+        {
+          tenantId,
+          parentEntryId: originalEntry.id,
+          paymentId: payment.id,
+          type: "EXPENSE",
+          amount: payment.amount,
+          paymentMethod: payment.method,
+          category: "ANNULATION_FACTURE",
+          description:
+            `Annulation facture ${locked.number}` +
+            (location?.contractNumber ? ` (contrat ${location.contractNumber})` : "") +
+            ` — compensation du paiement du ${payment.paidAt.toISOString().slice(0, 10)}`,
+          reason: options.reason.trim(),
+          performedByUserId: options.performedByUserId,
+          agencyId: locked.agencyId,
+          contractId: locked.locationId,
+          contractNumber: location?.contractNumber ?? null,
+        },
+        tx
+      );
+      await tx.payment.update({ where: { id: payment.id }, data: { status: "REFUNDED" } });
+
+      reversedPaymentCount += 1;
+      reversedAmountTotal += payment.amount;
+      refunds.push({ paymentId: payment.id, amount: payment.amount, method: payment.method });
+    }
+
+    const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
+
+    return { invoice, reversedPaymentCount, reversedAmountTotal, refundedWithoutCashEntryCount, refunds };
   });
 }

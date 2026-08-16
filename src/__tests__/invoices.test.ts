@@ -43,6 +43,29 @@ async function payInvoiceInFull(admin: AuthenticatedTestUser, invoiceId: string,
   expect(response.status).toBe(201);
 }
 
+/** Sprint 28 (Finding D2) : encaisse un paiement (facture déjà finalisée) et retourne le
+ * Payment créé — contrairement à payInvoiceInFull, ne finalise pas et n'exige pas un montant
+ * intégral, pour permettre plusieurs paiements successifs sur la même facture. */
+async function payAmount(admin: AuthenticatedTestUser, invoiceId: string, amount: number) {
+  const response = await apiFetch("/api/payments", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ invoiceId, amount, method: "CASH" }),
+  });
+  expect(response.status).toBe(201);
+  return (await response.json()).payment;
+}
+
+/** Sprint 28 (Finding D2) : crée une facture PARTIALLY_PAID avec un seul Payment ACTIVE
+ * (totalAmount 15000 pour locationAId — un tiers laisse un solde restant, donc PARTIALLY_PAID). */
+async function createPartiallyPaidInvoice(admin: AuthenticatedTestUser) {
+  const createResponse = await createInvoice(admin);
+  const invoice = (await createResponse.json()).invoice;
+  await finalizeInvoice(admin, invoice.id);
+  const payment = await payAmount(admin, invoice.id, Math.floor(invoice.totalAmount / 3));
+  return { invoice, payment };
+}
+
 /** Sprint 26E : crée une facture SENT sans aucun Payment — seule éligibilité au versionnement. */
 async function createSentInvoiceNoPayment(admin: AuthenticatedTestUser, overrides: Record<string, unknown> = {}) {
   const createResponse = await createInvoice(admin, overrides);
@@ -412,6 +435,273 @@ describe("PATCH /api/invoices/[id]", () => {
     expect(body.invoice.totalAmount).toBe(0);
     expect(body.invoice.amountPaid).toBe(0);
     expect(body.invoice.status).toBe("PAID");
+  });
+});
+
+describe("POST /api/invoices/[id]/admin-cancel — Sprint 28 (Finding D2)", () => {
+  it("refuse une requête non authentifiée", async () => {
+    const { invoice } = await createPartiallyPaidInvoice(adminA);
+    const response = await apiFetch(`/api/invoices/${invoice.id}/admin-cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "Erreur de facturation" }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it("refuse un utilisateur non ADMIN (403)", async () => {
+    const { invoice } = await createPartiallyPaidInvoice(adminA);
+    const response = await apiFetch(`/api/invoices/${invoice.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: memberA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de facturation" }),
+    });
+    expect(response.status).toBe(403);
+
+    const unchanged = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect((await unchanged.json()).invoice.status).toBe("PARTIALLY_PAID");
+  });
+
+  it("refuse un motif absent (400)", async () => {
+    const { invoice } = await createPartiallyPaidInvoice(adminA);
+    const response = await apiFetch(`/api/invoices/${invoice.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({}),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse un motif vide/blanc (400)", async () => {
+    const { invoice } = await createPartiallyPaidInvoice(adminA);
+    const response = await apiFetch(`/api/invoices/${invoice.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "   " }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse une facture PAID (409)", async () => {
+    const createResponse = await createInvoice(adminA);
+    const invoice = (await createResponse.json()).invoice;
+    await payInvoiceInFull(adminA, invoice.id, invoice.totalAmount);
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de facturation" }),
+    });
+    expect(response.status).toBe(409);
+
+    const unchanged = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect((await unchanged.json()).invoice.status).toBe("PAID");
+  });
+
+  it("refuse une facture DRAFT (409, statut non concerné)", async () => {
+    const createResponse = await createInvoice(adminA);
+    const invoice = (await createResponse.json()).invoice;
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de facturation" }),
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it("refuse une facture SENT sans paiement (409, statut non concerné — s'annule directement via PATCH)", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de facturation" }),
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it("annulation SENT sans paiement inchangée : PATCH direct fonctionne toujours, sans compensation ni exigence ADMIN", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).invoice.status).toBe("CANCELLED");
+
+    const cashEntries = await prisma.cashEntry.findMany({ where: { tenantId: adminA.tenantId, category: "ANNULATION_FACTURE" } });
+    expect(cashEntries).toHaveLength(0);
+  });
+
+  it("PATCH /api/invoices/[id] refuse PARTIALLY_PAID → CANCELLED (403) et indique la route dédiée", async () => {
+    const { invoice } = await createPartiallyPaidInvoice(adminA);
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+    expect(response.status).toBe(403);
+    const body = await response.json();
+    expect(body.error).toMatch(/admin-cancel/);
+
+    const unchanged = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect((await unchanged.json()).invoice.status).toBe("PARTIALLY_PAID");
+  });
+
+  it("ADMIN annule une facture PARTIALLY_PAID : statut CANCELLED, Payment ACTIVE passé REFUNDED, CashEntry de compensation créée, audit journalisé", async () => {
+    const { invoice, payment } = await createPartiallyPaidInvoice(adminA);
+
+    const originalEntry = await prisma.cashEntry.findFirst({ where: { paymentId: payment.id, parentEntryId: null } });
+    expect(originalEntry).not.toBeNull();
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de facturation, remboursement client hors application" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.invoice.status).toBe("CANCELLED");
+    expect(body.reversedPaymentCount).toBe(1);
+    expect(body.reversedAmountTotal).toBe(payment.amount);
+
+    const paymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(paymentAfter.status).toBe("REFUNDED");
+    // Sprint 28 (Finding D2) : une compensation ne rejoue jamais amount/method/paidAt du
+    // Payment — seul son status change (même invariant que le Finding D1).
+    expect(paymentAfter.amount).toBe(payment.amount);
+    expect(paymentAfter.method).toBe(payment.method);
+
+    const compensationEntry = await prisma.cashEntry.findFirst({
+      where: { paymentId: payment.id, parentEntryId: originalEntry!.id },
+    });
+    expect(compensationEntry).not.toBeNull();
+    expect(compensationEntry!.type).toBe("EXPENSE");
+    expect(compensationEntry!.category).toBe("ANNULATION_FACTURE");
+    expect(compensationEntry!.amount).toBe(payment.amount);
+    expect(compensationEntry!.reason).toContain("Erreur de facturation");
+    expect(compensationEntry!.performedByUserId).toBe(adminA.userId);
+
+    const auditLog = await prisma.auditLog.findFirst({
+      where: { tenantId: adminA.tenantId, action: "invoice.admin_cancelled", resourceId: invoice.id },
+    });
+    expect(auditLog).not.toBeNull();
+    expect((auditLog!.metadata as Record<string, unknown>).reason).toContain("Erreur de facturation");
+  });
+
+  it("ignore un Payment déjà REFUNDED (ne le compense pas une seconde fois) et compense uniquement les Payment ACTIVE", async () => {
+    const { invoice, payment: firstPayment } = await createPartiallyPaidInvoice(adminA);
+    const secondPayment = await payAmount(adminA, invoice.id, Math.floor(invoice.totalAmount / 3));
+
+    // Force directement en base un état REFUNDED préexistant sur le premier paiement — jamais
+    // atteignable via l'API sur une facture encore PARTIALLY_PAID en usage normal (un Payment
+    // REFUNDED implique aujourd'hui toujours une facture déjà CANCELLED via
+    // adminCancelValidatedLocation) : vérifie la défense en profondeur de la requête
+    // `status: "ACTIVE"` plutôt qu'un simple test heureux.
+    await prisma.payment.update({ where: { id: firstPayment.id }, data: { status: "REFUNDED" } });
+    const entriesBefore = await prisma.cashEntry.count({ where: { paymentId: firstPayment.id } });
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de facturation" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.reversedPaymentCount).toBe(1);
+    expect(body.reversedAmountTotal).toBe(secondPayment.amount);
+
+    // Le Payment déjà REFUNDED n'a reçu aucune compensation supplémentaire.
+    const entriesAfter = await prisma.cashEntry.count({ where: { paymentId: firstPayment.id } });
+    expect(entriesAfter).toBe(entriesBefore);
+
+    const secondPaymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: secondPayment.id } });
+    expect(secondPaymentAfter.status).toBe("REFUNDED");
+  });
+
+  it("rollback complet si une compensation échoue en cours de boucle : statut facture, Payment et CashEntry tous inchangés", async () => {
+    const { invoice, payment: firstPayment } = await createPartiallyPaidInvoice(adminA);
+    const secondPayment = await payAmount(adminA, invoice.id, Math.floor(invoice.totalAmount / 3));
+
+    // Corrompt directement en base le montant du second Payment (jamais atteignable via l'API,
+    // qui refuse tout montant <= 0) pour forcer InvalidCashEntryAmountError au moment de la
+    // compensation de cette ligne, après que la première ligne a déjà été traitée dans la même
+    // transaction — vérifie que Prisma défait bien l'intégralité de la transaction, pas
+    // seulement l'itération en échec.
+    await prisma.payment.update({ where: { id: secondPayment.id }, data: { amount: 0 } });
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de facturation" }),
+    });
+    expect(response.status).toBe(500);
+
+    const invoiceAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+    expect(invoiceAfter.status).toBe("PARTIALLY_PAID");
+
+    const firstPaymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: firstPayment.id } });
+    expect(firstPaymentAfter.status).toBe("ACTIVE");
+
+    const compensationEntries = await prisma.cashEntry.count({ where: { category: "ANNULATION_FACTURE", paymentId: { in: [firstPayment.id, secondPayment.id] } } });
+    expect(compensationEntries).toBe(0);
+  });
+
+  it("n'affecte pas adminCancelValidatedLocation (Sprint 23/26D) : l'annulation ADMIN d'un contrat validé fonctionne toujours normalement", async () => {
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: agencyAId,
+        name: "Twingo",
+        licensePlate: `INV-D2-REG-${runId}`,
+        make: "Renault",
+        model: "Twingo",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 3000,
+        chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 5,
+        powerKW: 55,
+        engineSize: 1.0,
+      }),
+    });
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const clientResponse = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Client Régression D2", email: `client-d2-reg-${runId}@test.local` }),
+    });
+    const clientId = (await clientResponse.json()).client.id;
+
+    const locationResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ vehicleId, clientId, startDate: "2028-02-10", endDate: "2028-02-13" }),
+    });
+    const locationId = (await locationResponse.json()).location.id;
+
+    await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+
+    const cancelResponse = await apiFetch(`/api/locations/${locationId}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Régression Sprint 28 — non-affectation de adminCancelValidatedLocation" }),
+    });
+    expect(cancelResponse.status).toBe(200);
+    const cancelBody = await cancelResponse.json();
+    expect(cancelBody.location.status).toBe("CANCELLED");
   });
 });
 

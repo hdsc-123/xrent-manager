@@ -10,6 +10,7 @@ import {
   InvoiceNotEditableError,
   InvalidInvoiceStatusTransitionError,
   InvoiceNotDeletableError,
+  InvoiceCancellationRequiresAdminError,
 } from "@/lib/invoices";
 import { logAction } from "@/lib/audit";
 
@@ -108,6 +109,13 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     }
     if (error instanceof InvoiceNotEditableError || error instanceof InvalidInvoiceStatusTransitionError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    // Sprint 28 (Finding D2) : PARTIALLY_PAID → CANCELLED n'est plus une simple transition de
+    // statut — elle doit passer par POST /api/invoices/[id]/admin-cancel (compensation de
+    // caisse + remboursement des Payment, réservé ADMIN). 403, même code que
+    // LocationCancellationRequiresAdminError (src/app/api/locations/[id]/route.ts).
+    if (error instanceof InvoiceCancellationRequiresAdminError) {
+      return NextResponse.json({ error: error.message }, { status: 403 });
     }
 
     console.error("Erreur lors de la modification de la facture :", error);

@@ -11,6 +11,7 @@ import {
   VehicleNotFoundError,
   ClientNotFoundError,
   VehicleNotAvailableError,
+  VehicleUnavailableForLocationError,
   MissingPriceError,
   InvalidFuelLevelError,
 } from "@/lib/locations";
@@ -229,6 +230,11 @@ export async function POST(request: Request) {
         { error: error.message, conflictingLocations: error.conflictingLocations },
         { status: 409 }
       );
+    }
+    // Sprint 28 (Finding E) : véhicule MAINTENANCE/TRANSFERRING/ON_TRIP — s'applique à tout
+    // appelant, y compris ADMIN (aucun override possible, contrairement à LocationLockedError).
+    if (error instanceof VehicleUnavailableForLocationError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
     if (error instanceof MissingPriceError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
