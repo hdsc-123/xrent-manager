@@ -187,6 +187,15 @@ describe("Sprint 23 — annulation d'un contrat validé, réservée ADMIN, avec 
       body: JSON.stringify({ status: "CANCELLED" }),
     });
     expect(patchResponse.status).toBe(403);
+
+    // Sprint 31A (DOMAINRULES.md section 43) : refus métier réel, aucune concurrence impliquée —
+    // le message doit rester clairement distinct du message de conflit (409) harmonisé ce sprint.
+    const body = await patchResponse.json();
+    expect(body.error).toBe(
+      "Seul un administrateur peut annuler un contrat déjà validé (voir POST /api/locations/[id]/admin-cancel)."
+    );
+    expect(body.error).not.toContain("modifié entre-temps");
+    expect(body.error).not.toContain("un autre utilisateur");
   });
 
   it("PATCH status=CANCELLED sur un contrat encore PENDING reste autorisé pour un MEMBER (brouillon jamais validé)", async () => {
@@ -398,11 +407,50 @@ describe("Sprint 23 — correctif de concurrence sur updateLocation (DOMAINRULES
       }),
     ]);
 
+    const [confirmedBody, cancelledBody] = await Promise.all([toConfirmed.json(), toCancelled.json()]);
     const statuses = [toConfirmed.status, toCancelled.status].sort();
     expect(statuses).toEqual([200, 409]);
 
+    // Sprint 31A (DOMAINRULES.md section 43) : le perdant reçoit désormais toujours le message de
+    // conflit harmonisé, jamais le message de refus admin-cancel (le perdant n'est pas
+    // nécessairement celui qui tente l'annulation — voir le test dédié au verrou plus bas).
+    const loserBody = toConfirmed.status === 409 ? confirmedBody : cancelledBody;
+    expect(loserBody.error).toBe(
+      "Cette opération n'a pas été appliquée. La location a déjà été modifiée par un autre utilisateur. Actualisez la page puis réessayez."
+    );
+
     const finalLocation = await prisma.location.findUnique({ where: { id: location.id } });
     expect(["CONFIRMED", "CANCELLED"]).toContain(finalLocation?.status);
+  });
+
+  it("scénario reproductible : 5 itérations indépendantes de la même course, [200, 409] à chaque fois, jamais [200, 200] ni [200, 403] (Sprint 31A — preuve du caractère déterministe, indépendant du timing)", async () => {
+    for (let i = 0; i < 5; i += 1) {
+      const createResponse = await createLocation(adminA, nextTestDateRange());
+      const { location } = await createResponse.json();
+
+      const [toConfirmed, toCancelled] = await Promise.all([
+        apiFetch(`/api/locations/${location.id}`, {
+          method: "PATCH",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify({ status: "CONFIRMED" }),
+        }),
+        apiFetch(`/api/locations/${location.id}`, {
+          method: "PATCH",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify({ status: "CANCELLED" }),
+        }),
+      ]);
+
+      const statuses = [toConfirmed.status, toCancelled.status].sort();
+      // Le verrou de ligne (lockLocationForUpdate) sérialise les deux transactions au niveau de
+      // la base : quelle que soit l'ordonnancement réel des deux requêtes, l'issue est toujours
+      // un succès et un conflit explicite — jamais deux succès (double écriture), jamais un 403
+      // de façade (garde admin-cancel statuant sur un statut périmé, le bug corrigé ce sprint).
+      expect(statuses).toEqual([200, 409]);
+
+      const finalLocation = await prisma.location.findUnique({ where: { id: location.id } });
+      expect(["CONFIRMED", "CANCELLED"]).toContain(finalLocation?.status);
+    }
   });
 });
 

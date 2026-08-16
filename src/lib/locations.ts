@@ -295,10 +295,17 @@ export class LocationCancellationRequiresAdminError extends Error {
   }
 }
 
-/** Sprint 23 — garde de concurrence sur la transition de statut (voir updateLocation). */
+/**
+ * Sprint 23, révisée Sprint 31A (DOMAINRULES.md section 43) : garde de concurrence sur la
+ * transition de statut (voir updateLocation) — déclenchée soit par le verrou de ligne posé en
+ * tout début de transaction (l'état a changé entre la lecture hors transaction et l'écriture),
+ * soit par l'`updateMany` conditionné conservé en défense en profondeur.
+ */
 export class LocationStatusConflictError extends Error {
   constructor() {
-    super("Le statut de ce contrat a été modifié entre-temps — rechargez la page et réessayez.");
+    super(
+      "Cette opération n'a pas été appliquée. La location a déjà été modifiée par un autre utilisateur. Actualisez la page puis réessayez."
+    );
     this.name = "LocationStatusConflictError";
   }
 }
@@ -721,6 +728,23 @@ export interface UpdateLocationInput {
   adminOverride?: boolean;
 }
 
+/**
+ * Sprint 31A (DOMAINRULES.md section 43) : verrou de ligne sur la `Location` elle-même, même
+ * primitive que `lockVehicleForUpdate` (src/lib/vehicles.ts) — posé en tout début de la
+ * transaction d'`updateLocation` pour donner à toutes les gardes dépendant du statut (admin-cancel,
+ * validité de transition) une vue à jour et stable, avant toute décision.
+ */
+async function lockLocationForUpdate(
+  tenantId: string,
+  locationId: string,
+  tx: Prisma.TransactionClient
+): Promise<{ id: string; status: LocationStatus } | null> {
+  const locked = await tx.$queryRaw<{ id: string; status: LocationStatus }[]>`
+    SELECT id, status FROM "Location" WHERE id = ${locationId} AND "tenantId" = ${tenantId} FOR UPDATE
+  `;
+  return locked[0] ?? null;
+}
+
 export async function updateLocation(
   tenantId: string,
   locationId: string,
@@ -743,9 +767,10 @@ export async function updateLocation(
   // compensation) — sans quoi une facture/des paiements resteraient incohérents avec un
   // contrat désormais annulé. Un contrat encore PENDING (brouillon jamais confirmé) reste
   // annulable normalement par tout titulaire de locations.edit, comportement inchangé.
-  if (data.status === "CANCELLED" && existing.status !== "CANCELLED" && existing.status !== "PENDING") {
-    throw new LocationCancellationRequiresAdminError();
-  }
+  // Sprint 31A (DOMAINRULES.md section 43) : cette garde est désormais évaluée à l'intérieur de
+  // la transaction ci-dessous, après verrouillage de la ligne — jamais ici sur `existing.status`
+  // (lu hors transaction, donc potentiellement périmé face à une modification concurrente). Voir
+  // le correctif de la course qui en résultait, plus bas.
 
   // Contrat verrouillé (Sprint 14B, DOMAINRULES.md section 29) : les dates ne sont plus
   // modifiables une fois la location sortie de PENDING (confirmée/active/terminée/annulée) —
@@ -814,6 +839,28 @@ export async function updateLocation(
   // dates ni le statut n'a besoin d'aucune des deux gardes.
   if (datesChanging || statusChanging) {
     return prisma.$transaction(async (tx) => {
+      // Sprint 31A (DOMAINRULES.md section 43) : verrou de ligne posé en tout premier, avant
+      // toute garde dépendant du statut — corrige une course où la garde admin-cancel et le
+      // contrôle de transition statuaient jusqu'ici sur `existing.status`, lu hors transaction et
+      // donc potentiellement périmé. Si le statut verrouillé diverge de celui observé par la
+      // requête (`existing.status`), un autre utilisateur a modifié la location entre la lecture
+      // et l'écriture : conflit explicite (409), avant toute autre décision — jamais un 403 de
+      // façade masquant un changement concurrent, jamais un 409 masquant un vrai refus métier.
+      const locked = await lockLocationForUpdate(tenantId, locationId, tx);
+      if (!locked) {
+        throw new LocationStatusConflictError();
+      }
+      if (locked.status !== existing.status) {
+        throw new LocationStatusConflictError();
+      }
+
+      // Sprint 23 (DOMAINRULES.md section 39), déplacée Sprint 31A : le statut verrouillé
+      // ci-dessus est désormais garanti identique à `existing.status` — un refus ici est un vrai
+      // refus métier, jamais un artefact de concurrence.
+      if (data.status === "CANCELLED" && existing.status !== "CANCELLED" && existing.status !== "PENDING") {
+        throw new LocationCancellationRequiresAdminError();
+      }
+
       if (datesChanging) {
         const vehicle = await lockVehicleForUpdate(tenantId, existing.vehicleId, tx);
         if (!vehicle) {
