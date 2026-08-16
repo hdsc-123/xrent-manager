@@ -223,7 +223,11 @@ describe("Sprint 23 — statut NO_SHOW et réinitialisation à zéro réservée 
     const clientResponse = await apiFetch("/api/clients", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ name: `Client Convert ${runId}`, phone: `+21262${runId.slice(-7)}` }),
+      body: JSON.stringify({
+        name: `Client Convert ${runId}`,
+        phone: `+21262${runId.slice(-7)}`,
+        licenseExpiryDate: "2099-12-31",
+      }),
     });
     const clientId = (await clientResponse.json()).client.id;
 
@@ -1129,7 +1133,7 @@ describe("POST /api/reservations/[id]/convert", () => {
         idNumber: `AB-${runId}-${convertBodyCounter}`,
         licenseNumber: `P-${runId}-${convertBodyCounter}`,
         licenseIssueDate: "2020-01-01",
-        licenseExpiryDate: "2030-01-01",
+        licenseExpiryDate: "2099-12-31",
       },
       ...overrides,
     };
@@ -1468,6 +1472,83 @@ describe("POST /api/reservations/[id]/convert", () => {
       expect(body.location.vehicleId).toBe(vehicleId);
     });
   });
+
+  describe("Sprint 29 — permis du client principal doit couvrir la date de retour à la conversion (point 16, DOMAINRULES.md section 44)", () => {
+    // Plage 2034-xx isolée : aucune autre réservation/location de ce fichier n'utilise l'année
+    // 2034 (vérifié), élimine tout risque de conflit de disponibilité avec un test existant.
+    it("refuse (400) la conversion si le permis du client n'expire pas au moins à la date de retour — transaction entièrement annulée", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "PermisExpire",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-04-10",
+        endDate: "2034-04-13",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const body = convertBody(reservation);
+      body.client.licenseExpiryDate = "2034-04-04"; // expire 9 jours avant le retour
+
+      const clientCountBefore = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+      const responseBody = await response.json();
+      expect(responseBody.error).toMatch(/expire avant la date de retour/i);
+
+      // Rollback complet de la transaction partagée (Sprint 26A, Finding A) : ni Location, ni
+      // réservation marquée CONVERTED, ni client orphelin créé par la tentative de conversion.
+      const locationCount = await prisma.location.count({ where: { vehicleId: vehicleAId, startDate: new Date("2034-04-10") } });
+      expect(locationCount).toBe(0);
+
+      const reservationAfter = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+      expect(reservationAfter.status).toBe("PENDING");
+      expect(reservationAfter.convertedLocationId).toBeNull();
+
+      const clientCountAfter = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+      expect(clientCountAfter).toBe(clientCountBefore);
+    });
+
+    it("accepte la conversion lorsque le permis expire exactement à la date de retour (égalité UTC)", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "PermisEgal",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-04-18T10:00:00.000Z",
+        endDate: "2034-04-20T14:00:00.000Z",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const body = convertBody(reservation);
+      body.client.licenseExpiryDate = "2034-04-20";
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(201);
+    });
+
+    it("non-régression : conversion avec permis valide (défaut convertBody, expiration 2099) toujours acceptée", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "PermisOk",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-04-22",
+        endDate: "2034-04-25",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation)),
+      });
+      expect(response.status).toBe(201);
+    });
+  });
 });
 
 describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous concurrence", () => {
@@ -1493,7 +1574,7 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
         idNumber: `S26A-${runId}-${convertBodyCounter}`,
         licenseNumber: `S26AP-${runId}-${convertBodyCounter}`,
         licenseIssueDate: "2020-01-01",
-        licenseExpiryDate: "2030-01-01",
+        licenseExpiryDate: "2099-12-31",
       },
       ...overrides,
     };
@@ -1632,7 +1713,7 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
             await apiFetch("/api/clients", {
               method: "POST",
               headers: { Cookie: adminA.sessionCookie },
-              body: JSON.stringify({ name: `Occupant-${runId}` }),
+              body: JSON.stringify({ name: `Occupant-${runId}`, licenseExpiryDate: "2099-12-31" }),
             })
           ).json()
         ).client.id,
@@ -1879,6 +1960,7 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
             name: `RollbackMixte Ligne2-${runId}`,
             firstName: "RollbackMixte",
             lastName: `Ligne2-${runId}`,
+            licenseExpiryDate: new Date("2099-12-31"),
           },
           tx
         );
@@ -1978,7 +2060,7 @@ describe("Sprint 26C, Finding C — verrou Vehicle en conversion, sous concurren
         idNumber: `S26C-${runId}-${convertBodyCounter}`,
         licenseNumber: `S26CP-${runId}-${convertBodyCounter}`,
         licenseIssueDate: "2020-01-01",
-        licenseExpiryDate: "2030-01-01",
+        licenseExpiryDate: "2099-12-31",
       },
       ...overrides,
     };
@@ -1998,6 +2080,7 @@ describe("Sprint 26C, Finding C — verrou Vehicle en conversion, sous concurren
       name: `Direct Client ${runId}`,
       firstName: "Direct",
       lastName: `Client-${runId}`,
+      licenseExpiryDate: new Date("2099-12-31"),
     });
 
     const [convertResponse, directResponse] = await Promise.all([

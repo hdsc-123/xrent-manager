@@ -320,7 +320,11 @@ describe("Sprint 15 — numérotation de contrat par agence (déplacée depuis T
     const clientResponse = await apiFetch("/api/clients", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ name: "Client Numérotation", email: `client-numerotation-${runId}@test.local` }),
+      body: JSON.stringify({
+        name: "Client Numérotation",
+        email: `client-numerotation-${runId}@test.local`,
+        licenseExpiryDate: "2099-12-31",
+      }),
     });
     const clientId = (await clientResponse.json()).client.id;
 

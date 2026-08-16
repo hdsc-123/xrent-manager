@@ -21,6 +21,8 @@ import {
   VehicleNotAvailableError,
   VehicleUnavailableForLocationError,
   MissingPriceError,
+  MissingDriverLicenseExpiryError,
+  DriverLicenseExpiredError,
 } from "@/lib/locations";
 import { createInvoice } from "@/lib/invoices";
 import { processLocationPayment, validatePaymentInput, type PaymentInput } from "@/lib/location-payment";
@@ -489,6 +491,13 @@ export async function POST(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: error.message }, { status: 404 });
     }
     if (error instanceof MissingPriceError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    // Sprint 29 (DOMAINRULES.md section 44, point 16) : la conversion réutilise createLocation
+    // (via la transaction partagée) — même garde permis du client principal, aucune exception
+    // pour cette route ; le rollback de la transaction (client/second conducteur/réservation
+    // réclamée) est garanti par Prisma, comme pour toute autre erreur levée ici.
+    if (error instanceof MissingDriverLicenseExpiryError || error instanceof DriverLicenseExpiredError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof ConversionPaymentError) {

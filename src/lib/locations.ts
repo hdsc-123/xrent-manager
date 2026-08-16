@@ -1,4 +1,4 @@
-import type { Location, LocationStatus, PaymentMethod, Prisma, Vehicle, VehicleStatus } from "@prisma/client";
+import type { Client, Location, LocationStatus, PaymentMethod, Prisma, Vehicle, VehicleStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { checkAvailability, lockVehicleForUpdate } from "@/lib/vehicles";
 import { getClientById } from "@/lib/clients";
@@ -32,6 +32,64 @@ export class SecondDriverNotFoundError extends Error {
   constructor() {
     super("Second conducteur introuvable.");
     this.name = "SecondDriverNotFoundError";
+  }
+}
+
+/**
+ * Sprint 29 (DOMAINRULES.md section 44, point 16) : sans date d'expiration de permis connue
+ * pour le client principal, sa validité jusqu'à la date de retour ne peut pas être démontrée —
+ * refusée plutôt que silencieusement acceptée. Ne s'applique qu'au client principal
+ * (data.clientId) : le second conducteur (ConvertSecondDriverInput, POST
+ * /api/reservations/[id]/convert) n'a pas de champ licenseExpiryDate et n'est donc jamais
+ * concerné par cette règle (décision validée explicitement avec le propriétaire du projet).
+ */
+export class MissingDriverLicenseExpiryError extends Error {
+  constructor() {
+    super(
+      "La date d'expiration du permis de conduire du client n'est pas renseignée : impossible " +
+        "de vérifier sa validité jusqu'à la date de retour prévue. Complétez la date d'expiration " +
+        "du permis dans la fiche client avant de générer le contrat."
+    );
+    this.name = "MissingDriverLicenseExpiryError";
+  }
+}
+
+/**
+ * Sprint 29 (DOMAINRULES.md section 44, point 16) : le permis de conduire du client principal
+ * doit rester valide au moins jusqu'à la date de retour du contrat — comparaison sur le jour
+ * calendaire UTC uniquement (voir toUtcDateOnly ci-dessous), jamais sur l'heure locale du
+ * serveur ; une expiration exactement égale à la date de retour est acceptée (décision validée
+ * explicitement).
+ */
+export class DriverLicenseExpiredError extends Error {
+  constructor() {
+    super(
+      "Le permis de conduire du client expire avant la date de retour prévue du contrat : " +
+        "impossible de générer le contrat. Modifiez la date de retour ou mettez à jour la date " +
+        "d'expiration du permis dans la fiche client."
+    );
+    this.name = "DriverLicenseExpiredError";
+  }
+}
+
+/** Sprint 29 — normalise une date à son jour calendaire UTC (minuit UTC), pour une comparaison
+ * indépendante de l'heure et du fuseau horaire local du serveur. */
+function toUtcDateOnly(date: Date): number {
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+/**
+ * Sprint 29 — appliquée uniquement à la création d'un contrat (voir createLocationLocked
+ * ci-dessous), jamais à updateLocation (portée volontairement limitée, DOMAINRULES.md
+ * section 44) : un contrat PENDING dont la date de retour est repoussée après création n'est
+ * pas revérifié par cette règle.
+ */
+function assertDriverLicenseCoversReturn(client: Client, endDate: Date): void {
+  if (!client.licenseExpiryDate) {
+    throw new MissingDriverLicenseExpiryError();
+  }
+  if (toUtcDateOnly(client.licenseExpiryDate) < toUtcDateOnly(endDate)) {
+    throw new DriverLicenseExpiredError();
   }
 }
 
@@ -453,6 +511,7 @@ async function createLocationLocked(data: CreateLocationInput, tx: Prisma.Transa
   if (!client) {
     throw new ClientNotFoundError();
   }
+  assertDriverLicenseCoversReturn(client, data.endDate);
 
   if (data.secondDriverId) {
     const secondDriver = await getClientById(data.tenantId, data.secondDriverId, tx);

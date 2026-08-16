@@ -274,7 +274,10 @@ describe("DELETE /api/clients/[id]", () => {
   });
 
   it("refuse la suppression d'un client ayant une location", async () => {
-    const createResponse = await createClient(adminA, { name: "Suppression bloquée" });
+    const createResponse = await createClient(adminA, {
+      name: "Suppression bloquée",
+      licenseExpiryDate: "2030-01-01",
+    });
     const clientId = (await createResponse.json()).client.id;
 
     const vehicleResponse = await apiFetch("/api/vehicles", {

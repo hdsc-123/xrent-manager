@@ -126,14 +126,14 @@ beforeAll(async () => {
   const clientAResponse = await apiFetch("/api/clients", {
     method: "POST",
     headers: { Cookie: adminA.sessionCookie },
-    body: JSON.stringify({ name: "Client A", email: `client-a-${runId}@test.local` }),
+    body: JSON.stringify({ name: "Client A", email: `client-a-${runId}@test.local`, licenseExpiryDate: "2099-12-31" }),
   });
   clientAId = (await clientAResponse.json()).client.id;
 
   const clientBResponse = await apiFetch("/api/clients", {
     method: "POST",
     headers: { Cookie: adminB.sessionCookie },
-    body: JSON.stringify({ name: "Client B", email: `client-b-${runId}@test.local` }),
+    body: JSON.stringify({ name: "Client B", email: `client-b-${runId}@test.local`, licenseExpiryDate: "2099-12-31" }),
   });
   clientBId = (await clientBResponse.json()).client.id;
 
@@ -770,6 +770,107 @@ describe("POST /api/locations", () => {
     expect(response.status).toBe(201);
     const body = await response.json();
     expect(body.location.totalPrice).toBe(10000); // 2 jours × 5000
+  });
+
+  describe("Sprint 29 — permis du client principal doit couvrir la date de retour (point 16, DOMAINRULES.md section 44)", () => {
+    async function createClientWithLicense(overrides: Record<string, unknown>) {
+      const response = await apiFetch("/api/clients", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ name: "Client Sprint 29", ...overrides }),
+      });
+      return (await response.json()).client as { id: string };
+    }
+
+    // Plage 2034-xx isolée : aucune autre location de ce fichier (ni d'aucun autre fichier de
+    // test, vérifié) n'utilise l'année 2034 — élimine tout risque de VehicleNotAvailableError
+    // (409) accidentel avec un test déjà existant sur vehicleAId.
+    it("refuse (400) si le permis expire strictement avant la date de retour — aucune Location créée", async () => {
+      const client = await createClientWithLicense({ licenseExpiryDate: "2034-04-04" });
+
+      const before = await prisma.location.count({ where: { vehicleId: vehicleAId, clientId: client.id } });
+
+      const response = await createLocation(adminA, {
+        clientId: client.id,
+        startDate: "2034-04-10",
+        endDate: "2034-04-13", // permis expiré 9 jours avant le retour
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toMatch(/expire avant la date de retour/i);
+
+      const after = await prisma.location.count({ where: { vehicleId: vehicleAId, clientId: client.id } });
+      expect(after).toBe(before);
+    });
+
+    it("accepte lorsque la date d'expiration du permis est égale à la date de retour, après normalisation UTC (heure ignorée)", async () => {
+      // Retour à 14h UTC le 20/04 ; permis expirant minuit UTC le même jour calendaire —
+      // égalité au sens du jour UTC, pas de l'horodatage exact (décision validée).
+      const client = await createClientWithLicense({ licenseExpiryDate: "2034-04-20" });
+
+      const response = await createLocation(adminA, {
+        clientId: client.id,
+        startDate: "2034-04-18T10:00:00.000Z",
+        endDate: "2034-04-20T14:00:00.000Z",
+      });
+      expect(response.status).toBe(201);
+    });
+
+    it("accepte lorsque la date d'expiration du permis est postérieure à la date de retour", async () => {
+      const client = await createClientWithLicense({ licenseExpiryDate: "2034-05-01" });
+
+      const response = await createLocation(adminA, {
+        clientId: client.id,
+        startDate: "2034-04-22",
+        endDate: "2034-04-25",
+      });
+      expect(response.status).toBe(201);
+    });
+
+    it("refuse (400) si licenseExpiryDate est absente — aucune Location créée", async () => {
+      const client = await createClientWithLicense({});
+
+      const before = await prisma.location.count({ where: { vehicleId: vehicleAId, clientId: client.id } });
+
+      const response = await createLocation(adminA, {
+        clientId: client.id,
+        startDate: "2034-04-28",
+        endDate: "2034-04-30",
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toMatch(/n'est pas renseignée/i);
+
+      const after = await prisma.location.count({ where: { vehicleId: vehicleAId, clientId: client.id } });
+      expect(after).toBe(before);
+    });
+
+    it("non-régression : un contrat avec permis valide (clientAId, expiration 2099) est toujours accepté", async () => {
+      const response = await createLocation(adminA, { startDate: "2034-05-05", endDate: "2034-05-07" });
+      expect(response.status).toBe(201);
+    });
+
+    it("portée limitée à la création : updateLocation() ne revérifie pas le permis lors d'un changement de dates (hors périmètre Sprint 29, documenté)", async () => {
+      const client = await createClientWithLicense({ licenseExpiryDate: "2034-05-12" });
+      const createResponse = await createLocation(adminA, {
+        clientId: client.id,
+        startDate: "2034-05-10",
+        endDate: "2034-05-12", // égal à l'expiration : accepté à la création
+      });
+      expect(createResponse.status).toBe(201);
+      const locationId = (await createResponse.json()).location.id;
+
+      // Toujours PENDING (aucun status transmis) : les dates restent modifiables. On les
+      // repousse au-delà de l'expiration du permis (2034-05-15 > 2034-05-12) — updateLocation
+      // n'exécute aucune vérification de permis (portée Sprint 29 volontairement limitée à
+      // createLocation, voir DOMAINRULES.md section 44) : accepté malgré l'incohérence.
+      const updateResponse = await apiFetch(`/api/locations/${locationId}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ startDate: "2034-05-13", endDate: "2034-05-15" }),
+      });
+      expect(updateResponse.status).toBe(200);
+    });
   });
 });
 

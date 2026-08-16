@@ -14,6 +14,8 @@ import {
   VehicleUnavailableForLocationError,
   MissingPriceError,
   InvalidFuelLevelError,
+  MissingDriverLicenseExpiryError,
+  DriverLicenseExpiredError,
 } from "@/lib/locations";
 import { createInvoice } from "@/lib/invoices";
 import { processLocationPayment, validatePaymentInput, type PaymentInput } from "@/lib/location-payment";
@@ -237,6 +239,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     if (error instanceof MissingPriceError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    // Sprint 29 (DOMAINRULES.md section 44, point 16) : permis du client principal absent ou
+    // expirant avant la date de retour — même statut/forme de réponse que MissingPriceError.
+    if (error instanceof MissingDriverLicenseExpiryError || error instanceof DriverLicenseExpiredError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof InvalidFuelLevelError) {

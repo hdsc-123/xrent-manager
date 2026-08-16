@@ -799,7 +799,11 @@ body: JSON.stringify({ type: "EXPENSE", category: "Fournitures", amount: 20_000,
     const clientResponse = await apiFetch("/api/clients", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ name: "Client Solde Agence", email: `client-solde-${runId}@test.local` }),
+      body: JSON.stringify({
+        name: "Client Solde Agence",
+        email: `client-solde-${runId}@test.local`,
+        licenseExpiryDate: "2099-12-31",
+      }),
     });
     const client = (await clientResponse.json()).client;
 

@@ -130,7 +130,7 @@ describe("Scénario complet Sprint 10 : inscription → sélection de tenant →
     const clientResponse = await apiFetch("/api/clients", {
       method: "POST",
       headers: { Cookie: admin.sessionCookie },
-      body: JSON.stringify({ name: "Client E2E Full" }),
+      body: JSON.stringify({ name: "Client E2E Full", licenseExpiryDate: "2099-12-31" }),
     });
     expect(clientResponse.status).toBe(201);
     const clientId = (await clientResponse.json()).client.id;

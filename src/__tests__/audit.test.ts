@@ -221,7 +221,7 @@ describe("Journal d'audit exhaustif sur le CRUD métier (Sprint 10)", () => {
     const clientResponse = await apiFetch("/api/clients", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ name: "Client Cycle" }),
+      body: JSON.stringify({ name: "Client Cycle", licenseExpiryDate: "2099-12-31" }),
     });
     const clientId = (await clientResponse.json()).client.id;
 
@@ -374,7 +374,7 @@ describe("Journal d'audit exhaustif sur le CRUD métier (Sprint 10)", () => {
     const clientResponse = await apiFetch("/api/clients", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ name: "Client Finding F" }),
+      body: JSON.stringify({ name: "Client Finding F", licenseExpiryDate: "2099-12-31" }),
     });
     const clientId = (await clientResponse.json()).client.id;
 
