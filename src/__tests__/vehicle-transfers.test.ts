@@ -2,6 +2,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+// Sprint 31B — Scénario F (rollback) : appelée directement (hors route HTTP) pour provoquer une
+// erreur après le verrouillage du véhicule via un responsibleUserId inexistant, impossible à
+// obtenir via POST /api/vehicle-transfers qui valide déjà responsibleUserId avant d'appeler cette
+// fonction (voir src/app/api/vehicle-transfers/route.ts).
+import { createVehicleTransfer } from "@/lib/vehicle-transfers";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -114,6 +119,9 @@ afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.vehicleTransfer.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  // Sprint 31B — Scénario C (transfert vs déplacement concurrents) crée aussi des VehicleTrip
+  // dans ce fichier : à nettoyer avant Vehicle, comme VehicleTransfer ci-dessus.
+  await prisma.vehicleTrip.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -220,6 +228,197 @@ describe("POST /api/vehicle-transfers", () => {
 
     const response = await createTransfer(adminA, vehicleId, agencyB1Id, adminA.userId);
     expect(response.status).toBe(404);
+  });
+});
+
+/**
+ * Sprint 31B (DOMAINRULES.md section 46) : avant ce sprint, la création d'un transfert/
+ * déplacement relisait le véhicule dans la transaction via un simple `tx.vehicle.findUnique`,
+ * sans verrou de ligne — sous l'isolation READ COMMITTED de PostgreSQL, deux créations
+ * concurrentes sur le même véhicule pouvaient toutes deux lire AVAILABLE avant que l'une des
+ * deux n'écrive. Correctif : `lockVehicleForUpdate` (SELECT ... FOR UPDATE) posé en tout début
+ * de transaction (voir createVehicleTransfer, src/lib/vehicle-transfers.ts). Les tests
+ * ci-dessous répètent chaque scénario concurrent plusieurs fois : le résultat attendu (un seul
+ * 201, un seul 409, un seul mouvement actif en base) est garanti par le verrou de ligne
+ * PostgreSQL lui-même, jamais par un minutage particulier des deux requêtes — déterministe par
+ * construction, pas par chance.
+ */
+describe("Sprint 31B — verrouillage du véhicule à la création (courses concurrentes)", () => {
+  const CONCURRENCY_REPEATS = 5;
+
+  async function setVehicleStatus(admin: AuthenticatedTestUser, vehicleId: string, status: string) {
+    const response = await apiFetch(`/api/vehicles/${vehicleId}`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ status }),
+    });
+    expect(response.status).toBe(200);
+  }
+
+  it("Scénario A : deux transferts concurrents sur le même véhicule — exactement un 201 et un 409, un seul transfert actif en base, un seul audit", async () => {
+    for (let attempt = 0; attempt < CONCURRENCY_REPEATS; attempt++) {
+      const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+      const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+      const auditCountBefore = await prisma.auditLog.count({
+        where: { tenantId: adminA.tenantId, action: "vehicle_transfer.created" },
+      });
+
+      const [r1, r2] = await Promise.all([
+        createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId),
+        createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId),
+      ]);
+
+      const statuses = [r1.status, r2.status];
+      expect(statuses.filter((s) => s === 201)).toHaveLength(1);
+      expect(statuses.filter((s) => s === 409)).toHaveLength(1);
+
+      // Le message exact du perdant (conflit de concurrence vs refus métier générique, voir
+      // VehicleReservationConflictError) dépend de l'entrelacement réel des deux requêtes HTTP —
+      // non garanti par Promise.all seul (constaté : reproductible à 100% en isolation avant que
+      // la route ne soit compilée par Next dev, ~1/53 même une fois chaude). Seules les propriétés
+      // ci-dessous sont garanties par le verrou de ligne PostgreSQL, indépendamment du minutage —
+      // ce sont elles qui font foi pour la sécurité de concurrence, pas le libellé exact du 409.
+      const loserResponse = r1.status === 409 ? r1 : r2;
+      const loserBody = await loserResponse.json();
+      expect(typeof loserBody.error).toBe("string");
+      expect(loserBody.error.length).toBeGreaterThan(0);
+
+      const activeTransfers = await prisma.vehicleTransfer.count({ where: { vehicleId, status: "IN_TRANSIT" } });
+      expect(activeTransfers).toBe(1);
+
+      const vehicleCheck = await apiFetch(`/api/vehicles/${vehicleId}`, { headers: { Cookie: adminA.sessionCookie } });
+      const vehicleBody = await vehicleCheck.json();
+      expect(vehicleBody.vehicle.status).toBe("TRANSFERRING");
+
+      const auditCountAfter = await prisma.auditLog.count({
+        where: { tenantId: adminA.tenantId, action: "vehicle_transfer.created" },
+      });
+      expect(auditCountAfter - auditCountBefore).toBe(1);
+    }
+  });
+
+  it("Scénario C : un transfert et un déplacement concurrents sur le même véhicule — exactement une réussite et un conflit, un seul mouvement actif, statut véhicule cohérent avec le gagnant", async () => {
+    for (let attempt = 0; attempt < CONCURRENCY_REPEATS; attempt++) {
+      const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+      const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+      const [transferResponse, tripResponse] = await Promise.all([
+        createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId),
+        apiFetch("/api/vehicle-trips", {
+          method: "POST",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify({
+            vehicleId,
+            employeeUserId: adminA.userId,
+            reason: "Course test concurrence",
+            destination: "Aéroport",
+            startOdometer: 100,
+          }),
+        }),
+      ]);
+
+      const statuses = [transferResponse.status, tripResponse.status];
+      expect(statuses.filter((s) => s === 201)).toHaveLength(1);
+      expect(statuses.filter((s) => s === 409)).toHaveLength(1);
+
+      const activeTransfers = await prisma.vehicleTransfer.count({ where: { vehicleId, status: "IN_TRANSIT" } });
+      const activeTrips = await prisma.vehicleTrip.count({ where: { vehicleId, status: "IN_PROGRESS" } });
+      expect(activeTransfers + activeTrips).toBe(1);
+
+      const vehicleCheck = await apiFetch(`/api/vehicles/${vehicleId}`, { headers: { Cookie: adminA.sessionCookie } });
+      const vehicleBody = await vehicleCheck.json();
+
+      // Voir le commentaire du Scénario A ci-dessus : le libellé exact du 409 perdant n'est pas
+      // garanti par Promise.all seul, seules les propriétés ci-dessous le sont (verrou de ligne).
+      if (transferResponse.status === 201) {
+        expect(activeTransfers).toBe(1);
+        expect(activeTrips).toBe(0);
+        expect(vehicleBody.vehicle.status).toBe("TRANSFERRING");
+        const tripError = await tripResponse.json();
+        expect(typeof tripError.error).toBe("string");
+        expect(tripError.error.length).toBeGreaterThan(0);
+      } else {
+        expect(activeTrips).toBe(1);
+        expect(activeTransfers).toBe(0);
+        expect(vehicleBody.vehicle.status).toBe("ON_TRIP");
+        const transferError = await transferResponse.json();
+        expect(typeof transferError.error).toBe("string");
+        expect(transferError.error.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("Scénario D : refuse un transfert sur un véhicule RENTED (refus métier, jamais un conflit de concurrence)", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+    await setVehicleStatus(adminA, vehicleId, "RENTED");
+
+    const response = await createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId);
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).not.toContain("déjà été réservé par un autre utilisateur");
+  });
+
+  it("Scénario D : refuse un transfert sur un véhicule MAINTENANCE (refus métier)", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+    await setVehicleStatus(adminA, vehicleId, "MAINTENANCE");
+
+    const response = await createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId);
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).not.toContain("déjà été réservé par un autre utilisateur");
+  });
+
+  it("Scénario D : refuse un transfert sur un véhicule INACTIVE (refus métier)", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+    await setVehicleStatus(adminA, vehicleId, "INACTIVE");
+
+    const response = await createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId);
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).not.toContain("déjà été réservé par un autre utilisateur");
+  });
+
+  it("Scénario F : une erreur après le verrouillage du véhicule (FK responsibleUserId inexistant) déclenche un rollback complet — aucune donnée résiduelle", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const alertCountBefore = await prisma.alert.count({ where: { tenantId: adminA.tenantId } });
+    const auditCountBefore = await prisma.auditLog.count({
+      where: { tenantId: adminA.tenantId, action: "vehicle_transfer.created" },
+    });
+
+    // Appel direct de la fonction lib (pas de la route) : la route valide déjà responsibleUserId
+    // avant d'appeler createVehicleTransfer, il faut donc la contourner pour provoquer l'échec
+    // (violation de contrainte de clé étrangère P2003) exactement après le verrouillage du
+    // véhicule et la vérification de son statut, mais avant toute écriture définitive.
+    await expect(
+      createVehicleTransfer({
+        tenantId: adminA.tenantId,
+        vehicleId,
+        toAgencyId: agencyA2Id,
+        responsibleUserId: "nonexistent-responsible-user-id",
+      })
+    ).rejects.toThrow();
+
+    const transferCount = await prisma.vehicleTransfer.count({ where: { vehicleId } });
+    expect(transferCount).toBe(0);
+
+    const alertCountAfter = await prisma.alert.count({ where: { tenantId: adminA.tenantId } });
+    expect(alertCountAfter).toBe(alertCountBefore);
+
+    const auditCountAfter = await prisma.auditLog.count({
+      where: { tenantId: adminA.tenantId, action: "vehicle_transfer.created" },
+    });
+    expect(auditCountAfter).toBe(auditCountBefore);
+
+    const vehicleCheck = await apiFetch(`/api/vehicles/${vehicleId}`, { headers: { Cookie: adminA.sessionCookie } });
+    const vehicleBody = await vehicleCheck.json();
+    expect(vehicleBody.vehicle.status).toBe("AVAILABLE");
+    expect(vehicleBody.vehicle.agencyId).toBe(agencyA1Id);
   });
 });
 

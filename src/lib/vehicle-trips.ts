@@ -1,6 +1,6 @@
 import type { VehicleTrip, VehicleTripStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getVehicleById } from "@/lib/vehicles";
+import { getVehicleById, lockVehicleForUpdate } from "@/lib/vehicles";
 
 export class VehicleTripVehicleNotFoundError extends Error {
   constructor() {
@@ -9,10 +9,31 @@ export class VehicleTripVehicleNotFoundError extends Error {
   }
 }
 
+/** Sprint 31B : `message` désormais surchargeable par une sous-classe (voir
+ * VehicleReservationConflictError ci-dessous) — même principe que
+ * VehicleNotAvailableForTransferError, src/lib/vehicle-transfers.ts. */
 export class VehicleNotAvailableForTripError extends Error {
-  constructor() {
-    super("Ce véhicule n'est pas disponible pour un déplacement (statut actuel non AVAILABLE).");
+  constructor(message = "Ce véhicule n'est pas disponible pour un déplacement (statut actuel non AVAILABLE).") {
+    super(message);
     this.name = "VehicleNotAvailableForTripError";
+  }
+}
+
+/**
+ * Sprint 31B (DOMAINRULES.md section 46) : conflit de concurrence sur la CRÉATION d'un
+ * déplacement — distinct du refus métier ci-dessus. Même principe que
+ * VehicleReservationConflictError de src/lib/vehicle-transfers.ts (dupliquée localement, même
+ * convention que InvalidFuelLevelError dans ce fichier, pour éviter une dépendance croisée entre
+ * modules indépendants) : sous-classe de VehicleNotAvailableForTripError, donc toujours capturée
+ * par le même `instanceof` côté route (POST /api/vehicle-trips, mappé sur 409), aucune
+ * modification de route nécessaire.
+ */
+export class VehicleReservationConflictError extends VehicleNotAvailableForTripError {
+  constructor() {
+    super(
+      "Cette opération n'a pas été appliquée. Le véhicule a déjà été réservé par un autre utilisateur. Actualisez la page puis réessayez."
+    );
+    this.name = "VehicleReservationConflictError";
   }
 }
 
@@ -108,8 +129,15 @@ export interface CreateVehicleTripInput {
 
 /**
  * Départ automatique : agencyId dérivé du véhicule côté serveur (même principe que
- * Maintenance.agencyId), Vehicle.status → ON_TRIP dans la même transaction que la création,
- * pour éviter une course avec un transfert/déplacement concurrent sur le même véhicule.
+ * Maintenance.agencyId).
+ *
+ * Sprint 31B (DOMAINRULES.md section 46) : le véhicule est désormais verrouillé
+ * (`lockVehicleForUpdate`, `SELECT ... FOR UPDATE`, src/lib/vehicles.ts) en tout début de
+ * transaction, avant toute vérification de statut — même correctif et même raison que
+ * createVehicleTransfer (src/lib/vehicle-transfers.ts) : une simple lecture non verrouillante
+ * sous READ COMMITTED laissait deux transactions concurrentes lire toutes deux le véhicule
+ * AVAILABLE avant que l'une n'écrive, permettant un VehicleTrip + un VehicleTransfer (ou deux
+ * VehicleTrip) actifs simultanément sur le même véhicule.
  */
 export async function createVehicleTrip(data: CreateVehicleTripInput): Promise<VehicleTrip> {
   const vehicle = await getVehicleById(data.tenantId, data.vehicleId);
@@ -123,16 +151,25 @@ export async function createVehicleTrip(data: CreateVehicleTripInput): Promise<V
   validateFuelLevel(data.startFuelLevel);
 
   return prisma.$transaction(async (tx) => {
-    const freshVehicle = await tx.vehicle.findUnique({ where: { id: vehicle.id } });
-    if (!freshVehicle || freshVehicle.status !== "AVAILABLE") {
+    const lockedVehicle = await lockVehicleForUpdate(data.tenantId, vehicle.id, tx);
+    if (!lockedVehicle) {
+      throw new VehicleTripVehicleNotFoundError();
+    }
+    if (lockedVehicle.status !== "AVAILABLE") {
+      // Même distinction conflit/refus métier que createVehicleTransfer ci-dessus : le véhicule
+      // était AVAILABLE avant l'ouverture de la transaction mais ne l'est plus une fois le
+      // verrou acquis → un autre appel concurrent a gagné la course entre-temps.
+      if (vehicle.status === "AVAILABLE") {
+        throw new VehicleReservationConflictError();
+      }
       throw new VehicleNotAvailableForTripError();
     }
 
     const trip = await tx.vehicleTrip.create({
       data: {
         tenantId: data.tenantId,
-        vehicleId: vehicle.id,
-        agencyId: vehicle.agencyId,
+        vehicleId: lockedVehicle.id,
+        agencyId: lockedVehicle.agencyId,
         employeeUserId: data.employeeUserId,
         reason: data.reason,
         destination: data.destination,
@@ -143,7 +180,7 @@ export async function createVehicleTrip(data: CreateVehicleTripInput): Promise<V
       },
     });
 
-    await tx.vehicle.update({ where: { id: vehicle.id }, data: { status: "ON_TRIP" } });
+    await tx.vehicle.update({ where: { id: lockedVehicle.id }, data: { status: "ON_TRIP" } });
 
     return trip;
   });

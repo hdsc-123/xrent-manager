@@ -2,6 +2,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+// Sprint 31B — Scénario F (rollback) : appelée directement (hors route HTTP) pour provoquer une
+// erreur après le verrouillage du véhicule via un employeeUserId inexistant, impossible à obtenir
+// via POST /api/vehicle-trips qui valide déjà employeeUserId avant d'appeler cette fonction (voir
+// src/app/api/vehicle-trips/route.ts).
+import { createVehicleTrip } from "@/lib/vehicle-trips";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -192,6 +197,140 @@ describe("POST /api/vehicle-trips", () => {
 
     const response = await createTrip(memberA, vehicleId, memberA.userId);
     expect(response.status).toBe(403);
+  });
+});
+
+/**
+ * Sprint 31B (DOMAINRULES.md section 46) : même correctif que côté transfert
+ * (vehicle-transfers.test.ts) — `lockVehicleForUpdate` (SELECT ... FOR UPDATE) posé en tout
+ * début de transaction dans createVehicleTrip (src/lib/vehicle-trips.ts). Le scénario croisé
+ * transfert/déplacement (Scénario C) est déjà couvert par vehicle-transfers.test.ts (nécessite
+ * les deux modules) ; les tests ci-dessous couvrent la partie propre à VehicleTrip. Répétés
+ * plusieurs fois : le résultat (un seul 201, un seul 409, un seul déplacement actif) est garanti
+ * par le verrou de ligne PostgreSQL, jamais par un minutage particulier des deux requêtes.
+ */
+describe("Sprint 31B — verrouillage du véhicule à la création (courses concurrentes)", () => {
+  const CONCURRENCY_REPEATS = 5;
+
+  async function setVehicleStatus(admin: AuthenticatedTestUser, vehicleId: string, status: string) {
+    const response = await apiFetch(`/api/vehicles/${vehicleId}`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ status }),
+    });
+    expect(response.status).toBe(200);
+  }
+
+  it("Scénario B : deux déplacements concurrents sur le même véhicule — exactement un 201 et un 409, un seul déplacement actif en base, un seul audit", async () => {
+    for (let attempt = 0; attempt < CONCURRENCY_REPEATS; attempt++) {
+      const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+      const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+      const auditCountBefore = await prisma.auditLog.count({
+        where: { tenantId: adminA.tenantId, action: "vehicle_trip.created" },
+      });
+
+      const [r1, r2] = await Promise.all([
+        createTrip(adminA, vehicleId, adminA.userId),
+        createTrip(adminA, vehicleId, adminA.userId),
+      ]);
+
+      const statuses = [r1.status, r2.status];
+      expect(statuses.filter((s) => s === 201)).toHaveLength(1);
+      expect(statuses.filter((s) => s === 409)).toHaveLength(1);
+
+      // Le message exact du perdant (conflit de concurrence vs refus métier générique, voir
+      // VehicleReservationConflictError, src/lib/vehicle-trips.ts) dépend de l'entrelacement réel
+      // des deux requêtes HTTP — non garanti par Promise.all seul (constaté : reproductible à
+      // 100% en isolation avant que la route ne soit compilée par Next dev, ~1/53 même chaude).
+      // Seules les propriétés ci-dessous sont garanties par le verrou de ligne PostgreSQL,
+      // indépendamment du minutage — ce sont elles qui font foi pour la sécurité de concurrence.
+      const loserResponse = r1.status === 409 ? r1 : r2;
+      const loserBody = await loserResponse.json();
+      expect(typeof loserBody.error).toBe("string");
+      expect(loserBody.error.length).toBeGreaterThan(0);
+
+      const activeTrips = await prisma.vehicleTrip.count({ where: { vehicleId, status: "IN_PROGRESS" } });
+      expect(activeTrips).toBe(1);
+
+      const vehicleCheck = await apiFetch(`/api/vehicles/${vehicleId}`, { headers: { Cookie: adminA.sessionCookie } });
+      const vehicleBody = await vehicleCheck.json();
+      expect(vehicleBody.vehicle.status).toBe("ON_TRIP");
+
+      const auditCountAfter = await prisma.auditLog.count({
+        where: { tenantId: adminA.tenantId, action: "vehicle_trip.created" },
+      });
+      expect(auditCountAfter - auditCountBefore).toBe(1);
+    }
+  });
+
+  it("Scénario D : refuse un déplacement sur un véhicule RENTED (refus métier, jamais un conflit de concurrence)", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+    await setVehicleStatus(adminA, vehicleId, "RENTED");
+
+    const response = await createTrip(adminA, vehicleId, adminA.userId);
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).not.toContain("déjà été réservé par un autre utilisateur");
+  });
+
+  it("Scénario D : refuse un déplacement sur un véhicule MAINTENANCE (refus métier)", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+    await setVehicleStatus(adminA, vehicleId, "MAINTENANCE");
+
+    const response = await createTrip(adminA, vehicleId, adminA.userId);
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).not.toContain("déjà été réservé par un autre utilisateur");
+  });
+
+  it("Scénario D : refuse un déplacement sur un véhicule INACTIVE (refus métier)", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+    await setVehicleStatus(adminA, vehicleId, "INACTIVE");
+
+    const response = await createTrip(adminA, vehicleId, adminA.userId);
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).not.toContain("déjà été réservé par un autre utilisateur");
+  });
+
+  it("Scénario F : une erreur après le verrouillage du véhicule (FK employeeUserId inexistant) déclenche un rollback complet — aucune donnée résiduelle", async () => {
+    const vehicleResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const auditCountBefore = await prisma.auditLog.count({
+      where: { tenantId: adminA.tenantId, action: "vehicle_trip.created" },
+    });
+
+    // Appel direct de la fonction lib (pas de la route) : la route valide déjà employeeUserId
+    // avant d'appeler createVehicleTrip, il faut donc la contourner pour provoquer l'échec
+    // (violation de contrainte de clé étrangère P2003) exactement après le verrouillage du
+    // véhicule et la vérification de son statut, mais avant toute écriture définitive.
+    await expect(
+      createVehicleTrip({
+        tenantId: adminA.tenantId,
+        vehicleId,
+        employeeUserId: "nonexistent-employee-user-id",
+        reason: "Course test rollback",
+        destination: "Aéroport",
+        startOdometer: 100,
+      })
+    ).rejects.toThrow();
+
+    const tripCount = await prisma.vehicleTrip.count({ where: { vehicleId } });
+    expect(tripCount).toBe(0);
+
+    const auditCountAfter = await prisma.auditLog.count({
+      where: { tenantId: adminA.tenantId, action: "vehicle_trip.created" },
+    });
+    expect(auditCountAfter).toBe(auditCountBefore);
+
+    const vehicleCheck = await apiFetch(`/api/vehicles/${vehicleId}`, { headers: { Cookie: adminA.sessionCookie } });
+    const vehicleBody = await vehicleCheck.json();
+    expect(vehicleBody.vehicle.status).toBe("AVAILABLE");
   });
 });
 

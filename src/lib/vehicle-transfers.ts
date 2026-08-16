@@ -1,6 +1,6 @@
 import type { VehicleTransfer, VehicleTransferStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getVehicleById } from "@/lib/vehicles";
+import { getVehicleById, lockVehicleForUpdate } from "@/lib/vehicles";
 
 export class VehicleTransferVehicleNotFoundError extends Error {
   constructor() {
@@ -24,11 +24,35 @@ export class SameAgencyTransferError extends Error {
 }
 
 /** Empêche de lancer un transfert incohérent : le véhicule doit être AVAILABLE (ni loué, ni
- * déjà en transfert/déplacement, ni en maintenance/inactif) au moment du lancement. */
+ * déjà en transfert/déplacement, ni en maintenance/inactif) au moment du lancement.
+ *
+ * Sprint 31B : `message` désormais surchargeable par une sous-classe (voir
+ * VehicleReservationConflictError ci-dessous) — le refus métier générique reste le message par
+ * défaut, inchangé, pour tout appelant qui construit l'erreur sans argument. */
 export class VehicleNotAvailableForTransferError extends Error {
-  constructor() {
-    super("Ce véhicule n'est pas disponible pour un transfert (statut actuel non AVAILABLE).");
+  constructor(message = "Ce véhicule n'est pas disponible pour un transfert (statut actuel non AVAILABLE).") {
+    super(message);
     this.name = "VehicleNotAvailableForTransferError";
+  }
+}
+
+/**
+ * Sprint 31B (DOMAINRULES.md section 46) : conflit de concurrence sur la CRÉATION d'un
+ * transfert — distinct du refus métier ci-dessus. Le véhicule était AVAILABLE à la lecture
+ * initiale (avant l'ouverture de la transaction) mais ne l'est plus une fois le verrou de ligne
+ * acquis (lockVehicleForUpdate) : un autre appel concurrent a gagné la course pour ce véhicule
+ * entre les deux lectures. Sous-classe de VehicleNotAvailableForTransferError : reste capturée
+ * par le même `instanceof` déjà en place côté route (POST /api/vehicle-transfers, mappé sur 409),
+ * aucune modification de route nécessaire — seul le message diffère pour rester distinct d'un
+ * refus métier (véhicule déjà RENTED/MAINTENANCE/INACTIVE/TRANSFERRING/ON_TRIP avant même cette
+ * requête, message générique ci-dessus conservé dans ce cas).
+ */
+export class VehicleReservationConflictError extends VehicleNotAvailableForTransferError {
+  constructor() {
+    super(
+      "Cette opération n'a pas été appliquée. Le véhicule a déjà été réservé par un autre utilisateur. Actualisez la page puis réessayez."
+    );
+    this.name = "VehicleReservationConflictError";
   }
 }
 
@@ -136,9 +160,19 @@ export interface CreateVehicleTransferInput {
 
 /**
  * Lance un transfert (fromAgencyId toujours dérivé du véhicule côté serveur, jamais fourni par
- * le client — SECURITY.md section 4). Transaction : le véhicule doit être AVAILABLE au moment
- * exact de l'écriture (relu dans la transaction, pas seulement avant) pour éviter une course
- * entre deux transferts/déplacements concurrents sur le même véhicule.
+ * le client — SECURITY.md section 4).
+ *
+ * Sprint 31B (DOMAINRULES.md section 46) : le véhicule est désormais verrouillé
+ * (`lockVehicleForUpdate`, `SELECT ... FOR UPDATE`, src/lib/vehicles.ts — même mécanisme que
+ * `createLocationLocked`, Sprint 26C, Finding C) en tout début de transaction, avant toute
+ * vérification de statut. Avant ce correctif, la lecture du véhicule dans la transaction
+ * (`tx.vehicle.findUnique`) n'était qu'une simple lecture non verrouillante : sous l'isolation
+ * READ COMMITTED de PostgreSQL (aucun `isolationLevel` custom dans ce projet), deux transactions
+ * concurrentes pouvaient toutes deux lire le véhicule AVAILABLE avant que l'une des deux
+ * n'écrive, produisant deux VehicleTransfer (ou un VehicleTransfer + un VehicleTrip, voir
+ * src/lib/vehicle-trips.ts) actifs simultanément sur le même véhicule. Le verrou de ligne force
+ * désormais une deuxième transaction concurrente à attendre le commit (ou le rollback) de la
+ * première avant de relire un statut garanti à jour.
  */
 export async function createVehicleTransfer(data: CreateVehicleTransferInput): Promise<VehicleTransfer> {
   const vehicle = await getVehicleById(data.tenantId, data.vehicleId);
@@ -158,16 +192,26 @@ export async function createVehicleTransfer(data: CreateVehicleTransferInput): P
   validateFuelLevel(data.startFuelLevel);
 
   return prisma.$transaction(async (tx) => {
-    const freshVehicle = await tx.vehicle.findUnique({ where: { id: vehicle.id } });
-    if (!freshVehicle || freshVehicle.status !== "AVAILABLE") {
+    const lockedVehicle = await lockVehicleForUpdate(data.tenantId, vehicle.id, tx);
+    if (!lockedVehicle) {
+      throw new VehicleTransferVehicleNotFoundError();
+    }
+    if (lockedVehicle.status !== "AVAILABLE") {
+      // Le véhicule était AVAILABLE à la lecture initiale (avant la transaction) mais ne l'est
+      // plus une fois le verrou acquis : un autre appel concurrent a gagné la course entre-temps
+      // — conflit de concurrence, distinct d'un refus métier préexistant (voir le commentaire de
+      // VehicleReservationConflictError ci-dessus).
+      if (vehicle.status === "AVAILABLE") {
+        throw new VehicleReservationConflictError();
+      }
       throw new VehicleNotAvailableForTransferError();
     }
 
     const transfer = await tx.vehicleTransfer.create({
       data: {
         tenantId: data.tenantId,
-        vehicleId: vehicle.id,
-        fromAgencyId: vehicle.agencyId,
+        vehicleId: lockedVehicle.id,
+        fromAgencyId: lockedVehicle.agencyId,
         toAgencyId: data.toAgencyId,
         fromCity: data.fromCity,
         toCity: data.toCity,
@@ -180,7 +224,7 @@ export async function createVehicleTransfer(data: CreateVehicleTransferInput): P
       },
     });
 
-    await tx.vehicle.update({ where: { id: vehicle.id }, data: { status: "TRANSFERRING" } });
+    await tx.vehicle.update({ where: { id: lockedVehicle.id }, data: { status: "TRANSFERRING" } });
 
     // Sprint 22 : alerte immédiate à l'agence d'arrivée — jusqu'ici rien ne signalait à un
     // véhicule entrant, l'agence de destination ne le découvrait qu'en consultant la liste des
@@ -191,7 +235,7 @@ export async function createVehicleTransfer(data: CreateVehicleTransferInput): P
         agencyId: toAgency.id,
         type: "VEHICLE_TRANSFER_INCOMING",
         priority: "MEDIUM",
-        message: `Véhicule en transit vers votre agence : ${vehicle.name} (${vehicle.licensePlate}), en provenance de ${data.fromCity ?? "l'agence de départ"}.`,
+        message: `Véhicule en transit vers votre agence : ${lockedVehicle.name} (${lockedVehicle.licensePlate}), en provenance de ${data.fromCity ?? "l'agence de départ"}.`,
         entityType: "VehicleTransferIncoming",
         entityId: transfer.id,
       },
