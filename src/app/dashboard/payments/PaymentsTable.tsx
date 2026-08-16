@@ -8,6 +8,11 @@ import { Badge } from "@/components/ui";
 
 export interface PaymentRow {
   id: string;
+  /** Sprint 33 — distingue un paiement locatif (Invoice) d'un paiement de dégât
+   * (DamageInvoice), jamais mélangés dans un calcul, seulement affichés côte à côte. */
+  type: "LOCATION" | "DEGAT";
+  /** id de l'Invoice ou de la DamageInvoice selon `type` — sert uniquement au lien de détail. */
+  invoiceId: string;
   invoiceNumber: string;
   contractNumber: string | null;
   clientName: string;
@@ -26,14 +31,35 @@ const METHOD_LABELS: Record<string, string> = {
   OTHER: "Autre",
 };
 
+const TYPE_LABELS: Record<PaymentRow["type"], string> = {
+  LOCATION: "Location",
+  DEGAT: "Dégât",
+};
+
 export function PaymentsTable({ payments }: { payments: PaymentRow[] }) {
   const columns = useMemo<DataTableColumn<PaymentRow>[]>(
     () => [
       {
+        accessorKey: "type",
+        header: "Type",
+        cell: ({ row }) => (
+          <Badge variant={row.original.type === "DEGAT" ? "secondary" : "outline"}>
+            {TYPE_LABELS[row.original.type]}
+          </Badge>
+        ),
+      },
+      {
         id: "invoiceNumber",
         header: "Facture",
         cell: ({ row }) => (
-          <Link href={`/dashboard/invoices`} className="text-primary hover:underline">
+          <Link
+            href={
+              row.original.type === "DEGAT"
+                ? `/dashboard/damage-invoices/${row.original.invoiceId}`
+                : `/dashboard/invoices/${row.original.invoiceId}`
+            }
+            className="text-primary hover:underline"
+          >
             {row.original.invoiceNumber}
           </Link>
         ),

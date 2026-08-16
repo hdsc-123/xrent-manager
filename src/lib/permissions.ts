@@ -58,6 +58,17 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: "locations.activate", label: "Activer un contrat (CONFIRMED → ACTIVE)", category: "Locations" },
   { key: "locations.complete", label: "Terminer un contrat (→ COMPLETED)", category: "Locations" },
   { key: "locations.cancel", label: "Annuler un contrat non validé (PENDING → CANCELLED)", category: "Locations" },
+  // Sprint 32 : la date/heure réelle de retour (Location.actualReturnAt) est préremplie par
+  // l'heure serveur à l'ouverture du formulaire de retour et jamais modifiable côté client
+  // seul (DOMAINRULES.md section 32) — cette clé, isolée, autorise uniquement sa correction ;
+  // elle ne donne aucun droit supplémentaire sur le contrat, le véhicule, les paiements ou les
+  // dégâts. Non accordée à aucun groupe par défaut à cette étape (catalogue uniquement — voir
+  // le commentaire équivalent sur damages.* ci-dessous).
+  {
+    key: "locations.return_time.edit",
+    label: "Corriger la date/heure réelle de retour",
+    category: "Locations",
+  },
 
   { key: "reservations.view", label: "Voir les réservations", category: "Réservations" },
   { key: "reservations.create", label: "Créer des réservations", category: "Réservations" },
@@ -153,6 +164,30 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: "cash_register.edit", label: "Modifier une écriture de caisse manuelle", category: "Caisse" },
   { key: "cash_register.delete", label: "Supprimer une écriture de caisse manuelle", category: "Caisse" },
   { key: "cash_register.manage_categories", label: "Gérer les catégories de dépense", category: "Caisse" },
+
+  // Sprint 32 (DOMAINRULES.md section 32) : module dégâts — jusqu'ici explicitement reporté
+  // (Sprint 19, section 37 point 15 : "aucun code de ce module n'existe"). Damage.status est
+  // dérivé automatiquement (Sprint 33 : de l'état de sa DamageInvoice une fois facturé, voir
+  // src/lib/damages.ts, applyDamageInvoiceStatus) ; damages.edit ne couvre que
+  // nature/description/billableAmount, jamais une fois le dégât facturé (Damage.damageInvoiceId
+  // renseigné). Catalogue non attribué par défaut — non ajoutées à DEFAULT_GROUPS/
+  // PAST_PERMISSION_BACKFILLS : l'attribution par rôle reste une décision ultérieure du
+  // propriétaire du projet, aucun workflow/répartition de responsabilités n'a été validé.
+  { key: "damages.view", label: "Voir les dégâts", category: "Dégâts" },
+  { key: "damages.create", label: "Déclarer un dégât", category: "Dégâts" },
+  { key: "damages.edit", label: "Corriger un dégât (jamais une fois facturé)", category: "Dégâts" },
+
+  // Sprint 33 (DOMAINRULES.md section 48) : facturation séparée des dégâts — remplace
+  // damages.payment.create (Sprint 32, retirée : un paiement de dégât n'est plus jamais possible
+  // sans DamageInvoice). damage_invoices.create gate la génération automatique d'une facture
+  // (au retour ou à la déclaration d'un dégât facturable) — jamais une création manuelle, aucune
+  // route ne l'expose comme telle. damage_invoices.export gate spécifiquement le PDF (distincte
+  // de .view, décision explicite du propriétaire du projet pour ce module).
+  { key: "damage_invoices.view", label: "Voir les factures de dégâts", category: "Dégâts" },
+  { key: "damage_invoices.create", label: "Générer une facture de dégâts (au retour/à la déclaration)", category: "Dégâts" },
+  { key: "damage_invoices.payment.create", label: "Encaisser un paiement de facture de dégâts", category: "Dégâts" },
+  { key: "damage_invoices.export", label: "Télécharger le PDF d'une facture de dégâts", category: "Dégâts" },
+  { key: "damage_invoices.cancel", label: "Annuler une facture de dégâts", category: "Dégâts" },
 
   { key: "vehicle_transfers.view", label: "Voir les transferts de véhicules", category: "Transferts" },
   { key: "vehicle_transfers.create", label: "Lancer un transfert de véhicule", category: "Transferts" },

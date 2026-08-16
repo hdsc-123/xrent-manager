@@ -27,6 +27,12 @@ import {
 
 export interface InvoiceRow {
   id: string;
+  /** Sprint 33 (DOMAINRULES.md section 48) — distingue une facture locative (Invoice) d'une
+   * facture de dégâts (DamageInvoice), jamais mélangées dans un calcul, seulement affichées côte
+   * à côte pour la recherche transversale. Une ligne DEGAT s'ouvre toujours dans son écran
+   * dédié (/dashboard/damage-invoices/[id]) et n'est jamais sélectionnable pour le lot PDF
+   * (/api/documents/batch-pdf ne gère que les factures locatives). */
+  type: "LOCATION" | "DEGAT";
   number: string;
   contractNumber: string | null;
   clientName: string;
@@ -35,9 +41,15 @@ export interface InvoiceRow {
   totalAmount: number;
   amountPaid: number;
   currency: string;
-  /** Sprint 26E : versionnement documentaire — 1 pour une facture jamais versionnée. */
+  /** Sprint 26E : versionnement documentaire — 1 pour une facture jamais versionnée (toujours 1
+   * pour une DamageInvoice, qui n'a pas de versionnement). */
   versionNumber: number;
 }
+
+const TYPE_LABELS: Record<InvoiceRow["type"], string> = {
+  LOCATION: "Location",
+  DEGAT: "Dégât",
+};
 
 const STATUS_LABELS: Record<string, string> = {
   DRAFT: "Brouillon",
@@ -63,7 +75,12 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
   const [rangeTo, setRangeTo] = useState("");
   const [rangeError, setRangeError] = useState<string | null>(null);
 
-  const allSelected = invoices.length > 0 && invoices.every((invoice) => selectedIds.has(invoice.id));
+  // Sprint 33 : seules les factures locatives sont sélectionnables pour le lot PDF
+  // (/api/documents/batch-pdf ne gère pas les DamageInvoice) — une DamageInvoice se télécharge
+  // individuellement depuis son propre écran (/dashboard/damage-invoices/[id]).
+  const selectableInvoices = useMemo(() => invoices.filter((invoice) => invoice.type === "LOCATION"), [invoices]);
+  const allSelected =
+    selectableInvoices.length > 0 && selectableInvoices.every((invoice) => selectedIds.has(invoice.id));
 
   const toggleSelected = useCallback((id: string, checked: boolean) => {
     setSelectedIds((current) => {
@@ -76,9 +93,9 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
 
   const toggleSelectAll = useCallback(
     (checked: boolean) => {
-      setSelectedIds(checked ? new Set(invoices.map((invoice) => invoice.id)) : new Set());
+      setSelectedIds(checked ? new Set(selectableInvoices.map((invoice) => invoice.id)) : new Set());
     },
-    [invoices]
+    [selectableInvoices]
   );
 
   async function handleDownloadSelection() {
@@ -129,14 +146,24 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
             aria-label="Tout sélectionner"
           />
         ),
-        cell: ({ row }) => (
-          <Checkbox
-            checked={selectedIds.has(row.original.id)}
-            onCheckedChange={(checked: boolean) => toggleSelected(row.original.id, checked === true)}
-            aria-label="Sélectionner cette facture"
-          />
-        ),
+        cell: ({ row }) =>
+          row.original.type === "LOCATION" ? (
+            <Checkbox
+              checked={selectedIds.has(row.original.id)}
+              onCheckedChange={(checked: boolean) => toggleSelected(row.original.id, checked === true)}
+              aria-label="Sélectionner cette facture"
+            />
+          ) : null,
         size: 32,
+      },
+      {
+        accessorKey: "type",
+        header: "Type",
+        cell: ({ row }) => (
+          <Badge variant={row.original.type === "DEGAT" ? "secondary" : "outline"}>
+            {TYPE_LABELS[row.original.type]}
+          </Badge>
+        ),
       },
       {
         accessorKey: "number",
@@ -195,12 +222,32 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
                 <MoreHorizontal className="size-4" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem render={<Link href={`/dashboard/invoices/${row.original.id}`} />}>
+                <DropdownMenuItem
+                  render={
+                    <Link
+                      href={
+                        row.original.type === "DEGAT"
+                          ? `/dashboard/damage-invoices/${row.original.id}`
+                          : `/dashboard/invoices/${row.original.id}`
+                      }
+                    />
+                  }
+                >
                   <Eye className="size-4" />
                   Détails
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  render={<a href={`/api/invoices/${row.original.id}/pdf`} target="_blank" rel="noreferrer" />}
+                  render={
+                    <a
+                      href={
+                        row.original.type === "DEGAT"
+                          ? `/api/damage-invoices/${row.original.id}/pdf`
+                          : `/api/invoices/${row.original.id}/pdf`
+                      }
+                      target="_blank"
+                      rel="noreferrer"
+                    />
+                  }
                 >
                   <Download className="size-4" />
                   Télécharger le PDF

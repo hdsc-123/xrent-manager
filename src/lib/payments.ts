@@ -97,6 +97,20 @@ export class PaymentHasCashEntryError extends Error {
   }
 }
 
+/** Sprint 33 (DOMAINRULES.md section 48) : createPayment/updatePayment/createMixedPayments/
+ * deletePayment ne traitent jamais que des paiements locatifs (Payment.invoiceId non nul) —
+ * jamais un paiement de dégât (Payment.damageInvoiceId non nul, voir src/lib/damage-invoices.ts,
+ * seul module habilité à les créer/corriger). Cette erreur ne devrait jamais se produire en usage
+ * normal (les routes dédiées appellent toujours la bonne fonction) : défense en profondeur contre
+ * un appel direct/un identifiant substitué (IDOR) qui viserait un paiement de dégât via une route
+ * de paiement locatif générique. */
+export class PaymentIsDamageInvoicePaymentError extends Error {
+  constructor() {
+    super("Ce paiement appartient à une facture de dégâts : utilisez les routes dédiées /api/damage-invoices.");
+    this.name = "PaymentIsDamageInvoicePaymentError";
+  }
+}
+
 /**
  * Recalcule amountPaid (somme des paiements) et status de la facture à partir des
  * paiements existants — jamais l'inverse. amountPaid n'est donc jamais incrémenté/
@@ -108,7 +122,13 @@ export class PaymentHasCashEntryError extends Error {
 async function recomputeInvoiceStatus(invoiceId: string, tx: Prisma.TransactionClient = prisma): Promise<void> {
   const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
   const aggregate = await tx.payment.aggregate({
-    where: { invoiceId },
+    // Sprint 33 (DOMAINRULES.md section 48) : un paiement de dégât n'a plus jamais d'invoiceId
+    // (Payment.invoiceId/damageInvoiceId sont mutuellement exclusifs, contrainte CHECK en base —
+    // voir prisma/schema.prisma, remplace le mécanisme provisoire du Sprint 32 où un paiement de
+    // dégât partageait l'invoiceId de la facture du contrat). `damageInvoiceId: null` est donc
+    // redondant avec `invoiceId` mais conservé par défense en profondeur : jamais faire confiance
+    // à une seule couche de validation pour un agrégat financier.
+    where: { invoiceId, damageInvoiceId: null },
     _sum: { amount: true },
   });
   const amountPaid = aggregate._sum.amount ?? 0;
@@ -164,10 +184,16 @@ export interface PaymentFilters {
   to?: Date;
 }
 
+/** Sprint 33 (DOMAINRULES.md section 48) : ce module (src/lib/payments.ts) ne traite jamais que
+ * des paiements locatifs — `invoiceId: { not: null }` exclut structurellement tout paiement de
+ * dégât (Payment.damageInvoiceId non nul, invoiceId toujours null dans ce cas), même sans filtre
+ * `invoiceId` explicite fourni par l'appelant. Un paiement de dégât se consulte exclusivement via
+ * src/lib/damage-invoices.ts (getDamageInvoiceWithDetails). */
 export async function getPayments(tenantId: string, filters: PaymentFilters = {}): Promise<Payment[]> {
   return prisma.payment.findMany({
     where: {
       tenantId,
+      invoiceId: { not: null },
       ...(filters.invoiceId ? { invoiceId: filters.invoiceId } : {}),
       ...(filters.method ? { method: filters.method } : {}),
       ...(filters.from ? { paidAt: { gte: filters.from } } : {}),
@@ -356,6 +382,18 @@ async function updatePaymentLocked(
     return null;
   }
 
+  if (existing.damageInvoiceId) {
+    throw new PaymentIsDamageInvoicePaymentError();
+  }
+  // Narrowing explicite (Sprint 33) : garanti non nul ici par la contrainte CHECK d'exclusivité
+  // (Payment.invoiceId/damageInvoiceId, voir prisma/schema.prisma) puisque damageInvoiceId vient
+  // d'être vérifié null — revérifié quand même au runtime plutôt que d'utiliser une assertion `!`
+  // muette, cohérent avec le principe de ne jamais faire confiance à une seule couche.
+  const rentalInvoiceId = existing.invoiceId;
+  if (!rentalInvoiceId) {
+    throw new PaymentIsDamageInvoicePaymentError();
+  }
+
   if (existing.status === "REFUNDED") {
     throw new PaymentAlreadyRefundedError();
   }
@@ -381,7 +419,7 @@ async function updatePaymentLocked(
     // pour que la relecture ci-dessous (existing) soit garantie à jour au moment du calcul de
     // la compensation — une lecture non verrouillée pourrait sinon rester périmée si un premier
     // PATCH concurrent committait entre cette lecture initiale et l'écriture finale.
-    invoice = await lockInvoiceForUpdate(tenantId, existing.invoiceId, tx);
+    invoice = await lockInvoiceForUpdate(tenantId, rentalInvoiceId, tx);
     if (!invoice) {
       throw new PaymentInvoiceNotFoundError();
     }
@@ -497,7 +535,7 @@ async function updatePaymentLocked(
   }
 
   if (amountChanging) {
-    await recomputeInvoiceStatus(existing.invoiceId, tx);
+    await recomputeInvoiceStatus(rentalInvoiceId, tx);
   }
 
   return updated;
@@ -631,12 +669,20 @@ async function deletePaymentLocked(
     return false;
   }
 
+  if (existing.damageInvoiceId) {
+    throw new PaymentIsDamageInvoicePaymentError();
+  }
+  const rentalInvoiceId = existing.invoiceId;
+  if (!rentalInvoiceId) {
+    throw new PaymentIsDamageInvoicePaymentError();
+  }
+
   const linkedEntry = await tx.cashEntry.findFirst({ where: { paymentId: existing.id } });
   if (linkedEntry) {
     throw new PaymentHasCashEntryError();
   }
 
   await tx.payment.delete({ where: { id: paymentId } });
-  await recomputeInvoiceStatus(existing.invoiceId, tx);
+  await recomputeInvoiceStatus(rentalInvoiceId, tx);
   return true;
 }

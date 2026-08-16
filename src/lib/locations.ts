@@ -251,8 +251,9 @@ export class LocationNotDeletableError extends Error {
 export class LocationHasInvoiceError extends Error {
   constructor() {
     super(
-      "Cette location a une facture SENT/PARTIALLY_PAID/PAID ou avec un paiement enregistré ; " +
-        "annulez ou supprimez la facture (voir DELETE /api/invoices/[id]) avant de supprimer la location."
+      "Cette location a une facture SENT/PARTIALLY_PAID/PAID, un paiement enregistré, ou un dégât " +
+        "déclaré ; annulez/supprimez la facture (voir DELETE /api/invoices/[id]) ou traitez le(s) " +
+        "dégât(s) avant de supprimer la location."
     );
     this.name = "LocationHasInvoiceError";
   }
@@ -931,7 +932,13 @@ export async function deleteLocation(tenantId: string, locationId: string): Prom
   const hasNonDeletableInvoice = invoices.some(
     (invoice) => invoice.status !== "DRAFT" || invoice.amountPaid > 0
   );
-  if (hasNonDeletableInvoice) {
+  // Sprint 32 (DOMAINRULES.md section 32, correctif étape 5) : Damage a une contrainte de clé
+  // étrangère réelle vers Location (jamais de suppression physique d'un dégât, voir
+  // prisma/schema.prisma) — sans ce contrôle, la transaction ci-dessous échouait avec une
+  // erreur Prisma brute non gérée (violation de contrainte) dès qu'un dégât, même non payé,
+  // était attaché à une location PENDING/CANCELLED par ailleurs supprimable.
+  const hasDamages = (await prisma.damage.count({ where: { locationId } })) > 0;
+  if (hasNonDeletableInvoice || hasDamages) {
     throw new LocationHasInvoiceError();
   }
 
@@ -1050,6 +1057,13 @@ export async function adminCancelValidatedLocation(
     for (const invoice of invoicesToCancel) {
       await tx.invoice.update({ where: { id: invoice.id }, data: { status: "CANCELLED" } });
 
+      // Sprint 33 (DOMAINRULES.md section 48) : un paiement de dégât n'a plus jamais d'invoiceId
+      // (Payment.invoiceId/damageInvoiceId mutuellement exclusifs, contrainte CHECK en base —
+      // remplace le mécanisme provisoire du Sprint 32 où un paiement de dégât partageait
+      // l'invoiceId de la facture du contrat). Filtrer par `invoiceId: invoice.id` exclut donc
+      // déjà structurellement tout paiement de dégât : il n'a jamais cet invoiceId. L'annulation
+      // d'un contrat n'annule jamais la réparation d'un dégât déjà réglée (facture séparée, voir
+      // src/lib/damage-invoices.ts).
       const payments = await tx.payment.findMany({ where: { invoiceId: invoice.id } });
       for (const payment of payments) {
         // Idempotence en défense en profondeur (Sprint 26D) : la garde updateMany sur

@@ -4,6 +4,7 @@ import type { InvoiceStatus } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
+import { getDamageInvoices } from "@/lib/damage-invoices";
 import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { InvoicesTable, type InvoiceRow } from "./InvoicesTable";
 
@@ -15,10 +16,23 @@ const STATUS_OPTIONS: { value: InvoiceStatus; label: string }[] = [
   { value: "CANCELLED", label: "Annulée" },
 ];
 
+const TYPE_OPTIONS = [
+  { value: "LOCATION", label: "Location" },
+  { value: "DEGAT", label: "Dégât" },
+] as const;
+
 interface PageProps {
-  searchParams: Promise<{ status?: string; from?: string; to?: string; showHistory?: string }>;
+  searchParams: Promise<{ status?: string; from?: string; to?: string; showHistory?: string; type?: string }>;
 }
 
+/**
+ * Sprint 33 (DOMAINRULES.md section 48, objectif 12) — regroupe factures locatives (Invoice) et
+ * factures de dégâts (DamageInvoice) pour la recherche transversale (filtre Type, badge distinct,
+ * numéro FACT-DEG visible), sans jamais les confondre : deux requêtes séparées, deux totaux
+ * jamais additionnés (le tableau affiche chaque ligne avec son propre montant, aucune somme
+ * globale calculée sur cet écran) — une DamageInvoice s'ouvre toujours dans son écran dédié
+ * (/dashboard/damage-invoices/[id]), jamais dans /dashboard/invoices/[id].
+ */
 export default async function InvoicesPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
@@ -36,6 +50,8 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
 
   const params = await searchParams;
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+  const canViewDamageInvoices = await can(user, "damage_invoices.view");
+  const type = params.type === "LOCATION" || params.type === "DEGAT" ? params.type : undefined;
   // Sprint 26E : masque par défaut les factures remplacées par une nouvelle version —
   // comportement propre à cet écran uniquement, jamais un changement du comportement par défaut
   // de GET /api/invoices/getInvoices (voir src/lib/invoices.ts, filtre excludeReplaced, jamais
@@ -43,31 +59,81 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
   // physique dupliquée — voir prisma/schema.prisma, Invoice.replacesInvoiceId).
   const showHistory = params.showHistory === "true";
 
-  const invoices = await prisma.invoice.findMany({
-    where: {
-      tenantId: user.tenantId,
-      ...(accessibleAgencyIds ? { agencyId: { in: accessibleAgencyIds } } : {}),
-      ...(params.status ? { status: params.status as InvoiceStatus } : {}),
-      ...(params.from ? { issuedAt: { gte: new Date(params.from) } } : {}),
-      ...(params.to ? { issuedAt: { lte: new Date(params.to) } } : {}),
-      ...(showHistory ? {} : { replacedBy: null }),
-    },
-    include: { client: { select: { name: true } }, location: { select: { contractNumber: true } } },
-    orderBy: { issuedAt: "desc" },
-  });
+  const invoices =
+    type === "DEGAT"
+      ? []
+      : await prisma.invoice.findMany({
+          where: {
+            tenantId: user.tenantId,
+            ...(accessibleAgencyIds ? { agencyId: { in: accessibleAgencyIds } } : {}),
+            ...(params.status ? { status: params.status as InvoiceStatus } : {}),
+            ...(params.from ? { issuedAt: { gte: new Date(params.from) } } : {}),
+            ...(params.to ? { issuedAt: { lte: new Date(params.to) } } : {}),
+            ...(showHistory ? {} : { replacedBy: null }),
+          },
+          include: { client: { select: { name: true } }, location: { select: { contractNumber: true } } },
+          orderBy: { issuedAt: "desc" },
+        });
 
-  const rows: InvoiceRow[] = invoices.map((invoice) => ({
-    id: invoice.id,
-    number: invoice.number,
-    contractNumber: invoice.location.contractNumber,
-    clientName: invoice.client.name,
-    status: invoice.status,
-    issuedAt: invoice.issuedAt.toISOString(),
-    totalAmount: invoice.totalAmount,
-    amountPaid: invoice.amountPaid,
-    currency: invoice.currency,
-    versionNumber: invoice.versionNumber,
-  }));
+  const damageInvoices =
+    type === "LOCATION" || !canViewDamageInvoices
+      ? []
+      : await getDamageInvoices(user.tenantId, {
+          agencyIds: accessibleAgencyIds,
+          // Un DamageInvoiceStatus recouvre les mêmes valeurs qu'InvoiceStatus (voir
+          // prisma/schema.prisma) — le filtre Statut s'applique donc aux deux types identiquement.
+          status: params.status as InvoiceStatus | undefined,
+          from: params.from ? new Date(params.from) : undefined,
+          to: params.to ? new Date(params.to) : undefined,
+        });
+  const damageInvoiceLocationIds = damageInvoices.map((invoice) => invoice.locationId);
+  const damageInvoiceLocations =
+    damageInvoiceLocationIds.length > 0
+      ? await prisma.location.findMany({
+          where: { id: { in: damageInvoiceLocationIds } },
+          select: { id: true, contractNumber: true },
+        })
+      : [];
+  const contractNumberByLocationId = new Map(damageInvoiceLocations.map((location) => [location.id, location.contractNumber]));
+  const damageInvoiceClientIds = damageInvoices.map((invoice) => invoice.clientId);
+  const damageInvoiceClients =
+    damageInvoiceClientIds.length > 0
+      ? await prisma.client.findMany({ where: { id: { in: damageInvoiceClientIds } }, select: { id: true, name: true } })
+      : [];
+  const clientNameById = new Map(damageInvoiceClients.map((client) => [client.id, client.name]));
+
+  const rows: InvoiceRow[] = [
+    ...invoices.map(
+      (invoice): InvoiceRow => ({
+        id: invoice.id,
+        type: "LOCATION",
+        number: invoice.number,
+        contractNumber: invoice.location.contractNumber,
+        clientName: invoice.client.name,
+        status: invoice.status,
+        issuedAt: invoice.issuedAt.toISOString(),
+        totalAmount: invoice.totalAmount,
+        amountPaid: invoice.amountPaid,
+        currency: invoice.currency,
+        versionNumber: invoice.versionNumber,
+      })
+    ),
+    ...damageInvoices.map(
+      (invoice): InvoiceRow => ({
+        id: invoice.id,
+        type: "DEGAT",
+        number: invoice.number,
+        contractNumber: contractNumberByLocationId.get(invoice.locationId) ?? null,
+        clientName: clientNameById.get(invoice.clientId) ?? "—",
+        status: invoice.status,
+        issuedAt: invoice.issuedAt.toISOString(),
+        totalAmount: invoice.totalAmount,
+        amountPaid: invoice.amountPaid,
+        currency: invoice.currency,
+        versionNumber: 1,
+      })
+    ),
+  ].sort((a, b) => new Date(b.issuedAt).getTime() - new Date(a.issuedAt).getTime());
 
   const canCreate = (accessibleAgencyIds === null || accessibleAgencyIds.length > 0) && (await can(user, "invoices.create"));
 
@@ -76,7 +142,9 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="font-heading text-2xl font-semibold">Factures</h1>
-          <p className="text-sm text-muted-foreground">Factures émises pour vos locations.</p>
+          <p className="text-sm text-muted-foreground">
+            Factures locatives et factures de dégâts — deux documents distincts, jamais mêlés dans leurs soldes.
+          </p>
         </div>
         {canCreate && (
           <Button render={<Link href="/dashboard/invoices/new" />}>
@@ -87,6 +155,24 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
       </div>
 
       <form className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3" method="get">
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="type" className="text-xs font-medium text-muted-foreground">
+            Type
+          </label>
+          <select
+            id="type"
+            name="type"
+            defaultValue={params.type ?? ""}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          >
+            <option value="">Tous</option>
+            {TYPE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="flex flex-col gap-1.5">
           <label htmlFor="status" className="text-xs font-medium text-muted-foreground">
             Statut
@@ -105,7 +191,6 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
             ))}
           </select>
         </div>
-
         <div className="flex flex-col gap-1.5">
           <label htmlFor="from" className="text-xs font-medium text-muted-foreground">
             Du
@@ -118,7 +203,6 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
             className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
           />
         </div>
-
         <div className="flex flex-col gap-1.5">
           <label htmlFor="to" className="text-xs font-medium text-muted-foreground">
             Au
@@ -131,13 +215,12 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
             className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
           />
         </div>
-
         <input type="hidden" name="showHistory" value={showHistory ? "true" : "false"} />
 
         <Button type="submit" variant="outline" size="sm">
           Filtrer
         </Button>
-        {(params.status || params.from || params.to) && (
+        {(params.status || params.from || params.to || params.type) && (
           <Button render={<Link href="/dashboard/invoices" />} variant="ghost" size="sm">
             Réinitialiser
           </Button>
@@ -146,7 +229,9 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
 
       {/* Sprint 26E : par défaut, seule la dernière version active de chaque facture
           versionnée est affichée — bascule explicite pour voir aussi les versions
-          remplacées (CANCELLED, une autre facture pointe vers elle via replacesInvoiceId). */}
+          remplacées (CANCELLED, une autre facture pointe vers elle via replacesInvoiceId).
+          Ne s'applique qu'aux factures locatives (les DamageInvoice n'ont pas de
+          versionnement, voir DOMAINRULES.md section 48). */}
       <div>
         <Link
           href={{

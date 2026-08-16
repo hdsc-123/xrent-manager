@@ -91,6 +91,15 @@ export default async function LocationDetailPage({ params }: PageProps) {
               Voir facture
             </Button>
           )}
+          {/* Sprint 32 (DOMAINRULES.md section 32) : écran de retour dédié — même condition que
+              le bouton "Terminée" de LocationActions.tsx (locations.complete + accès agence,
+              départ ou retour). N'existe que pour un contrat ACTIVE ; POST
+              /api/locations/[id]/return revérifie de toute façon tout ceci côté serveur. */}
+          {location.status === "ACTIVE" && (canManageFullEdit ? hasLocationsComplete : canManageReturnOnly) && (
+            <Button render={<Link href={`/dashboard/locations/${location.id}/return`} />} size="sm">
+              Retourner le contrat
+            </Button>
+          )}
         </div>
       </div>
 

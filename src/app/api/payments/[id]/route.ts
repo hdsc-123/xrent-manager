@@ -29,6 +29,14 @@ async function loadAuthorizedPayment(tenantId: string, paymentId: string, user: 
     return null;
   }
 
+  // Sprint 33 (DOMAINRULES.md section 48) : cette route ne traite jamais que des paiements
+  // locatifs — un paiement de dégât (Payment.invoiceId null, Payment.damageInvoiceId non nul,
+  // voir prisma/schema.prisma) n'est jamais résolu ici (traité comme introuvable, jamais exposé
+  // via cette route générique) ; il relève exclusivement de /api/damage-invoices/[id]/payments.
+  if (!payment.invoiceId) {
+    return null;
+  }
+
   const invoice = await getInvoiceById(tenantId, payment.invoiceId);
   if (!invoice || !(await canAccessAgency(user, invoice.agencyId))) {
     return null;

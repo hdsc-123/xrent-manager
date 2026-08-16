@@ -16,17 +16,22 @@ import { logAction } from "@/lib/audit";
  * (solde recalculé à 0 après la purge des CashEntry, jamais supprimé), Account/Session/
  * VerificationToken (NextAuth).
  *
- * Vidé : Client, Vehicle, Location, Invoice, Payment, Maintenance, VehicleTransfer,
- * VehicleTrip, Alert, Invitation, Reservation, CashEntry ; AuditLog uniquement si
- * `includeAuditLog` (option « réinitialisation complète », voir l'énoncé du sprint).
- * `Agency.lastContractNumber` (Sprint 15 — déplacé depuis Tenant, numérotation par agence)
- * est remis à 0 pour toutes les agences du tenant (cohérent avec la suppression de toutes
- * les `Location`, voir DOMAINRULES.md section 29) — `contractNumberPrefix` fait partie de la
- * configuration et n'est jamais touché.
+ * Vidé : Client, Vehicle, Location, Invoice, Payment, Damage, DamageInvoice, DamageInvoiceLine,
+ * Maintenance, VehicleTransfer, VehicleTrip, Alert, Invitation, Reservation, CashEntry ;
+ * AuditLog uniquement si `includeAuditLog` (option « réinitialisation complète », voir l'énoncé
+ * du sprint). `Agency.lastContractNumber` (Sprint 15 — déplacé depuis Tenant, numérotation par
+ * agence) est remis à 0 pour toutes les agences du tenant (cohérent avec la suppression de
+ * toutes les `Location`, voir DOMAINRULES.md section 29) — `contractNumberPrefix` fait partie de
+ * la configuration et n'est jamais touché.
  *
- * Ordre de suppression : enfants avant parents (contrainte de clé étrangère), même ordre
- * que `scripts/reset-dev-data.js` — Payment avant Invoice, Invoice/Maintenance/
- * VehicleTransfer/VehicleTrip avant Location, Location avant Vehicle/Client.
+ * Ordre de suppression : enfants avant parents (contrainte de clé étrangère, toutes en
+ * `onDelete: Restrict` pour Payment/Damage/DamageInvoiceLine vis-à-vis de leurs parents — voir
+ * prisma/schema.prisma) — Payment (référence Invoice et/ou DamageInvoice) avant
+ * DamageInvoiceLine (référence Damage et DamageInvoice) avant Damage (référence DamageInvoice en
+ * plus de Vehicle/Location) avant DamageInvoice (référence Location/Client, pas Damage) avant
+ * Invoice, Invoice/Maintenance/VehicleTransfer/VehicleTrip avant Location, Location avant
+ * Vehicle/Client. Sprint 33 (DOMAINRULES.md section 48) : remplace l'ordre du Sprint 32
+ * (`Payment.damageId`, retiré) — Payment ne référence plus jamais Damage directement.
  */
 
 /**
@@ -83,6 +88,10 @@ export interface DataResetCounts {
   location: number;
   invoice: number;
   payment: number;
+  // Sprint 32/33 : voir l'ordre de suppression documenté plus haut et resetTenantData ci-dessous.
+  damage: number;
+  damageInvoice: number;
+  damageInvoiceLine: number;
   maintenance: number;
   vehicleTransfer: number;
   vehicleTrip: number;
@@ -100,6 +109,9 @@ async function countResetTargets(tenantId: string): Promise<DataResetCounts> {
     location,
     invoice,
     payment,
+    damage,
+    damageInvoice,
+    damageInvoiceLine,
     maintenance,
     vehicleTransfer,
     vehicleTrip,
@@ -114,6 +126,9 @@ async function countResetTargets(tenantId: string): Promise<DataResetCounts> {
     prisma.location.count({ where: { tenantId } }),
     prisma.invoice.count({ where: { tenantId } }),
     prisma.payment.count({ where: { tenantId } }),
+    prisma.damage.count({ where: { tenantId } }),
+    prisma.damageInvoice.count({ where: { tenantId } }),
+    prisma.damageInvoiceLine.count({ where: { damageInvoice: { tenantId } } }),
     prisma.maintenance.count({ where: { tenantId } }),
     prisma.vehicleTransfer.count({ where: { tenantId } }),
     prisma.vehicleTrip.count({ where: { tenantId } }),
@@ -130,6 +145,9 @@ async function countResetTargets(tenantId: string): Promise<DataResetCounts> {
     location,
     invoice,
     payment,
+    damage,
+    damageInvoice,
+    damageInvoiceLine,
     maintenance,
     vehicleTransfer,
     vehicleTrip,
@@ -215,6 +233,14 @@ export async function resetTenantData(input: ResetTenantDataInput): Promise<Data
     // tenant, le résultat recalculé est de toute façon trivialement 0.
     const deleted = await prisma.$transaction(async (tx) => {
       const paymentResult = await tx.payment.deleteMany({ where: { tenantId } });
+      // Sprint 33 : DamageInvoiceLine (référence Damage + DamageInvoice, onDelete: Restrict)
+      // avant Damage (référence DamageInvoice) avant DamageInvoice — voir l'ordre documenté en
+      // tête de fichier.
+      const damageInvoiceLineResult = await tx.damageInvoiceLine.deleteMany({
+        where: { damageInvoice: { tenantId } },
+      });
+      const damageResult = await tx.damage.deleteMany({ where: { tenantId } });
+      const damageInvoiceResult = await tx.damageInvoice.deleteMany({ where: { tenantId } });
       const invoiceResult = await tx.invoice.deleteMany({ where: { tenantId } });
       const maintenanceResult = await tx.maintenance.deleteMany({ where: { tenantId } });
       const vehicleTransferResult = await tx.vehicleTransfer.deleteMany({ where: { tenantId } });
@@ -238,6 +264,9 @@ export async function resetTenantData(input: ResetTenantDataInput): Promise<Data
 
       const result: DataResetCounts = {
         payment: paymentResult.count,
+        damage: damageResult.count,
+        damageInvoice: damageInvoiceResult.count,
+        damageInvoiceLine: damageInvoiceLineResult.count,
         invoice: invoiceResult.count,
         maintenance: maintenanceResult.count,
         vehicleTransfer: vehicleTransferResult.count,

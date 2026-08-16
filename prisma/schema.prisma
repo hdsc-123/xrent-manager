@@ -40,6 +40,8 @@ model Tenant {
   expenseCategories ExpenseCategory[]
   vehicleTransfers  VehicleTransfer[]
   vehicleTrips      VehicleTrip[]
+  damages           Damage[]
+  damageInvoices    DamageInvoice[]
 }
 
 model Agency {
@@ -87,6 +89,7 @@ model Agency {
   reservationsPickup  Reservation[]     @relation("ReservationPickupAgency")
   reservationsDropoff Reservation[]     @relation("ReservationDropoffAgency")
   cashEntries         CashEntry[]
+  damageInvoices      DamageInvoice[]
 
   @@unique([tenantId, slug])
   @@index([tenantId])
@@ -118,6 +121,8 @@ model User {
   vehicleTrips                VehicleTrip[]
   // Sprint 26D (Finding D1) : agent à l'origine d'une correction/compensation de caisse.
   cashEntriesPerformed        CashEntry[]       @relation("CashEntryPerformedBy")
+  // Sprint 32 : agent ayant déclaré un dégât (Damage.createdByUserId).
+  damagesCreated              Damage[]          @relation("DamageCreatedBy")
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -177,10 +182,11 @@ model Client {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  tenant                   Tenant     @relation(fields: [tenantId], references: [id])
-  locations                Location[] @relation("LocationClient")
-  secondDriverForLocations Location[] @relation("LocationSecondDriver")
+  tenant                   Tenant          @relation(fields: [tenantId], references: [id])
+  locations                Location[]      @relation("LocationClient")
+  secondDriverForLocations Location[]      @relation("LocationSecondDriver")
   invoices                 Invoice[]
+  damageInvoices           DamageInvoice[]
 
   @@index([tenantId])
 }
@@ -277,6 +283,7 @@ model Vehicle {
   maintenances Maintenance[]
   transfers    VehicleTransfer[]
   trips        VehicleTrip[]
+  damages      Damage[]
 
   @@unique([tenantId, licensePlate])
   @@index([tenantId])
@@ -331,16 +338,23 @@ model Location {
   // (jamais backfillées rétroactivement, même principe que Vehicle.pricePerDay Sprint 14A) ;
   // toute nouvelle Location en reçoit un systématiquement, quel que soit son statut initial.
   contractNumber  String?
+  // Sprint 32 : date/heure réelles du retour, distinctes de endDate (prévu). Préremplies par
+  // le serveur à l'ouverture du formulaire de retour (jamais l'heure du navigateur seule) ;
+  // modifiables uniquement par un titulaire de locations.return_time.edit — voir POST
+  // .../return (non codé à cette étape, DOMAINRULES.md section 32).
+  actualReturnAt  DateTime?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
-  tenant        Tenant    @relation(fields: [tenantId], references: [id])
-  agency        Agency    @relation("LocationAgency", fields: [agencyId], references: [id])
-  dropoffAgency Agency?   @relation("LocationDropoffAgency", fields: [dropoffAgencyId], references: [id])
-  vehicle       Vehicle   @relation(fields: [vehicleId], references: [id])
-  client        Client    @relation("LocationClient", fields: [clientId], references: [id])
-  secondDriver  Client?   @relation("LocationSecondDriver", fields: [secondDriverId], references: [id])
-  invoices      Invoice[]
+  tenant         Tenant          @relation(fields: [tenantId], references: [id])
+  agency         Agency          @relation("LocationAgency", fields: [agencyId], references: [id])
+  dropoffAgency  Agency?         @relation("LocationDropoffAgency", fields: [dropoffAgencyId], references: [id])
+  vehicle        Vehicle         @relation(fields: [vehicleId], references: [id])
+  client         Client          @relation("LocationClient", fields: [clientId], references: [id])
+  secondDriver   Client?         @relation("LocationSecondDriver", fields: [secondDriverId], references: [id])
+  invoices       Invoice[]
+  damages        Damage[]
+  damageInvoices DamageInvoice[]
 
   @@unique([tenantId, contractNumber])
   @@index([tenantId])
@@ -446,27 +460,176 @@ enum PaymentStatus {
 // explicite Sprint 6) contre une facture. Aucune donnée de carte bancaire n'est
 // jamais saisie ni stockée ici (SECURITY.md) : `method`/`reference` ne décrivent que
 // le mode de règlement (ex. "CARD" = paiement carte encaissé hors-ligne par l'agence).
+//
+// Sprint 33 (DOMAINRULES.md section 48) : un paiement pointe désormais soit `invoiceId`
+// (paiement locatif), soit `damageInvoiceId` (paiement de dégât facturé séparément via
+// DamageInvoice) — jamais les deux, jamais aucun des deux. Remplace le mécanisme provisoire du
+// Sprint 32 (`Payment.damageId`, retiré ce sprint — plus aucun paiement de dégât direct sans
+// DamageInvoice n'est possible). Contrainte d'exclusivité appliquée par un CHECK SQL (voir la
+// migration) en plus de la validation applicative dans src/lib/payments.ts/damage-invoices.ts —
+// défense en profondeur, même principe que le reste du projet (jamais une seule couche de
+// validation pour une règle financière).
 model Payment {
-  id        String        @id @default(cuid())
-  tenantId  String
-  invoiceId String
-  amount    Int
-  currency  String        @default("MAD")
-  method    PaymentMethod
-  paidAt    DateTime      @default(now())
-  reference String?
-  notes     String?
+  id              String        @id @default(cuid())
+  tenantId        String
+  invoiceId       String?
+  damageInvoiceId String?
+  amount          Int
+  currency        String        @default("MAD")
+  method          PaymentMethod
+  paidAt          DateTime      @default(now())
+  reference       String?
+  notes           String?
   // Sprint 26D (Finding D1) : voir PaymentStatus ci-dessus.
-  status    PaymentStatus @default(ACTIVE)
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+  status          PaymentStatus @default(ACTIVE)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
-  tenant      Tenant      @relation(fields: [tenantId], references: [id])
-  invoice     Invoice     @relation(fields: [invoiceId], references: [id])
-  cashEntries CashEntry[]
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  // onDelete: Restrict explicite (Sprint 33) : le défaut Prisma pour une relation optionnelle est
+  // SET NULL, qui mettrait silencieusement les deux colonnes à null en cas de suppression de la
+  // facture/DamageInvoice référencée — violerait la garantie « exactement une des deux »
+  // (contrainte CHECK, voir la migration) plutôt que de la faire respecter. En pratique une
+  // Invoice/DamageInvoice ayant des Payment n'est jamais supprimable (deleteInvoice/l'absence de
+  // suppression sur DamageInvoice) ; Restrict rend cette garantie explicite au niveau base plutôt
+  // que de dépendre uniquement de la couche applicative.
+  invoice       Invoice?       @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  damageInvoice DamageInvoice? @relation(fields: [damageInvoiceId], references: [id], onDelete: Restrict)
+  cashEntries   CashEntry[]
 
   @@index([tenantId])
   @@index([invoiceId])
+  @@index([damageInvoiceId])
+}
+
+// CANCELLED (Sprint 33) : reflète l'annulation de la DamageInvoice à laquelle ce dégât est
+// rattaché (cancelDamageInvoice, src/lib/damage-invoices.ts) — jamais réglé directement, même
+// principe que les autres valeurs de cet enum.
+enum DamageStatus {
+  REPORTED
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+}
+
+// Dégât constaté sur un véhicule au retour d'un contrat (Sprint 32, DOMAINRULES.md section
+// 32 — remplace le report explicite documenté aux Sprints 19/37 : "aucun code de ce module
+// n'existe"). status dérivé automatiquement de l'état de sa DamageInvoice une fois facturé
+// (applyDamageInvoiceStatus, src/lib/damages.ts — remplace au Sprint 33 la dérivation directe
+// depuis Payment.damageId du Sprint 32, retirée), jamais réglé manuellement — même principe que
+// Invoice.status vis-à-vis de Payment (recomputeInvoiceStatus). Jamais supprimé physiquement une
+// fois créé (traçabilité, même principe append-only que CashEntry) ; une correction passe par
+// damages.edit (nature/description/billableAmount, jamais une fois damageInvoiceId renseigné —
+// le contenu facturé devient un snapshot immuable sur DamageInvoiceLine, voir son commentaire).
+model Damage {
+  id              String       @id @default(cuid())
+  tenantId        String
+  vehicleId       String
+  locationId      String
+  createdByUserId String?
+  nature          String
+  description     String?
+  billableAmount  Int?
+  currency        String       @default("MAD")
+  status          DamageStatus @default(REPORTED)
+  // Sprint 33 : renseigné une fois ce dégât facturé (createDamageInvoice, src/lib/damage-invoices.ts)
+  // — jamais remis à null ensuite (même une DamageInvoice annulée conserve ce lien, traçabilité
+  // append-only). Sert de garde d'idempotence directe : un dégât déjà rattaché à une DamageInvoice
+  // ne peut plus jamais en recevoir une seconde (DamageAlreadyInvoicedError).
+  damageInvoiceId String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  tenant        Tenant             @relation(fields: [tenantId], references: [id])
+  vehicle       Vehicle            @relation(fields: [vehicleId], references: [id])
+  location      Location           @relation(fields: [locationId], references: [id])
+  createdByUser User?              @relation("DamageCreatedBy", fields: [createdByUserId], references: [id])
+  // onDelete: Restrict explicite (Sprint 33), même raisonnement que Payment.invoice/damageInvoice
+  // ci-dessus : Damage.damageInvoiceId ne doit jamais être remis à null silencieusement.
+  damageInvoice DamageInvoice?     @relation(fields: [damageInvoiceId], references: [id], onDelete: Restrict)
+  invoiceLine   DamageInvoiceLine?
+
+  @@index([tenantId])
+  @@index([vehicleId])
+  @@index([locationId])
+  @@index([status])
+  @@index([damageInvoiceId])
+}
+
+enum DamageInvoiceStatus {
+  DRAFT
+  SENT
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+}
+
+// Facture de dégâts (Sprint 33, DOMAINRULES.md section 48) — remplace le paiement direct de
+// dégât du Sprint 32 (Payment.damageId, retiré) : un dégât facturable généré au retour d'un
+// contrat (returnLocation, src/lib/location-return.ts) produit toujours une DamageInvoice créée
+// directement au statut SENT (jamais de brouillon éditable — ses lignes sont un snapshot
+// immuable du formulaire de retour, voir DamageInvoiceLine). subtotal/totalAmount sont la somme
+// des lignes ; amountPaid/status sont dérivés de la somme réelle des Payment liés
+// (recomputeDamageInvoiceStatus, src/lib/damage-invoices.ts), même principe que
+// Invoice.amountPaid/status vis-à-vis de Payment (recomputeInvoiceStatus, src/lib/payments.ts) —
+// jamais réglés directement. Numéro au format "FACT-DEG-{5 chiffres}/{contractNumber}" (compteur
+// séquentiel par tenant, voir generateDamageInvoiceNumber). Solde et paiements strictement
+// séparés du solde/des paiements locatifs (Invoice/Payment.invoiceId) — jamais agrégés ensemble.
+model DamageInvoice {
+  id          String              @id @default(cuid())
+  tenantId    String
+  agencyId    String
+  locationId  String
+  clientId    String
+  number      String
+  status      DamageInvoiceStatus @default(DRAFT)
+  subtotal    Int
+  totalAmount Int
+  amountPaid  Int                 @default(0)
+  currency    String              @default("MAD")
+  issuedAt    DateTime            @default(now())
+  notes       String?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  tenant   Tenant              @relation(fields: [tenantId], references: [id])
+  agency   Agency              @relation(fields: [agencyId], references: [id])
+  location Location            @relation(fields: [locationId], references: [id])
+  client   Client              @relation(fields: [clientId], references: [id])
+  lines    DamageInvoiceLine[]
+  damages  Damage[]
+  payments Payment[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId])
+  @@index([agencyId])
+  @@index([locationId])
+  @@index([clientId])
+  @@index([status])
+}
+
+// Ligne de facture de dégâts (Sprint 33) — snapshot immuable de nature/description/billableAmount
+// au moment de la facturation (jamais réécrite ensuite, même si le Damage sous-jacent est modifié
+// via damages.edit avant facturation — après facturation, damages.edit est de toute façon refusé,
+// voir le commentaire sur Damage.damageInvoiceId) : garantit que la facture déjà émise au client
+// reste fidèle à ce qui a été réellement facturé, indépendamment de toute correction ultérieure du
+// Damage vivant. `damageId` est `@unique` : un dégât ne peut apparaître que sur une seule ligne,
+// jamais deux (cohérent avec l'idempotence "un dégât n'est jamais facturé deux fois").
+model DamageInvoiceLine {
+  id              String   @id @default(cuid())
+  damageInvoiceId String
+  damageId        String   @unique
+  nature          String
+  description     String?
+  billableAmount  Int
+  currency        String   @default("MAD")
+  createdAt       DateTime @default(now())
+
+  damageInvoice DamageInvoice @relation(fields: [damageInvoiceId], references: [id])
+  damage        Damage        @relation(fields: [damageId], references: [id])
+
+  @@index([damageInvoiceId])
+  @@index([damageId])
 }
 
 enum MaintenanceType {

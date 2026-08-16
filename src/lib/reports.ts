@@ -28,10 +28,18 @@ export interface RevenueReport {
  * facturé (Invoice.totalAmount peut inclure des factures non encore payées). Suppose une
  * devise unique par tenant (voir DOMAINRULES.md section 14, multi-devises À DÉCIDER) :
  * la devise retournée est celle du premier paiement trouvé, "MAD" par défaut si aucun.
+ *
+ * Sprint 33 (DOMAINRULES.md section 48) : exclut les paiements de dégât — un paiement de dégât
+ * n'a plus jamais d'invoiceId (Payment.invoiceId/damageInvoiceId mutuellement exclusifs,
+ * contrainte CHECK en base, remplace le filtre `damageId: null` provisoire du Sprint 32). Ce
+ * rapport reste défini comme le chiffre d'affaires locatif, sans changer silencieusement de
+ * périmètre. Les paiements de dégât restent consultables dans la caisse et sur leur
+ * DamageInvoice (src/lib/damage-invoices.ts) ; un rapport financier dédié aux dégâts reste à
+ * faire (hors périmètre de ce sprint).
  */
 export async function getRevenueReport(tenantId: string, startDate: Date, endDate: Date): Promise<RevenueReport> {
   const payments = await prisma.payment.findMany({
-    where: { tenantId, paidAt: { gte: startDate, lte: endDate } },
+    where: { tenantId, paidAt: { gte: startDate, lte: endDate }, invoiceId: { not: null } },
     orderBy: { paidAt: "asc" },
   });
 

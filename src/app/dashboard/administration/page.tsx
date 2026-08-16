@@ -189,11 +189,18 @@ async function AdministrationSection({
       },
       orderBy: { paidAt: "desc" },
     });
+    // Sprint 33 (DOMAINRULES.md section 48) : le filtre `invoice: { agencyId }` ci-dessus exclut
+    // déjà structurellement tout paiement de dégât (Payment.invoiceId null ne peut jamais
+    // satisfaire un filtre de relation exigeant une Invoice existante) — type toujours
+    // "LOCATION" ici, jamais un mélange avec les factures de dégâts (hors périmètre de cette vue
+    // par ville/agence, voir DOMAINRULES.md section 39).
     const rows: PaymentRow[] = payments.map((payment) => ({
       id: payment.id,
-      invoiceNumber: payment.invoice.number,
-      contractNumber: payment.invoice.location.contractNumber,
-      clientName: payment.invoice.client.name,
+      type: "LOCATION",
+      invoiceId: payment.invoiceId as string,
+      invoiceNumber: payment.invoice!.number,
+      contractNumber: payment.invoice!.location.contractNumber,
+      clientName: payment.invoice!.client.name,
       method: payment.method,
       paidAt: payment.paidAt.toISOString(),
       amount: payment.amount,

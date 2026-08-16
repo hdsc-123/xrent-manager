@@ -63,7 +63,13 @@ export async function GET(request: Request) {
 
   // Un MEMBER ne voit que les paiements des factures de ses agences (même principe que
   // vehicles/locations) : filtrage post-requête via l'agencyId des factures concernées.
-  const invoiceIds = [...new Set(payments.map((payment) => payment.invoiceId))];
+  // Sprint 33 (DOMAINRULES.md section 48) : getPayments (src/lib/payments.ts) exclut déjà
+  // structurellement tout paiement de dégât (invoiceId: { not: null }) — filter/cast explicite
+  // ci-dessous uniquement pour satisfaire le typage (Payment.invoiceId reste `string | null` au
+  // niveau du modèle Prisma, indépendamment de la garantie runtime du `where` de getPayments).
+  const invoiceIds = [
+    ...new Set(payments.map((payment) => payment.invoiceId).filter((id): id is string => id !== null)),
+  ];
   const invoices = await prisma.invoice.findMany({
     where: { id: { in: invoiceIds } },
     select: { id: true, agencyId: true },
@@ -73,7 +79,7 @@ export async function GET(request: Request) {
   );
 
   return NextResponse.json({
-    payments: payments.filter((payment) => accessibleInvoiceIds.has(payment.invoiceId)),
+    payments: payments.filter((payment) => payment.invoiceId !== null && accessibleInvoiceIds.has(payment.invoiceId)),
   });
 }
 

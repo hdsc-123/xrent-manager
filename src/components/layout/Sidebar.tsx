@@ -13,6 +13,7 @@ import {
   CreditCard,
   Wallet,
   FileText,
+  FileWarning,
   Gauge,
   KeyRound,
   LayoutDashboard,
@@ -59,6 +60,9 @@ const navItems: NavItem[] = [
   { href: "/dashboard/maintenances", label: "Maintenances", icon: Wrench, permission: "maintenances.view" },
   { href: "/dashboard/alerts", label: "Alertes", icon: Bell, permission: "alerts.view" },
   { href: "/dashboard/invoices", label: "Factures", icon: FileText, permission: "invoices.view" },
+  // Sprint 33 (DOMAINRULES.md section 48) : facturation séparée des dégâts — écran dédié,
+  // distinct de "Factures" (documents financiers strictement séparés, jamais mêlés).
+  { href: "/dashboard/damage-invoices", label: "Factures de dégâts", icon: FileWarning, permission: "damage_invoices.view" },
   { href: "/dashboard/payments", label: "Paiements", icon: CreditCard, permission: "payments.view" },
   { href: "/dashboard/cash-register", label: "Caisse", icon: Wallet, permission: "cash_register.view" },
   { href: "/dashboard/reports", label: "Rapports", icon: BarChart3, permission: "reports.view" },
