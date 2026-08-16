@@ -27,11 +27,16 @@ export async function GET(_request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Facture introuvable." }, { status: 404 });
   }
 
-  const [tenant, agency, location, client] = await Promise.all([
+  const [tenant, agency, location, client, replacedInvoice] = await Promise.all([
     prisma.tenant.findUnique({ where: { id: invoice.tenantId }, select: { name: true } }),
     prisma.agency.findUnique({ where: { id: invoice.agencyId }, select: { name: true } }),
     prisma.location.findUnique({ where: { id: invoice.locationId }, include: { vehicle: true } }),
     prisma.client.findUnique({ where: { id: invoice.clientId } }),
+    // Sprint 26E : numéro de la facture immédiatement remplacée par celle-ci (null sur une
+    // facture jamais versionnée), affiché sur le PDF.
+    invoice.replacesInvoiceId
+      ? prisma.invoice.findUnique({ where: { id: invoice.replacesInvoiceId }, select: { number: true } })
+      : Promise.resolve(null),
   ]);
 
   if (!tenant || !agency || !location || !client) {
@@ -45,6 +50,8 @@ export async function GET(_request: Request, { params }: RouteParams) {
       invoiceNumber={invoice.number}
       contractNumber={location.contractNumber}
       status={invoice.status}
+      versionNumber={invoice.versionNumber}
+      replacesInvoiceNumber={replacedInvoice?.number ?? null}
       issuedAt={invoice.issuedAt}
       dueDate={invoice.dueDate}
       clientName={client.name}

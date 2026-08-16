@@ -388,11 +388,32 @@ model Invoice {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
+  // Sprint 26E : versionnement documentaire (jamais un avoir — pas de montant négatif, pas de
+  // transfert de paiement, voir src/lib/invoices.ts, versionInvoice). Une facture SENT sans
+  // aucun Payment peut être remplacée par une nouvelle facture DRAFT ; l'ancienne passe
+  // CANCELLED, jamais supprimée ni réécrite dans ses montants — même principe append-only que
+  // CashEntry.parentEntryId (Sprint 26D). replacesInvoiceId (sur la NOUVELLE facture) pointe
+  // vers la version immédiatement précédente qu'elle remplace (null sur la toute première
+  // facture d'une chaîne) — relation 1:1 réelle (@unique, une facture n'est jamais remplacée
+  // deux fois) : l'ancienne facture est retrouvable dans l'autre sens via la relation inverse
+  // `replacedBy` (jamais une colonne physique dupliquée — aucune information stockée deux fois).
+  // rootInvoiceId pointe vers la toute première facture de la chaîne (null sur elle-même) —
+  // relation N:1 (plusieurs versions peuvent partager la même racine), inverse `versions`.
+  // versionNumber par défaut 1 pour toute facture déjà existante (aucun backfill d'historique).
+  replacesInvoiceId String? @unique
+  rootInvoiceId     String?
+  versionNumber     Int     @default(1)
+
   tenant   Tenant    @relation(fields: [tenantId], references: [id])
   agency   Agency    @relation(fields: [agencyId], references: [id])
   location Location  @relation(fields: [locationId], references: [id])
   client   Client    @relation(fields: [clientId], references: [id])
   payments Payment[]
+
+  replaces   Invoice?  @relation("InvoiceVersionChain", fields: [replacesInvoiceId], references: [id])
+  replacedBy Invoice?  @relation("InvoiceVersionChain")
+  root       Invoice?  @relation("InvoiceVersionRoot", fields: [rootInvoiceId], references: [id])
+  versions   Invoice[] @relation("InvoiceVersionRoot")
 
   @@unique([tenantId, number])
   @@index([tenantId])
@@ -400,6 +421,7 @@ model Invoice {
   @@index([locationId])
   @@index([clientId])
   @@index([status])
+  @@index([rootInvoiceId])
 }
 
 // Sprint 26D (Finding D1) : ACTIVE = paiement encaissé normal, jamais modifié par ce

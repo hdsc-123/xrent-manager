@@ -68,6 +68,8 @@ const BACKFILLS = {
     "locations.cancel",
     "maintenances.complete",
     "maintenances.cancel",
+    // Sprint 26E : voir PAST_PERMISSION_BACKFILLS (src/lib/permissions.ts).
+    "invoices.version",
   ],
   AGENCE: [
     "cash_register.edit",
@@ -82,6 +84,8 @@ const BACKFILLS = {
     "locations.cancel",
     "maintenances.complete",
     "maintenances.cancel",
+    // Sprint 26E : voir PAST_PERMISSION_BACKFILLS (src/lib/permissions.ts).
+    "invoices.version",
   ],
 };
 

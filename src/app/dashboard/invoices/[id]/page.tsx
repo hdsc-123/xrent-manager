@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { Download } from "lucide-react";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
-import { getInvoiceById } from "@/lib/invoices";
+import { getInvoiceById, getInvoiceVersionHistory } from "@/lib/invoices";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
@@ -43,20 +43,28 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
     notFound();
   }
 
-  const [client, location, payments, canEdit, canDelete, canCreatePayment] = await Promise.all([
-    prisma.client.findUnique({ where: { id: invoice.clientId } }),
-    prisma.location.findUnique({ where: { id: invoice.locationId }, include: { vehicle: true } }),
-    prisma.payment.findMany({ where: { invoiceId: invoice.id }, orderBy: { paidAt: "desc" } }),
-    can(user, "invoices.edit"),
-    can(user, "invoices.delete"),
-    can(user, "payments.create"),
-  ]);
+  const [client, location, payments, canEdit, canDelete, canCreatePayment, canVersion, versionHistory] =
+    await Promise.all([
+      prisma.client.findUnique({ where: { id: invoice.clientId } }),
+      prisma.location.findUnique({ where: { id: invoice.locationId }, include: { vehicle: true } }),
+      prisma.payment.findMany({ where: { invoiceId: invoice.id }, orderBy: { paidAt: "desc" } }),
+      can(user, "invoices.edit"),
+      can(user, "invoices.delete"),
+      can(user, "payments.create"),
+      can(user, "invoices.version"),
+      getInvoiceVersionHistory(user.tenantId, invoice.id),
+    ]);
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="font-heading text-2xl font-semibold">{invoice.number}</h1>
+          <h1 className="font-heading text-2xl font-semibold">
+            {invoice.number}
+            {invoice.versionNumber > 1 && (
+              <span className="ml-2 text-base font-normal text-muted-foreground">Version {invoice.versionNumber}</span>
+            )}
+          </h1>
           <p className="text-sm text-muted-foreground">Client : {client?.name ?? "—"}</p>
         </div>
         <div className="flex items-center gap-2">
@@ -176,6 +184,44 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
         </CardContent>
       </Card>
 
+      {versionHistory.length > 1 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Historique des versions</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto rounded-md border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Version</th>
+                    <th className="px-3 py-2 font-medium">Numéro</th>
+                    <th className="px-3 py-2 font-medium">Statut</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {versionHistory.map((version) => (
+                    <tr key={version.id} className="border-t border-border">
+                      <td className="px-3 py-2">{version.versionNumber}</td>
+                      <td className="px-3 py-2">
+                        {version.id === invoice.id ? (
+                          version.number
+                        ) : (
+                          <Link href={`/dashboard/invoices/${version.id}`} className="text-primary hover:underline">
+                            {version.number}
+                          </Link>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">{STATUS_LABELS[version.status] ?? version.status}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <InvoiceActions
         id={invoice.id}
         status={invoice.status}
@@ -184,6 +230,7 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
         canEdit={canEdit}
         canDelete={canDelete}
         canCreatePayment={canCreatePayment}
+        canVersion={canVersion}
       />
     </div>
   );

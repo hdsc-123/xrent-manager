@@ -43,6 +43,14 @@ async function payInvoiceInFull(admin: AuthenticatedTestUser, invoiceId: string,
   expect(response.status).toBe(201);
 }
 
+/** Sprint 26E : crée une facture SENT sans aucun Payment — seule éligibilité au versionnement. */
+async function createSentInvoiceNoPayment(admin: AuthenticatedTestUser, overrides: Record<string, unknown> = {}) {
+  const createResponse = await createInvoice(admin, overrides);
+  const invoice = (await createResponse.json()).invoice;
+  await finalizeInvoice(admin, invoice.id);
+  return invoice;
+}
+
 beforeAll(async () => {
   adminA = await registerTenantAdmin({
     tenantName: "Invoices Test A",
@@ -532,5 +540,394 @@ describe("Sprint 15 — permissions granulaires (invoices.create)", () => {
         body: JSON.stringify({ permissionGroupId: null }),
       });
     }
+  });
+});
+
+describe("POST /api/invoices/[id]/versions — Sprint 26E (versionnement documentaire)", () => {
+  it("refuse une requête non authentifiée", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+    const response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "Erreur de TVA" }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it("refuse un motif vide", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+    const response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "   " }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse une facture d'un autre tenant (isolation multi-tenant)", async () => {
+    const otherResponse = await apiFetch("/api/invoices", {
+      method: "POST",
+      headers: { Cookie: adminB.sessionCookie },
+      body: JSON.stringify({ locationId: locationBId }),
+    });
+    const otherInvoice = (await otherResponse.json()).invoice;
+    await finalizeInvoice(adminB, otherInvoice.id);
+
+    const response = await apiFetch(`/api/invoices/${otherInvoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de TVA" }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("refuse depuis DRAFT (pas encore finalisée)", async () => {
+    const createResponse = await createInvoice(adminA);
+    const invoice = (await createResponse.json()).invoice;
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de TVA" }),
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it("refuse depuis PARTIALLY_PAID", async () => {
+    const createResponse = await createInvoice(adminA);
+    const invoice = (await createResponse.json()).invoice;
+    await payInvoiceInFull(adminA, invoice.id, Math.floor(invoice.totalAmount / 2));
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de TVA" }),
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it("refuse depuis PAID", async () => {
+    const createResponse = await createInvoice(adminA);
+    const invoice = (await createResponse.json()).invoice;
+    await payInvoiceInFull(adminA, invoice.id, invoice.totalAmount);
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de TVA" }),
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it("refuse depuis CANCELLED", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+    await apiFetch(`/api/invoices/${invoice.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de TVA" }),
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it("crée une nouvelle version DRAFT numérotée -AV1 ; l'ancienne facture passe CANCELLED", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA, { taxRate: 2000, discountAmount: 1000 });
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Erreur de TVA" }),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+
+    expect(body.invoice.status).toBe("DRAFT");
+    expect(body.invoice.number).toBe(`${invoice.number}-AV1`);
+    expect(body.invoice.versionNumber).toBe(2);
+    expect(body.invoice.replacesInvoiceId).toBe(invoice.id);
+    expect(body.invoice.rootInvoiceId).toBe(invoice.id);
+    // Montants copiés à l'identique — aucune modification indirecte.
+    expect(body.invoice.subtotal).toBe(invoice.subtotal);
+    expect(body.invoice.taxRate).toBe(invoice.taxRate);
+    expect(body.invoice.discountAmount).toBe(invoice.discountAmount);
+    expect(body.invoice.taxAmount).toBe(invoice.taxAmount);
+    expect(body.invoice.totalAmount).toBe(invoice.totalAmount);
+    expect(body.invoice.amountPaid).toBe(0);
+    expect(body.invoice.locationId).toBe(invoice.locationId);
+    expect(body.invoice.clientId).toBe(invoice.clientId);
+    expect(body.invoice.agencyId).toBe(invoice.agencyId);
+    expect(body.invoice.currency).toBe(invoice.currency);
+
+    expect(body.replacedInvoice.id).toBe(invoice.id);
+    expect(body.replacedInvoice.status).toBe("CANCELLED");
+    // Sens inverse déjà couvert par body.invoice.replacesInvoiceId ci-dessus (relation 1:1 —
+    // aucune colonne physique dupliquée sur l'ancienne facture, voir prisma/schema.prisma) et
+    // par le test dédié « GET .../versions retourne l'historique complet » plus bas.
+
+    const oldAfter = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect((await oldAfter.json()).invoice.status).toBe("CANCELLED");
+  });
+
+  it("chaîne linéaire illimitée : une deuxième version obtient -AV2, rootInvoiceId toujours la racine", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+
+    const v2Response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Première correction" }),
+    });
+    const v2 = (await v2Response.json()).invoice;
+    await finalizeInvoice(adminA, v2.id);
+
+    const v3Response = await apiFetch(`/api/invoices/${v2.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Deuxième correction" }),
+    });
+    expect(v3Response.status).toBe(201);
+    const v3 = (await v3Response.json()).invoice;
+    expect(v3.number).toBe(`${invoice.number}-AV2`);
+    expect(v3.versionNumber).toBe(3);
+    expect(v3.rootInvoiceId).toBe(invoice.id);
+    expect(v3.replacesInvoiceId).toBe(v2.id);
+  });
+
+  it("concurrence : une seule création concurrente réussit (201), l'autre reçoit 409", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+
+    const [r1, r2] = await Promise.all([
+      apiFetch(`/api/invoices/${invoice.id}/versions`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ reason: "Concurrence 1" }),
+      }),
+      apiFetch(`/api/invoices/${invoice.id}/versions`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ reason: "Concurrence 2" }),
+      }),
+    ]);
+    expect([r1.status, r2.status].sort()).toEqual([201, 409]);
+
+    const versions = await prisma.invoice.findMany({ where: { replacesInvoiceId: invoice.id } });
+    expect(versions.length).toBe(1);
+  });
+
+  it("une facture née d'un versionnement n'est jamais supprimable, même DRAFT sans paiement", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+    const versionResponse = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Motif" }),
+    });
+    const newInvoice = (await versionResponse.json()).invoice;
+
+    const deleteResponse = await apiFetch(`/api/invoices/${newInvoice.id}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(409);
+  });
+
+  it("audit : une entrée invoice.versioned journalisée avec le motif et les deux factures", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+    const response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Motif audité" }),
+    });
+    const newInvoice = (await response.json()).invoice;
+
+    const logs = await prisma.auditLog.findMany({
+      where: { tenantId: adminA.tenantId, action: "invoice.versioned", resourceId: invoice.id },
+    });
+    expect(logs.length).toBe(1);
+    const metadata = logs[0].metadata as Record<string, unknown>;
+    expect(metadata.reason).toBe("Motif audité");
+    expect(metadata.reasonCode).toBe("FACTURE_VERSIONNEE");
+    expect(metadata.newInvoiceId).toBe(newInvoice.id);
+  });
+
+  it("GET /api/invoices/[id]/versions retourne l'historique complet, trié par versionNumber croissant", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+    const v2Response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Motif" }),
+    });
+    const v2 = (await v2Response.json()).invoice;
+
+    const historyResponse = await apiFetch(`/api/invoices/${v2.id}/versions`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(historyResponse.status).toBe(200);
+    const body = await historyResponse.json();
+    expect(body.history.map((i: { id: string }) => i.id)).toEqual([invoice.id, v2.id]);
+  });
+
+  it("le PDF d'une version affiche 200 (Version N / facture remplacée)", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+    const v2Response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Motif" }),
+    });
+    const v2 = (await v2Response.json()).invoice;
+
+    const pdfResponse = await apiFetch(`/api/invoices/${v2.id}/pdf`, { headers: { Cookie: adminA.sessionCookie } });
+    expect(pdfResponse.status).toBe(200);
+    expect(pdfResponse.headers.get("content-type")).toBe("application/pdf");
+  });
+});
+
+describe("Sprint 26E — permissions granulaires (invoices.version)", () => {
+  it("refuse un MEMBER rattaché à l'agence mais dont le groupe personnalisé n'a pas invoices.version", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+
+    const restrictedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `NoVersion-${runId}`, permissions: ["invoices.view", "invoices.edit"] }),
+    });
+    const restrictedGroupId = (await restrictedGroupResponse.json()).group.id;
+
+    const restrictedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Restricted Version Member",
+      email: `restricted-version-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: restrictedMember.userId, agencyId: agencyAId } });
+    await apiFetch(`/api/users/${restrictedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: restrictedGroupId }),
+    });
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: restrictedMember.sessionCookie },
+      body: JSON.stringify({ reason: "Motif" }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it("autorise un MEMBER dont le groupe personnalisé accorde invoices.version", async () => {
+    const invoice = await createSentInvoiceNoPayment(adminA);
+
+    const grantedGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `WithVersion-${runId}`, permissions: ["invoices.view", "invoices.version"] }),
+    });
+    const grantedGroupId = (await grantedGroupResponse.json()).group.id;
+
+    const grantedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Granted Version Member",
+      email: `granted-version-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: grantedMember.userId, agencyId: agencyAId } });
+    await apiFetch(`/api/users/${grantedMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: grantedGroupId }),
+    });
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: grantedMember.sessionCookie },
+      body: JSON.stringify({ reason: "Motif" }),
+    });
+    expect(response.status).toBe(201);
+  });
+});
+
+describe("Sprint 26E — non-régression : annulation ADMIN d'un contrat après versionnement de sa facture", () => {
+  it("adminCancelValidatedLocation reste correcte (v1 déjà CANCELLED exclue, v2 DRAFT non affectée, aucun crash)", async () => {
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: agencyAId,
+        name: "208 Versioning",
+        licensePlate: `INV-VER-${runId}`,
+        make: "Peugeot",
+        model: "208",
+        year: 2023,
+        category: "Citadine",
+        pricePerDay: 4500,
+        chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Noir",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
+      }),
+    });
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const clientResponse = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Client Versioning", email: `client-versioning-${runId}@test.local` }),
+    });
+    const clientId = (await clientResponse.json()).client.id;
+
+    const locationResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ vehicleId, clientId, startDate: "2028-02-10", endDate: "2028-02-13" }),
+    });
+    const location = (await locationResponse.json()).location;
+
+    await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+
+    const invoice = await createSentInvoiceNoPayment(adminA, { locationId: location.id });
+    const versionResponse = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Correction avant annulation" }),
+    });
+    const newInvoice = (await versionResponse.json()).invoice;
+
+    const cancelResponse = await apiFetch(`/api/locations/${location.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "Annulation ADMIN après versionnement" }),
+    });
+    expect(cancelResponse.status).toBe(200);
+    const cancelBody = await cancelResponse.json();
+    // Ni v1 (déjà CANCELLED par le versionnement) ni v2 (DRAFT, amountPaid 0) ne qualifient
+    // pour la boucle de réversibilité financière d'adminCancelValidatedLocation — comportement
+    // inchangé, aucune modification de src/lib/locations.ts nécessaire pour ce sprint.
+    expect(cancelBody.cancelledInvoiceCount).toBe(0);
+    expect(cancelBody.reversedPaymentCount).toBe(0);
+
+    const oldInvoiceAfter = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    const oldInvoiceBody = (await oldInvoiceAfter.json()).invoice;
+    expect(oldInvoiceBody.status).toBe("CANCELLED");
+    // Sens inverse (old → new) déjà couvert par newInvoiceBody.replacesInvoiceId ci-dessous —
+    // relation 1:1 réelle, aucune colonne physique dupliquée sur l'ancienne facture.
+
+    const newInvoiceAfter = await apiFetch(`/api/invoices/${newInvoice.id}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const newInvoiceBody = (await newInvoiceAfter.json()).invoice;
+    expect(newInvoiceBody.status).toBe("DRAFT");
+    expect(newInvoiceBody.replacesInvoiceId).toBe(invoice.id);
+
+    const locationAfter = await apiFetch(`/api/locations/${location.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect((await locationAfter.json()).location.status).toBe("CANCELLED");
   });
 });

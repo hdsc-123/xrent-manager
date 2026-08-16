@@ -62,6 +62,10 @@ interface InvoiceActionsProps {
   canDelete?: boolean;
   /** payments.create — autorise l'enregistrement d'un paiement depuis cette facture. */
   canCreatePayment?: boolean;
+  /** Sprint 26E : invoices.version — autorise la création d'une nouvelle version. Calculé côté
+   * serveur ; le bouton n'est de toute façon visible que si status === "SENT" (l'éligibilité
+   * réelle — pas de Payment — est revalidée côté serveur par versionInvoice). */
+  canVersion?: boolean;
 }
 
 function formatMoneyLocal(amountInSmallestUnit: number, currency: string): string {
@@ -76,10 +80,15 @@ export function InvoiceActions({
   canEdit = false,
   canDelete = false,
   canCreatePayment = false,
+  canVersion = false,
 }: InvoiceActionsProps) {
   const router = useRouter();
   const [isChangingStatus, setIsChangingStatus] = useState(false);
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
+  const [showVersionDialog, setShowVersionDialog] = useState(false);
+  const [versionReason, setVersionReason] = useState("");
+  const [versionError, setVersionError] = useState<string | null>(null);
+  const [isVersioning, setIsVersioning] = useState(false);
   const [mixed, setMixed] = useState(false);
   const [amount, setAmount] = useState((remainingBalance / 100).toFixed(2));
   const [method, setMethod] = useState<PaymentMethod>("CASH");
@@ -162,7 +171,34 @@ export function InvoiceActions({
     }
   }
 
+  async function handleCreateVersion(event: React.FormEvent) {
+    event.preventDefault();
+    setVersionError(null);
+
+    if (!versionReason.trim()) {
+      setVersionError("Un motif est obligatoire.");
+      return;
+    }
+
+    setIsVersioning(true);
+    try {
+      const response = await apiPost<{ invoice: { id: string } }>(`/api/invoices/${id}/versions`, {
+        reason: versionReason,
+      });
+      toast.success("Nouvelle version créée.");
+      setShowVersionDialog(false);
+      router.push(`/dashboard/invoices/${response.invoice.id}`);
+    } catch (err) {
+      setVersionError(err instanceof ApiError ? err.message : "Erreur lors du versionnement.");
+    } finally {
+      setIsVersioning(false);
+    }
+  }
+
   const nextStatuses = ALLOWED_TRANSITIONS[status];
+  // Sprint 26E : visible seulement pour une facture SENT — l'éligibilité réelle (aucun Payment)
+  // est revalidée côté serveur (InvoiceNotVersionableError sinon).
+  const canCreateVersion = status === "SENT" && canVersion;
   // Filtrage par permission : CANCELLED s'apparente à une suppression (invoices.delete), les
   // autres transitions (ex. DRAFT → SENT) à une modification (invoices.edit).
   const visibleNextStatuses = nextStatuses.filter((next) => (next === "CANCELLED" ? canDelete : canEdit));
@@ -215,6 +251,21 @@ export function InvoiceActions({
               onClick={() => setShowPaymentDialog(true)}
             >
               Enregistrer un paiement
+            </Button>
+          </div>
+        )}
+
+        {canCreateVersion && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Versionnement</span>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="w-fit"
+              onClick={() => setShowVersionDialog(true)}
+            >
+              Créer une nouvelle version
             </Button>
           </div>
         )}
@@ -336,6 +387,47 @@ export function InvoiceActions({
               </Button>
               <Button type="submit" disabled={isSubmittingPayment}>
                 {isSubmittingPayment ? "Enregistrement..." : "Enregistrer"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showVersionDialog} onOpenChange={setShowVersionDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Créer une nouvelle version</DialogTitle>
+            <DialogDescription>
+              Versionnement documentaire : cette facture ({STATUS_LABELS[status]}) sera annulée et remplacée par une
+              nouvelle facture brouillon, reprenant le même contrat, client, agence et devise. Aucun montant n&apos;est
+              modifié par cette action elle-même.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleCreateVersion} noValidate className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="versionReason" required>
+                Motif
+              </Label>
+              <Input
+                id="versionReason"
+                required
+                value={versionReason}
+                onChange={(e) => setVersionReason(e.target.value)}
+              />
+            </div>
+
+            {versionError && (
+              <p role="alert" className="text-sm text-destructive">
+                {versionError}
+              </p>
+            )}
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setShowVersionDialog(false)}>
+                Annuler
+              </Button>
+              <Button type="submit" disabled={isVersioning}>
+                {isVersioning ? "Création..." : "Créer la nouvelle version"}
               </Button>
             </DialogFooter>
           </form>

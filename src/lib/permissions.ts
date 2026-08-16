@@ -79,6 +79,12 @@ export const PERMISSIONS: PermissionDefinition[] = [
   { key: "invoices.create", label: "Créer des factures", category: "Factures" },
   { key: "invoices.edit", label: "Modifier des factures", category: "Factures" },
   { key: "invoices.delete", label: "Supprimer des factures", category: "Factures" },
+  // Sprint 26E : versionnement documentaire d'une facture SENT sans paiement (voir
+  // src/lib/invoices.ts, versionInvoice) — clé dédiée, distincte de invoices.edit (modification
+  // des champs d'une facture DRAFT) et invoices.delete (suppression), même patron que
+  // payments.correct (Sprint 26D) : une action de statut sensible mérite sa propre clé plutôt
+  // que de réutiliser une clé plus générique.
+  { key: "invoices.version", label: "Créer une nouvelle version d'une facture", category: "Factures" },
 
   { key: "payments.view", label: "Voir les paiements", category: "Paiements" },
   { key: "payments.create", label: "Créer des paiements", category: "Paiements" },
@@ -216,6 +222,10 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "invoices.create",
       "invoices.edit",
       "invoices.delete",
+      // Sprint 26E : ce groupe a déjà invoices.edit/create/delete — invoices.version accordée
+      // par défaut pour ne pas retirer silencieusement une capacité de gestion de facturation
+      // déjà largement couverte (voir le commentaire sur PERMISSIONS ci-dessus).
+      "invoices.version",
       "payments.view",
       "payments.create",
       // Sprint 26D : voir le commentaire sur PERMISSIONS ci-dessus (remplace le détournement
@@ -266,6 +276,8 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "invoices.create",
       "invoices.edit",
       "invoices.delete",
+      // Sprint 26E : voir le commentaire équivalent sur MEMBER ci-dessus.
+      "invoices.version",
       "payments.view",
       "payments.create",
       // Sprint 26D : voir le commentaire équivalent sur MEMBER ci-dessus.
@@ -324,6 +336,8 @@ export const DEFAULT_GROUPS: DefaultGroupDefinition[] = [
       "invoices.view",
       "invoices.create",
       "invoices.edit",
+      // Sprint 26E : voir le commentaire équivalent sur MEMBER ci-dessus.
+      "invoices.version",
       "payments.view",
       "payments.create",
       // Sprint 26D : voir le commentaire équivalent sur MEMBER ci-dessus.
@@ -428,6 +442,8 @@ export const PAST_PERMISSION_BACKFILLS: Record<string, string[]> = {
     "locations.cancel",
     "maintenances.complete",
     "maintenances.cancel",
+    // Sprint 26E : voir le commentaire sur DEFAULT_GROUPS.
+    "invoices.version",
   ],
   AGENCE: [
     // Sprint 17 : agencies.view/cash_register.* — voir le commentaire sur DEFAULT_GROUPS
@@ -475,11 +491,14 @@ export const PAST_PERMISSION_BACKFILLS: Record<string, string[]> = {
     "locations.cancel",
     "maintenances.complete",
     "maintenances.cancel",
+    // Sprint 26E : voir le commentaire sur DEFAULT_GROUPS.
+    "invoices.version",
   ],
   // Sprint 23 : COMPTABILITÉ n'avait jamais eu d'entrée dans ce dictionnaire (resserré, jamais
   // étendu, depuis le Sprint 15) — première extension pour ce groupe.
   // Sprint 26D (Finding D1) : payments.correct — voir le commentaire sur DEFAULT_GROUPS.
-  COMPTABILITÉ: ["contracts_overview.view", "vehicle_performance.view", "payments.correct"],
+  // Sprint 26E : invoices.version — voir le commentaire sur DEFAULT_GROUPS.
+  COMPTABILITÉ: ["contracts_overview.view", "vehicle_performance.view", "payments.correct", "invoices.version"],
 };
 
 /**

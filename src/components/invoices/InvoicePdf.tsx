@@ -54,6 +54,10 @@ export interface InvoicePdfProps {
   invoiceNumber: string;
   contractNumber: string | null;
   status: string;
+  /** Sprint 26E : versionnement documentaire — 1 pour une facture jamais versionnée. */
+  versionNumber: number;
+  /** Sprint 26E : numéro de la facture immédiatement remplacée par celle-ci, null sinon. */
+  replacesInvoiceNumber: string | null;
   issuedAt: Date;
   dueDate: Date | null;
   clientName: string;
@@ -96,6 +100,10 @@ export function InvoicePdfPage(props: InvoicePdfProps) {
         <View>
           <Text style={styles.invoiceTitle}>FACTURE</Text>
           <Text style={styles.invoiceMeta}>{props.invoiceNumber}</Text>
+          {props.versionNumber > 1 && <Text style={styles.invoiceMeta}>Version {props.versionNumber}</Text>}
+          {props.replacesInvoiceNumber && (
+            <Text style={styles.invoiceMeta}>Remplace la facture {props.replacesInvoiceNumber}</Text>
+          )}
           {props.contractNumber && <Text style={styles.invoiceMeta}>Contrat {props.contractNumber}</Text>}
           <Text style={styles.invoiceMeta}>{STATUS_LABELS[props.status] ?? props.status}</Text>
         </View>

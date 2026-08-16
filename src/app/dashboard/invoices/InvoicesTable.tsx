@@ -35,6 +35,8 @@ export interface InvoiceRow {
   totalAmount: number;
   amountPaid: number;
   currency: string;
+  /** Sprint 26E : versionnement documentaire — 1 pour une facture jamais versionnée. */
+  versionNumber: number;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -136,7 +138,20 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
         ),
         size: 32,
       },
-      { accessorKey: "number", header: "Numéro" },
+      {
+        accessorKey: "number",
+        header: "Numéro",
+        cell: ({ row }) => (
+          <span className="flex items-center gap-1.5">
+            {row.original.number}
+            {row.original.versionNumber > 1 && (
+              <Badge variant="outline" className="text-xs">
+                v{row.original.versionNumber}
+              </Badge>
+            )}
+          </span>
+        ),
+      },
       {
         accessorKey: "contractNumber",
         header: "N° contrat",

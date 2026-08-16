@@ -16,7 +16,7 @@ const STATUS_OPTIONS: { value: InvoiceStatus; label: string }[] = [
 ];
 
 interface PageProps {
-  searchParams: Promise<{ status?: string; from?: string; to?: string }>;
+  searchParams: Promise<{ status?: string; from?: string; to?: string; showHistory?: string }>;
 }
 
 export default async function InvoicesPage({ searchParams }: PageProps) {
@@ -36,6 +36,12 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
 
   const params = await searchParams;
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+  // Sprint 26E : masque par défaut les factures remplacées par une nouvelle version —
+  // comportement propre à cet écran uniquement, jamais un changement du comportement par défaut
+  // de GET /api/invoices/getInvoices (voir src/lib/invoices.ts, filtre excludeReplaced, jamais
+  // appliqué sans opt-in explicite). Filtre sur la relation inverse `replacedBy` (aucune colonne
+  // physique dupliquée — voir prisma/schema.prisma, Invoice.replacesInvoiceId).
+  const showHistory = params.showHistory === "true";
 
   const invoices = await prisma.invoice.findMany({
     where: {
@@ -44,6 +50,7 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
       ...(params.status ? { status: params.status as InvoiceStatus } : {}),
       ...(params.from ? { issuedAt: { gte: new Date(params.from) } } : {}),
       ...(params.to ? { issuedAt: { lte: new Date(params.to) } } : {}),
+      ...(showHistory ? {} : { replacedBy: null }),
     },
     include: { client: { select: { name: true } }, location: { select: { contractNumber: true } } },
     orderBy: { issuedAt: "desc" },
@@ -59,6 +66,7 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
     totalAmount: invoice.totalAmount,
     amountPaid: invoice.amountPaid,
     currency: invoice.currency,
+    versionNumber: invoice.versionNumber,
   }));
 
   const canCreate = (accessibleAgencyIds === null || accessibleAgencyIds.length > 0) && (await can(user, "invoices.create"));
@@ -124,6 +132,8 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
           />
         </div>
 
+        <input type="hidden" name="showHistory" value={showHistory ? "true" : "false"} />
+
         <Button type="submit" variant="outline" size="sm">
           Filtrer
         </Button>
@@ -133,6 +143,21 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
           </Button>
         )}
       </form>
+
+      {/* Sprint 26E : par défaut, seule la dernière version active de chaque facture
+          versionnée est affichée — bascule explicite pour voir aussi les versions
+          remplacées (CANCELLED, une autre facture pointe vers elle via replacesInvoiceId). */}
+      <div>
+        <Link
+          href={{
+            pathname: "/dashboard/invoices",
+            query: { ...params, showHistory: showHistory ? "false" : "true" },
+          }}
+          className="text-sm text-primary hover:underline"
+        >
+          {showHistory ? "Masquer les versions remplacées" : "Afficher l'historique des versions"}
+        </Link>
+      </div>
 
       <InvoicesTable invoices={rows} />
     </div>

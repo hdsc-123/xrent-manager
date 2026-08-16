@@ -276,6 +276,17 @@ export async function POST(request: Request) {
   });
   const agencyNameById = new Map(agencies.map((agency) => [agency.id, agency.name]));
 
+  // Sprint 26E : numéro de la facture immédiatement remplacée, pour chaque facture versionnée
+  // du lot (affiché sur le PDF, InvoicePdfPage).
+  const replacesInvoiceIds = [
+    ...new Set(invoices.map((invoice) => invoice.replacesInvoiceId).filter((id): id is string => id !== null)),
+  ];
+  const replacedInvoices =
+    replacesInvoiceIds.length > 0
+      ? await prisma.invoice.findMany({ where: { id: { in: replacesInvoiceIds } }, select: { id: true, number: true } })
+      : [];
+  const replacedNumberById = new Map(replacedInvoices.map((invoice) => [invoice.id, invoice.number]));
+
   const buffer = await renderToBuffer(
     <Document title={`Lot de factures (${invoices.length})`}>
       {invoices.map((invoice) => (
@@ -286,6 +297,8 @@ export async function POST(request: Request) {
           invoiceNumber={invoice.number}
           contractNumber={invoice.location.contractNumber}
           status={invoice.status}
+          versionNumber={invoice.versionNumber}
+          replacesInvoiceNumber={invoice.replacesInvoiceId ? (replacedNumberById.get(invoice.replacesInvoiceId) ?? null) : null}
           issuedAt={invoice.issuedAt}
           dueDate={invoice.dueDate}
           clientName={invoice.client.name}
