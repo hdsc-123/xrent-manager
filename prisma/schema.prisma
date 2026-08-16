@@ -166,6 +166,13 @@ model Client {
   licenseNumber     String?
   licenseIssueDate  DateTime?
   licenseExpiryDate DateTime?
+  // Sprint 30 (DOMAINRULES.md section 45, point 7) : âge réel du conducteur, distinct de
+  // l'ancienneté du permis (licenseExpiryDate ci-dessus). Nullable — clients déjà créés avant ce
+  // sprint n'en ont pas, jamais backfillée (même principe que licenseExpiryDate, Sprint 12A) ;
+  // un client sans birthDate peut toujours exister (CLAUDE.md section 2 point 7 — pas de donnée
+  // inventée), seule sa désignation comme conducteur d'un contrat est bloquée (voir
+  // assertClientMeetsMinimumAge, src/lib/locations.ts).
+  birthDate         DateTime?
   notes             String?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt

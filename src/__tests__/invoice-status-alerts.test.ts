@@ -117,7 +117,7 @@ beforeAll(async () => {
     body: JSON.stringify({
       name: "Client Alertes Facture",
       email: `client-isa-${runId}@test.local`,
-      licenseExpiryDate: "2099-12-31",
+      licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01",
     }),
   });
   clientId = (await clientResponse.json()).client.id;

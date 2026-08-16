@@ -673,6 +673,68 @@ body: JSON.stringify({ type: "EXPENSE", category: "Entretien", amount: 800, desc
     const { entries: entriesB } = await entriesResponseB.json();
     expect(entriesB).toEqual([]);
   });
+
+  // Sprint 30 (point 6b, Sprint A) : from/to déjà supportés côté serveur (getCashEntries),
+  // jusqu'ici jamais exposés dans l'UI (EntriesTable.tsx/ExpensesTable.tsx) — le formulaire de
+  // filtre ajouté ce sprint réutilise ces paramètres tels quels, sans changement d'API.
+  it("filtre par plage de dates (from/to) — entrées et dépenses", async () => {
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    const entryResponse = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        type: "ENTRY",
+        category: "COMMISSION",
+        amount: 1_200,
+        description: `Commission plage ${runId}`,
+      }),
+    });
+    const entryId = (await entryResponse.json()).entry.id;
+
+    const expenseResponse = await apiFetch("/api/cash-register", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        type: "EXPENSE",
+        category: "Entretien",
+        amount: 700,
+        description: `Dépense plage ${runId}`,
+      }),
+    });
+    const expenseId = (await expenseResponse.json()).entry.id;
+
+    const withinRangeEntries = await apiFetch(`/api/cash-register/entries?from=${yesterday}&to=${tomorrow}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const withinRangeEntriesIds = (await withinRangeEntries.json()).entries.map((entry: { id: string }) => entry.id);
+    expect(withinRangeEntriesIds).toContain(entryId);
+
+    const beforeRangeEntries = await apiFetch(`/api/cash-register/entries?from=${tomorrow}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const beforeRangeEntriesIds = (await beforeRangeEntries.json()).entries.map((entry: { id: string }) => entry.id);
+    expect(beforeRangeEntriesIds).not.toContain(entryId);
+
+    const afterRangeEntries = await apiFetch(`/api/cash-register/entries?to=${yesterday}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const afterRangeEntriesIds = (await afterRangeEntries.json()).entries.map((entry: { id: string }) => entry.id);
+    expect(afterRangeEntriesIds).not.toContain(entryId);
+
+    const withinRangeExpenses = await apiFetch(`/api/cash-register/expenses?from=${yesterday}&to=${tomorrow}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const withinRangeExpensesIds = (await withinRangeExpenses.json()).entries.map((entry: { id: string }) => entry.id);
+    expect(withinRangeExpensesIds).toContain(expenseId);
+
+    const outsideRangeExpenses = await apiFetch(`/api/cash-register/expenses?from=${tomorrow}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const outsideRangeExpensesIds = (await outsideRangeExpenses.json()).entries.map((entry: { id: string }) => entry.id);
+    expect(outsideRangeExpensesIds).not.toContain(expenseId);
+  });
 });
 
 describe("GET/POST /api/cash-register/categories", () => {
@@ -802,7 +864,7 @@ body: JSON.stringify({ type: "EXPENSE", category: "Fournitures", amount: 20_000,
       body: JSON.stringify({
         name: "Client Solde Agence",
         email: `client-solde-${runId}@test.local`,
-        licenseExpiryDate: "2099-12-31",
+        licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01",
       }),
     });
     const client = (await clientResponse.json()).client;

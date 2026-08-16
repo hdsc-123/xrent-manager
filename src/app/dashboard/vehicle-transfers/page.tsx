@@ -51,6 +51,8 @@ export default async function VehicleTransfersPage({ searchParams }: PageProps) 
             accessibleAgencyIds.includes(transfer.fromAgencyId) || accessibleAgencyIds.includes(transfer.toAgencyId)
         );
 
+  // Sprint 30 (point 6b, Sprint A) : vehicleMap déjà chargé pour résoudre l'affichage de chaque
+  // ligne — réutilisé tel quel pour peupler le filtre véhicule, jamais interrogé une seconde fois.
   const [vehicleMap, agencyMap, userMap] = await Promise.all([
     prisma.vehicle
       .findMany({ where: { tenantId: user.tenantId }, select: { id: true, name: true, licensePlate: true } })
@@ -119,10 +121,29 @@ export default async function VehicleTransfersPage({ searchParams }: PageProps) 
           </select>
         </div>
 
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="vehicleId" className="text-xs font-medium text-muted-foreground">
+            Véhicule
+          </label>
+          <select
+            id="vehicleId"
+            name="vehicleId"
+            defaultValue={params.vehicleId ?? ""}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          >
+            <option value="">Tous</option>
+            {Array.from(vehicleMap.entries()).map(([id, vehicle]) => (
+              <option key={id} value={id}>
+                {vehicle.name} ({vehicle.licensePlate})
+              </option>
+            ))}
+          </select>
+        </div>
+
         <Button type="submit" variant="outline" size="sm">
           Filtrer
         </Button>
-        {params.status && (
+        {(params.status || params.vehicleId) && (
           <Button render={<Link href="/dashboard/vehicle-transfers" />} variant="ghost" size="sm">
             Réinitialiser
           </Button>

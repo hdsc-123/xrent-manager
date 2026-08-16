@@ -71,7 +71,7 @@ describe("Scénario complet : inscription → CRUD métier → facturation → r
     const clientResponse = await apiFetch("/api/clients", {
       method: "POST",
       headers: { Cookie: admin.sessionCookie },
-      body: JSON.stringify({ name: "Client E2E", licenseExpiryDate: "2099-12-31" }),
+      body: JSON.stringify({ name: "Client E2E", licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
     });
     expect(clientResponse.status).toBe(201);
     const clientId = (await clientResponse.json()).client.id;

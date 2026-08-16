@@ -223,6 +223,46 @@ describe("POST /api/vehicle-transfers", () => {
   });
 });
 
+// Sprint 30 (point 6b, Sprint A) : vehicleId déjà supporté par GET /api/vehicle-transfers
+// (getVehicleTransfers, src/lib/vehicle-transfers.ts) mais jusqu'ici jamais exposé dans l'UI
+// (VehicleTransfersTable.tsx) — le formulaire de filtre ajouté ce sprint réutilise ce paramètre
+// tel quel, sans changement d'API.
+describe("GET /api/vehicle-transfers — filtre vehicleId (Sprint 30, point 6b Sprint A)", () => {
+  it("filtre par véhicule, combinable avec le filtre status existant", async () => {
+    const vehicleAResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleAId = (await vehicleAResponse.json()).vehicle.id;
+    const vehicleCResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleCId = (await vehicleCResponse.json()).vehicle.id;
+
+    const transferA = await createTransfer(adminA, vehicleAId, agencyA2Id, adminA.userId);
+    const transferAId = (await transferA.json()).transfer.id;
+    await createTransfer(adminA, vehicleCId, agencyA2Id, adminA.userId);
+
+    const filteredResponse = await apiFetch(`/api/vehicle-transfers?vehicleId=${vehicleAId}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const filteredBody = await filteredResponse.json();
+    expect(filteredBody.transfers.every((transfer: { vehicleId: string }) => transfer.vehicleId === vehicleAId)).toBe(
+      true
+    );
+    expect(filteredBody.transfers.map((transfer: { id: string }) => transfer.id)).toContain(transferAId);
+
+    const combinedResponse = await apiFetch(
+      `/api/vehicle-transfers?vehicleId=${vehicleAId}&status=IN_TRANSIT`,
+      { headers: { Cookie: adminA.sessionCookie } }
+    );
+    const combinedBody = await combinedResponse.json();
+    expect(combinedBody.transfers.map((transfer: { id: string }) => transfer.id)).toContain(transferAId);
+
+    const combinedNoMatchResponse = await apiFetch(
+      `/api/vehicle-transfers?vehicleId=${vehicleAId}&status=CANCELLED`,
+      { headers: { Cookie: adminA.sessionCookie } }
+    );
+    const combinedNoMatchBody = await combinedNoMatchResponse.json();
+    expect(combinedNoMatchBody.transfers.map((transfer: { id: string }) => transfer.id)).not.toContain(transferAId);
+  });
+});
+
 describe("Sprint 19 — GET /api/vehicles/[id]/last-known-state", () => {
   it("retourne null/null pour un véhicule sans historique de retour", async () => {
     const vehicleResponse = await createVehicle(adminA, agencyA1Id);

@@ -38,6 +38,7 @@ export function NewClientForm() {
   const [licenseNumber, setLicenseNumber] = useState("");
   const [licenseIssueDate, setLicenseIssueDate] = useState("");
   const [licenseExpiryDate, setLicenseExpiryDate] = useState("");
+  const [birthDate, setBirthDate] = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -58,6 +59,7 @@ export function NewClientForm() {
       licenseNumber: licenseNumber || undefined,
       licenseIssueDate: licenseIssueDate || undefined,
       licenseExpiryDate: licenseExpiryDate || undefined,
+      birthDate: birthDate || undefined,
       notes: notes || undefined,
       ...overrides,
     };
@@ -123,6 +125,23 @@ export function NewClientForm() {
                   onChange={(e) => setLastName(e.target.value)}
                 />
               </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="birthDate">
+                Date de naissance <span className="text-muted-foreground">— optionnel</span>
+              </Label>
+              <Input
+                id="birthDate"
+                type="date"
+                max={new Date().toISOString().slice(0, 10)}
+                value={birthDate}
+                onChange={(e) => setBirthDate(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Nécessaire pour désigner ce client comme conducteur d&apos;un contrat (âge minimum requis : 21 ans).
+                Un client sans date de naissance peut être enregistré, mais ne pourra pas être conducteur.
+              </p>
             </div>
 
             <div className="flex flex-col gap-1.5">

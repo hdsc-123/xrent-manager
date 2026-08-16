@@ -1,8 +1,9 @@
+import Link from "next/link";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getCashEntries } from "@/lib/cash-register";
 import { prisma } from "@/lib/prisma";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { EntriesTable, type EntryRow } from "./EntriesTable";
 import { NewEntryForm } from "./NewEntryForm";
 
@@ -68,6 +69,43 @@ export default async function CashEntriesPage({ searchParams }: PageProps) {
       </div>
 
       {canCreateEntry && <NewEntryForm agencies={agencies} />}
+
+      <form className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3" method="get">
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="from" className="text-xs font-medium text-muted-foreground">
+            Du
+          </label>
+          <input
+            id="from"
+            name="from"
+            type="date"
+            defaultValue={params.from ?? ""}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="to" className="text-xs font-medium text-muted-foreground">
+            Au
+          </label>
+          <input
+            id="to"
+            name="to"
+            type="date"
+            defaultValue={params.to ?? ""}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          />
+        </div>
+
+        <Button type="submit" variant="outline" size="sm">
+          Filtrer
+        </Button>
+        {(params.from || params.to) && (
+          <Button render={<Link href="/dashboard/cash-register/entries" />} variant="ghost" size="sm">
+            Réinitialiser
+          </Button>
+        )}
+      </form>
 
       <EntriesTable entries={rows} canEdit={canEdit} canDelete={canDelete} />
     </div>

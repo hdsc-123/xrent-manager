@@ -1,15 +1,31 @@
+import Link from "next/link";
+import type { LocationStatus } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getContractsOverview } from "@/lib/locations";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { ContractsOverviewTable, type ContractOverviewRow } from "./ContractsOverviewTable";
+
+const STATUS_OPTIONS: { value: LocationStatus; label: string }[] = [
+  { value: "PENDING", label: "En attente" },
+  { value: "CONFIRMED", label: "Confirmée" },
+  { value: "ACTIVE", label: "En cours" },
+  { value: "COMPLETED", label: "Terminée" },
+  { value: "CANCELLED", label: "Annulée" },
+];
+
+interface PageProps {
+  searchParams: Promise<{ status?: string }>;
+}
 
 /**
  * Sprint 23 (DOMAINRULES.md section 39, point C de l'énoncé) — listing de tous les contrats
  * (Location), scopé aux agences accessibles à l'appelant (départ ou retour). Gardée par
  * `contracts_overview.view` (catalogue src/lib/permissions.ts), distincte de `reports.view`.
+ * Sprint 30 (point 6b, Sprint A) : filtre statut ajouté — `getContractsOverview` le supportait
+ * déjà côté serveur, jamais exposé côté UI jusqu'ici.
  */
-export default async function ContractsPage() {
+export default async function ContractsPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
@@ -24,8 +40,13 @@ export default async function ContractsPage() {
     );
   }
 
+  const params = await searchParams;
+  const status = params.status && STATUS_OPTIONS.some((option) => option.value === params.status)
+    ? (params.status as LocationStatus)
+    : undefined;
+
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
-  const contracts = await getContractsOverview(user.tenantId, { agencyIds: accessibleAgencyIds });
+  const contracts = await getContractsOverview(user.tenantId, { agencyIds: accessibleAgencyIds, status });
 
   const rows: ContractOverviewRow[] = contracts.map((contract) => ({
     id: contract.id,
@@ -54,6 +75,36 @@ export default async function ContractsPage() {
           total facturé et état.
         </p>
       </div>
+
+      <form className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3" method="get">
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="status" className="text-xs font-medium text-muted-foreground">
+            Statut
+          </label>
+          <select
+            id="status"
+            name="status"
+            defaultValue={params.status ?? ""}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          >
+            <option value="">Tous</option>
+            {STATUS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <Button type="submit" variant="outline" size="sm">
+          Filtrer
+        </Button>
+        {status && (
+          <Button render={<Link href="/dashboard/contracts" />} variant="ghost" size="sm">
+            Réinitialiser
+          </Button>
+        )}
+      </form>
 
       <ContractsOverviewTable contracts={rows} />
     </div>

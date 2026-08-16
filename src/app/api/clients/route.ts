@@ -46,6 +46,10 @@ interface CreateClientBody {
   licenseNumber?: string;
   licenseIssueDate?: string;
   licenseExpiryDate?: string;
+  /** Sprint 30 (DOMAINRULES.md section 45) — jamais requise ici : un client de moins de 21 ans
+   * ou sans date de naissance connue peut toujours être créé (CLAUDE.md section 2 point 7),
+   * seule sa désignation comme conducteur d'un contrat est bloquée (src/lib/locations.ts). */
+  birthDate?: string;
   notes?: string;
   /** Réutilise ce client existant au lieu d'en créer un nouveau (voir DuplicateCheck.tsx). */
   useExistingClientId?: string;
@@ -81,6 +85,18 @@ export async function POST(request: Request) {
 
   if (body.idType && !ID_TYPES.includes(body.idType)) {
     return NextResponse.json({ error: "idType invalide." }, { status: 400 });
+  }
+
+  // Sprint 30 (DOMAINRULES.md section 45) : validation de format uniquement (date parseable,
+  // pas future) — jamais un contrôle d'âge ici, birthDate reste optionnelle à ce niveau.
+  if (body.birthDate !== undefined) {
+    const parsedBirthDate = new Date(body.birthDate);
+    if (Number.isNaN(parsedBirthDate.getTime())) {
+      return NextResponse.json({ error: "birthDate doit être une date ISO valide." }, { status: 400 });
+    }
+    if (parsedBirthDate.getTime() > Date.now()) {
+      return NextResponse.json({ error: "birthDate ne peut pas être une date future." }, { status: 400 });
+    }
   }
 
   // Détection de doublons (DOMAINRULES.md section 9) : toujours exécutée (sauf choix déjà
@@ -159,6 +175,7 @@ export async function POST(request: Request) {
     licenseNumber: body.licenseNumber,
     licenseIssueDate: body.licenseIssueDate ? new Date(body.licenseIssueDate) : undefined,
     licenseExpiryDate: body.licenseExpiryDate ? new Date(body.licenseExpiryDate) : undefined,
+    birthDate: body.birthDate ? new Date(body.birthDate) : undefined,
     notes,
   });
 

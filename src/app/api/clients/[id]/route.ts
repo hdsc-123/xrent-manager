@@ -46,6 +46,8 @@ interface UpdateClientBody {
   licenseNumber?: string | null;
   licenseIssueDate?: string | null;
   licenseExpiryDate?: string | null;
+  /** Sprint 30 (DOMAINRULES.md section 45) — jamais requise ici, voir POST /api/clients. */
+  birthDate?: string | null;
   notes?: string | null;
 }
 
@@ -81,6 +83,18 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "idType invalide." }, { status: 400 });
   }
 
+  // Sprint 30 (DOMAINRULES.md section 45) : validation de format uniquement, jamais un contrôle
+  // d'âge ici — voir POST /api/clients.
+  if (body.birthDate !== undefined && body.birthDate !== null) {
+    const parsedBirthDate = new Date(body.birthDate);
+    if (Number.isNaN(parsedBirthDate.getTime())) {
+      return NextResponse.json({ error: "birthDate doit être une date ISO valide." }, { status: 400 });
+    }
+    if (parsedBirthDate.getTime() > Date.now()) {
+      return NextResponse.json({ error: "birthDate ne peut pas être une date future." }, { status: 400 });
+    }
+  }
+
   // Si firstName/lastName changent sans name explicite, on garde name synchronisé
   // (même dérivation qu'à la création, voir POST /api/clients).
   const derivedName =
@@ -106,6 +120,8 @@ export async function PATCH(request: Request, { params }: RouteParams) {
           ? null
           : new Date(body.licenseExpiryDate)
         : undefined,
+    birthDate:
+      body.birthDate !== undefined ? (body.birthDate === null ? null : new Date(body.birthDate)) : undefined,
   });
   await logAction({
     tenantId: user.tenantId,

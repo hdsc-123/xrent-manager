@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { getContractsOverview } from "@/lib/locations";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -126,14 +127,14 @@ beforeAll(async () => {
   const clientAResponse = await apiFetch("/api/clients", {
     method: "POST",
     headers: { Cookie: adminA.sessionCookie },
-    body: JSON.stringify({ name: "Client A", email: `client-a-${runId}@test.local`, licenseExpiryDate: "2099-12-31" }),
+    body: JSON.stringify({ name: "Client A", email: `client-a-${runId}@test.local`, licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
   });
   clientAId = (await clientAResponse.json()).client.id;
 
   const clientBResponse = await apiFetch("/api/clients", {
     method: "POST",
     headers: { Cookie: adminB.sessionCookie },
-    body: JSON.stringify({ name: "Client B", email: `client-b-${runId}@test.local`, licenseExpiryDate: "2099-12-31" }),
+    body: JSON.stringify({ name: "Client B", email: `client-b-${runId}@test.local`, licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
   });
   clientBId = (await clientBResponse.json()).client.id;
 
@@ -786,7 +787,7 @@ describe("POST /api/locations", () => {
     // test, vérifié) n'utilise l'année 2034 — élimine tout risque de VehicleNotAvailableError
     // (409) accidentel avec un test déjà existant sur vehicleAId.
     it("refuse (400) si le permis expire strictement avant la date de retour — aucune Location créée", async () => {
-      const client = await createClientWithLicense({ licenseExpiryDate: "2034-04-04" });
+      const client = await createClientWithLicense({ licenseExpiryDate: "2034-04-04", birthDate: "1990-01-01" });
 
       const before = await prisma.location.count({ where: { vehicleId: vehicleAId, clientId: client.id } });
 
@@ -806,7 +807,7 @@ describe("POST /api/locations", () => {
     it("accepte lorsque la date d'expiration du permis est égale à la date de retour, après normalisation UTC (heure ignorée)", async () => {
       // Retour à 14h UTC le 20/04 ; permis expirant minuit UTC le même jour calendaire —
       // égalité au sens du jour UTC, pas de l'horodatage exact (décision validée).
-      const client = await createClientWithLicense({ licenseExpiryDate: "2034-04-20" });
+      const client = await createClientWithLicense({ licenseExpiryDate: "2034-04-20", birthDate: "1990-01-01" });
 
       const response = await createLocation(adminA, {
         clientId: client.id,
@@ -817,7 +818,7 @@ describe("POST /api/locations", () => {
     });
 
     it("accepte lorsque la date d'expiration du permis est postérieure à la date de retour", async () => {
-      const client = await createClientWithLicense({ licenseExpiryDate: "2034-05-01" });
+      const client = await createClientWithLicense({ licenseExpiryDate: "2034-05-01", birthDate: "1990-01-01" });
 
       const response = await createLocation(adminA, {
         clientId: client.id,
@@ -851,7 +852,7 @@ describe("POST /api/locations", () => {
     });
 
     it("portée limitée à la création : updateLocation() ne revérifie pas le permis lors d'un changement de dates (hors périmètre Sprint 29, documenté)", async () => {
-      const client = await createClientWithLicense({ licenseExpiryDate: "2034-05-12" });
+      const client = await createClientWithLicense({ licenseExpiryDate: "2034-05-12", birthDate: "1990-01-01" });
       const createResponse = await createLocation(adminA, {
         clientId: client.id,
         startDate: "2034-05-10",
@@ -871,6 +872,204 @@ describe("POST /api/locations", () => {
       });
       expect(updateResponse.status).toBe(200);
     });
+  });
+
+  describe("Sprint 30 — âge minimum du conducteur à la date de départ (point 7, DOMAINRULES.md section 45)", () => {
+    // Plage 2035-xx isolée (aucune autre location de ce fichier n'utilise cette année) — élimine
+    // tout risque de VehicleNotAvailableError (409) accidentel avec un test déjà existant sur
+    // vehicleAId. licenseExpiryDate systématiquement 2099-12-31 (permis toujours valide, voir
+    // Sprint 29 ci-dessus) pour isoler strictement le contrôle d'âge testé ici.
+    async function createClientWithBirthDate(overrides: Record<string, unknown>) {
+      const response = await apiFetch("/api/clients", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ name: "Client Sprint 30", licenseExpiryDate: "2099-12-31", ...overrides }),
+      });
+      return (await response.json()).client as { id: string };
+    }
+
+    it("refuse (400) un client âgé de 20 ans et 364 jours à la date de départ — aucune Location créée", async () => {
+      // Départ le 2035-06-15 ; 21e anniversaire le 2035-06-16 (un jour après) → 20 ans et 364 jours.
+      const client = await createClientWithBirthDate({ birthDate: "2014-06-16" });
+
+      const before = await prisma.location.count({ where: { vehicleId: vehicleAId, clientId: client.id } });
+
+      const response = await createLocation(adminA, {
+        clientId: client.id,
+        startDate: "2035-06-15",
+        endDate: "2035-06-17",
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toMatch(/n'a pas encore 21 ans/i);
+
+      const after = await prisma.location.count({ where: { vehicleId: vehicleAId, clientId: client.id } });
+      expect(after).toBe(before);
+    });
+
+    it("accepte un client exactement âgé de 21 ans le jour de la date de départ", async () => {
+      // Départ le 2035-06-20 ; anniversaire le même jour calendaire → exactement 21 ans.
+      const client = await createClientWithBirthDate({ birthDate: "2014-06-20" });
+
+      const response = await createLocation(adminA, {
+        clientId: client.id,
+        startDate: "2035-06-20",
+        endDate: "2035-06-22",
+      });
+      expect(response.status).toBe(201);
+    });
+
+    it("accepte un client plus âgé que le minimum requis", async () => {
+      const client = await createClientWithBirthDate({ birthDate: "1990-01-01" });
+
+      const response = await createLocation(adminA, {
+        clientId: client.id,
+        startDate: "2035-06-25",
+        endDate: "2035-06-27",
+      });
+      expect(response.status).toBe(201);
+    });
+
+    it("refuse (400) si birthDate est absente — aucune Location créée", async () => {
+      const client = await createClientWithBirthDate({});
+
+      const before = await prisma.location.count({ where: { vehicleId: vehicleAId, clientId: client.id } });
+
+      const response = await createLocation(adminA, {
+        clientId: client.id,
+        startDate: "2035-06-28",
+        endDate: "2035-06-30",
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toMatch(/date de naissance.*n'est pas renseignée/i);
+
+      const after = await prisma.location.count({ where: { vehicleId: vehicleAId, clientId: client.id } });
+      expect(after).toBe(before);
+    });
+
+    it("refuse (400) si birthDate est postérieure à la date du jour", async () => {
+      // POST /api/clients refuse déjà une birthDate future à la création (Task Client
+      // model/API) — une birthDate future ne peut donc normalement jamais atteindre ce
+      // contrôle métier. Vérifié ici en défense en profondeur : une valeur déjà en base
+      // (contournement direct, hors API) reste bloquée à la création du contrat.
+      const client = await createClientWithBirthDate({ birthDate: "1990-01-01" });
+      await prisma.client.update({ where: { id: client.id }, data: { birthDate: new Date("2099-01-01") } });
+
+      const response = await createLocation(adminA, {
+        clientId: client.id,
+        startDate: "2035-07-02",
+        endDate: "2035-07-04",
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toMatch(/postérieure à la date du jour/i);
+    });
+
+    it("non-régression : un contrat avec un client majeur (clientAId, né en 1990) est toujours accepté", async () => {
+      const response = await createLocation(adminA, { startDate: "2035-07-06", endDate: "2035-07-08" });
+      expect(response.status).toBe(201);
+    });
+  });
+});
+
+describe("Sprint 30 — âge minimum du second conducteur ajouté via PATCH /api/locations/[id] (point 7, DOMAINRULES.md section 45)", () => {
+  async function createClientWithBirthDate(overrides: Record<string, unknown>) {
+    const response = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Second Conducteur Sprint 30", ...overrides }),
+    });
+    return (await response.json()).client as { id: string };
+  }
+
+  it("refuse (400) l'ajout d'un second conducteur âgé de moins de 21 ans à la date de départ du contrat", async () => {
+    const createResponse = await createLocation(adminA, { startDate: "2035-08-01", endDate: "2035-08-03" });
+    const locationId = (await createResponse.json()).location.id;
+
+    // 21e anniversaire le 2035-08-02 (un jour après le départ) → 20 ans et 364 jours au départ.
+    const secondDriver = await createClientWithBirthDate({ birthDate: "2014-08-02" });
+
+    const response = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ secondDriverId: secondDriver.id }),
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/n'a pas encore 21 ans/i);
+
+    const locationAfter = await prisma.location.findUniqueOrThrow({ where: { id: locationId } });
+    expect(locationAfter.secondDriverId).toBeNull();
+  });
+
+  it("accepte un second conducteur exactement âgé de 21 ans à la date de départ du contrat", async () => {
+    const createResponse = await createLocation(adminA, { startDate: "2035-08-10", endDate: "2035-08-12" });
+    const locationId = (await createResponse.json()).location.id;
+
+    const secondDriver = await createClientWithBirthDate({ birthDate: "2014-08-10" });
+
+    const response = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ secondDriverId: secondDriver.id }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.location.secondDriverId).toBe(secondDriver.id);
+  });
+
+  it("refuse (400) un second conducteur sans birthDate connue", async () => {
+    const createResponse = await createLocation(adminA, { startDate: "2035-08-15", endDate: "2035-08-17" });
+    const locationId = (await createResponse.json()).location.id;
+
+    const secondDriver = await createClientWithBirthDate({});
+
+    const response = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ secondDriverId: secondDriver.id }),
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/second conducteur.*n'est pas renseignée/i);
+  });
+
+  it("un contrat déjà verrouillé (hors PENDING, dates non modifiables) reste soumis au contrôle d'âge pour un second conducteur ajouté après coup", async () => {
+    const createResponse = await createLocation(adminA, {
+      startDate: "2035-08-20",
+      endDate: "2035-08-22",
+      status: "CONFIRMED",
+    });
+    const locationId = (await createResponse.json()).location.id;
+
+    // Les dates restent verrouillées (LocationLockedError) sur ce contrat CONFIRMED pour un
+    // titulaire ordinaire (linkedMemberA, sans adminOverride — un ADMIN contournerait ce verrou,
+    // voir DOMAINRULES.md section 37, non représentatif ici), mais secondDriverId n'est jamais
+    // verrouillé (voir UpdateLocationInput.secondDriverId) — le contrôle d'âge s'applique donc
+    // malgré tout, sans dépendre du statut du contrat.
+    const lockedDatesResponse = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: linkedMemberA.sessionCookie },
+      body: JSON.stringify({ startDate: "2035-08-21", endDate: "2035-08-23" }),
+    });
+    expect(lockedDatesResponse.status).toBe(409);
+
+    const tooYoungSecondDriver = await createClientWithBirthDate({ birthDate: "2020-01-01" });
+    const rejectedResponse = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ secondDriverId: tooYoungSecondDriver.id }),
+    });
+    expect(rejectedResponse.status).toBe(400);
+
+    const adultSecondDriver = await createClientWithBirthDate({ birthDate: "1990-01-01" });
+    const acceptedResponse = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ secondDriverId: adultSecondDriver.id }),
+    });
+    expect(acceptedResponse.status).toBe(200);
   });
 });
 
@@ -1617,5 +1816,50 @@ describe("Sprint 28 (Finding E) — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP b
       endDate: "2028-06-03",
     });
     expect(response.status).toBe(201);
+  });
+});
+
+// Sprint 30 (point 6b, Sprint A) : getContractsOverview supportait déjà `status` en filtre
+// (src/lib/locations.ts) mais jusqu'ici jamais exposé côté UI (/dashboard/contracts,
+// ContractsOverviewTable.tsx n'a pas de route API dédiée — appelée directement depuis le Server
+// Component, testée ici en important la fonction lib directement, même principe que les tests de
+// concurrence Sprint 26A/26C de reservations.test.ts).
+describe("getContractsOverview — filtre status (Sprint 30, point 6b Sprint A)", () => {
+  it("filtre par statut, combinable avec le scoping agencyIds existant", async () => {
+    const pendingResponse = await createLocation(adminA, { startDate: "2028-11-01", endDate: "2028-11-03" });
+    const pendingLocationId = (await pendingResponse.json()).location.id;
+
+    const confirmedResponse = await createLocation(adminA, {
+      startDate: "2028-11-05",
+      endDate: "2028-11-07",
+      status: "CONFIRMED",
+    });
+    const confirmedLocationId = (await confirmedResponse.json()).location.id;
+
+    const allContracts = await getContractsOverview(adminA.tenantId, { agencyIds: [agencyA1Id] });
+    const allIds = allContracts.map((contract) => contract.id);
+    expect(allIds).toContain(pendingLocationId);
+    expect(allIds).toContain(confirmedLocationId);
+
+    const pendingOnly = await getContractsOverview(adminA.tenantId, { agencyIds: [agencyA1Id], status: "PENDING" });
+    const pendingOnlyIds = pendingOnly.map((contract) => contract.id);
+    expect(pendingOnlyIds).toContain(pendingLocationId);
+    expect(pendingOnlyIds).not.toContain(confirmedLocationId);
+
+    const confirmedOnly = await getContractsOverview(adminA.tenantId, {
+      agencyIds: [agencyA1Id],
+      status: "CONFIRMED",
+    });
+    const confirmedOnlyIds = confirmedOnly.map((contract) => contract.id);
+    expect(confirmedOnlyIds).toContain(confirmedLocationId);
+    expect(confirmedOnlyIds).not.toContain(pendingLocationId);
+
+    // Isolation agence préservée : une agence n'ayant pas accès à agencyA1Id ne voit aucun de
+    // ces deux contrats, quel que soit le filtre status.
+    const otherAgencyScope = await getContractsOverview(adminA.tenantId, {
+      agencyIds: [agencyB1Id],
+      status: "PENDING",
+    });
+    expect(otherAgencyScope.map((contract) => contract.id)).not.toContain(pendingLocationId);
   });
 });

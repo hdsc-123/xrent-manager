@@ -323,7 +323,7 @@ describe("Sprint 15 — numérotation de contrat par agence (déplacée depuis T
       body: JSON.stringify({
         name: "Client Numérotation",
         email: `client-numerotation-${runId}@test.local`,
-        licenseExpiryDate: "2099-12-31",
+        licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01",
       }),
     });
     const clientId = (await clientResponse.json()).client.id;

@@ -168,14 +168,14 @@ beforeAll(async () => {
   const clientAResponse = await apiFetch("/api/clients", {
     method: "POST",
     headers: { Cookie: adminA.sessionCookie },
-    body: JSON.stringify({ name: "Client A", email: `client-a-${runId}@test.local`, licenseExpiryDate: "2099-12-31" }),
+    body: JSON.stringify({ name: "Client A", email: `client-a-${runId}@test.local`, licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
   });
   clientAId = (await clientAResponse.json()).client.id;
 
   const clientBResponse = await apiFetch("/api/clients", {
     method: "POST",
     headers: { Cookie: adminB.sessionCookie },
-    body: JSON.stringify({ name: "Client B", email: `client-b-${runId}@test.local`, licenseExpiryDate: "2099-12-31" }),
+    body: JSON.stringify({ name: "Client B", email: `client-b-${runId}@test.local`, licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
   });
   const clientBId = (await clientBResponse.json()).client.id;
 

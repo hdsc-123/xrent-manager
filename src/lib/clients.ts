@@ -58,6 +58,11 @@ export interface CreateClientInput {
   licenseNumber?: string;
   licenseIssueDate?: Date;
   licenseExpiryDate?: Date;
+  /** Sprint 30 (DOMAINRULES.md section 45) — âge réel, distinct de licenseExpiryDate ci-dessus.
+   * Optionnelle ici : un client de moins de 21 ans (ou sans date de naissance connue) peut
+   * toujours être enregistré, seule sa désignation comme conducteur d'un contrat est bloquée
+   * (voir assertClientMeetsMinimumAge, src/lib/locations.ts). */
+  birthDate?: Date;
   notes?: string;
 }
 
@@ -83,6 +88,7 @@ export interface UpdateClientInput {
   licenseNumber?: string | null;
   licenseIssueDate?: Date | null;
   licenseExpiryDate?: Date | null;
+  birthDate?: Date | null;
   notes?: string | null;
 }
 

@@ -37,6 +37,7 @@ interface EditClientFormProps {
   initialLicenseNumber: string | null;
   initialLicenseIssueDate: string | null;
   initialLicenseExpiryDate: string | null;
+  initialBirthDate: string | null;
   initialNotes: string | null;
 }
 
@@ -55,6 +56,7 @@ export function EditClientForm({
   initialLicenseNumber,
   initialLicenseIssueDate,
   initialLicenseExpiryDate,
+  initialBirthDate,
   initialNotes,
 }: EditClientFormProps) {
   const router = useRouter();
@@ -71,6 +73,7 @@ export function EditClientForm({
   const [licenseNumber, setLicenseNumber] = useState(initialLicenseNumber ?? "");
   const [licenseIssueDate, setLicenseIssueDate] = useState(initialLicenseIssueDate ?? "");
   const [licenseExpiryDate, setLicenseExpiryDate] = useState(initialLicenseExpiryDate ?? "");
+  const [birthDate, setBirthDate] = useState(initialBirthDate ?? "");
   const [notes, setNotes] = useState(initialNotes ?? "");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -100,6 +103,7 @@ export function EditClientForm({
         licenseNumber: licenseNumber || null,
         licenseIssueDate: licenseIssueDate || null,
         licenseExpiryDate: licenseExpiryDate || null,
+        birthDate: birthDate || null,
         notes: notes || null,
       });
       toast.success("Client mis à jour.");
@@ -139,6 +143,23 @@ export function EditClientForm({
                 onChange={(e) => setLastName(e.target.value)}
               />
             </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="birthDate">
+              Date de naissance <span className="text-muted-foreground">— optionnel</span>
+            </Label>
+            <Input
+              id="birthDate"
+              type="date"
+              max={new Date().toISOString().slice(0, 10)}
+              value={birthDate}
+              onChange={(e) => setBirthDate(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Nécessaire pour désigner ce client comme conducteur d&apos;un contrat (âge minimum requis : 21 ans).
+              Un client sans date de naissance peut être enregistré, mais ne pourra pas être conducteur.
+            </p>
           </div>
 
           <div className="flex flex-col gap-1.5">

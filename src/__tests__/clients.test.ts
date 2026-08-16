@@ -135,7 +135,7 @@ describe("POST /api/clients", () => {
       idType: "CIN",
       licenseNumber: "12345678",
       licenseIssueDate: "2020-01-15",
-      licenseExpiryDate: "2030-01-15",
+      licenseExpiryDate: "2030-01-15", birthDate: "1990-01-01",
       notes: "Client fidèle",
     });
     expect(response.status).toBe(201);
@@ -144,10 +144,35 @@ describe("POST /api/clients", () => {
     expect(body.client.idType).toBe("CIN");
     expect(body.client.licenseNumber).toBe("12345678");
     expect(new Date(body.client.licenseIssueDate).toISOString().slice(0, 10)).toBe("2020-01-15");
+    expect(new Date(body.client.birthDate).toISOString().slice(0, 10)).toBe("1990-01-01");
   });
 
   it("refuse un idType invalide", async () => {
     const response = await createClient(adminA, { name: "Test idType", idType: "PERMIS_MOTO" });
+    expect(response.status).toBe(400);
+  });
+
+  // Sprint 30 (DOMAINRULES.md section 45, point 7) : birthDate reste optionnelle à la
+  // création/modification d'un client — un client de moins de 21 ans (ou sans date de naissance
+  // connue) peut toujours être enregistré (CLAUDE.md section 2 point 7), seule sa désignation
+  // comme conducteur d'un contrat est bloquée (voir locations.test.ts/reservations.test.ts).
+  it("accepte la création d'un client sans birthDate (jamais bloquant uniquement à cause de l'âge)", async () => {
+    const response = await createClient(adminA, { name: "Client Sans Naissance" });
+    expect(response.status).toBe(201);
+  });
+
+  it("accepte la création d'un client dont la date de naissance le rendrait mineur pour conduire (< 21 ans)", async () => {
+    const response = await createClient(adminA, { name: "Client Jeune", birthDate: "2020-01-01" });
+    expect(response.status).toBe(201);
+  });
+
+  it("refuse (400) une birthDate au format invalide", async () => {
+    const response = await createClient(adminA, { name: "Client Date Invalide", birthDate: "pas-une-date" });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse (400) une birthDate future", async () => {
+    const response = await createClient(adminA, { name: "Client Date Future", birthDate: "2099-01-01" });
     expect(response.status).toBe(400);
   });
 });
@@ -259,6 +284,47 @@ describe("PATCH /api/clients/[id]", () => {
     });
     expect(response.status).toBe(404);
   });
+
+  // Sprint 30 (DOMAINRULES.md section 45, point 7).
+  it("permet de renseigner birthDate après coup, sans blocage lié à l'âge", async () => {
+    const createResponse = await createClient(adminA, { name: "Sans naissance au départ" });
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ birthDate: "2020-01-01" }), // rendrait le client mineur pour conduire
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(new Date(body.client.birthDate).toISOString().slice(0, 10)).toBe("2020-01-01");
+  });
+
+  it("refuse (400) une birthDate future en modification", async () => {
+    const createResponse = await createClient(adminA, { name: "Test PATCH Date Future" });
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ birthDate: "2099-01-01" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("permet d'effacer birthDate (null)", async () => {
+    const createResponse = await createClient(adminA, { name: "Avec naissance", birthDate: "1990-01-01" });
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ birthDate: null }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.client.birthDate).toBeNull();
+  });
 });
 
 describe("DELETE /api/clients/[id]", () => {
@@ -276,7 +342,7 @@ describe("DELETE /api/clients/[id]", () => {
   it("refuse la suppression d'un client ayant une location", async () => {
     const createResponse = await createClient(adminA, {
       name: "Suppression bloquée",
-      licenseExpiryDate: "2030-01-01",
+      licenseExpiryDate: "2030-01-01", birthDate: "1990-01-01",
     });
     const clientId = (await createResponse.json()).client.id;
 

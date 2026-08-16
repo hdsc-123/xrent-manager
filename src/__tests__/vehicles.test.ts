@@ -353,7 +353,7 @@ describe("DELETE /api/vehicles/[id]", () => {
     const clientResponse = await apiFetch("/api/clients", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ name: "Client Delete Test", licenseExpiryDate: "2099-12-31" }),
+      body: JSON.stringify({ name: "Client Delete Test", licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
     });
     const clientId = (await clientResponse.json()).client.id;
 
@@ -398,7 +398,7 @@ describe("GET /api/vehicles/[id]/availability", () => {
     const clientResponse = await apiFetch("/api/clients", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ name: "Client Availability Test", licenseExpiryDate: "2099-12-31" }),
+      body: JSON.stringify({ name: "Client Availability Test", licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
     });
     const clientId = (await clientResponse.json()).client.id;
 
@@ -441,7 +441,7 @@ describe("GET /api/vehicles/[id]/availability", () => {
     const clientResponse = await apiFetch("/api/clients", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ name: "Client Sensible Conflict Test", licenseExpiryDate: "2099-12-31" }),
+      body: JSON.stringify({ name: "Client Sensible Conflict Test", licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
     });
     const clientId = (await clientResponse.json()).client.id;
 

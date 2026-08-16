@@ -6,7 +6,11 @@ import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import { MaintenancesTable, type MaintenanceRow } from "./MaintenancesTable";
-import { VehicleStatusOverviewTable, type VehicleStatusRow } from "./VehicleStatusOverviewTable";
+import {
+  VehicleStatusOverviewTable,
+  type VehicleStatusRow,
+  type VehicleStatusAgencyOption,
+} from "./VehicleStatusOverviewTable";
 
 const STATUS_OPTIONS: { value: MaintenanceStatus; label: string }[] = [
   { value: "SCHEDULED", label: "Planifiée" },
@@ -49,7 +53,11 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
   const canComplete = await can(user, "maintenances.complete");
   const canCancel = await can(user, "maintenances.cancel");
 
-  const [vehicles, vehiclesWithStatus, maintenances] = await Promise.all([
+  // Sprint 30 (point 6b, Sprint B — DOMAINRULES.md) : liste des agences pour le filtre Agence de
+  // VehicleStatusOverviewTable — dérivée côté serveur des agences réellement accessibles à
+  // l'appelant (jamais des seules lignes déjà chargées, pour rester correcte même si aucun
+  // véhicule visible n'appartient encore à une agence donnée).
+  const [vehicles, vehiclesWithStatus, maintenances, accessibleAgencies] = await Promise.all([
     prisma.vehicle.findMany({
       where: {
         tenantId: user.tenantId,
@@ -92,6 +100,14 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
       },
       orderBy: { scheduledDate: "desc" },
     }),
+    prisma.agency.findMany({
+      where: {
+        tenantId: user.tenantId,
+        ...(accessibleAgencyIds ? { id: { in: accessibleAgencyIds } } : {}),
+      },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    }),
   ]);
 
   const rows: MaintenanceRow[] = maintenances.map((maintenance) => ({
@@ -114,12 +130,18 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
       id: vehicle.id,
       name: vehicle.name,
       licensePlate: vehicle.licensePlate,
+      agencyId: vehicle.agencyId,
       agencyName: vehicle.agency.name,
       status: vehicle.status,
       returnDate: activeLocation?.endDate.toISOString() ?? null,
       available: vehicle.status === "AVAILABLE" && activeLocation === null,
     };
   });
+
+  const agencyOptions: VehicleStatusAgencyOption[] = accessibleAgencies.map((agency) => ({
+    id: agency.id,
+    name: agency.name,
+  }));
 
   const canCreate = (accessibleAgencyIds === null || accessibleAgencyIds.length > 0) && (await can(user, "maintenances.create"));
 
@@ -143,7 +165,7 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
         <p className="text-sm text-muted-foreground">
           Un véhicule loué reste visible ici (avec sa date de retour) pour anticiper une maintenance à son retour.
         </p>
-        <VehicleStatusOverviewTable vehicles={overviewRows} />
+        <VehicleStatusOverviewTable vehicles={overviewRows} agencies={agencyOptions} />
       </div>
 
       <h2 className="font-heading text-lg font-semibold">Historique des maintenances</h2>

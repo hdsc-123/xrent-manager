@@ -23,6 +23,9 @@ import {
   MissingPriceError,
   MissingDriverLicenseExpiryError,
   DriverLicenseExpiredError,
+  MissingDriverBirthDateError,
+  InvalidDriverBirthDateError,
+  DriverUnderMinimumAgeError,
 } from "@/lib/locations";
 import { createInvoice } from "@/lib/invoices";
 import { processLocationPayment, validatePaymentInput, type PaymentInput } from "@/lib/location-payment";
@@ -47,6 +50,9 @@ interface ConvertClientInput {
   licenseNumber?: string;
   licenseIssueDate?: string;
   licenseExpiryDate?: string;
+  /** Sprint 30 (DOMAINRULES.md section 45, point 7) — âge réel, requis pour générer un contrat
+   * (même statut que licenseExpiryDate ci-dessus), voir le contrôle missingRequiredField. */
+  birthDate?: string;
 }
 
 interface ConvertSecondDriverInput {
@@ -55,6 +61,9 @@ interface ConvertSecondDriverInput {
   phone?: string;
   idNumber?: string;
   licenseNumber?: string;
+  /** Sprint 30 — âge réel du second conducteur, requis dès que secondDriver est fourni (même
+   * contrôle que le client principal, voir assertClientMeetsMinimumAge). */
+  birthDate?: string;
 }
 
 interface ConvertBody {
@@ -201,12 +210,13 @@ export async function POST(request: Request, { params }: RouteParams) {
       !clientInput.idNumber ||
       !clientInput.licenseNumber ||
       !clientInput.licenseIssueDate ||
-      !clientInput.licenseExpiryDate;
+      !clientInput.licenseExpiryDate ||
+      !clientInput.birthDate;
     if (missingRequiredField) {
       return NextResponse.json(
         {
           error:
-            "client.address, city, country, idNumber, licenseNumber, licenseIssueDate et licenseExpiryDate sont requis pour générer un contrat.",
+            "client.address, city, country, idNumber, licenseNumber, licenseIssueDate, licenseExpiryDate et birthDate sont requis pour générer un contrat.",
         },
         { status: 400 }
       );
@@ -218,6 +228,15 @@ export async function POST(request: Request, { params }: RouteParams) {
   if (body.secondDriver && (!body.secondDriver.firstName || !body.secondDriver.lastName)) {
     return NextResponse.json(
       { error: "secondDriver.firstName et secondDriver.lastName sont requis si secondDriver est fourni." },
+      { status: 400 }
+    );
+  }
+  // Sprint 30 (DOMAINRULES.md section 45, point 7) : birthDate requise dès qu'un second
+  // conducteur est fourni (firstName/lastName déjà garantis présents par le contrôle
+  // précédent) — même contrôle que le client principal ci-dessus.
+  if (body.secondDriver && !body.secondDriver.birthDate) {
+    return NextResponse.json(
+      { error: "secondDriver.birthDate est requise si secondDriver est fourni." },
       { status: 400 }
     );
   }
@@ -283,6 +302,7 @@ export async function POST(request: Request, { params }: RouteParams) {
             ...(clientInput.licenseExpiryDate !== undefined
               ? { licenseExpiryDate: new Date(clientInput.licenseExpiryDate) }
               : {}),
+            ...(clientInput.birthDate !== undefined ? { birthDate: new Date(clientInput.birthDate) } : {}),
           },
           tx
         );
@@ -326,6 +346,7 @@ export async function POST(request: Request, { params }: RouteParams) {
             licenseNumber: clientInput.licenseNumber,
             licenseIssueDate: clientInput.licenseIssueDate ? new Date(clientInput.licenseIssueDate) : undefined,
             licenseExpiryDate: clientInput.licenseExpiryDate ? new Date(clientInput.licenseExpiryDate) : undefined,
+            birthDate: clientInput.birthDate ? new Date(clientInput.birthDate) : undefined,
             notes,
           },
           tx
@@ -346,6 +367,7 @@ export async function POST(request: Request, { params }: RouteParams) {
             phone: body.secondDriver.phone,
             idNumber: body.secondDriver.idNumber,
             licenseNumber: body.secondDriver.licenseNumber,
+            birthDate: body.secondDriver.birthDate ? new Date(body.secondDriver.birthDate) : undefined,
             notes: `Second conducteur (conversion de la réservation ${reservation.voucherNumber}).`,
           },
           tx
@@ -498,6 +520,16 @@ export async function POST(request: Request, { params }: RouteParams) {
     // pour cette route ; le rollback de la transaction (client/second conducteur/réservation
     // réclamée) est garanti par Prisma, comme pour toute autre erreur levée ici.
     if (error instanceof MissingDriverLicenseExpiryError || error instanceof DriverLicenseExpiredError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    // Sprint 30 (DOMAINRULES.md section 45, point 7) : âge réel du client principal et/ou du
+    // second conducteur (créé à l'étape 6 ci-dessus, transaction partagée) — même rollback
+    // complet garanti par Prisma que pour MissingDriverLicenseExpiryError.
+    if (
+      error instanceof MissingDriverBirthDateError ||
+      error instanceof InvalidDriverBirthDateError ||
+      error instanceof DriverUnderMinimumAgeError
+    ) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof ConversionPaymentError) {

@@ -16,6 +16,9 @@ import {
   InvalidFuelLevelError,
   MissingDriverLicenseExpiryError,
   DriverLicenseExpiredError,
+  MissingDriverBirthDateError,
+  InvalidDriverBirthDateError,
+  DriverUnderMinimumAgeError,
 } from "@/lib/locations";
 import { createInvoice } from "@/lib/invoices";
 import { processLocationPayment, validatePaymentInput, type PaymentInput } from "@/lib/location-payment";
@@ -244,6 +247,15 @@ export async function POST(request: Request) {
     // Sprint 29 (DOMAINRULES.md section 44, point 16) : permis du client principal absent ou
     // expirant avant la date de retour — même statut/forme de réponse que MissingPriceError.
     if (error instanceof MissingDriverLicenseExpiryError || error instanceof DriverLicenseExpiredError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    // Sprint 30 (DOMAINRULES.md section 45, point 7) : âge réel du conducteur (client principal
+    // uniquement ici — secondDriverId n'est pas exposé par cette route, voir DOMAINRULES.md).
+    if (
+      error instanceof MissingDriverBirthDateError ||
+      error instanceof InvalidDriverBirthDateError ||
+      error instanceof DriverUnderMinimumAgeError
+    ) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof InvalidFuelLevelError) {

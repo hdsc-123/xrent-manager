@@ -93,6 +93,102 @@ function assertDriverLicenseCoversReturn(client: Client, endDate: Date): void {
   }
 }
 
+/** Sprint 30 (DOMAINRULES.md section 45, point 7) — distingue le client principal du second
+ * conducteur dans le message d'erreur, sans dupliquer les classes d'erreur. */
+export type DriverRole = "client" | "secondDriver";
+
+const MINIMUM_DRIVER_AGE = 21;
+
+/**
+ * Sprint 30 : âge réel du conducteur (Client.birthDate), distinct de l'ancienneté du permis
+ * (assertDriverLicenseCoversReturn ci-dessus). S'applique au client principal ET au second
+ * conducteur (Location.secondDriverId) — voir DOMAINRULES.md section 45.
+ */
+export class MissingDriverBirthDateError extends Error {
+  role: DriverRole;
+  constructor(role: DriverRole = "client") {
+    super(
+      role === "secondDriver"
+        ? "La date de naissance du second conducteur n'est pas renseignée : impossible de vérifier " +
+          `qu'il a l'âge minimum requis (${MINIMUM_DRIVER_AGE} ans). Complétez sa date de naissance avant ` +
+          "de générer le contrat."
+        : "La date de naissance du client n'est pas renseignée : impossible de vérifier qu'il a l'âge " +
+          `minimum requis (${MINIMUM_DRIVER_AGE} ans) pour conduire. Complétez la date de naissance dans ` +
+          "la fiche client avant de générer le contrat."
+    );
+    this.name = "MissingDriverBirthDateError";
+    this.role = role;
+  }
+}
+
+/** Sprint 30 — date de naissance future (postérieure à aujourd'hui) ou autrement incohérente :
+ * distinct de DriverUnderMinimumAgeError ci-dessous, qui suppose une date par ailleurs valide. */
+export class InvalidDriverBirthDateError extends Error {
+  role: DriverRole;
+  constructor(role: DriverRole = "client") {
+    super(
+      role === "secondDriver"
+        ? "La date de naissance du second conducteur est invalide ou postérieure à la date du jour."
+        : "La date de naissance du client est invalide ou postérieure à la date du jour."
+    );
+    this.name = "InvalidDriverBirthDateError";
+    this.role = role;
+  }
+}
+
+/**
+ * Sprint 30 — âge réel du conducteur inférieur à 21 ans à la date de début du contrat
+ * (Location.startDate, jour où il prend effectivement le volant) : un conducteur atteignant
+ * exactement 21 ans ce jour-là est accepté (comparaison sur le jour calendaire UTC, voir
+ * toUtcDateOnly/calculateAgeInYears).
+ */
+export class DriverUnderMinimumAgeError extends Error {
+  role: DriverRole;
+  constructor(role: DriverRole = "client") {
+    super(
+      role === "secondDriver"
+        ? `Le second conducteur n'a pas encore ${MINIMUM_DRIVER_AGE} ans à la date de début du contrat : ` +
+          "impossible de générer le contrat."
+        : `Le client n'a pas encore ${MINIMUM_DRIVER_AGE} ans à la date de début du contrat : impossible ` +
+          "de générer le contrat."
+    );
+    this.name = "DriverUnderMinimumAgeError";
+    this.role = role;
+  }
+}
+
+/** Sprint 30 — âge exact en années complètes à `referenceDate`, calcul calendaire (année/mois/
+ * jour civils UTC) : jamais une approximation par division du nombre de jours (ex. /365.25),
+ * pour rester correct autour des années bissextiles et donner un résultat exact au jour près. */
+function calculateAgeInYears(birthDate: Date, referenceDate: Date): number {
+  let age = referenceDate.getUTCFullYear() - birthDate.getUTCFullYear();
+  const monthDiff = referenceDate.getUTCMonth() - birthDate.getUTCMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && referenceDate.getUTCDate() < birthDate.getUTCDate())) {
+    age -= 1;
+  }
+  return age;
+}
+
+/**
+ * Sprint 30 (DOMAINRULES.md section 45, point 7) — appliquée au client principal (création
+ * directe et conversion) et au second conducteur (conversion et PATCH /api/locations/[id]) :
+ * voir les points d'application dans createLocationLocked/updateLocation ci-dessous. Toujours
+ * comparée à `Location.startDate` (premier jour prévu de la location), jamais `endDate` ni la
+ * date du jour — décision explicite, distincte de assertDriverLicenseCoversReturn (permis,
+ * comparé à `endDate`).
+ */
+function assertClientMeetsMinimumAge(client: Client, startDate: Date, role: DriverRole): void {
+  if (!client.birthDate) {
+    throw new MissingDriverBirthDateError(role);
+  }
+  if (Number.isNaN(client.birthDate.getTime()) || toUtcDateOnly(client.birthDate) > toUtcDateOnly(new Date())) {
+    throw new InvalidDriverBirthDateError(role);
+  }
+  if (calculateAgeInYears(client.birthDate, startDate) < MINIMUM_DRIVER_AGE) {
+    throw new DriverUnderMinimumAgeError(role);
+  }
+}
+
 /**
  * Sprint 28 (Finding E) : un véhicule MAINTENANCE/TRANSFERRING/ON_TRIP n'est pas disponible
  * pour une nouvelle Location, indépendamment de tout conflit de dates avec une Location
@@ -512,12 +608,14 @@ async function createLocationLocked(data: CreateLocationInput, tx: Prisma.Transa
     throw new ClientNotFoundError();
   }
   assertDriverLicenseCoversReturn(client, data.endDate);
+  assertClientMeetsMinimumAge(client, data.startDate, "client");
 
   if (data.secondDriverId) {
     const secondDriver = await getClientById(data.tenantId, data.secondDriverId, tx);
     if (!secondDriver) {
       throw new SecondDriverNotFoundError();
     }
+    assertClientMeetsMinimumAge(secondDriver, data.startDate, "secondDriver");
   }
 
   validateFuelLevel(data.startFuelLevel);
@@ -633,13 +731,6 @@ export async function updateLocation(
     return null;
   }
 
-  if (data.secondDriverId) {
-    const secondDriver = await getClientById(tenantId, data.secondDriverId);
-    if (!secondDriver) {
-      throw new SecondDriverNotFoundError();
-    }
-  }
-
   validateFuelLevel(data.startFuelLevel);
   validateFuelLevel(data.endFuelLevel);
 
@@ -671,6 +762,20 @@ export async function updateLocation(
 
   if (nextEnd <= nextStart) {
     throw new InvalidDateRangeError();
+  }
+
+  // Sprint 30 (DOMAINRULES.md section 45, point 7) : un second conducteur ajouté/modifié après
+  // la création du contrat (jamais verrouillé par LocationLockedError, voir le commentaire sur
+  // UpdateLocationInput.secondDriverId ci-dessus) reste soumis au même contrôle d'âge, comparé à
+  // `nextStart` — la date de début effective après cette modification (identique à
+  // existing.startDate tant que PENDING n'est pas en train de changer ses dates dans le même
+  // appel). `null` retire le second conducteur : aucun contrôle nécessaire dans ce cas.
+  if (data.secondDriverId) {
+    const secondDriver = await getClientById(tenantId, data.secondDriverId);
+    if (!secondDriver) {
+      throw new SecondDriverNotFoundError();
+    }
+    assertClientMeetsMinimumAge(secondDriver, nextStart, "secondDriver");
   }
 
   const datesChanging = Boolean(data.startDate || data.endDate);

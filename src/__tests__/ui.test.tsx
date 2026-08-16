@@ -45,7 +45,13 @@ afterAll(async () => {
   // crée, pour rester dans le même ordre que les autres fichiers de test.
   await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  // Sprint 30 (point 6b, Sprint B) : userAgency/agency purgés (le second test de filtre Agence
+  // de VehicleStatusOverviewTable est le premier de ce fichier à créer une Agency/UserAgency) —
+  // userAgency avant user/agency (contrainte de clé étrangère sur les deux), même ordre
+  // enfants-avant-parents que locations.test.ts.
+  await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
   await prisma.$disconnect();
@@ -325,5 +331,73 @@ describe("Sprint 23 — /dashboard/administration : vue par ville/agence, réser
     expect(html).not.toContain("réservée aux administrateurs");
     expect(html).toContain("Administration");
     expect(html).toContain("Choisir une station");
+  });
+});
+
+/**
+ * Sprint 30 (point 6b, Sprint B — DOMAINRULES.md) : filtres Agence/Date de retour de
+ * VehicleStatusOverviewTable — composant Client Component filtré en mémoire (pas d'appel réseau
+ * séparé), donc non testable via une requête HTTP dédiée comme les filtres Sprint A. Seul ce qui
+ * est réellement vérifiable par ce paradigme de test (rendu SSR initial, pas d'exécution JS
+ * côté client — voir le commentaire en tête de fichier) est couvert ici : présence des contrôles
+ * dans le HTML rendu, et surtout la contrainte de sécurité réelle — la liste d'agences proposée
+ * dans le filtre est strictement limitée aux agences accessibles à l'appelant, jamais dérivée
+ * des seules lignes déjà chargées. Le comportement interactif du filtrage lui-même (combinaison
+ * agence + période, bascule "Sans date de retour") reste hors de portée de ce paradigme de test
+ * (aucun outil d'automatisation navigateur disponible en session, voir HANDOFF.md) — non testé
+ * automatiquement, à vérifier manuellement si une session avec navigateur devient disponible.
+ */
+describe("Sprint 30 — /dashboard/maintenances : filtres Agence et Date de retour de VehicleStatusOverviewTable (point 6b, Sprint B)", () => {
+  it("rend les contrôles de filtre (Agence, Date de retour du/au, Sans date de retour) en plus des filtres existants (recherche/état/disponibilité)", async () => {
+    const response = await apiFetch("/dashboard/maintenances", { headers: { Cookie: admin.sessionCookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("État des véhicules");
+    expect(html).toContain("Agence");
+    expect(html).toContain("Date de retour");
+    expect(html).toContain("Sans date de retour");
+    // Filtres préexistants (recherche/état/disponibilité) toujours présents, non régressés.
+    expect(html).toContain("Rechercher...");
+    expect(html).toContain("Disponibilité");
+  });
+
+  it("le filtre Agence ne propose que les agences accessibles à l'appelant, jamais dérivées des seules lignes déjà chargées", async () => {
+    const agencyOneResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ name: `Agence Filtre Un ${runId}`, slug: `agence-filtre-un-${runId}` }),
+    });
+    const agencyOneId = (await agencyOneResponse.json()).agency.id;
+
+    await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ name: `Agence Filtre Deux ${runId}`, slug: `agence-filtre-deux-${runId}` }),
+    });
+
+    // Un ADMIN voit toutes les agences du tenant dans le filtre, y compris une agence sans
+    // aucun véhicule visible (la liste n'est jamais dérivée des lignes déjà chargées).
+    const adminResponse = await apiFetch("/dashboard/maintenances", { headers: { Cookie: admin.sessionCookie } });
+    const adminHtml = await adminResponse.text();
+    expect(adminHtml).toContain(`Agence Filtre Un ${runId}`);
+    expect(adminHtml).toContain(`Agence Filtre Deux ${runId}`);
+
+    // Un MEMBER rattaché uniquement à la première agence ne doit voir que celle-ci dans le
+    // filtre — jamais la seconde, même en lecture seule dans un <select>.
+    const restrictedMember = await createAndLoginMember({
+      tenantId: admin.tenantId,
+      name: "UI Maintenance Filtre Agence",
+      email: `ui-maintenance-filtre-agence-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: restrictedMember.userId, agencyId: agencyOneId } });
+
+    const memberResponse = await apiFetch("/dashboard/maintenances", {
+      headers: { Cookie: restrictedMember.sessionCookie },
+    });
+    expect(memberResponse.status).toBe(200);
+    const memberHtml = await memberResponse.text();
+    expect(memberHtml).toContain(`Agence Filtre Un ${runId}`);
+    expect(memberHtml).not.toContain(`Agence Filtre Deux ${runId}`);
   });
 });

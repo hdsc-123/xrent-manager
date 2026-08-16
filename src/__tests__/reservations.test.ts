@@ -226,7 +226,7 @@ describe("Sprint 23 — statut NO_SHOW et réinitialisation à zéro réservée 
       body: JSON.stringify({
         name: `Client Convert ${runId}`,
         phone: `+21262${runId.slice(-7)}`,
-        licenseExpiryDate: "2099-12-31",
+        licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01",
       }),
     });
     const clientId = (await clientResponse.json()).client.id;
@@ -1133,7 +1133,7 @@ describe("POST /api/reservations/[id]/convert", () => {
         idNumber: `AB-${runId}-${convertBodyCounter}`,
         licenseNumber: `P-${runId}-${convertBodyCounter}`,
         licenseIssueDate: "2020-01-01",
-        licenseExpiryDate: "2099-12-31",
+        licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01",
       },
       ...overrides,
     };
@@ -1240,7 +1240,12 @@ describe("POST /api/reservations/[id]/convert", () => {
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
         convertBody(reservation, {
-          secondDriver: { firstName: "Second", lastName: "Conducteur", phone: "+212600000000" },
+          secondDriver: {
+            firstName: "Second",
+            lastName: "Conducteur",
+            phone: "+212600000000",
+            birthDate: "1990-01-01",
+          },
         })
       ),
     });
@@ -1549,6 +1554,201 @@ describe("POST /api/reservations/[id]/convert", () => {
       expect(response.status).toBe(201);
     });
   });
+
+  describe("Sprint 30 — âge minimum du conducteur à la date de départ, à la conversion (point 7, DOMAINRULES.md section 45)", () => {
+    // Plage 2034-06/07 isolée (aucune autre réservation/location de ce fichier n'utilise cette
+    // plage, vérifié) — élimine tout risque de conflit de disponibilité avec un test existant.
+    it("refuse (400) la conversion si le client principal (nouveau) a moins de 21 ans à la date de départ — transaction entièrement annulée", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "TropJeune",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-06-15",
+        endDate: "2034-06-17",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const body = convertBody(reservation);
+      // 21e anniversaire le 2034-06-16 (un jour après le départ) → 20 ans et 364 jours au départ.
+      body.client.birthDate = "2013-06-16";
+
+      const clientCountBefore = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+      const responseBody = await response.json();
+      expect(responseBody.error).toMatch(/n'a pas encore 21 ans/i);
+
+      // Rollback complet de la transaction partagée (Sprint 26A, Finding A) : ni Location, ni
+      // réservation marquée CONVERTED, ni client orphelin créé par la tentative de conversion.
+      const locationCount = await prisma.location.count({ where: { vehicleId: vehicleAId, startDate: new Date("2034-06-15") } });
+      expect(locationCount).toBe(0);
+
+      const reservationAfter = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+      expect(reservationAfter.status).toBe("PENDING");
+      expect(reservationAfter.convertedLocationId).toBeNull();
+
+      const clientCountAfter = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+      expect(clientCountAfter).toBe(clientCountBefore);
+    });
+
+    it("accepte la conversion lorsque le client principal a exactement 21 ans le jour de la date de départ", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "ExactementMajeur",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-06-20",
+        endDate: "2034-06-22",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const body = convertBody(reservation);
+      body.client.birthDate = "2013-06-20";
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(201);
+    });
+
+    it("refuse (400) la conversion si birthDate est absente pour un nouveau client principal", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "SansNaissance",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-06-25",
+        endDate: "2034-06-27",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const body = convertBody(reservation) as { client: Record<string, unknown> };
+      delete body.client.birthDate;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("refuse (400) la conversion via useExistingClientId pointant vers un client existant sans birthDate connue", async () => {
+      const existingClientResponse = await apiFetch("/api/clients", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ name: "Client Existant Sans Naissance", licenseExpiryDate: "2099-12-31" }),
+      });
+      const existingClientId = (await existingClientResponse.json()).client.id;
+
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "ExistantSansNaissance",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-06-28",
+        endDate: "2034-06-30",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      // convertBody() fournit par défaut client.birthDate (1990-01-01) — la mise à jour
+      // automatique du client existant (voir POST /api/reservations/[id]/convert) l'aurait
+      // sinon appliqué au client réutilisé, masquant le cas testé ici (client existant dont la
+      // birthDate reste réellement inconnue après conversion).
+      const body = convertBody(reservation, { useExistingClientId: existingClientId }) as {
+        client: Record<string, unknown>;
+      };
+      delete body.client.birthDate;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+      const responseBody = await response.json();
+      expect(responseBody.error).toMatch(/date de naissance.*n'est pas renseignée/i);
+    });
+
+    it("refuse (400) la conversion si le second conducteur a moins de 21 ans à la date de départ — transaction entièrement annulée", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "AvecSecondTropJeune",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-07-02",
+        endDate: "2034-07-04",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const clientCountBefore = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(
+          convertBody(reservation, {
+            // 21e anniversaire le 2034-07-03 (un jour après le départ) → 20 ans et 364 jours.
+            secondDriver: { firstName: "Second", lastName: "TropJeune", birthDate: "2013-07-03" },
+          })
+        ),
+      });
+      expect(response.status).toBe(400);
+      const responseBody = await response.json();
+      expect(responseBody.error).toMatch(/n'a pas encore 21 ans/i);
+
+      // Rollback complet : ni Location, ni réservation CONVERTED, ni client principal/second
+      // conducteur orphelin créés par la tentative de conversion.
+      const locationCount = await prisma.location.count({ where: { vehicleId: vehicleAId, startDate: new Date("2034-07-02") } });
+      expect(locationCount).toBe(0);
+
+      const reservationAfter = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+      expect(reservationAfter.status).toBe("PENDING");
+
+      const clientCountAfter = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+      expect(clientCountAfter).toBe(clientCountBefore);
+    });
+
+    it("accepte la conversion lorsque le second conducteur a exactement 21 ans le jour de la date de départ", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "AvecSecondExactementMajeur",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-07-06",
+        endDate: "2034-07-08",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(
+          convertBody(reservation, {
+            secondDriver: { firstName: "Second", lastName: "ExactementMajeur", birthDate: "2013-07-06" },
+          })
+        ),
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.location.secondDriverId).toBeTruthy();
+    });
+
+    it("refuse (400) la conversion si secondDriver.birthDate est absente", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "AvecSecondSansNaissance",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-07-10",
+        endDate: "2034-07-12",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(
+          convertBody(reservation, { secondDriver: { firstName: "Second", lastName: "SansNaissance" } })
+        ),
+      });
+      expect(response.status).toBe(400);
+    });
+  });
 });
 
 describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous concurrence", () => {
@@ -1574,7 +1774,7 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
         idNumber: `S26A-${runId}-${convertBodyCounter}`,
         licenseNumber: `S26AP-${runId}-${convertBodyCounter}`,
         licenseIssueDate: "2020-01-01",
-        licenseExpiryDate: "2099-12-31",
+        licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01",
       },
       ...overrides,
     };
@@ -1713,7 +1913,7 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
             await apiFetch("/api/clients", {
               method: "POST",
               headers: { Cookie: adminA.sessionCookie },
-              body: JSON.stringify({ name: `Occupant-${runId}`, licenseExpiryDate: "2099-12-31" }),
+              body: JSON.stringify({ name: `Occupant-${runId}`, licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
             })
           ).json()
         ).client.id,
@@ -1961,6 +2161,7 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
             firstName: "RollbackMixte",
             lastName: `Ligne2-${runId}`,
             licenseExpiryDate: new Date("2099-12-31"),
+            birthDate: new Date("1990-01-01"),
           },
           tx
         );
@@ -2060,7 +2261,7 @@ describe("Sprint 26C, Finding C — verrou Vehicle en conversion, sous concurren
         idNumber: `S26C-${runId}-${convertBodyCounter}`,
         licenseNumber: `S26CP-${runId}-${convertBodyCounter}`,
         licenseIssueDate: "2020-01-01",
-        licenseExpiryDate: "2099-12-31",
+        licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01",
       },
       ...overrides,
     };
@@ -2081,6 +2282,7 @@ describe("Sprint 26C, Finding C — verrou Vehicle en conversion, sous concurren
       firstName: "Direct",
       lastName: `Client-${runId}`,
       licenseExpiryDate: new Date("2099-12-31"),
+      birthDate: new Date("1990-01-01"),
     });
 
     const [convertResponse, directResponse] = await Promise.all([

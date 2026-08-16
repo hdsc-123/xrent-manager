@@ -163,14 +163,14 @@ beforeAll(async () => {
   const clientAResponse = await apiFetch("/api/clients", {
     method: "POST",
     headers: { Cookie: adminA.sessionCookie },
-    body: JSON.stringify({ name: "Client A", email: `client-a-${runId}@test.local`, licenseExpiryDate: "2099-12-31" }),
+    body: JSON.stringify({ name: "Client A", email: `client-a-${runId}@test.local`, licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
   });
   const clientAId = (await clientAResponse.json()).client.id;
 
   const clientBResponse = await apiFetch("/api/clients", {
     method: "POST",
     headers: { Cookie: adminB.sessionCookie },
-    body: JSON.stringify({ name: "Client B", email: `client-b-${runId}@test.local`, licenseExpiryDate: "2099-12-31" }),
+    body: JSON.stringify({ name: "Client B", email: `client-b-${runId}@test.local`, licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
   });
   const clientBId = (await clientBResponse.json()).client.id;
 
@@ -680,7 +680,7 @@ describe("POST /api/invoices/[id]/admin-cancel — Sprint 28 (Finding D2)", () =
       body: JSON.stringify({
         name: "Client Régression D2",
         email: `client-d2-reg-${runId}@test.local`,
-        licenseExpiryDate: "2099-12-31",
+        licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01",
       }),
     });
     const clientId = (await clientResponse.json()).client.id;
@@ -1173,7 +1173,7 @@ describe("Sprint 26E — non-régression : annulation ADMIN d'un contrat après 
       body: JSON.stringify({
         name: "Client Versioning",
         email: `client-versioning-${runId}@test.local`,
-        licenseExpiryDate: "2099-12-31",
+        licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01",
       }),
     });
     const clientId = (await clientResponse.json()).client.id;

@@ -103,6 +103,7 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
   const [licenseNumber, setLicenseNumber] = useState("");
   const [licenseIssueDate, setLicenseIssueDate] = useState("");
   const [licenseExpiryDate, setLicenseExpiryDate] = useState("");
+  const [birthDate, setBirthDate] = useState("");
 
   // Location — pré-remplie depuis la réservation.
   const [startDate, setStartDate] = useState(toDateInputValue(reservation.startDate));
@@ -154,6 +155,7 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
   const [secondDriverPhone, setSecondDriverPhone] = useState("");
   const [secondDriverIdNumber, setSecondDriverIdNumber] = useState("");
   const [secondDriverLicenseNumber, setSecondDriverLicenseNumber] = useState("");
+  const [secondDriverBirthDate, setSecondDriverBirthDate] = useState("");
 
   // Paiement — même formulaire que /dashboard/locations/new (Sprint 13A).
   const [paymentDeferred, setPaymentDeferred] = useState(false);
@@ -262,6 +264,7 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
             phone: secondDriverPhone || undefined,
             idNumber: secondDriverIdNumber || undefined,
             licenseNumber: secondDriverLicenseNumber || undefined,
+            birthDate: secondDriverBirthDate || undefined,
           }
         : undefined;
 
@@ -304,6 +307,7 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
         licenseNumber: licenseNumber || undefined,
         licenseIssueDate: licenseIssueDate || undefined,
         licenseExpiryDate: licenseExpiryDate || undefined,
+        birthDate: birthDate || undefined,
       },
       secondDriver,
       payment,
@@ -359,9 +363,18 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
     // champs restent optionnels sur la réservation elle-même (import broker sans ces
     // informations, voir CLAUDE.md/DOMAINRULES.md), mais un contrat ne doit jamais être généré
     // sans identité complète du client.
-    if (!address || !city || !country || !idNumber || !licenseNumber || !licenseIssueDate || !licenseExpiryDate) {
+    if (
+      !address ||
+      !city ||
+      !country ||
+      !idNumber ||
+      !licenseNumber ||
+      !licenseIssueDate ||
+      !licenseExpiryDate ||
+      !birthDate
+    ) {
       setError(
-        "Adresse, ville, pays, n° de pièce, n° de permis et dates d'obtention/expiration du permis sont requis pour générer le contrat."
+        "Adresse, ville, pays, n° de pièce, n° de permis, dates d'obtention/expiration du permis et date de naissance sont requis pour générer le contrat."
       );
       return;
     }
@@ -371,6 +384,10 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
     }
     if (hasSecondDriver && (!secondDriverFirstName || !secondDriverLastName)) {
       setError("Le prénom et le nom du second conducteur sont requis.");
+      return;
+    }
+    if (hasSecondDriver && !secondDriverBirthDate) {
+      setError("La date de naissance du second conducteur est requise.");
       return;
     }
     if (!pricePerDayCentimes) {
@@ -492,6 +509,21 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
                   onChange={(e) => setLicenseExpiryDate(e.target.value)}
                 />
               </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="birthDate" required>Date de naissance</Label>
+              <Input
+                id="birthDate"
+                type="date"
+                required
+                max={new Date().toISOString().slice(0, 10)}
+                value={birthDate}
+                onChange={(e) => setBirthDate(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Le conducteur doit avoir au moins 21 ans à la date de départ du contrat.
+              </p>
             </div>
           </CardContent>
         </Card>
@@ -732,6 +764,20 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
                       onChange={(e) => setSecondDriverLicenseNumber(e.target.value)}
                     />
                   </div>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="secondDriverBirthDate" required>Date de naissance</Label>
+                  <Input
+                    id="secondDriverBirthDate"
+                    type="date"
+                    required
+                    max={new Date().toISOString().slice(0, 10)}
+                    value={secondDriverBirthDate}
+                    onChange={(e) => setSecondDriverBirthDate(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Le second conducteur doit aussi avoir au moins 21 ans à la date de départ du contrat.
+                  </p>
                 </div>
               </>
             )}

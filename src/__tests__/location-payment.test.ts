@@ -79,7 +79,7 @@ beforeAll(async () => {
   const clientResponse = await apiFetch("/api/clients", {
     method: "POST",
     headers: { Cookie: admin.sessionCookie },
-    body: JSON.stringify({ name: "Client Test", email: `client-${runId}@test.local`, licenseExpiryDate: "2099-12-31" }),
+    body: JSON.stringify({ name: "Client Test", email: `client-${runId}@test.local`, licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
   });
   clientId = (await clientResponse.json()).client.id;
 });

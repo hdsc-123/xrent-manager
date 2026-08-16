@@ -67,6 +67,7 @@ export default async function ClientDetailPage({ params }: PageProps) {
           initialLicenseExpiryDate={
             client.licenseExpiryDate ? client.licenseExpiryDate.toISOString().slice(0, 10) : null
           }
+          initialBirthDate={client.birthDate ? client.birthDate.toISOString().slice(0, 10) : null}
           initialNotes={client.notes}
         />
       ) : (

@@ -18,6 +18,9 @@ import {
   LocationStatusConflictError,
   InvalidFuelLevelError,
   SecondDriverNotFoundError,
+  MissingDriverBirthDateError,
+  InvalidDriverBirthDateError,
+  DriverUnderMinimumAgeError,
 } from "@/lib/locations";
 import { logAction } from "@/lib/audit";
 
@@ -195,6 +198,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   } catch (error) {
     if (error instanceof SecondDriverNotFoundError) {
       return NextResponse.json({ error: error.message }, { status: 404 });
+    }
+    // Sprint 30 (DOMAINRULES.md section 45, point 7) : âge réel du second conducteur ajouté/
+    // modifié via ce PATCH — même contrôle qu'à la création (voir updateLocation).
+    if (
+      error instanceof MissingDriverBirthDateError ||
+      error instanceof InvalidDriverBirthDateError ||
+      error instanceof DriverUnderMinimumAgeError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof InvalidDateRangeError) {
       return NextResponse.json({ error: error.message }, { status: 400 });

@@ -195,6 +195,42 @@ describe("POST /api/vehicle-trips", () => {
   });
 });
 
+// Sprint 30 (point 6b, Sprint A) : vehicleId déjà supporté par GET /api/vehicle-trips
+// (getVehicleTrips, src/lib/vehicle-trips.ts) mais jusqu'ici jamais exposé dans l'UI
+// (VehicleTripsTable.tsx) — le formulaire de filtre ajouté ce sprint réutilise ce paramètre
+// tel quel, sans changement d'API.
+describe("GET /api/vehicle-trips — filtre vehicleId (Sprint 30, point 6b Sprint A)", () => {
+  it("filtre par véhicule, combinable avec le filtre status existant", async () => {
+    const vehicleAResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleAId = (await vehicleAResponse.json()).vehicle.id;
+    const vehicleCResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleCId = (await vehicleCResponse.json()).vehicle.id;
+
+    const tripA = await createTrip(adminA, vehicleAId, adminA.userId);
+    const tripAId = (await tripA.json()).trip.id;
+    await createTrip(adminA, vehicleCId, adminA.userId);
+
+    const filteredResponse = await apiFetch(`/api/vehicle-trips?vehicleId=${vehicleAId}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const filteredBody = await filteredResponse.json();
+    expect(filteredBody.trips.every((trip: { vehicleId: string }) => trip.vehicleId === vehicleAId)).toBe(true);
+    expect(filteredBody.trips.map((trip: { id: string }) => trip.id)).toContain(tripAId);
+
+    const combinedResponse = await apiFetch(`/api/vehicle-trips?vehicleId=${vehicleAId}&status=IN_PROGRESS`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const combinedBody = await combinedResponse.json();
+    expect(combinedBody.trips.map((trip: { id: string }) => trip.id)).toContain(tripAId);
+
+    const combinedNoMatchResponse = await apiFetch(`/api/vehicle-trips?vehicleId=${vehicleAId}&status=CANCELLED`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    const combinedNoMatchBody = await combinedNoMatchResponse.json();
+    expect(combinedNoMatchBody.trips.map((trip: { id: string }) => trip.id)).not.toContain(tripAId);
+  });
+});
+
 describe("PATCH /api/vehicle-trips/[id]/return", () => {
   it("bloque le retour si le kilométrage retour n'est pas strictement supérieur au départ", async () => {
     const vehicleResponse = await createVehicle(adminA, agencyA1Id);
