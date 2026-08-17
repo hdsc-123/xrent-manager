@@ -57,7 +57,6 @@ afterAll(async () => {
   // Sprint 15 — le bloc "numérotation de contrat par agence" ci-dessous crée des
   // véhicules/clients/locations (contrats) : nettoyage étendu par rapport à la version
   // d'origine de ce fichier, même ordre que src/__tests__/locations.test.ts (FK).
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -69,6 +68,8 @@ afterAll(async () => {
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
   await prisma.$disconnect();
 });

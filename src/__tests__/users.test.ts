@@ -31,12 +31,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
   await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
   await prisma.$disconnect();
 });

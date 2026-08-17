@@ -38,6 +38,8 @@ describe("couche d'accès aux données — isolation multi-tenant", () => {
   afterAll(async () => {
     await prisma.user.deleteMany({ where: { tenantId: { in: [tenantA.id, tenantB.id] } } });
     await prisma.agency.deleteMany({ where: { tenantId: { in: [tenantA.id, tenantB.id] } } });
+    await prisma.auditLog.deleteMany({ where: { tenantId: { in: [tenantA.id, tenantB.id] } } });
+    await prisma.alert.deleteMany({ where: { tenantId: { in: [tenantA.id, tenantB.id] } } });
     await prisma.tenant.deleteMany({ where: { id: { in: [tenantA.id, tenantB.id] } } });
     await prisma.$disconnect();
   });

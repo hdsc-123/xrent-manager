@@ -41,9 +41,10 @@ afterAll(async () => {
   // Sprint 15 : PATCH /api/tenants/[id] journalise désormais "tenant.updated" (AuditLog),
   // absent jusqu'ici — sans cette suppression, la contrainte de clé étrangère
   // AuditLog_tenantId_fkey bloque prisma.tenant.deleteMany() ci-dessous.
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
   await prisma.$disconnect();
 });

@@ -576,21 +576,40 @@ export async function checkOilChangeDue(tenantId: string): Promise<Alert[]> {
  * entre elles une fois la garde acquise — acceptable, chacune est déjà idempotente
  * (`hasUnresolvedAlert` déduplique), même limite déjà documentée pour le verrou de reset de
  * données (`src/lib/data-reset.ts`, DOMAINRULES.md section 31).
+ *
+ * (Sprint 34 étape 2, DOMAINRULES.md section 49) : réutilisée telle quelle par
+ * `runScheduledAlertChecksForAllTenants` (`src/lib/alert-scheduler.ts`), qui l'appelle une
+ * fois par tenant pour donner au throttle ci-dessus une vraie cadence horaire même pour un
+ * tenant sans utilisateur actif (jusqu'ici, seul le chargement d'une page dashboard par un
+ * user de ce tenant déclenchait cette fonction — un tenant inactif ne recevait donc jamais
+ * ses alertes). La signature de retour passe de `Promise<void>` à un résumé structuré
+ * (aucun appelant existant n'exploitait la valeur de retour, changement rétrocompatible).
  */
 const ALERT_CHECK_THROTTLE_MS = 60 * 60 * 1000;
 
-export async function maybeRunScheduledAlertChecks(tenantId: string): Promise<void> {
+export interface ScheduledAlertCheckResult {
+  /** false si le throttle horaire n'a pas laissé passer cet appel (déjà exécuté récemment
+   * pour ce tenant) — pas une erreur, le comportement attendu du garde-fou anti-doublon. */
+  ran: boolean;
+  alertsCreated: number;
+  /** Présent uniquement si les vérifications ont levé une exception après avoir déjà
+   * réclamé la garde horaire — la garde reste acquise (pas de nouvelle tentative avant la
+   * prochaine fenêtre), cohérent avec le comportement déjà en place avant ce sprint. */
+  error?: string;
+}
+
+export async function maybeRunScheduledAlertChecks(tenantId: string): Promise<ScheduledAlertCheckResult> {
   const cutoff = new Date(Date.now() - ALERT_CHECK_THROTTLE_MS);
   const claimed = await prisma.tenant.updateMany({
     where: { id: tenantId, OR: [{ lastAlertCheckAt: null }, { lastAlertCheckAt: { lt: cutoff } }] },
     data: { lastAlertCheckAt: new Date() },
   });
   if (claimed.count === 0) {
-    return;
+    return { ran: false, alertsCreated: 0 };
   }
 
   try {
-    await Promise.all([
+    const results = await Promise.all([
       checkDueMaintenances(tenantId),
       checkReturnsToday(tenantId),
       checkOverdueInvoices(tenantId),
@@ -605,7 +624,10 @@ export async function maybeRunScheduledAlertChecks(tenantId: string): Promise<vo
       checkTechnicalInspectionDue(tenantId),
       checkOilChangeDue(tenantId),
     ]);
+    const alertsCreated = results.reduce((sum, alerts) => sum + alerts.length, 0);
+    return { ran: true, alertsCreated };
   } catch (error) {
     console.error("Erreur lors de la génération automatique des alertes :", error);
+    return { ran: true, alertsCreated: 0, error: error instanceof Error ? error.message : String(error) };
   }
 }

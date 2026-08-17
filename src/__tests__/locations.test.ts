@@ -615,7 +615,6 @@ describe("Sprint 26C, Finding C — verrou Vehicle contre le double booking conc
 });
 
 afterAll(async () => {
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   // Sprint 23 — les tests d'annulation admin avec réversibilité créent des Payment/CashEntry
   // réels (voir createLocationWithPayment ci-dessous), à purger avant Payment/Location.
   await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -629,6 +628,8 @@ afterAll(async () => {
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
   await prisma.$disconnect();
 });

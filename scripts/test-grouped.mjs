@@ -14,7 +14,7 @@
 import { spawn } from "node:child_process";
 
 const GROUPS = [
-  ["reservations", "permissions", "vehicle-mobility-alerts", "invoice-status-alerts", "reports", "db", "password-policy"],
+  ["reservations", "permissions", "vehicle-mobility-alerts", "invoice-status-alerts", "reports", "db", "password-policy", "scheduled-alerts-cron"],
   ["locations", "data-reset", "invoices", "audit-deletion", "auth", "csv-export-sanitization", "damages", "location-return"],
   ["vehicles", "agencies", "audit", "ui", "e2e-full", "invitations", "location-return-route"],
   ["users", "maintenances", "clients", "vehicle-trips", "batch-pdf", "location-payment", "damages-route"],

@@ -200,7 +200,6 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   // Sprint 26D (Finding D1) : ce fichier encaisse désormais de vrais paiements
   // (payInvoiceInFull) pour tester le gating DRAFT → SENT — CashEntry/CashRegister doivent
   // être purgées avant Payment/Tenant, même ordre que payments.test.ts.
@@ -215,6 +214,8 @@ afterAll(async () => {
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
   await prisma.$disconnect();
 });

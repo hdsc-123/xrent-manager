@@ -77,6 +77,8 @@ afterAll(async () => {
   await prisma.cashEntry.deleteMany({ where: { tenantId } });
   await prisma.cashRegister.deleteMany({ where: { tenantId } });
   await prisma.agency.deleteMany({ where: { tenantId } });
+  await prisma.auditLog.deleteMany({ where: { tenantId } });
+  await prisma.alert.deleteMany({ where: { tenantId } });
   await prisma.tenant.delete({ where: { id: tenantId } });
 });
 

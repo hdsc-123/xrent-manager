@@ -42,6 +42,7 @@ export const ACTION_LABELS: Record<string, string> = {
   "maintenance.deleted": "Maintenance supprimée",
   "alert.acknowledged": "Alerte acquittée",
   "alert.resolved": "Alerte résolue",
+  "alert_check.scheduled_run": "Vérification automatique des alertes (scheduler horaire)",
   "reservation.created": "Réservation créée",
   "reservation.updated": "Réservation modifiée",
   "reservation.status_changed": "Statut de réservation modifié",
