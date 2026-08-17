@@ -5,7 +5,7 @@ import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getVehicleTransfers } from "@/lib/vehicle-transfers";
 import { prisma } from "@/lib/prisma";
-import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { VehicleTransfersTable, type VehicleTransferRow } from "./VehicleTransfersTable";
 
 const STATUS_OPTIONS: { value: VehicleTransferStatus; label: string }[] = [
@@ -95,7 +95,7 @@ export default async function VehicleTransfersPage({ searchParams }: PageProps) 
         </div>
         {canCreate && (
           <Button render={<Link href="/dashboard/vehicle-transfers/new" />}>
-            <Plus className="size-4" />
+            <Icon icon={Plus} className="size-4" />
             Nouveau transfert
           </Button>
         )}

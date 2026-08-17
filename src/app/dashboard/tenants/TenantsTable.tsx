@@ -19,6 +19,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  Icon,
 } from "@/components/ui";
 
 export interface TenantRow {
@@ -66,18 +67,18 @@ export function TenantsTable({ tenants }: { tenants: TenantRow[] }) {
               <DropdownMenuTrigger
                 render={<Button variant="ghost" size="icon-sm" aria-label="Actions" />}
               >
-                <MoreHorizontal className="size-4" />
+                <Icon icon={MoreHorizontal} className="size-4" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem render={<Link href={`/dashboard/tenants/${row.original.id}`} />}>
-                  <Pencil className="size-4" />
+                  <Icon icon={Pencil} className="size-4" />
                   Modifier
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   variant="destructive"
                   onClick={() => setPendingDelete(row.original)}
                 >
-                  <Trash2 className="size-4" />
+                  <Icon icon={Trash2} className="size-4" />
                   Supprimer
                 </DropdownMenuItem>
               </DropdownMenuContent>

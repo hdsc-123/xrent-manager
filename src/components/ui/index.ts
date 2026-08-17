@@ -57,3 +57,4 @@ export { Badge, badgeVariants } from "./badge";
 export { StatusBadge } from "./StatusBadge";
 export { Skeleton } from "./skeleton";
 export { Toaster } from "./sonner";
+export { Icon } from "./icon";

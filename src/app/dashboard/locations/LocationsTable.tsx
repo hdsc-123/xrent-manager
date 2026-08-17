@@ -21,6 +21,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  Icon,
   Input,
   Label,
   StatusBadge,
@@ -226,22 +227,22 @@ export function LocationsTable({
               <DropdownMenuTrigger
                 render={<Button variant="ghost" size="icon-sm" aria-label="Actions" />}
               >
-                <MoreHorizontal className="size-4" />
+                <Icon icon={MoreHorizontal} className="size-4" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem render={<Link href={`/dashboard/locations/${row.original.id}`} />}>
-                  <Eye className="size-4" />
+                  <Icon icon={Eye} className="size-4" />
                   Détails
                 </DropdownMenuItem>
                 {row.original.invoiceId && (
                   <DropdownMenuItem render={<Link href={`/dashboard/invoices/${row.original.invoiceId}`} />}>
-                    <FileText className="size-4" />
+                    <Icon icon={FileText} className="size-4" />
                     Voir facture
                   </DropdownMenuItem>
                 )}
                 {canCancel && CANCELLABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingCancel(row.original)}>
-                    <Ban className="size-4" />
+                    <Icon icon={Ban} className="size-4" />
                     Annuler
                   </DropdownMenuItem>
                 )}
@@ -262,14 +263,14 @@ export function LocationsTable({
             <>
               <p className="text-sm text-muted-foreground">{selectedIds.size} sélectionné(s)</p>
               <Button type="button" size="sm" variant="outline" disabled={isDownloading} onClick={handleDownloadSelection}>
-                <Download className="size-4" />
+                <Icon icon={Download} className="size-4" />
                 {isDownloading ? "Génération..." : "Télécharger le lot"}
               </Button>
             </>
           )}
         </div>
         <Button type="button" size="sm" variant="ghost" onClick={() => setShowRangeDialog(true)}>
-          <Download className="size-4" />
+          <Icon icon={Download} className="size-4" />
           Lot par période / plage de numéros
         </Button>
       </div>

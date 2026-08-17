@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { Eye } from "lucide-react";
-import { Badge, Button } from "@/components/ui";
+import { Badge, Button, Icon } from "@/components/ui";
 import { DataTable, type DataTableColumn } from "@/components/layout/DataTable";
 
 export interface UserRow {
@@ -44,7 +44,7 @@ export function UsersTable({ users }: { users: UserRow[] }) {
               aria-label="Détails"
               render={<Link href={`/dashboard/users/${row.original.id}`} />}
             >
-              <Eye className="size-4" />
+              <Icon icon={Eye} className="size-4" />
             </Button>
           </div>
         ),

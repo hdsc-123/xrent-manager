@@ -3,7 +3,7 @@ import { Plus } from "lucide-react";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getClients } from "@/lib/clients";
-import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { ClientsTable, type ClientRow } from "./ClientsTable";
 
 interface PageProps {
@@ -46,7 +46,7 @@ export default async function ClientsPage({ searchParams }: PageProps) {
         </div>
         {canCreate && (
           <Button render={<Link href="/dashboard/clients/new" />}>
-            <Plus className="size-4" />
+            <Icon icon={Plus} className="size-4" />
             Créer un client
           </Button>
         )}

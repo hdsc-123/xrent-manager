@@ -25,7 +25,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >
-      <body className="min-h-full flex flex-col">
+      {/* Les extensions navigateur (Dark Reader, Grammarly...) réécrivent souvent des attributs
+          sur <body> avant l'hydratation ; suppressHydrationWarning ne masque que les éventuels
+          écarts sur les attributs propres à cet élément, pas les erreurs de rendu réelles. */}
+      <body className="min-h-full flex flex-col" suppressHydrationWarning>
         {children}
         <Toaster />
       </body>

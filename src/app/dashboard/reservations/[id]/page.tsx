@@ -6,7 +6,7 @@ import { can } from "@/lib/permissions";
 import { getReservationById, canTransition } from "@/lib/reservations";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { ReservationActions } from "./ReservationActions";
 
 interface PageProps {
@@ -126,7 +126,7 @@ export default async function ReservationDetailPage({ params }: PageProps) {
                 variant="outline"
                 render={<a href={`/api/invoices/${invoice.id}/pdf`} target="_blank" rel="noreferrer" />}
               >
-                <FileText className="size-4" />
+                <Icon icon={FileText} className="size-4" />
                 Télécharger le contrat PDF
               </Button>
             )}

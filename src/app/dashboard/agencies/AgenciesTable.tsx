@@ -19,6 +19,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  Icon,
 } from "@/components/ui";
 
 export interface AgencyRow {
@@ -97,12 +98,12 @@ export function AgenciesTable({
               <DropdownMenuTrigger
                 render={<Button variant="ghost" size="icon-sm" aria-label="Actions" />}
               >
-                <MoreHorizontal className="size-4" />
+                <Icon icon={MoreHorizontal} className="size-4" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 {canEdit && (
                   <DropdownMenuItem render={<Link href={`/dashboard/agencies/${row.original.id}`} />}>
-                    <Pencil className="size-4" />
+                    <Icon icon={Pencil} className="size-4" />
                     Modifier
                   </DropdownMenuItem>
                 )}
@@ -111,7 +112,7 @@ export function AgenciesTable({
                     variant="destructive"
                     onClick={() => setPendingDelete(row.original)}
                   >
-                    <Trash2 className="size-4" />
+                    <Icon icon={Trash2} className="size-4" />
                     Supprimer
                   </DropdownMenuItem>
                 )}

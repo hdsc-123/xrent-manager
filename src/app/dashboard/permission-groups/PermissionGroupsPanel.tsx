@@ -16,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
+  Icon,
   Input,
   Label,
 } from "@/components/ui";
@@ -86,7 +87,7 @@ export function PermissionGroupsPanel({
       <div className="flex justify-end">
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger render={<Button />}>
-            <Plus className="size-4" />
+            <Icon icon={Plus} className="size-4" />
             Créer un groupe
           </DialogTrigger>
           <DialogContent className="sm:max-w-2xl">

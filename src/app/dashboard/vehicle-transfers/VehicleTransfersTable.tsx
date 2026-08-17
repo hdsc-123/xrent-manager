@@ -20,6 +20,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   FuelLevelSelect,
+  Icon,
   Input,
   Label,
 } from "@/components/ui";
@@ -189,14 +190,14 @@ export function VehicleTransfersTable({
             <div className="flex justify-end">
               <DropdownMenu>
                 <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label="Actions" />}>
-                  <MoreHorizontal className="size-4" />
+                  <Icon icon={MoreHorizontal} className="size-4" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem
                     disabled={!inTransit || !row.original.canValidate}
                     onClick={() => openValidate(row.original)}
                   >
-                    <CheckCircle2 className="size-4" />
+                    <Icon icon={CheckCircle2} className="size-4" />
                     Valider la réception
                   </DropdownMenuItem>
                   <DropdownMenuItem
@@ -204,7 +205,7 @@ export function VehicleTransfersTable({
                     disabled={!inTransit || !canCancel}
                     onClick={() => setPendingCancel(row.original)}
                   >
-                    <XCircle className="size-4" />
+                    <Icon icon={XCircle} className="size-4" />
                     Annuler
                   </DropdownMenuItem>
                 </DropdownMenuContent>

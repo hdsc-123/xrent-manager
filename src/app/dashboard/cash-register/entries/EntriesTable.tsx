@@ -20,6 +20,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  Icon,
   Input,
   Label,
 } from "@/components/ui";
@@ -165,18 +166,18 @@ export function EntriesTable({
                   <div className="flex justify-end">
                     <DropdownMenu>
                       <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label="Actions" />}>
-                        <MoreHorizontal className="size-4" />
+                        <Icon icon={MoreHorizontal} className="size-4" />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         {canEdit && (
                           <DropdownMenuItem onClick={() => openEdit(entry)}>
-                            <Pencil className="size-4" />
+                            <Icon icon={Pencil} className="size-4" />
                             Modifier
                           </DropdownMenuItem>
                         )}
                         {canDelete && (
                           <DropdownMenuItem variant="destructive" onClick={() => setPendingDelete(entry)}>
-                            <Trash2 className="size-4" />
+                            <Icon icon={Trash2} className="size-4" />
                             Supprimer
                           </DropdownMenuItem>
                         )}

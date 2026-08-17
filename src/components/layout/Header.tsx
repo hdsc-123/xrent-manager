@@ -16,6 +16,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  Icon,
 } from "@/components/ui";
 
 interface HeaderUser {
@@ -57,7 +58,7 @@ export function Header({ tenantName, user, onMenuClick, pendingAlertCount = 0 }:
         onClick={onMenuClick}
         aria-label="Ouvrir le menu"
       >
-        <Menu className="size-4" suppressHydrationWarning />
+        <Icon icon={Menu} className="size-4" />
       </Button>
 
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted-foreground">
@@ -71,7 +72,7 @@ export function Header({ tenantName, user, onMenuClick, pendingAlertCount = 0 }:
         render={<Link href="/dashboard/alerts" />}
         aria-label={`Alertes${pendingAlertCount > 0 ? ` (${pendingAlertCount} en attente)` : ""}`}
       >
-        <Bell className="size-4" suppressHydrationWarning />
+        <Icon icon={Bell} className="size-4" />
         {pendingAlertCount > 0 && (
           <Badge
             variant="destructive"
@@ -108,11 +109,11 @@ export function Header({ tenantName, user, onMenuClick, pendingAlertCount = 0 }:
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuItem render={<Link href="/dashboard/settings" />}>
-            <Settings className="size-4" suppressHydrationWarning />
+            <Icon icon={Settings} className="size-4" />
             Paramètres
           </DropdownMenuItem>
           <DropdownMenuItem variant="destructive" onClick={handleSignOut}>
-            <LogOut className="size-4" suppressHydrationWarning />
+            <Icon icon={LogOut} className="size-4" />
             Se déconnecter
           </DropdownMenuItem>
         </DropdownMenuContent>

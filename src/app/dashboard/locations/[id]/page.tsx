@@ -6,7 +6,7 @@ import { can } from "@/lib/permissions";
 import { getLocationById } from "@/lib/locations";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { LocationActions } from "./LocationActions";
 
 interface PageProps {
@@ -81,13 +81,13 @@ export default async function LocationDetailPage({ params }: PageProps) {
               variant="outline"
               size="sm"
             >
-              <Download className="size-4" />
+              <Icon icon={Download} className="size-4" />
               Contrat PDF
             </Button>
           )}
           {invoice && (
             <Button render={<Link href={`/dashboard/invoices/${invoice.id}`} />} variant="outline" size="sm">
-              <FileText className="size-4" />
+              <Icon icon={FileText} className="size-4" />
               Voir facture
             </Button>
           )}

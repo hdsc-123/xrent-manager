@@ -21,6 +21,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  Icon,
   Input,
   Label,
 } from "@/components/ui";
@@ -219,7 +220,7 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
               <DropdownMenuTrigger
                 render={<Button variant="ghost" size="icon-sm" aria-label="Actions" />}
               >
-                <MoreHorizontal className="size-4" />
+                <Icon icon={MoreHorizontal} className="size-4" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
@@ -233,7 +234,7 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
                     />
                   }
                 >
-                  <Eye className="size-4" />
+                  <Icon icon={Eye} className="size-4" />
                   Détails
                 </DropdownMenuItem>
                 <DropdownMenuItem
@@ -249,7 +250,7 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
                     />
                   }
                 >
-                  <Download className="size-4" />
+                  <Icon icon={Download} className="size-4" />
                   Télécharger le PDF
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -269,14 +270,14 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
             <>
               <p className="text-sm text-muted-foreground">{selectedIds.size} sélectionnée(s)</p>
               <Button type="button" size="sm" variant="outline" disabled={isDownloading} onClick={handleDownloadSelection}>
-                <Download className="size-4" />
+                <Icon icon={Download} className="size-4" />
                 {isDownloading ? "Génération..." : "Télécharger le lot"}
               </Button>
             </>
           )}
         </div>
         <Button type="button" size="sm" variant="ghost" onClick={() => setShowRangeDialog(true)}>
-          <Download className="size-4" />
+          <Icon icon={Download} className="size-4" />
           Lot par période
         </Button>
       </div>

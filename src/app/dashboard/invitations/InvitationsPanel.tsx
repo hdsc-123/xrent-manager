@@ -20,6 +20,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  Icon,
   Input,
   Label,
 } from "@/components/ui";
@@ -130,7 +131,7 @@ export function InvitationsPanel({ invitations }: { invitations: InvitationRow[]
                   aria-label="Copier le lien"
                   onClick={() => copyLink(row.original.id)}
                 >
-                  <Copy className="size-4" />
+                  <Icon icon={Copy} className="size-4" />
                 </Button>
                 <Button
                   variant="ghost"
@@ -138,7 +139,7 @@ export function InvitationsPanel({ invitations }: { invitations: InvitationRow[]
                   aria-label="Révoquer"
                   onClick={() => setPendingRevoke(row.original)}
                 >
-                  <Trash2 className="size-4" />
+                  <Icon icon={Trash2} className="size-4" />
                 </Button>
               </>
             )}
@@ -159,7 +160,7 @@ export function InvitationsPanel({ invitations }: { invitations: InvitationRow[]
               <CardDescription>Liste des invitations de ce tenant.</CardDescription>
             </div>
             <Button onClick={() => setDialogOpen(true)}>
-              <UserPlus className="size-4" />
+              <Icon icon={UserPlus} className="size-4" />
               Inviter
             </Button>
           </div>

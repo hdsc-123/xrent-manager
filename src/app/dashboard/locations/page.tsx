@@ -4,7 +4,7 @@ import type { LocationStatus } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
-import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { LocationsTable, type LocationRow } from "./LocationsTable";
 
 const STATUS_OPTIONS: { value: LocationStatus; label: string }[] = [
@@ -126,7 +126,7 @@ export default async function LocationsPage({ searchParams }: PageProps) {
         </div>
         {canCreate && (
           <Button render={<Link href="/dashboard/locations/new" />}>
-            <Plus className="size-4" />
+            <Icon icon={Plus} className="size-4" />
             Créer une location
           </Button>
         )}

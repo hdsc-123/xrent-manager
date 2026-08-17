@@ -22,6 +22,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  Icon,
   StatusBadge,
 } from "@/components/ui";
 
@@ -409,11 +410,11 @@ export function ReservationsTable({
           <div className="flex justify-end">
             <DropdownMenu>
               <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label="Actions" />}>
-                <MoreHorizontal className="size-4" />
+                <Icon icon={MoreHorizontal} className="size-4" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem render={<Link href={`/dashboard/reservations/${row.original.id}`} />}>
-                  <Eye className="size-4" />
+                  <Icon icon={Eye} className="size-4" />
                   Détails
                 </DropdownMenuItem>
                 {/* Sprint 23 (point A de l'énoncé) — action rapide « Valider » : mène
@@ -422,13 +423,13 @@ export function ReservationsTable({
                     directement (DOMAINRULES.md section 21). */}
                 {canConvert && row.original.canEditAgency && CONVERTIBLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem render={<Link href={`/dashboard/reservations/${row.original.id}/convert`} />}>
-                    <CheckCircle2 className="size-4" />
+                    <Icon icon={CheckCircle2} className="size-4" />
                     Valider
                   </DropdownMenuItem>
                 )}
                 {canEdit && row.original.canEditAgency && EDITABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem render={<Link href={`/dashboard/reservations/${row.original.id}/edit`} />}>
-                    <Pencil className="size-4" />
+                    <Icon icon={Pencil} className="size-4" />
                     Modifier
                   </DropdownMenuItem>
                 )}
@@ -438,7 +439,7 @@ export function ReservationsTable({
                     DOMAINRULES.md section 37. */}
                 {canCancel && row.original.canEditAgency && CANCELLABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingCancel(row.original)}>
-                    <Ban className="size-4" />
+                    <Icon icon={Ban} className="size-4" />
                     Annuler
                   </DropdownMenuItem>
                 )}
@@ -446,13 +447,13 @@ export function ReservationsTable({
                     Sprint 24 : gatée par reservations.no_show, plus reservations.edit. */}
                 {canNoShow && row.original.canEditAgency && NO_SHOWABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingNoShow(row.original)}>
-                    <UserX className="size-4" />
+                    <Icon icon={UserX} className="size-4" />
                     No Show
                   </DropdownMenuItem>
                 )}
                 {canDelete && row.original.canEditAgency && DELETABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem variant="destructive" onClick={() => setPendingDelete(row.original)}>
-                    <Trash2 className="size-4" />
+                    <Icon icon={Trash2} className="size-4" />
                     Supprimer
                   </DropdownMenuItem>
                 )}
@@ -461,7 +462,7 @@ export function ReservationsTable({
                     clic Annuler/No Show, ou reprise à zéro après annulation admin d'un contrat). */}
                 {isAdmin && RESETTABLE_STATUSES.has(row.original.status) && (
                   <DropdownMenuItem onClick={() => setPendingReset(row.original)}>
-                    <RotateCcw className="size-4" />
+                    <Icon icon={RotateCcw} className="size-4" />
                     Réinitialiser à zéro
                   </DropdownMenuItem>
                 )}
@@ -480,7 +481,7 @@ export function ReservationsTable({
         <div className="mb-3 flex items-center justify-between rounded-md border border-border bg-muted/50 px-3 py-2">
           <p className="text-sm text-muted-foreground">{selectedIds.size} sélectionnée(s)</p>
           <Button variant="destructive" size="sm" onClick={handleBulkDelete} disabled={isBulkDeleting}>
-            <Trash2 className="size-4" />
+            <Icon icon={Trash2} className="size-4" />
             {isBulkDeleting ? "Suppression..." : "Supprimer la sélection"}
           </Button>
         </div>

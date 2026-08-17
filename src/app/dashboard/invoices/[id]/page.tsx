@@ -6,7 +6,7 @@ import { can } from "@/lib/permissions";
 import { getInvoiceById, getInvoiceVersionHistory } from "@/lib/invoices";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { InvoiceActions } from "./InvoiceActions";
 
 interface PageProps {
@@ -74,7 +74,7 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
             variant="outline"
             size="sm"
           >
-            <Download className="size-4" />
+            <Icon icon={Download} className="size-4" />
             PDF
           </Button>
         </div>

@@ -29,12 +29,13 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui";
+import { Button, Icon } from "@/components/ui";
+import type { LucideIcon } from "lucide-react";
 
 interface NavItem {
   href: string;
   label: string;
-  icon: React.ComponentType<{ className?: string; suppressHydrationWarning?: boolean }>;
+  icon: LucideIcon;
   /** Clé de permission requise pour afficher l'entrée (voir src/lib/permissions.ts). Sprint 15 :
    * le retrofit de permissions granulaires côté serveur couvre désormais (quasiment) tous les
    * modules métier (DOMAINRULES.md section 22) — chaque entrée ci-dessous reflète la clé
@@ -113,7 +114,6 @@ export function Sidebar({ isOpen, onClose, permissions, role }: SidebarProps) {
   const nav = (
     <nav aria-label="Navigation principale" className="flex flex-1 flex-col gap-1 p-3">
       {visibleItems.map((item) => {
-        const Icon = item.icon;
         const active = isActive(pathname, item.href);
         return (
           <Link
@@ -128,7 +128,7 @@ export function Sidebar({ isOpen, onClose, permissions, role }: SidebarProps) {
                 : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
             )}
           >
-            <Icon className="size-4 shrink-0" suppressHydrationWarning />
+            <Icon icon={item.icon} className="size-4 shrink-0" />
             {item.label}
           </Link>
         );
@@ -164,7 +164,7 @@ export function Sidebar({ isOpen, onClose, permissions, role }: SidebarProps) {
             onClick={onClose}
             aria-label="Fermer le menu"
           >
-            <X className="size-4" suppressHydrationWarning />
+            <Icon icon={X} className="size-4" />
           </Button>
         </div>
         {nav}

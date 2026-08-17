@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { CalendarClock, Car, LayoutDashboard, UserRound } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Icon } from "@/components/ui";
 
 /**
  * Navigation rapide mobile (Sprint 13E) — complète, sans la remplacer, la sidebar existante
@@ -35,7 +36,6 @@ export function BottomNav() {
     >
       <div className="flex h-14 items-stretch justify-around">
         {navItems.map((item) => {
-          const Icon = item.icon;
           const active = isActive(pathname, item.href);
           return (
             <Link
@@ -47,7 +47,7 @@ export function BottomNav() {
                 active ? "text-blue-600" : "text-slate-400"
               )}
             >
-              <Icon className="size-5 shrink-0" suppressHydrationWarning />
+              <Icon icon={item.icon} className="size-5 shrink-0" />
               {item.label}
             </Link>
           );

@@ -3,7 +3,7 @@ import { Plus } from "lucide-react";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
-import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { AgenciesTable, type AgencyRow } from "./AgenciesTable";
 
 export default async function AgenciesPage() {
@@ -50,7 +50,7 @@ export default async function AgenciesPage() {
         </div>
         {canCreate && (
           <Button render={<Link href="/dashboard/agencies/new" />}>
-            <Plus className="size-4" />
+            <Icon icon={Plus} className="size-4" />
             Créer une agence
           </Button>
         )}

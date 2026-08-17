@@ -21,6 +21,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  Icon,
 } from "@/components/ui";
 
 export interface VehicleRow {
@@ -121,11 +122,11 @@ export function VehiclesTable({
               <DropdownMenuTrigger
                 render={<Button variant="ghost" size="icon-sm" aria-label="Actions" />}
               >
-                <MoreHorizontal className="size-4" />
+                <Icon icon={MoreHorizontal} className="size-4" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem render={<Link href={`/dashboard/vehicles/${row.original.id}`} />}>
-                  <Eye className="size-4" />
+                  <Icon icon={Eye} className="size-4" />
                   Détails
                 </DropdownMenuItem>
                 {canDelete && (
@@ -133,7 +134,7 @@ export function VehiclesTable({
                     variant="destructive"
                     onClick={() => setPendingDelete(row.original)}
                   >
-                    <Trash2 className="size-4" />
+                    <Icon icon={Trash2} className="size-4" />
                     Supprimer
                   </DropdownMenuItem>
                 )}

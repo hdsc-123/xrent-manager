@@ -2,7 +2,7 @@
 
 import Papa from "papaparse";
 import { Download } from "lucide-react";
-import { Button } from "@/components/ui";
+import { Button, Icon } from "@/components/ui";
 
 interface ExportCsvButtonProps {
   filename: string;
@@ -52,7 +52,7 @@ export function ExportCsvButton({ filename, rows }: ExportCsvButtonProps) {
 
   return (
     <Button type="button" variant="outline" size="sm" disabled={rows.length === 0} onClick={handleExport}>
-      <Download className="size-4" />
+      <Icon icon={Download} className="size-4" />
       Exporter en CSV
     </Button>
   );

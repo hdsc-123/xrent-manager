@@ -14,6 +14,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  Icon,
 } from "@/components/ui";
 
 const PRIORITY_VARIANTS: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
@@ -163,7 +164,7 @@ export default async function DashboardPage() {
           <Card>
             <CardHeader>
               <CardDescription className="flex items-center gap-2">
-                <CalendarRange className="size-4" /> Réservations aujourd&apos;hui
+                <Icon icon={CalendarRange} className="size-4" /> Réservations aujourd&apos;hui
               </CardDescription>
               <CardTitle className="text-3xl">{reservationsTodayCount}</CardTitle>
               {reservationsTodayByCurrency.length > 0 && (
@@ -180,7 +181,7 @@ export default async function DashboardPage() {
           <Card>
             <CardHeader>
               <CardDescription className="flex items-center gap-2">
-                <Car className="size-4" /> Véhicules disponibles
+                <Icon icon={Car} className="size-4" /> Véhicules disponibles
               </CardDescription>
               <CardTitle className="text-3xl">{availableVehiclesCount}</CardTitle>
               {availableVehiclesSample.length > 0 && (
@@ -200,7 +201,7 @@ export default async function DashboardPage() {
                 tenant-wide, voir plus haut) — labellisée "Organisation", jamais "Agence", pour
                 ne pas laisser croire qu'elle représente l'une des agences réelles du tenant. */}
             <CardDescription className="flex items-center gap-2">
-              <Store className="size-4" /> Organisation
+              <Icon icon={Store} className="size-4" /> Organisation
             </CardDescription>
             <CardTitle className="truncate text-3xl">{tenant?.name ?? "—"}</CardTitle>
           </CardHeader>
@@ -219,7 +220,7 @@ export default async function DashboardPage() {
                 className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-accent"
               >
                 <span className="flex items-center gap-2 text-sm">
-                  <CalendarClock className="size-4 text-muted-foreground" /> Retours
+                  <Icon icon={CalendarClock} className="size-4 text-muted-foreground" /> Retours
                 </span>
                 <span className="text-lg font-semibold">{returnsToday}</span>
               </Link>
@@ -230,7 +231,7 @@ export default async function DashboardPage() {
                 className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-accent"
               >
                 <span className="flex items-center gap-2 text-sm">
-                  <Wrench className="size-4 text-muted-foreground" /> Maintenances
+                  <Icon icon={Wrench} className="size-4 text-muted-foreground" /> Maintenances
                 </span>
                 <span className="text-lg font-semibold">{dueMaintenances}</span>
               </Link>
@@ -241,7 +242,7 @@ export default async function DashboardPage() {
                 className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-accent"
               >
                 <span className="flex items-center gap-2 text-sm">
-                  <FileWarning className="size-4 text-muted-foreground" /> Factures en retard
+                  <Icon icon={FileWarning} className="size-4 text-muted-foreground" /> Factures en retard
                 </span>
                 <span className="text-lg font-semibold">{overdueInvoicesCount}</span>
               </Link>
@@ -254,7 +255,7 @@ export default async function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Bell className="size-4" /> Alertes récentes
+              <Icon icon={Bell} className="size-4" /> Alertes récentes
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">

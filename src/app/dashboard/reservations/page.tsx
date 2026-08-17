@@ -5,7 +5,7 @@ import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getReservations } from "@/lib/reservations";
 import { prisma } from "@/lib/prisma";
-import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { ReservationsTable, type ReservationRow } from "./ReservationsTable";
 
 const STATUS_OPTIONS: { value: ReservationStatus; label: string }[] = [
@@ -135,13 +135,13 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
         <div className="flex gap-2">
           {canImport && (
             <Button variant="outline" render={<Link href="/dashboard/reservations/import" />}>
-              <Upload className="size-4" />
+              <Icon icon={Upload} className="size-4" />
               Importer (Excel)
             </Button>
           )}
           {canCreate && (
             <Button render={<Link href="/dashboard/reservations/new" />}>
-              <Plus className="size-4" />
+              <Icon icon={Plus} className="size-4" />
               Créer une réservation
             </Button>
           )}

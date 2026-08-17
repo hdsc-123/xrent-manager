@@ -5,7 +5,7 @@ import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getVehicleTrips } from "@/lib/vehicle-trips";
 import { prisma } from "@/lib/prisma";
-import { Button, Card, CardDescription, CardHeader, CardTitle } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { VehicleTripsTable, type VehicleTripRow } from "./VehicleTripsTable";
 
 const STATUS_OPTIONS: { value: VehicleTripStatus; label: string }[] = [
@@ -88,7 +88,7 @@ export default async function VehicleTripsPage({ searchParams }: PageProps) {
         </div>
         {canCreate && (
           <Button render={<Link href="/dashboard/vehicle-trips/new" />}>
-            <Plus className="size-4" />
+            <Icon icon={Plus} className="size-4" />
             Nouveau bon de déplacement
           </Button>
         )}

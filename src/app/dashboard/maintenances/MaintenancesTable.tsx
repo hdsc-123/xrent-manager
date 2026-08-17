@@ -20,6 +20,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  Icon,
   Input,
   Label,
 } from "@/components/ui";
@@ -177,18 +178,18 @@ export function MaintenancesTable({
             <div className="flex justify-end">
               <DropdownMenu>
                 <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label="Actions" />}>
-                  <MoreHorizontal className="size-4" />
+                  <Icon icon={MoreHorizontal} className="size-4" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem disabled={!editable} onClick={() => openEdit(row.original)}>
-                    <Pencil className="size-4" />
+                    <Icon icon={Pencil} className="size-4" />
                     Modifier
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     disabled={!completable}
                     onClick={() => setPendingAction({ row: row.original, kind: "complete" })}
                   >
-                    <CheckCircle2 className="size-4" />
+                    <Icon icon={CheckCircle2} className="size-4" />
                     Marquer terminée
                   </DropdownMenuItem>
                   <DropdownMenuItem
@@ -196,7 +197,7 @@ export function MaintenancesTable({
                     disabled={!cancellable}
                     onClick={() => setPendingAction({ row: row.original, kind: "cancel" })}
                   >
-                    <XCircle className="size-4" />
+                    <Icon icon={XCircle} className="size-4" />
                     Annuler
                   </DropdownMenuItem>
                 </DropdownMenuContent>

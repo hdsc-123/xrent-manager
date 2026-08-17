@@ -3,7 +3,7 @@ import Link from "next/link";
 import { UserPlus } from "lucide-react";
 import { getSessionUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
-import { Button } from "@/components/ui";
+import { Button, Icon } from "@/components/ui";
 import { UsersTable, type UserRow } from "./UsersTable";
 
 export default async function UsersPage() {
@@ -38,7 +38,7 @@ export default async function UsersPage() {
           </p>
         </div>
         <Button render={<Link href="/dashboard/invitations" />}>
-          <UserPlus className="size-4" />
+          <Icon icon={UserPlus} className="size-4" />
           Inviter un utilisateur
         </Button>
       </div>

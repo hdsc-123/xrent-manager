@@ -14,6 +14,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  Icon,
 } from "@/components/ui";
 import { ACTION_LABELS, RESOURCE_LABELS, getActionStyle } from "./audit-labels";
 
@@ -105,7 +106,7 @@ export function AuditLogTable({ logs, canDelete }: { logs: AuditLogRow[]; canDel
         <div className="flex items-center justify-between border-b border-border bg-muted/50 px-3 py-2">
           <p className="text-sm text-muted-foreground">{selectedIds.size} sélectionnée(s)</p>
           <Button variant="destructive" size="sm" onClick={() => setIsBulkDeleteOpen(true)}>
-            <Trash2 className="size-4" />
+            <Icon icon={Trash2} className="size-4" />
             Supprimer la sélection
           </Button>
         </div>
@@ -150,7 +151,7 @@ export function AuditLogTable({ logs, canDelete }: { logs: AuditLogRow[]; canDel
                   </td>
                   <td className="px-3 py-2">
                     <span className={`inline-flex items-center gap-1.5 ${className}`}>
-                      <ActionIcon className="size-3.5 shrink-0" />
+                      <Icon icon={ActionIcon} className="size-3.5 shrink-0" />
                       {ACTION_LABELS[log.action] ?? log.action}
                     </span>
                   </td>
@@ -168,7 +169,7 @@ export function AuditLogTable({ logs, canDelete }: { logs: AuditLogRow[]; canDel
                         aria-label="Supprimer cette entrée"
                         onClick={() => setPendingDelete(log)}
                       >
-                        <Trash2 className="size-4 text-destructive" />
+                        <Icon icon={Trash2} className="size-4 text-destructive" />
                       </Button>
                     </td>
                   )}

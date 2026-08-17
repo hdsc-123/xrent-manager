@@ -18,6 +18,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  Icon,
   Input,
   Label,
 } from "@/components/ui";
@@ -86,7 +87,7 @@ export function AuditPurgeCard() {
     <Card className="border-destructive/30">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-destructive">
-          <AlertTriangle className="size-4" />
+          <Icon icon={AlertTriangle} className="size-4" />
           Zone dangereuse — Audit
         </CardTitle>
         <CardDescription>

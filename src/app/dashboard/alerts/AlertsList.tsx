@@ -14,6 +14,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  Icon,
   Input,
   Label,
 } from "@/components/ui";
@@ -199,13 +200,13 @@ export function AlertsList({
                       disabled={pendingId === alert.id}
                       onClick={() => handleAcknowledge(alert.id)}
                     >
-                      <Check className="size-4" />
+                      <Icon icon={Check} className="size-4" />
                       Marquer vue
                     </Button>
                   )}
                   {canResolve && (
                     <Button size="sm" disabled={pendingId === alert.id} onClick={() => openResolve(alert)}>
-                      <CheckCheck className="size-4" />
+                      <Icon icon={CheckCheck} className="size-4" />
                       Résoudre
                     </Button>
                   )}

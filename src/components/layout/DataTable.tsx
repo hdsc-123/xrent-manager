@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight } from "lucide-react";
 import {
   Button,
+  Icon,
   Table,
   TableBody,
   TableCell,
@@ -157,9 +158,9 @@ export function DataTable<TData extends RowData>({
                           )}
                         >
                           {label}
-                          {sorted === "asc" && <ArrowUp className="size-3.5" />}
-                          {sorted === "desc" && <ArrowDown className="size-3.5" />}
-                          {!sorted && <ArrowUpDown className="size-3.5 text-muted-foreground/50" />}
+                          {sorted === "asc" && <Icon icon={ArrowUp} className="size-3.5" />}
+                          {sorted === "desc" && <Icon icon={ArrowDown} className="size-3.5" />}
+                          {!sorted && <Icon icon={ArrowUpDown} className="size-3.5 text-muted-foreground/50" />}
                         </button>
                       ) : (
                         label
@@ -216,7 +217,7 @@ export function DataTable<TData extends RowData>({
               disabled={!table.getCanPreviousPage()}
               aria-label="Page précédente"
             >
-              <ChevronLeft className="size-4" />
+              <Icon icon={ChevronLeft} className="size-4" />
             </Button>
             <Button
               variant="outline"
@@ -225,7 +226,7 @@ export function DataTable<TData extends RowData>({
               disabled={!table.getCanNextPage()}
               aria-label="Page suivante"
             >
-              <ChevronRight className="size-4" />
+              <Icon icon={ChevronRight} className="size-4" />
             </Button>
           </div>
         </div>
