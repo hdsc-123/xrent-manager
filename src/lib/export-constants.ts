@@ -74,8 +74,12 @@ export const LOCATION_COLUMNS = [
   "creeLe",
 ] as const;
 
+// Sprint 13E tâche 3, sous-phase 2c2-B : type/factureOrigine/motif ajoutés pour rendre un avoir
+// (CREDIT_NOTE) identifiable sans ambiguïté dans l'export — jusqu'ici aucune colonne ne
+// distinguait le type de document ni ne référençait la facture source d'un avoir.
 export const INVOICE_COLUMNS = [
   "numero",
+  "type",
   "statut",
   "agence",
   "client",
@@ -91,4 +95,6 @@ export const INVOICE_COLUMNS = [
   "echeance",
   "version",
   "creeLe",
+  "factureOrigine",
+  "motif",
 ] as const;

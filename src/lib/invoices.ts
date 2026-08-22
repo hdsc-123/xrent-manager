@@ -1018,6 +1018,79 @@ async function createCreditNoteAttempt(data: CreateCreditNoteInput, tx: Prisma.T
   });
 }
 
+// ---------------------------------------------------------------------------------------------
+// Montants dérivés (net/solde) — Sprint 13E tâche 3, sous-phase 2c2-A
+// ---------------------------------------------------------------------------------------------
+// Ces valeurs ne sont jamais stockées (aucune colonne persistée) : toujours recalculées à partir
+// de source.totalAmount/amountPaid et des CREDIT_NOTE existants (getTotalCreditedAmount, déjà
+// exportée en 2c1) — même principe que amountPaid/status (recomputeInvoiceStatus,
+// src/lib/payments.ts) : une seule source de vérité, jamais une valeur dérivée dupliquée en base.
+// S'applique uniquement au modèle Invoice (RENTAL/SUPPLEMENT/EXTENSION/CREDIT_NOTE) — DamageInvoice
+// est un modèle Prisma entièrement distinct, jamais référencé ici, structurellement hors périmètre.
+//
+// Terminologie corrigée explicitement par le propriétaire du projet (2c2 LOT 1, correction 1) :
+// aucun champ de ce module ne doit laisser croire qu'un remboursement est suivi ou possible dans
+// ce lot. `creditedCollectedAmount` (ex-`refundableAmount`) n'est PAS un montant remboursable —
+// c'est uniquement la part des avoirs qui correspond à une somme déjà encaissée, une lecture
+// prospective sans aucun suivi de remboursement réel (aucun `totalRefunded`, aucune table, aucun
+// champ ne l'enregistre — 2c2-C, non commencé). Ne jamais l'afficher comme « montant remboursable »
+// dans une interface ou un export tant que 2c2-C n'existe pas.
+
+export interface InvoiceNetAmounts {
+  /** Somme des CREDIT_NOTE actifs référençant cette facture (voir getTotalCreditedAmount). */
+  creditedAmount: number;
+  /** max(0, totalAmount - creditedAmount) — jamais négatif même si creditedAmount dépassait
+   * totalAmount (structurellement impossible aujourd'hui, le plafond de createCreditNote
+   * l'empêche déjà, mais la formule reste défensive). */
+  netAmount: number;
+  /** max(0, netAmount - amountPaid) — solde restant dû après avoirs. Couvre explicitement le
+   * sur-encaissement historique (amountPaid déjà supérieur au nouveau netAmount après un avoir
+   * émis a posteriori) : ramené à 0, jamais négatif — aucun paiement n'est jamais annulé ni
+   * aucun remboursement déclenché ici, voir DOMAINRULES.md section 56. */
+  remainingBalance: number;
+  /**
+   * max(0, min(creditedAmount, amountPaid)) — PAS un montant remboursable : aucun `totalRefunded`
+   * n'existe dans ce lot (aucun remboursement n'est stocké ni calculé, 2c2-C non commencé), donc
+   * rien n'est jamais déduit ici. Représente uniquement la part des avoirs déjà émis qui
+   * correspond à une somme réellement encaissée — une information prospective en lecture seule,
+   * jamais utilisée pour déclencher un mouvement financier, jamais exposée comme « remboursable »
+   * dans une interface/un export tant que 2c2-C n'existe pas.
+   */
+  creditedCollectedAmount: number;
+}
+
+/**
+ * Calcul pur, déterministe, sans accès base — reçoit des montants déjà connus de l'appelant
+ * (jamais de dérive possible entre deux appels avec les mêmes entrées). Toujours des entiers
+ * (plus petite unité monétaire), jamais de division/arrondi flottant.
+ */
+export function computeInvoiceNetAmounts(
+  totalAmount: number,
+  amountPaid: number,
+  creditedAmount: number
+): InvoiceNetAmounts {
+  const netAmount = Math.max(0, totalAmount - creditedAmount);
+  const remainingBalance = Math.max(0, netAmount - amountPaid);
+  const creditedCollectedAmount = Math.max(0, Math.min(creditedAmount, amountPaid));
+  return { creditedAmount, netAmount, remainingBalance, creditedCollectedAmount };
+}
+
+/**
+ * Variante pratique de computeInvoiceNetAmounts ci-dessus : lit creditedAmount depuis la base
+ * (getTotalCreditedAmount, tenant implicitement garanti par l'appelant — reçoit une facture déjà
+ * chargée/verrouillée dans son tenant, jamais un id brut non vérifié) plutôt que de l'exiger en
+ * paramètre. Réutilisable par createPayment/createMixedPayments (src/lib/payments.ts), les
+ * rapports et les exports (src/lib/reports.ts/exports.ts) sans dupliquer l'agrégation.
+ * `tx` optionnel, même convention que getTotalCreditedAmount/getInvoiceById.
+ */
+export async function getInvoiceNetAmounts(
+  invoice: Pick<Invoice, "id" | "totalAmount" | "amountPaid">,
+  tx: Prisma.TransactionClient = prisma
+): Promise<InvoiceNetAmounts> {
+  const creditedAmount = await getTotalCreditedAmount(invoice.id, tx);
+  return computeInvoiceNetAmounts(invoice.totalAmount, invoice.amountPaid, creditedAmount);
+}
+
 export interface UpdateInvoiceInput {
   status?: InvoiceStatus;
   taxRate?: number;

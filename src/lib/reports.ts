@@ -36,10 +36,18 @@ export interface RevenueReport {
  * périmètre. Les paiements de dégât restent consultables dans la caisse et sur leur
  * DamageInvoice (src/lib/damage-invoices.ts) ; un rapport financier dédié aux dégâts reste à
  * faire (hors périmètre de ce sprint).
+ *
+ * Sprint 13E tâche 3, sous-phase 2c2-B : `status: "ACTIVE"` ajouté — corrige un gap préexistant
+ * (jamais causé par CREDIT_NOTE/2c1) découvert pendant le cadrage 2c2 : un Payment marqué
+ * REFUNDED (remboursé via adminCancelInvoice/adminCancelValidatedLocation, src/lib/invoices.ts/
+ * locations.ts) restait compté comme revenu ici faute de filtre sur le statut, alors que
+ * l'argent a déjà été rendu au client. Aucun mécanisme de remboursement n'est introduit par ce
+ * changement (2c2-C, non commencé) — seule la lecture d'un état déjà existant (PaymentStatus)
+ * est corrigée. Voir DOMAINRULES.md section 56 pour le détail complet.
  */
 export async function getRevenueReport(tenantId: string, startDate: Date, endDate: Date): Promise<RevenueReport> {
   const payments = await prisma.payment.findMany({
-    where: { tenantId, paidAt: { gte: startDate, lte: endDate }, invoiceId: { not: null } },
+    where: { tenantId, paidAt: { gte: startDate, lte: endDate }, invoiceId: { not: null }, status: "ACTIVE" },
     orderBy: { paidAt: "asc" },
   });
 
@@ -133,7 +141,17 @@ export interface TopVehicle {
   currency: string;
 }
 
-/** Classement par revenu facturé (somme de Location.totalPrice, locations ACTIVE/COMPLETED). */
+/**
+ * Classement par revenu facturé (somme de Location.totalPrice, locations ACTIVE/COMPLETED).
+ *
+ * Sprint 13E tâche 3, sous-phase 2c2-B : décision explicite de ne PAS intégrer les avoirs
+ * (CREDIT_NOTE) ici — ce rapport agrège Location.totalPrice (le prix du contrat), jamais
+ * Invoice.totalAmount ; un avoir référence toujours une Invoice (RENTAL/SUPPLEMENT/EXTENSION),
+ * jamais une Location directement, et une même Location peut porter plusieurs factures. Y
+ * soustraire les avoirs de façon approximative (ex. par Location plutôt que par facture
+ * précise) risquerait un résultat incorrect plutôt qu'utile — non fait, documenté comme hors
+ * périmètre de ce lot plutôt qu'une formule inventée. Voir DOMAINRULES.md section 56.
+ */
 export async function getTopVehicles(tenantId: string, limit: number): Promise<TopVehicle[]> {
   const vehicles = await prisma.vehicle.findMany({
     where: { tenantId },
@@ -204,6 +222,10 @@ export interface RevenueByAgency {
  * Jusqu'ici cette fonction retournait toujours toutes les agences du tenant sans restriction :
  * un MEMBER restreint à une agence voyait quand même le CA de toutes les autres via ce graphique
  * (reports.view n'a jamais été scopé par agence).
+ *
+ * Sprint 13E tâche 3, sous-phase 2c2-B : non intégré aux avoirs, même raisonnement que
+ * getTopVehicles ci-dessus (Location.totalPrice, jamais Invoice.totalAmount) — hors périmètre
+ * de ce lot, documenté plutôt qu'approximé. Voir DOMAINRULES.md section 56.
  */
 export async function getRevenueByAgency(
   tenantId: string,
@@ -323,6 +345,10 @@ export interface VehiclePerformanceRow {
  * autres rapports — cet onglet est un cumul, pas un rapport périodique). Dépenses = somme de
  * `Maintenance.cost`, seule dépense véhicule-scopée existante dans le schéma. Classement
  * (`rank`) : marge nette (CA - dépenses) décroissante.
+ *
+ * Sprint 13E tâche 3, sous-phase 2c2-B : non intégré aux avoirs, même raisonnement que
+ * getTopVehicles/getRevenueByAgency ci-dessus (Location.totalPrice, jamais Invoice.totalAmount)
+ * — hors périmètre de ce lot. Voir DOMAINRULES.md section 56.
  */
 export async function getVehiclePerformanceReport(
   tenantId: string,

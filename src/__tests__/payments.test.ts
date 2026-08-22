@@ -1086,3 +1086,178 @@ describe("Sprint 26D, Finding D1 — corrections de paiement (compensation appen
     expect(invoiceAfter.amountPaid).toBe(paymentAfter.amount);
   });
 });
+
+describe("Sprint 13E tâche 3, sous-phase 2c2-A — plafonnement des nouveaux paiements par le solde net (avoirs)", () => {
+  async function createCreditNoteFor(invoiceId: string, amount: number, reason: string) {
+    const response = await apiFetch(`/api/invoices/${invoiceId}/credit-notes`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ amount, reason }),
+    });
+    expect(response.status).toBe(201);
+    return (await response.json()).invoice as { id: string; totalAmount: number; locationId: string };
+  }
+
+  async function pay(invoiceId: string, amount: number) {
+    return apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ invoiceId, amount, method: "CASH" }),
+    });
+  }
+
+  it("sans avoir : le comportement reste strictement identique (paiement jusqu'à totalAmount accepté)", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    const response = await pay(invoice.id, invoice.totalAmount);
+    expect(response.status).toBe(201);
+  });
+
+  it("avoir partiel : paiement inférieur au solde net accepté", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId); // totalAmount 15000
+    await createCreditNoteFor(invoice.id, 5000, "Avoir partiel");
+    // solde net = 15000 - 5000 = 10000
+    const response = await pay(invoice.id, 3000);
+    expect(response.status).toBe(201);
+  });
+
+  it("avoir partiel : paiement égal au solde net accepté (limite exacte)", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    await createCreditNoteFor(invoice.id, 5000, "Avoir partiel");
+    const response = await pay(invoice.id, 10000); // exactement le solde net
+    expect(response.status).toBe(201);
+  });
+
+  it("avoir partiel : paiement supérieur au solde net refusé (409)", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    await createCreditNoteFor(invoice.id, 5000, "Avoir partiel");
+    const response = await pay(invoice.id, 10001);
+    expect(response.status).toBe(409);
+    const payments = await prisma.payment.findMany({ where: { invoiceId: invoice.id } });
+    expect(payments).toHaveLength(0); // aucune ligne Payment créée
+  });
+
+  it("avoir total : tout paiement refusé (409), solde net nul — paiement après solde net nul", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    await createCreditNoteFor(invoice.id, invoice.totalAmount, "Avoir total");
+    const response = await pay(invoice.id, 1);
+    expect(response.status).toBe(409);
+  });
+
+  it("plusieurs avoirs partiels : le plafond cumulatif est respecté par la validation du paiement", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId); // 15000
+    await createCreditNoteFor(invoice.id, 4000, "Avoir 1");
+    await createCreditNoteFor(invoice.id, 3000, "Avoir 2");
+    // solde net = 15000 - 7000 = 8000
+    const tooMuch = await pay(invoice.id, 8001);
+    expect(tooMuch.status).toBe(409);
+    const exact = await pay(invoice.id, 8000);
+    expect(exact.status).toBe(201);
+  });
+
+  it("sur-encaissement historique : avoir émis après un paiement intégral (PAID) — nouveau paiement refusé, aucun Payment/CashEntry existant modifié", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    const payResponse = await pay(invoice.id, invoice.totalAmount);
+    expect(payResponse.status).toBe(201);
+    const paymentId = (await payResponse.json()).payment.id;
+    const cashCountBefore = await prisma.cashEntry.count({ where: { paymentId } });
+
+    // La facture est désormais PAID — un avoir reste possible dessus (2c1, C2 : PAID éligible).
+    await createCreditNoteFor(invoice.id, 5000, "Avoir après solde complet (sur-encaissement historique)");
+
+    const response = await pay(invoice.id, 1);
+    expect(response.status).toBe(409);
+
+    const paymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: paymentId } });
+    expect(paymentAfter.status).toBe("ACTIVE"); // jamais REFUNDED — aucun remboursement introduit
+    expect(paymentAfter.amount).toBe(invoice.totalAmount); // jamais modifié
+    const cashCountAfter = await prisma.cashEntry.count({ where: { paymentId } });
+    expect(cashCountAfter).toBe(cashCountBefore); // aucune CashEntry créée par l'avoir
+  });
+
+  it("avoir sur une facture SUPPLEMENT : le paiement respecte le même solde net", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    const supplementResponse = await apiFetch("/api/invoices", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        locationId: invoice.locationId,
+        type: "SUPPLEMENT",
+        supplementKey: `2c2a-payment-test-${Date.now()}`,
+        amount: 5000,
+      }),
+    });
+    expect(supplementResponse.status).toBe(201);
+    const supplement = (await supplementResponse.json()).invoice;
+    await apiFetch(`/api/invoices/${supplement.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "ISSUED" }),
+    });
+    await createCreditNoteFor(supplement.id, 2000, "Avoir sur supplément");
+    // solde net = 5000 - 2000 = 3000
+    expect((await pay(supplement.id, 3001)).status).toBe(409);
+    expect((await pay(supplement.id, 3000)).status).toBe(201);
+  });
+
+  it("avoir sur une facture EXTENSION : le paiement respecte le même solde net", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    const extensionResponse = await apiFetch("/api/invoices", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        locationId: invoice.locationId,
+        type: "EXTENSION",
+        extensionEndDate: new Date(2033, 4, 1 + Math.floor(Math.random() * 1000)).toISOString(),
+        amount: 6000,
+      }),
+    });
+    expect(extensionResponse.status).toBe(201);
+    const extension = (await extensionResponse.json()).invoice;
+    await apiFetch(`/api/invoices/${extension.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "ISSUED" }),
+    });
+    await createCreditNoteFor(extension.id, 1000, "Avoir sur extension");
+    // solde net = 6000 - 1000 = 5000
+    expect((await pay(extension.id, 5001)).status).toBe(409);
+    expect((await pay(extension.id, 5000)).status).toBe(201);
+  });
+
+  it("facture VOID : paiement toujours refusé (non-régression, formule inchangée pour ce cas)", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    const voidResponse = await apiFetch(`/api/invoices/${invoice.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "VOID" }),
+    });
+    expect(voidResponse.status).toBe(200);
+    const response = await pay(invoice.id, 1000);
+    expect(response.status).toBe(409);
+  });
+
+  it("facture CREDIT_NOTE comme cible directe d'un paiement : toujours refusé (409) — bug réel trouvé et corrigé pendant ce lot (un avoir n'est structurellement jamais payable, voir DOMAINRULES.md section 56)", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    const creditNote = await createCreditNoteFor(invoice.id, 5000, "Avoir cible de test");
+    const response = await pay(creditNote.id, 1000);
+    expect(response.status).toBe(409);
+    const payments = await prisma.payment.findMany({ where: { invoiceId: creditNote.id } });
+    expect(payments).toHaveLength(0);
+  });
+
+  it("aucun Payment/CashEntry existant modifié par la seule création d'un avoir (non-régression 2c1)", async () => {
+    const invoice = await createFreshInvoice(adminA, vehicleAId, clientAId);
+    const payResponse = await pay(invoice.id, 5000);
+    expect(payResponse.status).toBe(201);
+    const paymentId = (await payResponse.json()).payment.id;
+    const cashCountBefore = await prisma.cashEntry.count({ where: { paymentId } });
+
+    await createCreditNoteFor(invoice.id, 3000, "Avoir sans effet sur paiement existant");
+
+    const paymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: paymentId } });
+    expect(paymentAfter.status).toBe("ACTIVE");
+    expect(paymentAfter.amount).toBe(5000);
+    const cashCountAfter = await prisma.cashEntry.count({ where: { paymentId } });
+    expect(cashCountAfter).toBe(cashCountBefore);
+  });
+});

@@ -349,9 +349,11 @@ async function runLocationsExport(user: SessionUser, searchParams: URLSearchPara
   return { rows, rowCount: rows.length, appliedFilters };
 }
 
-// Sprint 13E tâche 3 : CREDIT_NOTE volontairement absente — voir le commentaire identique dans
-// src/app/api/invoices/route.ts (aucune facture ne peut encore atteindre ce statut).
-const INVOICE_STATUSES: InvoiceStatus[] = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "VOID"];
+// Sprint 13E tâche 3, sous-phase 2c2-B : CREDIT_NOTE réintégrée à cette liste — obsolète depuis
+// 2c1 (createCreditNote, src/lib/invoices.ts), qui rend ce statut réellement atteignable. Filtrer
+// un export sur status=CREDIT_NOTE isole désormais les avoirs, sans toucher au comportement par
+// défaut (aucun filtre = toutes les factures, inchangé).
+const INVOICE_STATUSES: InvoiceStatus[] = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "VOID", "CREDIT_NOTE"];
 
 /**
  * Factures — src/app/api/invoices/route.ts. Portée agence identique à `vehicles`/`locations`
@@ -392,6 +394,9 @@ async function runInvoicesExport(user: SessionUser, searchParams: URLSearchParam
       agency: { select: { name: true } },
       client: { select: { name: true } },
       location: { select: { contractNumber: true } },
+      // Sprint 13E tâche 3, sous-phase 2c2-B : numéro de la facture source d'un avoir (colonne
+      // factureOrigine ci-dessous) — null pour toute facture qui n'est pas un CREDIT_NOTE.
+      original: { select: { number: true } },
     },
     orderBy: { issuedAt: "desc" },
     take: MAX_EXPORT_ROWS + 1,
@@ -404,6 +409,10 @@ async function runInvoicesExport(user: SessionUser, searchParams: URLSearchParam
   const rows: CsvRow[] = invoices.map((invoice) => {
     const row: Record<(typeof INVOICE_COLUMNS)[number], string | number> = {
       numero: invoice.number,
+      // Sprint 13E tâche 3, sous-phase 2c2-B : type (RENTAL/SUPPLEMENT/EXTENSION/CREDIT_NOTE)
+      // rend un avoir identifiable sans ambiguïté — jusqu'ici seul `statut` (CREDIT_NOTE) le
+      // distinguait, mélangé sans indication avec les factures ordinaires dans le CSV.
+      type: invoice.type,
       statut: invoice.status,
       agence: invoice.agency.name,
       client: invoice.client.name,
@@ -423,6 +432,10 @@ async function runInvoicesExport(user: SessionUser, searchParams: URLSearchParam
       echeance: dateCell(invoice.dueDate),
       version: invoice.versionNumber,
       creeLe: formatDateForCsv(invoice.createdAt),
+      // Sprint 13E tâche 3, sous-phase 2c2-B : numéro de facture (jamais l'id technique) de la
+      // source d'un avoir — vide pour toute facture qui n'est pas un CREDIT_NOTE.
+      factureOrigine: cell(invoice.original?.number),
+      motif: cell(invoice.reason),
     };
     return row;
   });

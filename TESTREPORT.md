@@ -1585,6 +1585,40 @@ Voir DOMAINRULES.md section 54 pour le détail métier complet. Nouveau fichier 
 
 **Fichiers modifiés** : `src/lib/invoices.ts` (`createCreditNote`/`getTotalCreditedAmount`/`generateCreditNoteNumber`/classes d'erreur), `src/app/api/invoices/[id]/credit-notes/route.ts` (nouveau), `src/__tests__/invoices.test.ts` (nouveau describe), `DOMAINRULES.md` (nouvelle section 55), `TESTREPORT.md`, `HANDOFF.md`.
 
+## Tests Sprint 13E tâche 3, sous-phase 2c2 LOT 1 (2c2-A modèle financier dérivé + 2c2-B rapports/exports)
+
+**Contexte** : cadrage 2c2 validé, découpé en 4 sous-lots (2c2-A/B/C/D) — seul le LOT 1 (2c2-A + 2c2-B) autorisé à ce stade. Périmètre strict : formules dérivées (`creditedAmount`/`netAmount`/`remainingBalance`/`creditedCollectedAmount`, jamais persistées), plafonnement des **nouveaux** paiements, correction du gap `Payment.status` dans `getRevenueReport`, colonnes d'export dédiées à l'avoir — jamais de remboursement réel, jamais `Payment.status`/`CashEntry` liés à un remboursement, jamais de migration, jamais `cash-register.ts`/PDF/UI. **Correction de terminologie appliquée sur demande explicite** (avant validation finale) : le champ initialement nommé `refundableAmount` (avec un paramètre `totalRefunded` jamais réellement calculé) a été renommé `creditedCollectedAmount` et le paramètre mort retiré — voir DOMAINRULES.md section 56 pour la justification complète.
+
+**Fonctions créées** (`src/lib/invoices.ts`) : `computeInvoiceNetAmounts` (pure, sans accès base — `netAmount = max(0, totalAmount − creditedAmount)`, `remainingBalance = max(0, netAmount − amountPaid)`, `creditedCollectedAmount = max(0, min(creditedAmount, amountPaid))` — **prospectif, pas un montant remboursable**, aucun `totalRefunded` n'existe dans ce lot) et `getInvoiceNetAmounts` (lit `getTotalCreditedAmount`, réutilisable par paiements/rapports/exports).
+
+**Paiements** (`src/lib/payments.ts`) : `createPaymentLocked`/`createMixedPaymentsLocked` valident désormais le montant contre `remainingBalance` net plutôt que `totalAmount − amountPaid` brut. Sans avoir, comportement strictement identique (vérifié par la suite complète). `updatePayment` non modifié (hors périmètre : correction d'un paiement existant, pas un nouveau paiement).
+
+**Bug réel trouvé et corrigé pendant l'écriture des tests de ce lot** (pas une extension de périmètre) : un paiement dirigé vers une facture `CREDIT_NOTE` provoquait un crash — `recomputeInvoiceStatus` tentait de faire sortir l'avoir de `status=CREDIT_NOTE` après le paiement, violant la contrainte CHECK Postgres `Invoice_credit_note_status_type_consistency` (500 brut, découvert par le test dédié). Corrigé par une garde explicite (`invoice.type === "CREDIT_NOTE"`) réutilisant `PaymentExceedsRemainingBalanceError(0, ...)` (409) plutôt que d'introduire une nouvelle classe d'erreur — évite de devoir modifier `src/app/api/payments/route.ts` (hors fichiers autorisés pour ce lot).
+
+**Rapports** (`src/lib/reports.ts`) : `getRevenueReport` filtre désormais `status: "ACTIVE"` sur les `Payment` agrégés — corrige un gap préexistant (un `Payment` `REFUNDED` restait compté comme revenu), sans lien causal avec `CREDIT_NOTE`/2c1, aucun mécanisme de remboursement introduit. `getRevenueByAgency`/`getTopVehicles`/`getVehiclePerformanceReport` documentés comme volontairement non intégrés (agrègent `Location.totalPrice`, jamais `Invoice.totalAmount` — une soustraction d'avoir y serait approximative).
+
+**Exports** (`src/lib/exports.ts` + `src/lib/export-constants.ts`, signalé avant modification car hors liste initiale — ajout mécanique de 3 noms de colonnes) : colonnes `type`/`factureOrigine` (numéro de la facture source, jamais l'id technique)/`motif` ajoutées à l'export factures ; `CREDIT_NOTE` réintégrée à la liste blanche de filtre `status` (obsolète depuis 2c1). Comportement par défaut (aucun filtre) inchangé.
+
+**Tests** (31 nouveaux) :
+- `invoices.test.ts` (+13, describe « Montants dérivés ») : `computeInvoiceNetAmounts` unitaire (sans avoir, partiel, total, montants nuls, sur-encaissement historique, `creditedAmount` défensif, `creditedCollectedAmount` jamais négatif, déterminisme, cumul de plusieurs avoirs) ; `getInvoiceNetAmounts` intégré (facture fraîche, après avoir partiel, plusieurs avoirs, isolation stricte entre factures sources).
+- `payments.test.ts` (+12) : sans avoir (identique), avoir partiel (inférieur/égal/supérieur au solde net), avoir total, plusieurs avoirs (plafond cumulatif), sur-encaissement historique (facture PAID puis avoir — nouveau paiement refusé, `Payment`/`CashEntry` existants inchangés), avoir sur SUPPLEMENT, avoir sur EXTENSION, facture VOID (non-régression), facture CREDIT_NOTE comme cible (409, bug corrigé), aucun `Payment`/`CashEntry` existant modifié par la seule création d'un avoir.
+- `reports.test.ts` (+1) : `Payment` REFUNDED exclu de `getRevenueReport`.
+- `csv-exports.test.ts` (+5) : avoir identifiable dans l'export par défaut, filtre `status=CREDIT_NOTE`, `factureOrigine` = numéro exact (jamais un id technique), absence de doublon, absence de donnée sensible dans les nouvelles colonnes.
+
+**Résultats** :
+
+| Vérification | Résultat |
+|---|---|
+| `npx prisma validate` | ✅ (aucun changement de schéma) |
+| `npx tsc --noEmit` | ✅ |
+| `npx eslint` (fichiers modifiés) | ✅ |
+| Ciblé : `invoices`/`payments`/`reports`/`csv-exports` (4 fichiers) | **259/259** |
+| Suite complète (`node scripts/test-grouped.mjs`, 5 groupes) | **1049/1049**, 0 échec, 0 timeout, 0 redémarrage watchdog, 0 processus résiduel |
+
+**Aucun test désactivé, aucun `.only`/`.skip`, aucun retry ni délai artificiel, aucune assertion supprimée. `cash-register.ts`, `PaymentStatus`, `adminCancelInvoice`, `createCorrectionCashEntry`, routes de remboursement, `InvoicePdf.tsx`, composants UI, schéma Prisma, migrations, `xrent_dev`, `package.json`/`package-lock.json` : non modifiés — vérifié par `git diff --name-status` (exactement les fichiers autorisés + `export-constants.ts` signalé).**
+
+**Fichiers modifiés** : `src/lib/invoices.ts`, `src/lib/payments.ts`, `src/lib/reports.ts`, `src/lib/exports.ts`, `src/lib/export-constants.ts`, `src/__tests__/invoices.test.ts`, `src/__tests__/payments.test.ts`, `src/__tests__/reports.test.ts`, `src/__tests__/csv-exports.test.ts`, `DOMAINRULES.md` (nouvelle section 56), `TESTREPORT.md`, `HANDOFF.md`.
+
 ## 4. Format attendu des futurs rapports
 
 Chaque exécution future de la suite de tests devra être consignée dans ce document (ou dans un rapport daté associé) selon le format suivant :

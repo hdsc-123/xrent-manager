@@ -1,6 +1,6 @@
 import type { Invoice, Payment, PaymentMethod, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getInvoiceById } from "@/lib/invoices";
+import { getInvoiceById, getInvoiceNetAmounts } from "@/lib/invoices";
 import { getLocationById } from "@/lib/locations";
 import { getClientById } from "@/lib/clients";
 import { createCashEntry, createCorrectionCashEntry, CorrectionReasonRequiredError } from "@/lib/cash-register";
@@ -258,8 +258,23 @@ async function createPaymentLocked(data: CreatePaymentInput, tx: Prisma.Transact
   if (invoice.status === "DRAFT") {
     throw new InvoiceNotFinalizedError();
   }
+  if (invoice.type === "CREDIT_NOTE") {
+    // Sprint 13E tâche 3, sous-phase 2c2-A : bug réel trouvé pendant les tests de ce lot — sans
+    // cette garde, recomputeInvoiceStatus (plus bas) tente de faire sortir un avoir de
+    // status=CREDIT_NOTE après un paiement, violant la contrainte CHECK Postgres
+    // Invoice_credit_note_status_type_consistency (crash 500 brut, jamais une erreur métier
+    // propre). Un avoir n'est structurellement jamais payable — réutilise l'erreur métier déjà
+    // existante (remainingBalance toujours 0 pour ce type) plutôt que d'en créer une nouvelle,
+    // qui exigerait de modifier le mapping d'erreurs de la route (hors périmètre de ce lot).
+    throw new PaymentExceedsRemainingBalanceError(0, invoice.currency);
+  }
 
-  const remainingBalance = invoice.totalAmount - invoice.amountPaid;
+  // Sprint 13E tâche 3, sous-phase 2c2-A : le solde restant tient désormais compte des avoirs
+  // (CREDIT_NOTE) déjà émis sur cette facture (getInvoiceNetAmounts, src/lib/invoices.ts) —
+  // sans avoir, creditedAmount = 0 et le comportement reste strictement identique (netAmount =
+  // totalAmount). Ne modifie jamais amountPaid/Payment.status directement : seule la validation
+  // du montant accepté change.
+  const { remainingBalance } = await getInvoiceNetAmounts(invoice, tx);
   if (data.amount > remainingBalance) {
     throw new PaymentExceedsRemainingBalanceError(remainingBalance, invoice.currency);
   }
@@ -608,8 +623,17 @@ async function createMixedPaymentsLocked(
   if (invoice.status === "DRAFT") {
     throw new InvoiceNotFinalizedError();
   }
+  if (invoice.type === "CREDIT_NOTE") {
+    // Voir le commentaire équivalent dans createPaymentLocked ci-dessus (bug réel trouvé pendant
+    // les tests de ce lot — un avoir n'est structurellement jamais payable).
+    throw new PaymentExceedsRemainingBalanceError(0, invoice.currency);
+  }
 
-  const remainingBalance = invoice.totalAmount - invoice.amountPaid;
+  // Sprint 13E tâche 3, sous-phase 2c2-A : même formule nette que createPaymentLocked ci-dessus —
+  // validée ici sur le TOTAL des lignes avant toute écriture (Sprint 17, évite un paiement
+  // partiel orphelin), chaque createPayment interne revalidera ensuite individuellement avec la
+  // même formule sous le même verrou déjà tenu.
+  const { remainingBalance } = await getInvoiceNetAmounts(invoice, tx);
   const linesTotal = data.lines.reduce((sum, line) => sum + line.amount, 0);
   if (linesTotal > remainingBalance) {
     throw new PaymentExceedsRemainingBalanceError(remainingBalance, invoice.currency);

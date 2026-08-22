@@ -210,6 +210,46 @@ describe("getRevenueReport", () => {
     expect(report.currency).toBe("MAD");
     expect(report.byMonth).toEqual([{ month: "2030-03", revenue: invoice.totalAmount }]);
   });
+
+  /** Sprint 13E tâche 3, sous-phase 2c2-B : gap préexistant (jamais causé par CREDIT_NOTE/2c1)
+   * découvert pendant le cadrage 2c2 — un Payment marqué REFUNDED (via admin-cancel) restait
+   * compté comme revenu faute de filtre sur Payment.status. Corrigé ici ; aucun mécanisme de
+   * remboursement introduit, seule la lecture d'un état déjà existant est corrigée. */
+  it("exclut un Payment REFUNDED du chiffre d'affaires (correction du gap préexistant, sans lien avec CREDIT_NOTE)", async () => {
+    const location = await createLocation({ startDate: "2030-08-01", endDate: "2030-08-04" });
+    const invoiceResponse = await apiFetch("/api/invoices", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ locationId: location.id }),
+    });
+    const invoice = (await invoiceResponse.json()).invoice;
+    await apiFetch(`/api/invoices/${invoice.id}`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ status: "ISSUED" }),
+    });
+
+    // Paiement partiel (PARTIALLY_PAID, seule éligible à POST /api/invoices/[id]/admin-cancel).
+    const partialAmount = Math.floor(invoice.totalAmount / 2);
+    await apiFetch("/api/payments", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ invoiceId: invoice.id, amount: partialAmount, method: "CASH", paidAt: "2030-06-10" }),
+    });
+
+    const cancelResponse = await apiFetch(`/api/invoices/${invoice.id}/admin-cancel`, {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ reason: "Test 2c2-B — gap REFUNDED dans getRevenueReport" }),
+    });
+    expect(cancelResponse.status).toBe(200);
+
+    const payment = await prisma.payment.findFirstOrThrow({ where: { invoiceId: invoice.id } });
+    expect(payment.status).toBe("REFUNDED");
+
+    const report = await getRevenueReport(admin.tenantId, new Date("2030-08-01"), new Date("2030-08-31"));
+    expect(report.totalRevenue).toBe(0);
+  });
 });
 
 describe("getVehicleUtilizationReport", () => {

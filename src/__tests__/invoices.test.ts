@@ -14,6 +14,8 @@ import {
   validateSupplementaryAmount,
   createCreditNote,
   getTotalCreditedAmount,
+  computeInvoiceNetAmounts,
+  getInvoiceNetAmounts,
   InvoiceLocationNotFoundError,
   InvalidInvoiceAmountError,
   CreditNoteExceedsRemainingCreditError,
@@ -2413,6 +2415,146 @@ describe("POST /api/invoices/[id]/credit-notes — avoir (Sprint 13E tâche 3, s
       for (const number of numbers) {
         expect(number).toMatch(/^AV-\d{4}-\d{5}$/);
       }
+    });
+  });
+});
+
+describe("Montants dérivés — computeInvoiceNetAmounts/getInvoiceNetAmounts (Sprint 13E tâche 3, sous-phase 2c2-A)", () => {
+  describe("computeInvoiceNetAmounts (unitaire, pur, sans accès base)", () => {
+    it("sans avoir : identique au comportement historique (netAmount = totalAmount)", () => {
+      const result = computeInvoiceNetAmounts(15000, 5000, 0);
+      expect(result).toEqual({
+        creditedAmount: 0,
+        netAmount: 15000,
+        remainingBalance: 10000,
+        creditedCollectedAmount: 0,
+      });
+    });
+
+    it("avoir partiel : netAmount et remainingBalance réduits d'autant", () => {
+      const result = computeInvoiceNetAmounts(15000, 5000, 6000);
+      expect(result.netAmount).toBe(9000);
+      expect(result.remainingBalance).toBe(4000);
+      expect(result.creditedCollectedAmount).toBe(5000); // min(6000, 5000)
+    });
+
+    it("avoir total : netAmount et remainingBalance à 0", () => {
+      const result = computeInvoiceNetAmounts(15000, 0, 15000);
+      expect(result.netAmount).toBe(0);
+      expect(result.remainingBalance).toBe(0);
+    });
+
+    it("montants nuls : tous les résultats à 0", () => {
+      expect(computeInvoiceNetAmounts(0, 0, 0)).toEqual({
+        creditedAmount: 0,
+        netAmount: 0,
+        remainingBalance: 0,
+        creditedCollectedAmount: 0,
+      });
+    });
+
+    it("sur-encaissement historique (amountPaid > netAmount après avoir) : remainingBalance jamais négatif", () => {
+      const result = computeInvoiceNetAmounts(15000, 15000, 6000);
+      expect(result.netAmount).toBe(9000);
+      expect(result.remainingBalance).toBe(0); // max(0, 9000 - 15000), jamais -6000
+      expect(result.creditedCollectedAmount).toBe(6000); // min(6000, 15000)
+    });
+
+    it("creditedAmount hypothétiquement supérieur à totalAmount : netAmount jamais négatif (défensif)", () => {
+      const result = computeInvoiceNetAmounts(1000, 0, 5000);
+      expect(result.netAmount).toBe(0); // max(0, 1000 - 5000)
+      expect(result.remainingBalance).toBe(0);
+    });
+
+    it("creditedCollectedAmount n'est jamais négatif, même avec des entrées limites", () => {
+      expect(computeInvoiceNetAmounts(15000, 0, 6000).creditedCollectedAmount).toBe(0); // amountPaid=0
+      expect(computeInvoiceNetAmounts(15000, 999999, 6000).creditedCollectedAmount).toBe(6000); // plafonné à creditedAmount
+    });
+
+    it("déterministe : deux appels avec les mêmes entrées produisent le même résultat", () => {
+      expect(computeInvoiceNetAmounts(12345, 6789, 1000)).toEqual(computeInvoiceNetAmounts(12345, 6789, 1000));
+    });
+
+    it("plusieurs avoirs (cumul déjà agrégé en creditedAmount) : cohérent avec la somme", () => {
+      // creditedAmount = 4000 + 3000, comme le calculerait getTotalCreditedAmount pour 2 avoirs.
+      const result = computeInvoiceNetAmounts(15000, 0, 4000 + 3000);
+      expect(result.netAmount).toBe(8000);
+      expect(result.remainingBalance).toBe(8000);
+    });
+  });
+
+  describe("getInvoiceNetAmounts (intégré, lit réellement les CREDIT_NOTE en base)", () => {
+    it("facture fraîche sans avoir : creditedAmount = 0, identique à computeInvoiceNetAmounts direct", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const invoice = await prisma.invoice.findFirstOrThrow({ where: { locationId, type: "RENTAL" } });
+      const result = await getInvoiceNetAmounts(invoice);
+      expect(result).toEqual(computeInvoiceNetAmounts(invoice.totalAmount, invoice.amountPaid, 0));
+    });
+
+    it("après un avoir partiel : creditedAmount/netAmount/remainingBalance reflètent l'avoir réel", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const invoice = await prisma.invoice.findFirstOrThrow({ where: { locationId, type: "RENTAL" } });
+      await apiFetch(`/api/invoices/${invoice.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ status: "ISSUED" }),
+      });
+      const creditNoteResponse = await apiFetch(`/api/invoices/${invoice.id}/credit-notes`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ amount: 4000, reason: "Avoir pour test getInvoiceNetAmounts" }),
+      });
+      expect(creditNoteResponse.status).toBe(201);
+
+      const result = await getInvoiceNetAmounts(invoice);
+      expect(result.creditedAmount).toBe(4000);
+      expect(result.netAmount).toBe(invoice.totalAmount - 4000);
+      expect(result.remainingBalance).toBe(invoice.totalAmount - 4000);
+    });
+
+    it("plusieurs avoirs : creditedAmount cumule correctement, isolé par facture source", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const invoice = await prisma.invoice.findFirstOrThrow({ where: { locationId, type: "RENTAL" } });
+      await apiFetch(`/api/invoices/${invoice.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ status: "ISSUED" }),
+      });
+      for (const amount of [2000, 1000]) {
+        const response = await apiFetch(`/api/invoices/${invoice.id}/credit-notes`, {
+          method: "POST",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify({ amount, reason: "Avoir cumulatif" }),
+        });
+        expect(response.status).toBe(201);
+      }
+
+      const result = await getInvoiceNetAmounts(invoice);
+      expect(result.creditedAmount).toBe(3000);
+      expect(result.netAmount).toBe(invoice.totalAmount - 3000);
+    });
+
+    it("un avoir sur une AUTRE facture n'affecte jamais getInvoiceNetAmounts de celle-ci (isolation par facture source)", async () => {
+      const locationAId2 = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const invoiceA = await prisma.invoice.findFirstOrThrow({ where: { locationId: locationAId2, type: "RENTAL" } });
+      const locationBId2 = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const invoiceB = await prisma.invoice.findFirstOrThrow({ where: { locationId: locationBId2, type: "RENTAL" } });
+
+      await apiFetch(`/api/invoices/${invoiceB.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ status: "ISSUED" }),
+      });
+      const response = await apiFetch(`/api/invoices/${invoiceB.id}/credit-notes`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ amount: 3000, reason: "Avoir sur B uniquement" }),
+      });
+      expect(response.status).toBe(201);
+
+      const resultA = await getInvoiceNetAmounts(invoiceA);
+      expect(resultA.creditedAmount).toBe(0);
+      expect(resultA.netAmount).toBe(invoiceA.totalAmount);
     });
   });
 });
