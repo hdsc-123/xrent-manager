@@ -16,7 +16,31 @@ export interface LogActionInput {
   metadata?: Prisma.InputJsonValue;
 }
 
-export async function logAction(data: LogActionInput): Promise<void> {
+/**
+ * Sprint 13E tâche 3, sous-phase 2c2-C : `tx` optionnel — ajouté pour `refundCreditNote`
+ * (`src/lib/invoices.ts`), la première action du projet exigeant explicitement que l'audit et
+ * l'écriture métier (ici une `CashEntry`) soient créés dans une seule et même transaction,
+ * atomiquement. Comportement strictement inchangé pour tout appelant existant (aucun ne
+ * fournit `tx`) : écrit via le client global, erreur avalée et journalée en console, jamais
+ * propagée à l'appelant. **Différence assumée quand `tx` est fourni** : l'erreur n'est plus
+ * avalée — elle doit se propager pour faire échouer (rollback) toute la transaction appelante,
+ * sans quoi l'atomicité demandée n'aurait aucun sens (un audit silencieusement manquant à côté
+ * d'une CashEntry bien réelle serait pire que l'inverse pour cette action financière précise).
+ */
+export async function logAction(data: LogActionInput, tx?: Prisma.TransactionClient): Promise<void> {
+  if (tx) {
+    await tx.auditLog.create({
+      data: {
+        tenantId: data.tenantId,
+        userId: data.userId,
+        action: data.action,
+        resource: data.resource,
+        resourceId: data.resourceId,
+        metadata: data.metadata,
+      },
+    });
+    return;
+  }
   try {
     await prisma.auditLog.create({
       data: {

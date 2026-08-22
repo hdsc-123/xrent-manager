@@ -298,6 +298,14 @@ export interface CreateCashEntryInput {
    * renseigné uniquement pour l'écriture originale d'un Payment (recordPaymentCashEntry,
    * src/lib/payments.ts), jamais pour une écriture manuelle. */
   paymentId?: string;
+  /** Sprint 13E tâche 3, sous-phase 2c2-C — voir le commentaire du champ dans
+   * prisma/schema.prisma : renseigné uniquement par refundCreditNote (src/lib/invoices.ts).
+   * Optionnel : n'affecte aucun appelant existant. */
+  creditNoteId?: string;
+  /** Motif du remboursement — obligatoire en pratique pour refundCreditNote (validé par
+   * l'appelant avant d'arriver ici), jamais requis pour une écriture manuelle ordinaire. */
+  reason?: string;
+  performedByUserId?: string;
 }
 
 /**
@@ -332,6 +340,9 @@ export async function createCashEntry(
       clientName: data.clientName,
       paymentMethod: data.paymentMethod,
       paymentId: data.paymentId,
+      creditNoteId: data.creditNoteId,
+      reason: data.reason,
+      performedByUserId: data.performedByUserId,
       ...(data.createdAt ? { createdAt: data.createdAt } : {}),
     },
   });

@@ -894,3 +894,75 @@ Remboursement réel, `Payment.status=REFUNDED` lié à un avoir, `CashEntry` de 
 **Tests** : `invoices.test.ts` (+13, formules pures et intégrées), `payments.test.ts` (+12, plafonnement/sur-encaissement/RENTAL/SUPPLEMENT/EXTENSION/VOID/CREDIT_NOTE), `reports.test.ts` (+1, gap REFUNDED), `csv-exports.test.ts` (+5, identification de l'avoir/filtre/originaux/doublons/sécurité) — **31 nouveaux tests**. Suite complète (`node scripts/test-grouped.mjs`) : **1049/1049**, 0 échec, 0 timeout, 0 processus résiduel.
 
 **Fichiers modifiés** : `src/lib/invoices.ts`, `src/lib/payments.ts`, `src/lib/reports.ts`, `src/lib/exports.ts`, `src/lib/export-constants.ts` (signalé), `src/__tests__/invoices.test.ts`, `src/__tests__/payments.test.ts`, `src/__tests__/reports.test.ts`, `src/__tests__/csv-exports.test.ts`, `DOMAINRULES.md`, `HANDOFF.md`, `TESTREPORT.md`. **Non modifiés** : `prisma/schema.prisma`, toute migration, `src/lib/cash-register.ts`, `CashEntry`, `PaymentStatus`, `adminCancelInvoice`, `createCorrectionCashEntry`, toute route de remboursement, `InvoicePdf.tsx`, tout composant UI, `package.json`, `package-lock.json`, `xrent_dev`.
+
+## 57. Remboursement réel d'un avoir — `refundCreditNote` (Sprint 13E tâche 3, sous-phase 2c2-C)
+
+Décisions métier imposées explicitement par le propriétaire du projet. Périmètre strict : remboursement **manuel et explicite** d'un avoir déjà émis — jamais automatique, jamais mélangé à `createCreditNote`. **Explicitement hors périmètre** : PDF/interface (2c2-D), nouvelle permission granulaire.
+
+### Remboursement distinct de la création d'avoir
+
+`createCreditNote` **reste strictement inchangée** : aucun paramètre `refundImmediately`, aucun appel à `refundCreditNote` depuis elle. Vérifié explicitement par test (« createCreditNote ne crée toujours aucune CashEntry ni aucun remboursement automatique »).
+
+### Formule du montant remboursable
+
+```
+totalRefundedForCreditNote = Σ CashEntry(creditNoteId = CET avoir, type=EXPENSE, category=REMBOURSEMENT_AVOIR)
+totalRefundedForSource     = Σ CashEntry(creditNoteId ∈ TOUS les avoirs de la source, mêmes filtres)
+availableFromCollected     = max(0, source.amountPaid − totalRefundedForSource)
+refundableAmount           = max(0, min(creditNote.totalAmount − totalRefundedForCreditNote, availableFromCollected))
+```
+
+**Écart assumé par rapport à la formule initialement donnée** (`refundableAmount = max(0, min(creditedAmount, amountPaid) − totalRefunded)`) : la formule ci-dessus généralise correctement au cas où une même facture source porte **plusieurs avoirs actifs**. `source.amountPaid` est un plafond **partagé** entre tous les avoirs d'une même source — sans `totalRefundedForSource` (agrégé sur tous les avoirs, pas seulement celui ciblé), deux avoirs individuellement sous leur propre plafond pourraient, remboursés indépendamment, dépasser ensemble ce qui a réellement été encaissé. Démontré et vérifié par test dédié (deux avoirs de 4000 chacun sur une source à `amountPaid=5000` : le second avoir ne peut jamais faire dépasser le cumul remboursé au-delà de 5000, même si chacun pris isolément semblerait autoriser jusqu'à 4000).
+
+Implémenté dans `src/lib/invoices.ts` : `getTotalRefundedForCreditNote`, `getTotalRefundedForSource` (internes), `getCreditNoteRefundableAmount` (exportée, réutilisable/testable directement), `refundCreditNote` (service principal).
+
+### `CashEntry.creditNoteId`
+
+Nouveau champ optionnel sur `CashEntry` (migration `20260822154218_add_credit_note_refunds`, purement additive), FK `onDelete: Restrict` vers `Invoice`. Renseigné **uniquement** par `refundCreditNote` — jamais par `recordPaymentCashEntry` (paiements), jamais par `createCorrectionCashEntry` (corrections de paiement/annulations). `paymentId` n'est **jamais détourné** pour représenter un avoir (reste réservé aux paiements réels, `paymentId` toujours `null` sur une `CashEntry` de remboursement d'avoir). Aucune contrainte CHECK ne peut garantir en base que `creditNoteId` référence bien une ligne `type=CREDIT_NOTE` (Postgres ne permet pas un CHECK inter-tables) — garanti uniquement par l'application (`refundCreditNote` vérifie `type === "CREDIT_NOTE"` avant toute écriture).
+
+### Catégorie dédiée
+
+`REMBOURSEMENT_AVOIR` (`CashEntry.category`, texte libre — vérifié avant de choisir ce nom que toutes les catégories existantes sont déjà en français majuscule : `VERSEMENT`, `CORRECTION_PAIEMENT`, `ANNULATION_FACTURE`, `ANNULATION_CONTRAT`, `DEGATS`, `ANNULATION_FACTURE_DEGATS` — **`REFUND_CREDIT_NOTE` proposé initialement écarté** pour rester cohérent avec cette convention 100 % française du projet).
+
+### Autorisation
+
+ADMIN strict, dérivé uniquement de `user.role` côté route (`POST /api/invoices/[id]/refund`) — même principe que `POST /api/invoices/[id]/admin-cancel`/`.../credit-notes` (SECURITY.md section 4). Aucune permission granulaire introduite dans cette sous-phase.
+
+### Route — déviation assumée du chemin suggéré
+
+`POST /api/invoices/[id]/refund`, où `[id]` désigne **directement l'avoir** (CREDIT_NOTE) à rembourser — jamais sa facture source. **Écart délibéré** par rapport au chemin suggéré (`.../credit-notes/refund`, nécessairement nichée sous la source) : ce dernier laisserait ambigu **quel** avoir est visé dès qu'une même source en porte plusieurs — le nouveau chemin choisi est cohérent avec `POST /api/invoices/[id]/admin-cancel`/`.../versions` (chaque facture adressée par son propre id).
+
+### Payment/Invoice.amountPaid — jamais modifiés
+
+`Payment.status` n'est **jamais** touché par un remboursement d'avoir (reste réservé à `adminCancelInvoice`/`adminCancelValidatedLocation`, un mécanisme distinct pour une annulation totale, jamais réutilisé ici — un remboursement d'avoir peut correspondre à plusieurs paiements ou à un remboursement partiel, jamais représentable par un simple changement binaire d'un `Payment`). `Invoice.amountPaid` (de la source **et** de l'avoir) n'est jamais modifié — vérifié explicitement par test.
+
+### Audit et atomicité — extension de `logAction`
+
+`invoice.credit_note_refunded` (métadonnées : `creditNoteId`, `sourceInvoiceId`, `amount`, `cashEntryId`, `reason`, `actorId`, `tenantId` — aucune donnée bancaire). **Extension de `src/lib/audit.ts`** (signalée avant modification, hors liste initiale) : `logAction` accepte désormais un second paramètre optionnel `tx` — comportement strictement inchangé pour tout appelant existant (aucun ne le fournit, erreur toujours avalée et journalée en console) ; quand `tx` est fourni (uniquement par `refundCreditNote`), l'erreur **n'est plus avalée** : elle doit se propager pour faire échouer toute la transaction, seule façon de garantir que l'audit et la `CashEntry` sont créés atomiquement, comme exigé explicitement pour cette action financière précise.
+
+### Idempotence et concurrence
+
+Aucune clé d'idempotence dédiée : un second remboursement identique est simplement revalidé contre le plafond déjà réduit par le premier (refusé si atteint). Concurrence : verrou de ligne sur la facture **source** (`lockInvoiceRow`, jamais sur l'avoir seul) — nécessaire car le plafond réel est partagé entre tous les avoirs d'une même source ; verrouiller uniquement l'avoir ciblé ne sérialiserait pas deux remboursements visant deux avoirs différents de la même source. Aucun réessai nécessaire (contrairement à la collision de numérotation de `createCreditNote`) : le verrou sérialise entièrement toute tentative concurrente sur la même source, quel que soit l'avoir visé.
+
+### Montants et arrondis
+
+Réutilise `validateSupplementaryAmount` (entier fini strictement positif) — cohérent avec `createCreditNote`. Refuse zéro, négatif, non entier, non fini, et tout montant dépassant `refundableAmount`.
+
+### Migration
+
+`20260822154218_add_credit_note_refunds` — purement additive (colonne nullable + index + FK), aucune donnée supprimée, aucune colonne existante modifiée. Appliquée sur `xrent_dev` d'abord, puis explicitement autorisée et appliquée sur `xrent_test` (nécessaire : le client Prisma généré est partagé par tout le projet, la suite de tests cible exclusivement `xrent_test` — sans cette migration sur les deux bases, aucun test impliquant un paiement n'aurait pu s'exécuter).
+
+### Bug réel trouvé et corrigé pendant la revue corrective (avant commit) — double remboursement via une source annulée
+
+**Trouvé** : `adminCancelInvoice` (Sprint 28, Finding D2) fait passer une facture `PARTIALLY_PAID` à `VOID` et marque ses `Payment` `REFUNDED`, mais **ne réinitialise jamais `Invoice.amountPaid`** (seul `status` est modifié par le `updateMany` de cette fonction, inchangée par 2c2-C). Sans garde supplémentaire, un avoir déjà émis **avant** l'admin-cancel de sa source restait remboursable après coup : `refundCreditNote` aurait calculé `refundableAmount` à partir de cet `amountPaid` désormais obsolète, autorisant un remboursement de la même somme déjà reprise par la compensation de caisse d'`adminCancelInvoice` — un double remboursement réel, pas une simple incohérence d'affichage.
+
+**Corrigé** : `refundCreditNote` refuse désormais catégoriquement (`CreditNoteSourceVoidError`, 409) tout remboursement dont la facture source a `status = VOID`, vérifié sous le verrou de ligne (donc jamais périmé par une annulation concurrente entre la lecture et cette vérification). `adminCancelInvoice` lui-même **n'a pas été modifié** (aucune régression introduite, comportement déjà correct pour son propre périmètre — seul `refundCreditNote` avait besoin de cette garde supplémentaire, spécifique à son propre calcul de plafond).
+
+**Test dédié** : facture `PARTIALLY_PAID` → avoir émis → `admin-cancel` de la source (`VOID`, `Payment` `REFUNDED`, `amountPaid` confirmé inchangé) → tentative de remboursement de l'avoir → `409`, aucune `CashEntry` créée.
+
+### Limites connues
+
+- Pas de moyen de remboursement par défaut obligatoire (`paymentMethod` optionnel, cohérent avec `CashEntry.paymentMethod` déjà nullable ailleurs).
+- Pas de statut de suivi dédié sur l'avoir (`refundStatus`/`refundedAt` volontairement absents) — le montant remboursé est toujours dérivé des `CashEntry` liées, jamais stocké.
+- PDF/interface du remboursement : 2c2-D, non commencé.
+- **Atomicité audit+CashEntry vérifiée par inspection du code et des garanties transactionnelles de Prisma (toute erreur non interceptée dans le callback `$transaction` provoque un rollback complet), pas par un test forçant artificiellement l'échec de l'un des deux** — forcer un tel échec exigerait une injection de faute (mock), contraire à la philosophie « aucun mock » déjà établie pour ce projet (voir TESTREPORT.md, Sprint 13E tâche 2). Le sens inverse (échec de la `CashEntry` → aucun audit créé) est en revanche garanti par l'ordre du code lui-même (`logAction` n'est appelé qu'après le succès de `createCashEntry`), pas seulement par la transaction.

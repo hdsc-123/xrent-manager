@@ -493,6 +493,13 @@ model Invoice {
   original    Invoice?  @relation("InvoiceCreditNoteOriginal", fields: [originalInvoiceId], references: [id], onDelete: Restrict)
   creditNotes Invoice[] @relation("InvoiceCreditNoteOriginal")
 
+  // Sprint 13E tâche 3, sous-phase 2c2-C : écritures de caisse de remboursement d'un avoir
+  // (refundCreditNote, src/lib/invoices.ts) — inverse de CashEntry.creditNoteId. Une facture
+  // RENTAL/SUPPLEMENT/EXTENSION n'a jamais d'entrée ici (seul un CREDIT_NOTE est remboursable) ;
+  // non vérifié par une contrainte CHECK (impossible de contraindre le type de la ligne visée
+  // par une FK depuis une autre table en Postgres), garanti par l'application (refundCreditNote).
+  refundEntries CashEntry[] @relation("InvoiceCreditNoteRefundEntries")
+
   @@unique([tenantId, number])
   @@index([tenantId])
   @@index([agencyId])
@@ -1194,6 +1201,17 @@ model CashEntry {
   reason            String?
   performedByUserId String?
 
+  // Sprint 13E tâche 3, sous-phase 2c2-C : lien vers l'avoir (Invoice, type=CREDIT_NOTE)
+  // remboursé par cette écriture — renseigné uniquement par refundCreditNote
+  // (src/lib/invoices.ts), jamais pour une écriture manuelle, un versement normal
+  // (recordPaymentCashEntry) ni une correction de paiement (createCorrectionCashEntry).
+  // Optionnel : ne rend obligatoire aucun champ pour les appelants existants, ne détourne
+  // jamais paymentId (réservé aux paiements réels) pour représenter un avoir. onDelete:
+  // Restrict — même raisonnement que paymentId/parentEntryId ci-dessus : une écriture de
+  // remboursement ne doit jamais survivre silencieusement à la disparition de l'avoir
+  // qu'elle rembourse (en pratique jamais supprimable de toute façon, voir Invoice.original).
+  creditNoteId String?
+
   tenant          Tenant       @relation(fields: [tenantId], references: [id])
   cashRegister    CashRegister @relation(fields: [cashRegisterId], references: [id])
   agency          Agency?      @relation(fields: [agencyId], references: [id])
@@ -1201,6 +1219,7 @@ model CashEntry {
   parentEntry     CashEntry?   @relation("CashEntryCorrections", fields: [parentEntryId], references: [id])
   corrections     CashEntry[]  @relation("CashEntryCorrections")
   performedByUser User?        @relation("CashEntryPerformedBy", fields: [performedByUserId], references: [id])
+  creditNote      Invoice?     @relation("InvoiceCreditNoteRefundEntries", fields: [creditNoteId], references: [id], onDelete: Restrict)
 
   @@index([tenantId])
   @@index([cashRegisterId])
@@ -1209,6 +1228,7 @@ model CashEntry {
   @@index([agencyId])
   @@index([paymentId])
   @@index([parentEntryId])
+  @@index([creditNoteId])
 }
 
 model ExpenseCategory {

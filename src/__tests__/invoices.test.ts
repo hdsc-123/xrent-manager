@@ -16,9 +16,12 @@ import {
   getTotalCreditedAmount,
   computeInvoiceNetAmounts,
   getInvoiceNetAmounts,
+  refundCreditNote,
+  getCreditNoteRefundableAmount,
   InvoiceLocationNotFoundError,
   InvalidInvoiceAmountError,
   CreditNoteExceedsRemainingCreditError,
+  CreditNoteExceedsRefundableAmountError,
 } from "@/lib/invoices";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
@@ -2555,6 +2558,434 @@ describe("Montants dérivés — computeInvoiceNetAmounts/getInvoiceNetAmounts (
       const resultA = await getInvoiceNetAmounts(invoiceA);
       expect(resultA.creditedAmount).toBe(0);
       expect(resultA.netAmount).toBe(invoiceA.totalAmount);
+    });
+  });
+});
+
+describe("POST /api/invoices/[id]/refund — remboursement d'un avoir (Sprint 13E tâche 3, sous-phase 2c2-C)", () => {
+  async function createCreditNoteFor(sourceId: string, amount: number, reason: string) {
+    const response = await apiFetch(`/api/invoices/${sourceId}/credit-notes`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ amount, reason }),
+    });
+    expect(response.status).toBe(201);
+    return (await response.json()).invoice as { id: string; number: string; totalAmount: number; locationId: string };
+  }
+
+  async function refund(admin: AuthenticatedTestUser, creditNoteId: string, body: Record<string, unknown>) {
+    return apiFetch(`/api/invoices/${creditNoteId}/refund`, {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify(body),
+    });
+  }
+
+  /** Source PARTIALLY_PAID (paie 1/3 de totalAmount, 15000/3=5000) avec un avoir couvrant tout
+   * le montant payé — scénario de base réutilisé par la plupart des tests ci-dessous. */
+  async function createPartiallyPaidSourceWithCreditNote(creditAmount = 5000) {
+    const source = await createRentalSourceWithStatus("PARTIALLY_PAID"); // amountPaid = 5000
+    const creditNote = await createCreditNoteFor(source.id, creditAmount, "Avoir pour test remboursement");
+    return { source, creditNote };
+  }
+
+  describe("Autorisation", () => {
+    it("ADMIN autorisé : remboursement partiel accepté (201)", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      const response = await refund(adminA, creditNote.id, { amount: 2000, reason: "Remboursement partiel test" });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.cashEntry.amount).toBe(2000);
+      expect(body.cashEntry.type).toBe("EXPENSE");
+    });
+
+    it("utilisateur non-ADMIN (MEMBER) refusé (403), aucune CashEntry créée", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      const response = await refund(memberA, creditNote.id, { amount: 1000, reason: "Tentative MEMBER" });
+      expect(response.status).toBe(403);
+      const count = await prisma.cashEntry.count({ where: { creditNoteId: creditNote.id } });
+      expect(count).toBe(0);
+    });
+
+    it("autre tenant refusé (404)", async () => {
+      const locationId = await createFreshLocation(adminB, vehicleBId, clientBId);
+      const invoice = await prisma.invoice.findFirstOrThrow({ where: { locationId, type: "RENTAL" } });
+      await finalizeInvoice(adminB, invoice.id);
+      await payAmount(adminB, invoice.id, 5000);
+      const cnResponse = await apiFetch(`/api/invoices/${invoice.id}/credit-notes`, {
+        method: "POST",
+        headers: { Cookie: adminB.sessionCookie },
+        body: JSON.stringify({ amount: 3000, reason: "Avoir tenant B" }),
+      });
+      expect(cnResponse.status).toBe(201);
+      const creditNoteB = (await cnResponse.json()).invoice;
+
+      const response = await refund(adminA, creditNoteB.id, { amount: 1000, reason: "Tentative cross-tenant" });
+      expect(response.status).toBe(404);
+    });
+
+    it("identifiant invalide (avoir inexistant) -> 404", async () => {
+      const response = await refund(adminA, "nonexistent-credit-note-id", { amount: 1000, reason: "X" });
+      expect(response.status).toBe(404);
+    });
+
+    it("facture source (RENTAL) au lieu d'un avoir -> 404", async () => {
+      const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+      const response = await refund(adminA, source.id, { amount: 1000, reason: "Cible incorrecte" });
+      expect(response.status).toBe(404);
+    });
+  });
+
+  describe("Validation du montant et du motif", () => {
+    it("montant nul -> 400", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      const response = await refund(adminA, creditNote.id, { amount: 0, reason: "X" });
+      expect(response.status).toBe(400);
+    });
+
+    it("montant négatif -> 400", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      const response = await refund(adminA, creditNote.id, { amount: -500, reason: "X" });
+      expect(response.status).toBe(400);
+    });
+
+    it("montant décimal -> 400", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      const response = await refund(adminA, creditNote.id, { amount: 10.5, reason: "X" });
+      expect(response.status).toBe(400);
+    });
+
+    it("motif absent -> 400", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      const response = await refund(adminA, creditNote.id, { amount: 1000 });
+      expect(response.status).toBe(400);
+    });
+
+    it("motif vide -> 400", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      const response = await refund(adminA, creditNote.id, { amount: 1000, reason: "   " });
+      expect(response.status).toBe(400);
+    });
+
+    it("montant non fini (Infinity, service direct) -> InvalidInvoiceAmountError", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      await expect(
+        refundCreditNote({
+          tenantId: adminA.tenantId,
+          creditNoteId: creditNote.id,
+          amount: Infinity,
+          reason: "X",
+          performedByUserId: adminA.userId,
+        })
+      ).rejects.toThrow(InvalidInvoiceAmountError);
+    });
+  });
+
+  describe("Éligibilité de la source (revue corrective — bug réel trouvé et corrigé)", () => {
+    it("source déjà VOID (via admin-cancel après émission de l'avoir) : remboursement refusé (409) — ferme un double remboursement réel", async () => {
+      // Bug réel trouvé pendant la revue : adminCancelInvoice fait passer PARTIALLY_PAID -> VOID
+      // et marque le Payment REFUNDED, mais ne réinitialise JAMAIS Invoice.amountPaid. Sans la
+      // garde ajoutée, l'avoir émis AVANT l'admin-cancel resterait remboursable en se basant sur
+      // ce amountPaid désormais obsolète — un double remboursement réel de la même somme.
+      const source = await createRentalSourceWithStatus("PARTIALLY_PAID"); // amountPaid = 5000
+      const creditNote = await createCreditNoteFor(source.id, 3000, "Avoir avant admin-cancel");
+
+      const cancelResponse = await apiFetch(`/api/invoices/${source.id}/admin-cancel`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ reason: "Annulation ADMIN après émission de l'avoir" }),
+      });
+      expect(cancelResponse.status).toBe(200);
+
+      const sourceAfterCancel = await prisma.invoice.findUniqueOrThrow({ where: { id: source.id } });
+      expect(sourceAfterCancel.status).toBe("VOID");
+      expect(sourceAfterCancel.amountPaid).toBe(5000); // jamais réinitialisé, comportement préexistant inchangé
+
+      const response = await refund(adminA, creditNote.id, { amount: 3000, reason: "Tentative de double remboursement" });
+      expect(response.status).toBe(409);
+      const count = await prisma.cashEntry.count({ where: { creditNoteId: creditNote.id } });
+      expect(count).toBe(0);
+    });
+
+    it("avoir sans facture source (originalInvoiceId forcé à null en base) : remboursement refusé (404)", async () => {
+      // originalInvoiceId n'est garanti non-null que par l'application (createCreditNote),
+      // jamais par une contrainte CHECK — même idiome que les autres tests de ce fichier forçant
+      // un état non atteignable via l'API (ex. passage manuel à VOID pour SUPPLEMENT/EXTENSION).
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      await prisma.invoice.update({ where: { id: creditNote.id }, data: { originalInvoiceId: null } });
+
+      const response = await refund(adminA, creditNote.id, { amount: 1000, reason: "Source disparue" });
+      expect(response.status).toBe(404);
+    });
+
+    // "Autre agence" : structurellement inatteignable pour cette route ADMIN stricte
+    // (canAccessAgency retourne toujours true pour un ADMIN sur son propre tenant, quelle que
+    // soit l'agence) — se confond avec le test "autre tenant" ci-dessus (seul cas réel de 404
+    // lié à l'accès pour cette route), même constat que createCreditNote en 2c1. Documenté ici
+    // plutôt qu'un test qui ne testerait en réalité rien de plus.
+  });
+
+  describe("Plafond du remboursement", () => {
+    it("remboursement sans paiement encaissé (source ISSUED, amountPaid=0) refusé (409)", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      const creditNote = await createCreditNoteFor(source.id, 5000, "Avoir sans encaissement");
+      const response = await refund(adminA, creditNote.id, { amount: 1, reason: "Rien n'a été encaissé" });
+      expect(response.status).toBe(409);
+    });
+
+    it("montant supérieur au plafond refusé (409), aucune CashEntry créée", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote(5000); // plafond = min(5000, 5000) = 5000
+      const response = await refund(adminA, creditNote.id, { amount: 5001, reason: "Dépassement" });
+      expect(response.status).toBe(409);
+      const count = await prisma.cashEntry.count({ where: { creditNoteId: creditNote.id } });
+      expect(count).toBe(0);
+      const auditCount = await prisma.auditLog.count({ where: { resourceId: creditNote.id, action: "invoice.credit_note_refunded" } });
+      expect(auditCount).toBe(0); // atomicité : aucun audit sans CashEntry
+    });
+
+    it("remboursement total (montant = plafond exact) accepté (201)", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote(5000);
+      const response = await refund(adminA, creditNote.id, { amount: 5000, reason: "Remboursement total" });
+      expect(response.status).toBe(201);
+    });
+
+    it("second remboursement dépassant le plafond restant refusé (409)", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote(5000);
+      const first = await refund(adminA, creditNote.id, { amount: 3000, reason: "Premier remboursement" });
+      expect(first.status).toBe(201);
+      const second = await refund(adminA, creditNote.id, { amount: 2001, reason: "Dépasse le solde restant (2000)" });
+      expect(second.status).toBe(409);
+    });
+
+    it("plusieurs remboursements partiels jusqu'au plafond exact, tous acceptés", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote(5000);
+      expect((await refund(adminA, creditNote.id, { amount: 2000, reason: "Partiel 1" })).status).toBe(201);
+      expect((await refund(adminA, creditNote.id, { amount: 2000, reason: "Partiel 2" })).status).toBe(201);
+      expect((await refund(adminA, creditNote.id, { amount: 1000, reason: "Partiel 3 (solde exact)" })).status).toBe(201);
+      const tooMuch = await refund(adminA, creditNote.id, { amount: 1, reason: "Plafond déjà atteint" });
+      expect(tooMuch.status).toBe(409);
+
+      const total = await prisma.cashEntry.aggregate({
+        where: { creditNoteId: creditNote.id, type: "EXPENSE", category: "REMBOURSEMENT_AVOIR" },
+        _sum: { amount: true },
+      });
+      expect(total._sum.amount).toBe(5000);
+    });
+
+    it("avoir supérieur au montant encaissé : plafonné à amountPaid, jamais au montant de l'avoir", async () => {
+      // source PARTIALLY_PAID (amountPaid=5000) créditée pour 8000 (autorisé : 8000 <= totalAmount 15000)
+      const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+      const creditNote = await createCreditNoteFor(source.id, 8000, "Avoir supérieur à l'encaissé");
+      const tooMuch = await refund(adminA, creditNote.id, { amount: 5001, reason: "Dépasse amountPaid (5000)" });
+      expect(tooMuch.status).toBe(409);
+      const exact = await refund(adminA, creditNote.id, { amount: 5000, reason: "Exactement amountPaid" });
+      expect(exact.status).toBe(201);
+    });
+
+    it("facture totalement payée (PAID) : plafond = totalAmount de l'avoir", async () => {
+      const source = await createRentalSourceWithStatus("PAID"); // amountPaid = totalAmount = 15000
+      const creditNote = await createCreditNoteFor(source.id, 4000, "Avoir sur facture payée intégralement");
+      const tooMuch = await refund(adminA, creditNote.id, { amount: 4001, reason: "Dépasse le montant de l'avoir" });
+      expect(tooMuch.status).toBe(409);
+      const exact = await refund(adminA, creditNote.id, { amount: 4000, reason: "Montant exact de l'avoir" });
+      expect(exact.status).toBe(201);
+    });
+
+    it("plusieurs paiements sur la source (paiement mixte) : amountPaid cumulé sert de plafond", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      await payAmount(adminA, source.id, 3000);
+      await payAmount(adminA, source.id, 2000); // amountPaid total = 5000
+      const creditNote = await createCreditNoteFor(source.id, 6000, "Avoir couvrant plus que l'encaissé cumulé");
+      const tooMuch = await refund(adminA, creditNote.id, { amount: 5001, reason: "Dépasse le cumul des 2 paiements" });
+      expect(tooMuch.status).toBe(409);
+      const exact = await refund(adminA, creditNote.id, { amount: 5000, reason: "Cumul exact des 2 paiements" });
+      expect(exact.status).toBe(201);
+    });
+  });
+
+  describe("getCreditNoteRefundableAmount (unitaire, direct)", () => {
+    it("reflète le plafond partagé entre plusieurs avoirs de la même source", async () => {
+      const source = await createRentalSourceWithStatus("PARTIALLY_PAID"); // amountPaid = 5000
+      const creditNote1Http = await createCreditNoteFor(source.id, 4000, "Avoir 1");
+      const creditNote2Http = await createCreditNoteFor(source.id, 4000, "Avoir 2");
+      const creditNote1 = await prisma.invoice.findUniqueOrThrow({ where: { id: creditNote1Http.id } });
+      const creditNote2 = await prisma.invoice.findUniqueOrThrow({ where: { id: creditNote2Http.id } });
+      const sourceRow = await prisma.invoice.findUniqueOrThrow({ where: { id: source.id } });
+
+      const before = await getCreditNoteRefundableAmount(creditNote1, sourceRow);
+      expect(before.refundableAmount).toBe(4000); // min(4000, 5000 - 0)
+
+      expect((await refund(adminA, creditNote1.id, { amount: 3000, reason: "Réduit le plafond partagé" })).status).toBe(
+        201
+      );
+
+      const afterRefund1 = await getCreditNoteRefundableAmount(creditNote2, sourceRow);
+      expect(afterRefund1.refundableAmount).toBe(2000); // min(4000, 5000 - 3000)
+      expect(afterRefund1.totalRefundedForSource).toBe(3000);
+      expect(afterRefund1.totalRefundedForCreditNote).toBe(0); // rien encore remboursé sur creditNote2 lui-même
+    });
+  });
+
+  describe("Effets constatés (CashEntry, audit, immuabilité)", () => {
+    it("CashEntry EXPENSE créée exactement une fois, liée au bon creditNoteId, catégorie dédiée", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      const response = await refund(adminA, creditNote.id, { amount: 1500, reason: "Vérification CashEntry" });
+      expect(response.status).toBe(201);
+      const entries = await prisma.cashEntry.findMany({ where: { creditNoteId: creditNote.id } });
+      expect(entries).toHaveLength(1);
+      expect(entries[0].type).toBe("EXPENSE");
+      expect(entries[0].category).toBe("REMBOURSEMENT_AVOIR");
+      expect(entries[0].amount).toBe(1500);
+      expect(entries[0].paymentId).toBeNull(); // jamais détourné pour représenter un avoir
+    });
+
+    it("aucune modification de Payment.status par le remboursement", async () => {
+      const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+      const payment = await prisma.payment.findFirstOrThrow({ where: { invoiceId: source.id } });
+      const creditNote = await createCreditNoteFor(source.id, 5000, "Avoir");
+      const response = await refund(adminA, creditNote.id, { amount: 3000, reason: "Vérification Payment.status" });
+      expect(response.status).toBe(201);
+      const paymentAfter = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+      expect(paymentAfter.status).toBe("ACTIVE");
+      expect(paymentAfter.amount).toBe(payment.amount);
+    });
+
+    it("aucune modification de Invoice.amountPaid (ni la source, ni l'avoir)", async () => {
+      const { source, creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      const sourceBefore = await prisma.invoice.findUniqueOrThrow({ where: { id: source.id } });
+      const response = await refund(adminA, creditNote.id, { amount: 2000, reason: "Vérification amountPaid" });
+      expect(response.status).toBe(201);
+      const sourceAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: source.id } });
+      expect(sourceAfter.amountPaid).toBe(sourceBefore.amountPaid);
+      expect(sourceAfter.status).toBe(sourceBefore.status);
+      expect(sourceAfter.totalAmount).toBe(sourceBefore.totalAmount);
+      const creditNoteAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: creditNote.id } });
+      expect(creditNoteAfter.amountPaid).toBe(0);
+      expect(creditNoteAfter.status).toBe("CREDIT_NOTE");
+    });
+
+    it("audit invoice.credit_note_refunded créé exactement une fois, métadonnées complètes", async () => {
+      const { source, creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      const response = await refund(adminA, creditNote.id, { amount: 2500, reason: "Vérification audit" });
+      expect(response.status).toBe(201);
+      const cashEntryId = (await response.json()).cashEntry.id;
+
+      const entries = await prisma.auditLog.findMany({
+        where: { tenantId: adminA.tenantId, action: "invoice.credit_note_refunded", resourceId: creditNote.id },
+      });
+      expect(entries).toHaveLength(1);
+      const metadata = entries[0].metadata as Record<string, unknown>;
+      expect(metadata.creditNoteId).toBe(creditNote.id);
+      expect(metadata.sourceInvoiceId).toBe(source.id);
+      expect(metadata.amount).toBe(2500);
+      expect(metadata.cashEntryId).toBe(cashEntryId);
+      expect(metadata.reason).toBe("Vérification audit");
+      expect(metadata.actorId).toBe(adminA.userId);
+      expect(metadata.tenantId).toBe(adminA.tenantId);
+      // Aucune donnée sensible.
+      expect(JSON.stringify(metadata)).not.toMatch(/password|secret|token|hash/i);
+    });
+  });
+
+  describe("Concurrence (service direct — jamais une course HTTP, next dev sérialise une même route dynamique)", () => {
+    it("deux remboursements concurrents sur le même avoir dont la somme dépasse le plafond : une seule réussit", async () => {
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote(5000); // plafond = 5000
+      const [r1, r2] = await Promise.allSettled([
+        refundCreditNote({
+          tenantId: adminA.tenantId,
+          creditNoteId: creditNote.id,
+          amount: 3000,
+          reason: "Concurrence A",
+          performedByUserId: adminA.userId,
+        }),
+        refundCreditNote({
+          tenantId: adminA.tenantId,
+          creditNoteId: creditNote.id,
+          amount: 3000,
+          reason: "Concurrence B",
+          performedByUserId: adminA.userId,
+        }),
+      ]);
+      const statuses = [r1.status, r2.status].sort();
+      expect(statuses).toEqual(["fulfilled", "rejected"]);
+      const rejected = (r1.status === "rejected" ? r1 : r2) as PromiseRejectedResult;
+      expect(rejected.reason).toBeInstanceOf(CreditNoteExceedsRefundableAmountError);
+
+      const total = await prisma.cashEntry.aggregate({
+        where: { creditNoteId: creditNote.id, type: "EXPENSE", category: "REMBOURSEMENT_AVOIR" },
+        _sum: { amount: true },
+      });
+      expect(total._sum.amount).toBe(3000);
+      expect(total._sum.amount).toBeLessThanOrEqual(5000);
+    });
+
+    it("deux remboursements concurrents sur DEUX AVOIRS DIFFÉRENTS de la même source ne dépassent jamais le plafond partagé (amountPaid)", async () => {
+      const source = await createRentalSourceWithStatus("PARTIALLY_PAID"); // amountPaid = 5000
+      const creditNote1 = await createCreditNoteFor(source.id, 4000, "Avoir 1");
+      const creditNote2 = await createCreditNoteFor(source.id, 4000, "Avoir 2");
+      // Chaque avoir pris isolément autoriserait jusqu'à 4000, mais amountPaid partagé (5000)
+      // interdit que les deux remboursements cumulés dépassent 5000.
+      const [r1, r2] = await Promise.allSettled([
+        refundCreditNote({
+          tenantId: adminA.tenantId,
+          creditNoteId: creditNote1.id,
+          amount: 3000,
+          reason: "Remboursement avoir 1",
+          performedByUserId: adminA.userId,
+        }),
+        refundCreditNote({
+          tenantId: adminA.tenantId,
+          creditNoteId: creditNote2.id,
+          amount: 3000,
+          reason: "Remboursement avoir 2",
+          performedByUserId: adminA.userId,
+        }),
+      ]);
+      const statuses = [r1.status, r2.status].sort();
+      expect(statuses).toEqual(["fulfilled", "rejected"]);
+
+      const totalAcrossBoth = await prisma.cashEntry.aggregate({
+        where: {
+          type: "EXPENSE",
+          category: "REMBOURSEMENT_AVOIR",
+          creditNoteId: { in: [creditNote1.id, creditNote2.id] },
+        },
+        _sum: { amount: true },
+      });
+      expect(totalAcrossBoth._sum.amount).toBeLessThanOrEqual(5000);
+    });
+  });
+
+  describe("Non-régression et isolation", () => {
+    it("createCreditNote ne crée toujours aucune CashEntry ni aucun remboursement automatique", async () => {
+      const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+      const cashCountBefore = await prisma.cashEntry.count({ where: { tenantId: adminA.tenantId } });
+      await createCreditNoteFor(source.id, 3000, "Avoir sans remboursement automatique");
+      const cashCountAfter = await prisma.cashEntry.count({ where: { tenantId: adminA.tenantId } });
+      expect(cashCountAfter).toBe(cashCountBefore);
+    });
+
+    it("getRevenueReport n'est jamais affecté par une CashEntry de remboursement d'avoir (EXPENSE, jamais un Payment)", async () => {
+      const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+      const creditNote = await createCreditNoteFor(source.id, 5000, "Avoir");
+      const invoiceBefore = await prisma.invoice.findUniqueOrThrow({ where: { id: source.id } });
+      const response = await refund(adminA, creditNote.id, { amount: 2000, reason: "Ne doit pas affecter le revenu" });
+      expect(response.status).toBe(201);
+      // getRevenueReport agrège Payment.amount (status ACTIVE), jamais CashEntry — structurellement
+      // non affecté par ce remboursement, revérifié explicitement ici plutôt que supposé.
+      const paymentsUnchanged = await prisma.payment.findMany({ where: { invoiceId: source.id } });
+      expect(paymentsUnchanged.every((p) => p.status === "ACTIVE")).toBe(true);
+      const invoiceAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: source.id } });
+      expect(invoiceAfter.amountPaid).toBe(invoiceBefore.amountPaid);
+    });
+
+    it("isolation DamageInvoice : le remboursement d'un avoir ne touche jamais DamageInvoice/DamageInvoiceLine", async () => {
+      const damageInvoiceCountBefore = await prisma.damageInvoice.count();
+      const { creditNote } = await createPartiallyPaidSourceWithCreditNote();
+      const response = await refund(adminA, creditNote.id, { amount: 1000, reason: "Isolation DamageInvoice" });
+      expect(response.status).toBe(201);
+      const damageInvoiceCountAfter = await prisma.damageInvoice.count();
+      expect(damageInvoiceCountAfter).toBe(damageInvoiceCountBefore);
     });
   });
 });

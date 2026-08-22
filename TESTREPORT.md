@@ -1619,6 +1619,56 @@ Voir DOMAINRULES.md section 54 pour le détail métier complet. Nouveau fichier 
 
 **Fichiers modifiés** : `src/lib/invoices.ts`, `src/lib/payments.ts`, `src/lib/reports.ts`, `src/lib/exports.ts`, `src/lib/export-constants.ts`, `src/__tests__/invoices.test.ts`, `src/__tests__/payments.test.ts`, `src/__tests__/reports.test.ts`, `src/__tests__/csv-exports.test.ts`, `DOMAINRULES.md` (nouvelle section 56), `TESTREPORT.md`, `HANDOFF.md`.
 
+## Tests Sprint 13E tâche 3, sous-phase 2c2-C (remboursement réel d'un avoir)
+
+**Contexte** : décisions métier imposées explicitement (remboursement toujours distinct de la création d'avoir, ADMIN strict, `Payment.status` jamais touché par un remboursement d'avoir, `CashEntry.creditNoteId` nouveau lien optionnel, aucun nouveau champ de suivi sur `Invoice`). Migration nécessaire (`CashEntry.creditNoteId`) — appliquée sur `xrent_dev` directement (autorisé), puis sur `xrent_test` après une autorisation explicite distincte obtenue en cours de tâche (bloquant réel découvert : le client Prisma généré est partagé par tout le projet ; sans cette même migration sur `xrent_test`, la suite de tests — qui cible exclusivement cette base — échouait entièrement dès le premier paiement testé, bien au-delà du seul périmètre 2c2-C).
+
+**Fonctions créées** (`src/lib/invoices.ts`) : `refundCreditNote` (service principal, transactionnel) ; `getCreditNoteRefundableAmount` (exportée, calcule `refundableAmount` en tenant compte du plafond **partagé** entre tous les avoirs d'une même source) ; `getTotalRefundedForCreditNote`/`getTotalRefundedForSource` (internes, agrégats `CashEntry`).
+
+**Écart assumé et démontré par test** par rapport à la formule initialement donnée (`refundableAmount = max(0, min(creditedAmount, amountPaid) − totalRefunded)`, implicitement à l'échelle d'un seul avoir) : généralisée pour couvrir le cas de plusieurs avoirs actifs sur la même source, où `source.amountPaid` est un plafond partagé — voir DOMAINRULES.md section 57 pour le détail complet et le raisonnement.
+
+**Extensions signalées avant modification** (hors liste initiale de fichiers, nécessaires et minimales) :
+- `src/lib/audit.ts` : `logAction` accepte un `tx` optionnel — comportement inchangé pour tout appelant existant ; propage l'erreur (au lieu de l'avaler) uniquement quand `tx` est fourni, pour garantir l'atomicité CashEntry+audit exigée explicitement pour cette action financière.
+- `src/lib/cash-register.ts` : `CreateCashEntryInput` accepte `creditNoteId`/`reason`/`performedByUserId` optionnels — aucun appelant existant affecté (vérifié par la non-régression complète de `cash-register.test.ts`/`payments.test.ts`).
+
+**Route** (`POST /api/invoices/[id]/refund`, nouveau fichier) : `[id]` désigne directement l'avoir à rembourser (déviation assumée du chemin suggéré `.../credit-notes/refund`, qui laissait ambigu quel avoir viser si une source en porte plusieurs — cohérent à la place avec `.../admin-cancel`/`.../versions`). ADMIN strict ; `tenantId`/`agencyId` toujours dérivés côté serveur depuis l'avoir déjà chargé, jamais du client ; 201 (création) / 400 (montant/motif invalide) / 403 (non-ADMIN) / 404 (avoir introuvable, autre tenant, ou cible n'étant pas un CREDIT_NOTE) / 409 (dépassement du plafond).
+
+**Tests** (`invoices.test.ts`, nouveau describe « POST /api/invoices/[id]/refund... », HTTP réel + service direct pour la concurrence) — **29 nouveaux tests** :
+- Autorisation (4) : ADMIN accepté ; MEMBER refusé (403, aucune `CashEntry`) ; autre tenant refusé (404) ; identifiant invalide/facture RENTAL au lieu d'un avoir refusés (404).
+- Validation montant/motif (6) : nul, négatif, décimal (400) ; motif absent/vide (400) ; montant non fini (`Infinity`, service direct).
+- Plafond (7) : sans paiement encaissé (409) ; dépassement (409, aucune `CashEntry`/audit — atomicité) ; remboursement total exact (201) ; second remboursement dépassant le reste (409) ; plusieurs remboursements partiels jusqu'au plafond exact ; avoir supérieur au montant encaissé (plafonné à `amountPaid`, jamais au montant de l'avoir) ; facture PAID (plafond = montant de l'avoir) ; plusieurs paiements cumulés sur la source.
+- `getCreditNoteRefundableAmount` unitaire (1) : plafond partagé entre deux avoirs de la même source, démontré par le calcul avant/après un premier remboursement.
+- Effets constatés (4) : `CashEntry EXPENSE` créée exactement une fois, catégorie `REMBOURSEMENT_AVOIR`, `paymentId` toujours `null` ; `Payment.status` inchangé ; `Invoice.amountPaid` inchangé (source et avoir) ; audit créé exactement une fois avec toutes les métadonnées requises, aucune donnée sensible.
+- Concurrence réelle (2) : deux remboursements concurrents sur le **même** avoir dont la somme dépasse le plafond (un seul réussit) ; deux remboursements concurrents sur **deux avoirs différents** de la même source (plafond partagé jamais dépassé, même si chacun pris isolément semblerait l'autoriser).
+- Non-régression/isolation (3) : `createCreditNote` toujours sans effet caisse/paiement ; `getRevenueReport` non affecté (agrège `Payment`, jamais `CashEntry`) ; `DamageInvoice` jamais touchée.
+
+**Smoke test manuel sur `xrent_dev`** (tenant fictif `SMOKETEST-2c2C-<horodatage>`, serveur `next dev` temporaire contre `.env`) : facture RENTAL (15000), paiement partiel (6000, PARTIALLY_PAID), avoir (4000) → remboursement de 4001 refusé (409), 2500 accepté (201), 1500 accepté (201, solde exact), 1 refusé (409, plafond épuisé). Vérifié en base (lecture seule) : `Payment.status=ACTIVE` inchangé, `Invoice.amountPaid=6000`/`status=PARTIALLY_PAID` inchangés, 2 `CashEntry` totalisant exactement 4000, 2 entrées d'audit `invoice.credit_note_refunded`, `DamageInvoice` du tenant à 0. Toutes les données temporaires supprimées après coup (tenant, agence, véhicule, client, location, factures, paiement, `CashEntry`, groupes de permissions, audit — tous retombés à 0), aucune donnée préexistante touchée.
+
+## Revue corrective précédant le commit (avant validation finale) — bug réel trouvé et corrigé
+
+**Trouvé** : `adminCancelInvoice` (Sprint 28, Finding D2, inchangée par 2c2-C) fait passer une facture `PARTIALLY_PAID` à `VOID` et marque ses `Payment` `REFUNDED`, mais ne réinitialise **jamais** `Invoice.amountPaid` (seul `status` est modifié par son `updateMany`). Sans garde supplémentaire dans `refundCreditNote`, un avoir déjà émis **avant** l'admin-cancel de sa source restait remboursable après coup sur la base de cet `amountPaid` désormais obsolète — un **double remboursement réel** de la même somme déjà reprise par la compensation de caisse d'`adminCancelInvoice`.
+
+**Corrigé** (`src/lib/invoices.ts`) : nouvelle classe `CreditNoteSourceVoidError`, vérifiée dans `refundCreditNoteLocked` immédiatement après le verrouillage de la source — tout remboursement dont `source.status === "VOID"` est désormais refusé catégoriquement (409), quel que soit le montant demandé. `adminCancelInvoice` lui-même **non modifié** (comportement déjà correct pour son propre périmètre, aucune régression introduite).
+
+**Test ajouté** : facture `PARTIALLY_PAID` → avoir de 3000 → `admin-cancel` de la source (`VOID`, `Payment` `REFUNDED`, `amountPaid` confirmé toujours à 5000) → tentative de remboursement de l'avoir → **409**, `git diff` confirmant qu'aucune `CashEntry` n'est créée. Un second test ajouté couvre également « avoir sans facture source » (`originalInvoiceId` forcé à `null` en base, même idiome que les autres tests du fichier forçant un état non atteignable via l'API) → **404**.
+
+**Autres points de la revue corrective (étapes 4 à 7 du brief), tous confirmés déjà conformes sans nouvelle correction nécessaire** : intégrité tenant/agence garantie par le service (jamais uniquement par la FK) ; catégorie `REMBOURSEMENT_AVOIR` distincte d'`ANNULATION_FACTURE`/`CORRECTION_PAIEMENT` ; verrouillage de la facture source (jamais l'avoir seul) sérialisant correctement toute concurrence, y compris entre avoirs différents d'une même source ; aucune donnée créée sur un chemin de refus ; aucune permission/route/champ client non dérivé n'a pu contourner les contrôles. **Non testé par un test forçant un échec artificiel** (nécessiterait un mock, contraire à la philosophie du projet) : l'atomicité « échec de l'audit ⇒ rollback de la CashEntry » repose sur une inspection du code et des garanties transactionnelles de Prisma, documentée explicitement comme telle (DOMAINRULES.md section 57) plutôt que fabriquée.
+
+**Résultats** :
+
+| Vérification | Résultat |
+|---|---|
+| `npx prisma validate` | ✅ |
+| `npx tsc --noEmit` | ✅ |
+| `npx eslint` (fichiers modifiés) | ✅ |
+| `npx prisma migrate status` (xrent_dev puis xrent_test) | ✅ à jour sur les deux, revérifié après la correction |
+| Ciblé (`invoices.test.ts`) | **166/166** (135 existants + 31 nouveaux) |
+| Suite complète (`node scripts/test-grouped.mjs`, 5 groupes) | **1080/1080**, 0 échec, 0 timeout, 0 redémarrage watchdog, 0 processus résiduel |
+
+**Aucun test désactivé, aucun `.only`/`.skip`, aucun retry ni délai artificiel, aucune assertion supprimée. `PaymentStatus` (valeurs), `adminCancelInvoice`, PDF/composants UI, `package.json`/`package-lock.json` : non modifiés — vérifié par `git diff --name-status`.**
+
+**Fichiers modifiés** : `prisma/schema.prisma`, nouvelle migration `20260822154218_add_credit_note_refunds/`, `src/lib/invoices.ts`, `src/lib/audit.ts` (signalé), `src/lib/cash-register.ts` (signalé), nouvelle route `src/app/api/invoices/[id]/refund/route.ts`, `src/__tests__/invoices.test.ts`, `DOMAINRULES.md` (nouvelle section 57), `TESTREPORT.md`, `HANDOFF.md`.
+
 ## 4. Format attendu des futurs rapports
 
 Chaque exécution future de la suite de tests devra être consignée dans ce document (ou dans un rapport daté associé) selon le format suivant :

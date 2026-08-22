@@ -1,7 +1,8 @@
-import type { Invoice, InvoiceStatus, InvoiceType, Payment, PaymentMethod, Prisma } from "@prisma/client";
+import type { CashEntry, Invoice, InvoiceStatus, InvoiceType, Payment, PaymentMethod, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getLocationById, lockLocationForUpdate } from "@/lib/locations";
-import { createCorrectionCashEntry, CorrectionReasonRequiredError } from "@/lib/cash-register";
+import { createCorrectionCashEntry, createCashEntry, CorrectionReasonRequiredError } from "@/lib/cash-register";
+import { logAction } from "@/lib/audit";
 
 export { CorrectionReasonRequiredError };
 
@@ -1089,6 +1090,274 @@ export async function getInvoiceNetAmounts(
 ): Promise<InvoiceNetAmounts> {
   const creditedAmount = await getTotalCreditedAmount(invoice.id, tx);
   return computeInvoiceNetAmounts(invoice.totalAmount, invoice.amountPaid, creditedAmount);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Remboursement d'un avoir (refundCreditNote) — Sprint 13E tâche 3, sous-phase 2c2-C
+// ---------------------------------------------------------------------------------------------
+// Action strictement distincte de createCreditNote (2c1) : jamais appelée depuis elle, jamais un
+// paramètre refundImmediately. La création d'un avoir ne déclenche toujours aucun remboursement,
+// ne crée toujours aucune CashEntry, ne modifie toujours ni Payment ni Invoice.amountPaid — ce
+// module ne change rien à ce comportement déjà acté (2c2 LOT 1).
+
+export class CreditNoteRefundReasonRequiredError extends Error {
+  constructor() {
+    super("Un motif est obligatoire pour rembourser un avoir.");
+    this.name = "CreditNoteRefundReasonRequiredError";
+  }
+}
+
+export class CreditNoteNotFoundError extends Error {
+  constructor() {
+    super("Avoir introuvable.");
+    this.name = "CreditNoteNotFoundError";
+  }
+}
+
+export class InvoiceIsNotCreditNoteError extends Error {
+  constructor() {
+    super("Seul un avoir (CREDIT_NOTE) peut faire l'objet d'un remboursement.");
+    this.name = "InvoiceIsNotCreditNoteError";
+  }
+}
+
+/** Réutilisée pour "la facture source d'un avoir a disparu" — devrait être structurellement
+ * impossible (FK Restrict sur Invoice.originalInvoiceId), gardée en défense en profondeur. */
+export class CreditNoteSourceMissingError extends Error {
+  constructor() {
+    super("Facture source de l'avoir introuvable.");
+    this.name = "CreditNoteSourceMissingError";
+  }
+}
+
+export class CreditNoteExceedsRefundableAmountError extends Error {
+  constructor() {
+    super("Le montant dépasse le montant encore remboursable de cet avoir.");
+    this.name = "CreditNoteExceedsRefundableAmountError";
+  }
+}
+
+/**
+ * Sprint 13E tâche 3, sous-phase 2c2-C — bug réel trouvé pendant la revue corrective précédant
+ * le commit (pas une extension de périmètre) : `adminCancelInvoice` fait passer une facture
+ * PARTIALLY_PAID à VOID et marque ses Payment REFUNDED, mais ne réinitialise JAMAIS
+ * `Invoice.amountPaid` (seul `status` est modifié — voir adminCancelInvoice ci-dessous). Sans
+ * cette garde, un avoir déjà émis AVANT l'admin-cancel de sa source resterait remboursable
+ * après coup en se basant sur cet `amountPaid` désormais obsolète — alors que l'argent a déjà
+ * été repris via la compensation de caisse d'adminCancelInvoice — un double remboursement réel.
+ * Refusé catégoriquement, indépendamment du montant demandé.
+ */
+export class CreditNoteSourceVoidError extends Error {
+  constructor() {
+    super("Impossible de rembourser un avoir dont la facture source est déjà annulée (VOID).");
+    this.name = "CreditNoteSourceVoidError";
+  }
+}
+
+/**
+ * Somme des CashEntry de remboursement (type=EXPENSE, category=REMBOURSEMENT_AVOIR) déjà liées à
+ * CET avoir précis — jamais aux autres avoirs de la même source (voir getTotalRefundedForSource
+ * ci-dessous pour l'agrégat côté source). Structurellement hors de portée de DamageInvoice
+ * (CashEntry.creditNoteId ne référence jamais qu'un Invoice de type CREDIT_NOTE).
+ */
+async function getTotalRefundedForCreditNote(
+  creditNoteId: string,
+  tx: Prisma.TransactionClient = prisma
+): Promise<number> {
+  const result = await tx.cashEntry.aggregate({
+    where: { creditNoteId, type: "EXPENSE", category: "REMBOURSEMENT_AVOIR" },
+    _sum: { amount: true },
+  });
+  return result._sum.amount ?? 0;
+}
+
+/**
+ * Somme des CashEntry de remboursement déjà liées à N'IMPORTE LEQUEL des avoirs actifs de cette
+ * facture source — nécessaire car source.amountPaid est un plafond PARTAGÉ entre tous les avoirs
+ * d'une même source (deux avoirs distincts sur la même source ne peuvent jamais faire rembourser,
+ * ensemble, plus que ce qui a réellement été encaissé sur cette source). Sans cet agrégat
+ * partagé, deux avoirs individuellement sous leur propre plafond pourraient, cumulés, dépasser
+ * source.amountPaid.
+ */
+async function getTotalRefundedForSource(sourceInvoiceId: string, tx: Prisma.TransactionClient = prisma): Promise<number> {
+  const result = await tx.cashEntry.aggregate({
+    where: {
+      type: "EXPENSE",
+      category: "REMBOURSEMENT_AVOIR",
+      creditNote: { originalInvoiceId: sourceInvoiceId },
+    },
+    _sum: { amount: true },
+  });
+  return result._sum.amount ?? 0;
+}
+
+export interface CreditNoteRefundableAmount {
+  /** Plafond réel pour CET avoir précis, à cet instant (sous verrou lors d'un remboursement). */
+  refundableAmount: number;
+  totalRefundedForCreditNote: number;
+  totalRefundedForSource: number;
+}
+
+/**
+ * Calcule le montant encore remboursable d'un avoir précis :
+ *   availableFromCollected = max(0, source.amountPaid - totalRefundedForSource)
+ *   refundableAmount = max(0, min(creditNote.totalAmount - totalRefundedForCreditNote, availableFromCollected))
+ * `availableFromCollected` est le solde partagé entre tous les avoirs de la source (voir
+ * getTotalRefundedForSource ci-dessus) — jamais uniquement `source.amountPaid` seul, qui
+ * permettrait un sur-remboursement agrégé si la source porte plusieurs avoirs actifs.
+ */
+export async function getCreditNoteRefundableAmount(
+  creditNote: Pick<Invoice, "id" | "totalAmount" | "originalInvoiceId">,
+  source: Pick<Invoice, "amountPaid">,
+  tx: Prisma.TransactionClient = prisma
+): Promise<CreditNoteRefundableAmount> {
+  // originalInvoiceId n'est garanti non-null que par l'application (createCreditNote), jamais
+  // par une contrainte CHECK en base (voir prisma/schema.prisma) — revérifié explicitement
+  // plutôt qu'une assertion muette, cohérent avec le principe de ne jamais faire confiance à une
+  // seule couche pour un invariant financier.
+  if (!creditNote.originalInvoiceId) {
+    throw new CreditNoteSourceMissingError();
+  }
+  const totalRefundedForCreditNote = await getTotalRefundedForCreditNote(creditNote.id, tx);
+  const totalRefundedForSource = await getTotalRefundedForSource(creditNote.originalInvoiceId, tx);
+  const availableFromCollected = Math.max(0, source.amountPaid - totalRefundedForSource);
+  const refundableAmount = Math.max(
+    0,
+    Math.min(creditNote.totalAmount - totalRefundedForCreditNote, availableFromCollected)
+  );
+  return { refundableAmount, totalRefundedForCreditNote, totalRefundedForSource };
+}
+
+export interface RefundCreditNoteInput {
+  tenantId: string;
+  creditNoteId: string;
+  amount: number;
+  reason: string;
+  performedByUserId: string;
+  paymentMethod?: PaymentMethod;
+}
+
+export interface RefundCreditNoteResult {
+  creditNote: Invoice;
+  cashEntry: CashEntry;
+}
+
+/**
+ * Rembourse tout ou partie d'un avoir déjà émis — action financière réelle et distincte de
+ * createCreditNote : crée exactement une CashEntry EXPENSE (catégorie REMBOURSEMENT_AVOIR),
+ * liée à l'avoir via creditNoteId, jamais via paymentId (réservé aux paiements réels). Ne
+ * modifie jamais Payment.status (réservé à adminCancelInvoice/adminCancelValidatedLocation, un
+ * mécanisme différent), ne modifie jamais Invoice.amountPaid (ni de l'avoir, ni de la source).
+ *
+ * Concurrence : verrou de ligne sur la facture SOURCE (lockInvoiceRow, jamais sur l'avoir seul)
+ * — nécessaire car le plafond réel est partagé entre tous les avoirs d'une même source (voir
+ * getTotalRefundedForSource) : verrouiller uniquement l'avoir ciblé ne sérialiserait pas deux
+ * remboursements concurrents visant deux avoirs DIFFÉRENTS de la même source, qui pourraient
+ * alors dépasser ensemble source.amountPaid. Le verrou étant posé avant toute lecture
+ * décisionnelle et tenu jusqu'à la validation de la transaction, deux remboursements concurrents
+ * sur la même source (même avoir ou avoirs différents) sont entièrement sérialisés par
+ * PostgreSQL — aucun réessai n'est nécessaire ici (contrairement à la collision de numérotation
+ * de createCreditNote, qui impliquait deux lignes non verrouillées l'une contre l'autre).
+ *
+ * Idempotence : aucune clé dédiée (un second remboursement identique est simplement revalidé
+ * contre le plafond déjà réduit par le premier — refusé si le plafond est atteint, accepté sinon
+ * comme un nouveau remboursement partiel légitime).
+ *
+ * Audit : écrit dans la MÊME transaction que la CashEntry (logAction reçoit `tx` explicitement,
+ * voir src/lib/audit.ts) — une erreur d'audit fait échouer tout le remboursement, jamais une
+ * CashEntry orpheline sans trace.
+ */
+export async function refundCreditNote(
+  data: RefundCreditNoteInput,
+  tx?: Prisma.TransactionClient
+): Promise<RefundCreditNoteResult> {
+  if (tx) {
+    return refundCreditNoteLocked(data, tx);
+  }
+  return prisma.$transaction((innerTx) => refundCreditNoteLocked(data, innerTx));
+}
+
+async function refundCreditNoteLocked(
+  data: RefundCreditNoteInput,
+  tx: Prisma.TransactionClient
+): Promise<RefundCreditNoteResult> {
+  const reason = data.reason.trim();
+  if (!reason) {
+    throw new CreditNoteRefundReasonRequiredError();
+  }
+  validateSupplementaryAmount(data.amount);
+
+  // L'avoir lui-même est immuable après création (aucun chemin ne le modifie jamais) — une
+  // lecture non verrouillée de ses propres colonnes est donc sûre ; seule la facture SOURCE a
+  // besoin d'être verrouillée (voir le commentaire de refundCreditNote ci-dessus).
+  const creditNote = await tx.invoice.findFirst({ where: { id: data.creditNoteId, tenantId: data.tenantId } });
+  if (!creditNote) {
+    throw new CreditNoteNotFoundError();
+  }
+  if (creditNote.type !== "CREDIT_NOTE") {
+    throw new InvoiceIsNotCreditNoteError();
+  }
+  if (!creditNote.originalInvoiceId) {
+    throw new CreditNoteSourceMissingError();
+  }
+
+  const source = await lockInvoiceRow(data.tenantId, creditNote.originalInvoiceId, tx);
+  if (!source) {
+    throw new CreditNoteSourceMissingError();
+  }
+  // Voir CreditNoteSourceVoidError ci-dessus : ferme un double remboursement réel possible via
+  // adminCancelInvoice (qui ne réinitialise jamais amountPaid). Vérifié après le verrou, donc
+  // jamais périmé par une annulation concurrente entre la lecture et cette vérification.
+  if (source.status === "VOID") {
+    throw new CreditNoteSourceVoidError();
+  }
+
+  const { refundableAmount } = await getCreditNoteRefundableAmount(creditNote, source, tx);
+  if (data.amount > refundableAmount) {
+    throw new CreditNoteExceedsRefundableAmountError();
+  }
+
+  const location = await tx.location.findUnique({ where: { id: creditNote.locationId } });
+
+  const cashEntry = await createCashEntry(
+    {
+      tenantId: data.tenantId,
+      type: "EXPENSE",
+      category: "REMBOURSEMENT_AVOIR",
+      amount: data.amount,
+      description: `Remboursement avoir ${creditNote.number} (facture source ${source.number})`,
+      agencyId: creditNote.agencyId,
+      contractId: creditNote.locationId,
+      contractNumber: location?.contractNumber ?? null,
+      paymentMethod: data.paymentMethod,
+      creditNoteId: creditNote.id,
+      reason,
+      performedByUserId: data.performedByUserId,
+    },
+    tx
+  );
+
+  await logAction(
+    {
+      tenantId: data.tenantId,
+      userId: data.performedByUserId,
+      action: "invoice.credit_note_refunded",
+      resource: "Invoice",
+      resourceId: creditNote.id,
+      metadata: {
+        creditNoteId: creditNote.id,
+        sourceInvoiceId: source.id,
+        amount: data.amount,
+        cashEntryId: cashEntry.id,
+        reason,
+        actorId: data.performedByUserId,
+        tenantId: data.tenantId,
+      } as unknown as Prisma.InputJsonValue,
+    },
+    tx
+  );
+
+  return { creditNote, cashEntry };
 }
 
 export interface UpdateInvoiceInput {
