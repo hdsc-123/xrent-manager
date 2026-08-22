@@ -1,4 +1,4 @@
-import type { Invoice, InvoiceStatus, Payment, PaymentMethod, Prisma } from "@prisma/client";
+import type { Invoice, InvoiceStatus, InvoiceType, Payment, PaymentMethod, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getLocationById, lockLocationForUpdate } from "@/lib/locations";
 import { createCorrectionCashEntry, CorrectionReasonRequiredError } from "@/lib/cash-register";
@@ -824,6 +824,198 @@ export async function getOrCreateExtensionInvoice(
   return prisma.$transaction((innerTx) =>
     getOrCreateExtensionInvoiceLocked(tenantId, locationId, extensionEndDate, input, innerTx)
   );
+}
+
+// ---------------------------------------------------------------------------------------------
+// CREDIT_NOTE (avoir) — Sprint 13E tâche 3, sous-phase 2c1
+// ---------------------------------------------------------------------------------------------
+//
+// Un avoir référence une facture source (originalInvoiceId) sans jamais la modifier ni la
+// remplacer (distinct du versionnement, Sprint 26E, qui remplace un document). Créé directement
+// à status=CREDIT_NOTE (jamais DRAFT, pas de cycle de vie — garanti par la contrainte CHECK
+// Invoice_credit_note_status_type_consistency, déjà en base depuis la migration 2a). Purement
+// documentaire (B1) : ne touche jamais Payment ni CashEntry, ne déclenche aucun remboursement
+// automatique — un remboursement réel est un acte distinct, hors périmètre de 2c1 (voir
+// DOMAINRULES.md). Aucune idempotence par clé (un avoir est un document financier ponctuel,
+// plusieurs avoirs distincts peuvent légitimement référencer la même source) — la seule
+// protection est le plafond cumulatif ci-dessous, sous verrou de la source.
+
+export class CreditNoteReasonRequiredError extends Error {
+  constructor() {
+    super("Un motif est obligatoire pour créer un avoir.");
+    this.name = "CreditNoteReasonRequiredError";
+  }
+}
+
+export class CreditNoteSourceNotFoundError extends Error {
+  constructor() {
+    super("Facture source introuvable.");
+    this.name = "CreditNoteSourceNotFoundError";
+  }
+}
+
+/** RENTAL/SUPPLEMENT/EXTENSION uniquement (C2) — jamais CREDIT_NOTE (pas d'avoir sur un avoir). */
+export class CreditNoteSourceTypeNotEligibleError extends Error {
+  constructor() {
+    super("Seule une facture RENTAL, SUPPLEMENT ou EXTENSION peut recevoir un avoir.");
+    this.name = "CreditNoteSourceTypeNotEligibleError";
+  }
+}
+
+/** ISSUED/PARTIALLY_PAID/PAID uniquement — DRAFT (rien n'a encore été facturé formellement) et
+ * VOID (déjà annulée) sont refusées. PAID est le cas d'usage principal : c'est le seul mécanisme
+ * de réversibilité pour une facture intégralement soldée (voidInvoice ne couvre pas ce cas, voir
+ * DOMAINRULES.md). */
+export class CreditNoteSourceStatusNotEligibleError extends Error {
+  constructor() {
+    super("Seule une facture ISSUED, PARTIALLY_PAID ou PAID peut recevoir un avoir (DRAFT/VOID refusées).");
+    this.name = "CreditNoteSourceStatusNotEligibleError";
+  }
+}
+
+export class CreditNoteExceedsRemainingCreditError extends Error {
+  constructor() {
+    super("Le montant de l'avoir dépasse le montant encore créditable de la facture source.");
+    this.name = "CreditNoteExceedsRemainingCreditError";
+  }
+}
+
+const CREDIT_NOTE_ELIGIBLE_SOURCE_TYPES: InvoiceType[] = ["RENTAL", "SUPPLEMENT", "EXTENSION"];
+const CREDIT_NOTE_ELIGIBLE_SOURCE_STATUSES: InvoiceStatus[] = ["ISSUED", "PARTIALLY_PAID", "PAID"];
+
+/**
+ * Génère un numéro d'avoir unique par tenant, au format AV-{année}-{5 chiffres} — délibérément
+ * distinct de INV-{année}-{5 chiffres} (generateInvoiceNumber) et du suffixe -AV{n} du
+ * versionnement (Sprint 26E, qui désigne une "version", pas un "avoir" — même sigle, sens
+ * différent, jamais réutilisé ici pour éviter toute ambiguïté). Compteur dédié, jamais partagé
+ * avec la numérotation RENTAL.
+ */
+async function generateCreditNoteNumber(
+  tenantId: string,
+  year: number,
+  tx: Prisma.TransactionClient
+): Promise<string> {
+  const prefix = `AV-${year}-`;
+  const count = await tx.invoice.count({
+    where: { tenantId, number: { startsWith: prefix } },
+  });
+  return `${prefix}${String(count + 1).padStart(5, "0")}`;
+}
+
+/**
+ * Montant total déjà crédité pour une facture source, strictement limité aux avoirs actifs qui
+ * la référencent : type=CREDIT_NOTE ET status=CREDIT_NOTE (toujours les deux ensemble, voir la
+ * contrainte CHECK) ET originalInvoiceId=sourceId. Ne peut structurellement jamais sommer une
+ * facture ordinaire (originalInvoiceId est toujours NULL sur une facture non-avoir) ni la source
+ * elle-même (dont originalInvoiceId ne pointe jamais vers elle-même).
+ */
+export async function getTotalCreditedAmount(
+  originalInvoiceId: string,
+  tx: Prisma.TransactionClient = prisma
+): Promise<number> {
+  const result = await tx.invoice.aggregate({
+    where: { originalInvoiceId, type: "CREDIT_NOTE", status: "CREDIT_NOTE" },
+    _sum: { totalAmount: true },
+  });
+  return result._sum.totalAmount ?? 0;
+}
+
+export interface CreateCreditNoteInput {
+  tenantId: string;
+  /** Dérivé par l'appelant (route) depuis la facture source, jamais fourni par le client HTTP —
+   * revérifié ci-dessous contre source.locationId sous verrou (défense en profondeur, ne devrait
+   * jamais échouer en usage normal, un seul appelant interne existant). */
+  locationId: string;
+  originalInvoiceId: string;
+  amount: number;
+  reason: string;
+  notes?: string;
+}
+
+/**
+ * Crée un avoir référençant originalInvoiceId, sous verrou de la source tenu jusqu'à la
+ * validation de la transaction (SELECT ... FOR UPDATE via lockInvoiceRow, même primitive que
+ * versionInvoice/adminCancelInvoice) — sérialise toute création concurrente d'avoirs référençant
+ * la même source, garantissant qu'aucun cumul ne dépasse jamais source.totalAmount.
+ *
+ * Réessai de numérotation : contrairement à createInvoice/createSupplementInvoice/
+ * createExtensionInvoice (qui ne réessaient qu'un INSERT isolé, jamais entre eux nested dans le
+ * verrou — sans effet réel dans leurs propres chemins verrouillés, puisque PostgreSQL invalide
+ * le reste d'une transaction après une violation de contrainte), createCreditNote réessaie ici
+ * la transaction ENTIÈRE (verrou + calcul + insertion) quand aucune transaction partagée n'est
+ * fournie par l'appelant — seule façon de retenter effectivement après une collision de numéro
+ * (deux sources différentes, non sérialisées entre elles par le verrou de l'une) tout en gardant
+ * le verrou tenu jusqu'à l'insertion à l'intérieur de chaque tentative. Si un `tx` partagé est
+ * fourni (nested), une seule tentative est faite, comme le reste du fichier.
+ */
+export async function createCreditNote(data: CreateCreditNoteInput, tx?: Prisma.TransactionClient): Promise<Invoice> {
+  if (tx) {
+    return createCreditNoteAttempt(data, tx);
+  }
+  for (let attempt = 0; attempt < MAX_NUMBER_GENERATION_ATTEMPTS; attempt++) {
+    try {
+      return await prisma.$transaction((innerTx) => createCreditNoteAttempt(data, innerTx));
+    } catch (error) {
+      if (isUniqueConstraintError(error) && attempt < MAX_NUMBER_GENERATION_ATTEMPTS - 1) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("Impossible de générer un numéro d'avoir unique.");
+}
+
+async function createCreditNoteAttempt(data: CreateCreditNoteInput, tx: Prisma.TransactionClient): Promise<Invoice> {
+  const reason = data.reason.trim();
+  if (!reason) {
+    throw new CreditNoteReasonRequiredError();
+  }
+  validateSupplementaryAmount(data.amount);
+
+  const source = await lockInvoiceRow(data.tenantId, data.originalInvoiceId, tx);
+  if (!source || data.locationId !== source.locationId) {
+    throw new CreditNoteSourceNotFoundError();
+  }
+  if (!CREDIT_NOTE_ELIGIBLE_SOURCE_TYPES.includes(source.type)) {
+    throw new CreditNoteSourceTypeNotEligibleError();
+  }
+  if (!CREDIT_NOTE_ELIGIBLE_SOURCE_STATUSES.includes(source.status)) {
+    throw new CreditNoteSourceStatusNotEligibleError();
+  }
+
+  // A1 : plafond cumulatif, calculé sous le verrou ci-dessus — deux appels concurrents référençant
+  // la même source sont sérialisés, jamais de dépassement possible.
+  const alreadyCredited = await getTotalCreditedAmount(source.id, tx);
+  const remainingCredit = source.totalAmount - alreadyCredited;
+  if (data.amount > remainingCredit) {
+    throw new CreditNoteExceedsRemainingCreditError();
+  }
+
+  const year = new Date().getFullYear();
+  const number = await generateCreditNoteNumber(data.tenantId, year, tx);
+
+  // La source n'est jamais modifiée : aucun tx.invoice.update sur source.id, aucune écriture sur
+  // Payment/CashEntry — seule une nouvelle ligne CREDIT_NOTE est insérée.
+  return tx.invoice.create({
+    data: {
+      tenantId: data.tenantId,
+      agencyId: source.agencyId,
+      locationId: source.locationId,
+      clientId: source.clientId,
+      number,
+      type: "CREDIT_NOTE",
+      status: "CREDIT_NOTE",
+      originalInvoiceId: source.id,
+      reason,
+      notes: data.notes,
+      subtotal: data.amount,
+      taxRate: 0,
+      taxAmount: 0,
+      discountAmount: 0,
+      totalAmount: data.amount,
+      currency: source.currency,
+    },
+  });
 }
 
 export interface UpdateInvoiceInput {

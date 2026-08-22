@@ -1549,6 +1549,42 @@ Voir DOMAINRULES.md section 54 pour le détail métier complet. Nouveau fichier 
 
 **Fichiers modifiés** : `src/lib/invoices.ts` (services SUPPLEMENT/EXTENSION), `src/lib/locations.ts` (`syncDraftInvoiceTotal`), `src/app/api/invoices/route.ts` (branches SUPPLEMENT/EXTENSION), `src/__tests__/invoices.test.ts` (nouveau describe + 1 test préexistant corrigé), `DOMAINRULES.md`, `TESTREPORT.md`, `HANDOFF.md`.
 
+## Tests Sprint 13E tâche 3, sous-phase 2c1 (CREDIT_NOTE — création de l'avoir)
+
+**Contexte** : création de l'avoir (`CREDIT_NOTE`) autorisée après validation explicite du modèle métier (montant plafonné cumulatif A1, effet purement documentaire B1, sources RENTAL/SUPPLEMENT/EXTENSION C2, numérotation dédiée `AV-{année}-{5 chiffres}` D1, permission ADMIN strict E2, aucune idempotence par clé) — le schéma lui-même (`InvoiceType.CREDIT_NOTE`, `InvoiceStatus.CREDIT_NOTE`, `originalInvoiceId`, contrainte CHECK) existait déjà depuis la sous-phase 2a. Périmètre strict : création de l'avoir uniquement — ni extension de `voidInvoice` à `PAID`, ni correction du chemin `PATCH` VOID existant (`Invoice.reason` jamais renseigné aujourd'hui — évalué, documenté comme hors périmètre minimal, non corrigé), ni remboursement réel, ni modification de `payments.ts`/`cash-register.ts`/`reports.ts`/`exports.ts`/`InvoicePdf.tsx`.
+
+**Service créé** (`src/lib/invoices.ts`) : `createCreditNote` (verrou `lockInvoiceRow` sur la source tenu jusqu'à l'insertion, vérification type/statut éligibles, calcul du plafond via `getTotalCreditedAmount`, génération de numéro `AV-`, création directe à `status = CREDIT_NOTE`) ; `getTotalCreditedAmount` (strictement `type = CREDIT_NOTE AND status = CREDIT_NOTE AND originalInvoiceId = sourceId`) ; `generateCreditNoteNumber` (dédiée, jamais partagée avec `generateInvoiceNumber`) ; classes d'erreur dédiées (`CreditNoteReasonRequiredError`, `CreditNoteSourceNotFoundError`, `CreditNoteSourceTypeNotEligibleError`, `CreditNoteSourceStatusNotEligibleError`, `CreditNoteExceedsRemainingCreditError`). Réutilise `validateSupplementaryAmount` (déjà partagée SUPPLEMENT/EXTENSION) pour la validation du montant — aucune nouvelle fonction de validation numérique dupliquée.
+
+**Réessai de numérotation, adapté et documenté** (voir DOMAINRULES.md section 55 pour le raisonnement complet) : contrairement à `createInvoice`/`createSupplementInvoice`/`createExtensionInvoice` (réessai multi-tentatives sans effet réel dans leurs propres chemins verrouillés — PostgreSQL invalide le reste d'une transaction après une violation de contrainte), `createCreditNote` retente la transaction entière (verrou + calcul + insertion) quand aucune transaction partagée n'est fournie — seule façon de retenter effectivement contre une collision de numéro entre deux sources différentes.
+
+**Route** (`POST /api/invoices/[id]/credit-notes`, nouveau fichier) : ADMIN strict (`user.role !== "ADMIN"`, jamais une permission granulaire, même principe que `admin-cancel`) ; `locationId` toujours dérivé de la source déjà chargée et vérifiée (tenant + agence), jamais du corps de requête ; 201 (création) / 400 (montant/motif invalide) / 403 (non-ADMIN) / 404 (source absente ou autre tenant) / 409 (source inéligible ou plafond dépassé) ; audit `invoice.credit_note_created` journalisé après le commit de la transaction (`logAction` n'est pas transaction-aware — même contrainte architecturale que `admin-cancel`/`versionInvoice`, vérifiée avant implémentation). `POST /api/invoices` générique non modifié.
+
+**Tests** (`invoices.test.ts`, nouveau describe « POST /api/invoices/[id]/credit-notes... », HTTP réel + service direct pour la concurrence, sources fraîches par test) — **26 nouveaux tests** :
+- Sources éligibles et montants (7) : avoir total sur RENTAL (ISSUED, plafond atteint à 0) ; avoir partiel sur RENTAL (PARTIALLY_PAID) ; avoir sur facture PAID (cas d'usage principal) ; avoir sur SUPPLEMENT ; avoir sur EXTENSION ; second avoir jusqu'au plafond exact accepté puis troisième refusé (409) ; montant dépassant le plafond (409).
+- Validation du montant (4) : nul, négatif, non entier (400) ; non fini (`Infinity`, service direct — non représentable en JSON HTTP).
+- Validation du motif (2) : absent, vide (espaces uniquement) — 400.
+- Éligibilité de la source (5) : inexistante (404) ; autre tenant (404) ; DRAFT (409) ; VOID (409) ; CREDIT_NOTE — avoir sur avoir (409).
+- Permission (1) : rôle non-ADMIN (MEMBER) — 403.
+- Audit (1) : `invoice.credit_note_created` créé avec toutes les métadonnées attendues.
+- Immuabilité de la source et absence d'effet financier (3) : source inchangée (`status`/`amountPaid`/`totalAmount`/`subtotal`/`taxAmount`/`reason`/`updatedAt`) ; aucun `Payment` modifié ; aucune `CashEntry` créée.
+- Concurrence réelle, service direct (3) : deux créations concurrentes dont la somme dépasse le plafond (une seule réussit, plafond jamais dépassé) ; deux créations concurrentes dont la somme reste sous le plafond (les deux réussissent) ; collision de numérotation entre 5 sources différentes créées concurremment (aucun doublon de numéro `AV-`, réessai de transaction exercé).
+
+**Point documenté plutôt que testé séparément** : la route étant réservée ADMIN strict et `canAccessAgency` retournant toujours `true` pour un ADMIN sur son propre tenant, le scénario « source d'une autre agence du même tenant, non rattachée » est structurellement inatteignable — il se confond avec le test « autre tenant » (seul cas réel de 404 lié à l'accès pour cette route).
+
+**Résultats** :
+
+| Vérification | Résultat |
+|---|---|
+| `invoices.test.ts` (fichier complet, 122 tests) | **122/122** |
+| Non-régression : `payments`/`cash-register`/`damages`/`damage-invoices-route`/`damages-route`/`csv-exports`/`audit`/`reports`/`invoice-status-alerts`/`location-payment`/`e2e`/`e2e-full`/`locations` (13 fichiers) | **336/336** |
+| `npx prisma validate` | ✅ (aucun changement de schéma) |
+| `npx tsc --noEmit` | ✅ (aucune erreur) |
+| `npx eslint` (fichiers modifiés) | ✅ (aucune erreur, aucun avertissement) |
+
+**Aucun test désactivé, aucun `.only`/`.skip`, aucun retry ni délai artificiel, aucune assertion supprimée. `DamageInvoice`/`DamageInvoiceStatus`, `Payment`, `CashEntry`, `payments.ts`/`cash-register.ts`/`reports.ts`/`exports.ts`, `InvoicePdf.tsx`, schéma Prisma, `xrent_dev` : non modifiés — vérifié par `git status`/`git diff --stat` (2 fichiers modifiés, 1 nouveau fichier, exactement la liste autorisée).**
+
+**Fichiers modifiés** : `src/lib/invoices.ts` (`createCreditNote`/`getTotalCreditedAmount`/`generateCreditNoteNumber`/classes d'erreur), `src/app/api/invoices/[id]/credit-notes/route.ts` (nouveau), `src/__tests__/invoices.test.ts` (nouveau describe), `DOMAINRULES.md` (nouvelle section 55), `TESTREPORT.md`, `HANDOFF.md`.
+
 ## 4. Format attendu des futurs rapports
 
 Chaque exécution future de la suite de tests devra être consignée dans ce document (ou dans un rapport daté associé) selon le format suivant :

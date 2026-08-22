@@ -12,8 +12,11 @@ import {
   getOrCreateSupplementInvoice,
   getOrCreateExtensionInvoice,
   validateSupplementaryAmount,
+  createCreditNote,
+  getTotalCreditedAmount,
   InvoiceLocationNotFoundError,
   InvalidInvoiceAmountError,
+  CreditNoteExceedsRemainingCreditError,
 } from "@/lib/invoices";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
@@ -2022,6 +2025,394 @@ describe("SUPPLEMENT/EXTENSION — factures additionnelles (Sprint 13E tâche 3,
       const supplementAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: supplement.invoice.id } });
       expect(supplementAfter.subtotal).toBe(7777); // jamais touchée
       expect(supplementAfter.totalAmount).toBe(7777);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// CREDIT_NOTE (avoir) — Sprint 13E tâche 3, sous-phase 2c1
+// ---------------------------------------------------------------------------------------------
+// Périmètre strict, décidé explicitement par le propriétaire du projet : montant plafonné au
+// cumul déjà crédité (A1), purement documentaire — jamais Payment/CashEntry modifiés, jamais de
+// remboursement automatique (B1), sources RENTAL/SUPPLEMENT/EXTENSION uniquement (C2, jamais
+// CREDIT_NOTE/VOID/DRAFT en source), numérotation AV-{année}-{5 chiffres} dédiée (D1), ADMIN
+// strict sans nouvelle permission granulaire (E2), aucune idempotence par clé — un avoir est un
+// document ponctuel, plusieurs avoirs distincts peuvent référencer la même source.
+
+async function createRentalSourceWithStatus(
+  status: "DRAFT" | "ISSUED" | "PARTIALLY_PAID" | "PAID" | "VOID"
+) {
+  const createResponse = await createInvoice(adminA);
+  const created = (await createResponse.json()).invoice;
+  if (status === "DRAFT") {
+    return created;
+  }
+  await finalizeInvoice(adminA, created.id);
+  if (status === "ISSUED") {
+    return prisma.invoice.findUniqueOrThrow({ where: { id: created.id } });
+  }
+  if (status === "VOID") {
+    const patchResponse = await apiFetch(`/api/invoices/${created.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "VOID" }),
+    });
+    expect(patchResponse.status).toBe(200);
+    return prisma.invoice.findUniqueOrThrow({ where: { id: created.id } });
+  }
+  if (status === "PARTIALLY_PAID") {
+    await payAmount(adminA, created.id, Math.floor(created.totalAmount / 3));
+    return prisma.invoice.findUniqueOrThrow({ where: { id: created.id } });
+  }
+  await payAmount(adminA, created.id, created.totalAmount); // PAID
+  return prisma.invoice.findUniqueOrThrow({ where: { id: created.id } });
+}
+
+let creditNoteSupplementCounter = 0;
+async function createFreshSupplementInvoice(admin: AuthenticatedTestUser, amount: number) {
+  const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+  creditNoteSupplementCounter += 1;
+  const response = await apiFetch("/api/invoices", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({
+      locationId,
+      type: "SUPPLEMENT",
+      supplementKey: `CREDIT_NOTE_TEST_${creditNoteSupplementCounter}`,
+      amount,
+    }),
+  });
+  expect(response.status).toBe(201);
+  return (await response.json()).invoice;
+}
+
+let creditNoteExtensionDateOffset = 0;
+async function createFreshExtensionInvoice(admin: AuthenticatedTestUser, amount: number) {
+  const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+  creditNoteExtensionDateOffset += 1;
+  const targetDate = new Date(Date.UTC(2032, 0, 1 + creditNoteExtensionDateOffset)).toISOString();
+  const response = await apiFetch("/api/invoices", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ locationId, type: "EXTENSION", extensionEndDate: targetDate, amount }),
+  });
+  expect(response.status).toBe(201);
+  return (await response.json()).invoice;
+}
+
+async function createCreditNoteHttp(admin: AuthenticatedTestUser, sourceId: string, body: Record<string, unknown>) {
+  return apiFetch(`/api/invoices/${sourceId}/credit-notes`, {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("POST /api/invoices/[id]/credit-notes — avoir (Sprint 13E tâche 3, sous-phase 2c1)", () => {
+  describe("Sources éligibles et montants", () => {
+    it("avoir total sur RENTAL (ISSUED) : montant = totalAmount, plafond atteint à 0", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      const response = await createCreditNoteHttp(adminA, source.id, {
+        amount: source.totalAmount,
+        reason: "Avoir total",
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.invoice.type).toBe("CREDIT_NOTE");
+      expect(body.invoice.status).toBe("CREDIT_NOTE");
+      expect(body.invoice.originalInvoiceId).toBe(source.id);
+      expect(body.invoice.totalAmount).toBe(source.totalAmount);
+      expect(body.invoice.supplementKey).toBeNull();
+      expect(body.invoice.extensionEndDate).toBeNull();
+      expect(body.invoice.number).toMatch(/^AV-\d{4}-\d{5}$/);
+
+      const remaining = source.totalAmount - (await getTotalCreditedAmount(source.id));
+      expect(remaining).toBe(0);
+    });
+
+    it("avoir partiel sur RENTAL (PARTIALLY_PAID) : montant < totalAmount", async () => {
+      const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+      const partial = Math.floor(source.totalAmount / 2);
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: partial, reason: "Avoir partiel" });
+      expect(response.status).toBe(201);
+      const remaining = source.totalAmount - (await getTotalCreditedAmount(source.id));
+      expect(remaining).toBe(source.totalAmount - partial);
+    });
+
+    it("avoir sur une facture PAID — seul mécanisme de réversibilité pour une facture intégralement soldée (voidInvoice ne couvre pas ce cas)", async () => {
+      const source = await createRentalSourceWithStatus("PAID");
+      const response = await createCreditNoteHttp(adminA, source.id, {
+        amount: source.totalAmount,
+        reason: "Avoir après solde complet",
+      });
+      expect(response.status).toBe(201);
+    });
+
+    it("avoir sur une facture SUPPLEMENT", async () => {
+      const supplement = await createFreshSupplementInvoice(adminA, 5000);
+      await finalizeInvoice(adminA, supplement.id);
+      const response = await createCreditNoteHttp(adminA, supplement.id, {
+        amount: 5000,
+        reason: "Avoir sur supplément",
+      });
+      expect(response.status).toBe(201);
+      expect((await response.json()).invoice.originalInvoiceId).toBe(supplement.id);
+    });
+
+    it("avoir sur une facture EXTENSION", async () => {
+      const extension = await createFreshExtensionInvoice(adminA, 6000);
+      await finalizeInvoice(adminA, extension.id);
+      const response = await createCreditNoteHttp(adminA, extension.id, {
+        amount: 6000,
+        reason: "Avoir sur extension",
+      });
+      expect(response.status).toBe(201);
+      expect((await response.json()).invoice.originalInvoiceId).toBe(extension.id);
+    });
+
+    it("second avoir jusqu'au plafond exact accepté, troisième refusé (409)", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED"); // totalAmount 15000
+      const first = await createCreditNoteHttp(adminA, source.id, { amount: 10000, reason: "Premier avoir" });
+      expect(first.status).toBe(201);
+      const second = await createCreditNoteHttp(adminA, source.id, { amount: 5000, reason: "Solde exact" });
+      expect(second.status).toBe(201);
+      const third = await createCreditNoteHttp(adminA, source.id, { amount: 1, reason: "Dépassement" });
+      expect(third.status).toBe(409);
+    });
+
+    it("montant dépasse le montant encore créditable -> 409", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: source.totalAmount + 5000, reason: "Dépassement" });
+      expect(response.status).toBe(409);
+    });
+  });
+
+  describe("Validation du montant", () => {
+    it("montant nul -> 400", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: 0, reason: "X" });
+      expect(response.status).toBe(400);
+    });
+
+    it("montant négatif -> 400", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: -500, reason: "X" });
+      expect(response.status).toBe(400);
+    });
+
+    it("montant non entier -> 400", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: 10.5, reason: "X" });
+      expect(response.status).toBe(400);
+    });
+
+    it("montant non fini (Infinity, service direct — non représentable en JSON HTTP)", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      await expect(
+        createCreditNote({
+          tenantId: adminA.tenantId,
+          locationId: source.locationId,
+          originalInvoiceId: source.id,
+          amount: Infinity,
+          reason: "X",
+        })
+      ).rejects.toThrow(InvalidInvoiceAmountError);
+    });
+  });
+
+  describe("Validation du motif", () => {
+    it("motif absent -> 400", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: 1000 });
+      expect(response.status).toBe(400);
+    });
+
+    it("motif vide (espaces uniquement) -> 400", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: 1000, reason: "   " });
+      expect(response.status).toBe(400);
+    });
+  });
+
+  describe("Éligibilité de la source", () => {
+    it("source inexistante -> 404", async () => {
+      const response = await createCreditNoteHttp(adminA, "nonexistent-invoice-id-xyz", { amount: 1000, reason: "X" });
+      expect(response.status).toBe(404);
+    });
+
+    it("source d'un autre tenant -> 404", async () => {
+      const locationId = await createFreshLocation(adminB, vehicleBId, clientBId);
+      const invoice = await prisma.invoice.findFirstOrThrow({ where: { locationId, type: "RENTAL" } });
+      await finalizeInvoice(adminB, invoice.id);
+      const response = await createCreditNoteHttp(adminA, invoice.id, { amount: 1000, reason: "Tentative cross-tenant" });
+      expect(response.status).toBe(404);
+      // Note : la route étant réservée ADMIN strict (canAccessAgency retourne toujours true pour
+      // un ADMIN sur son propre tenant), le scénario "autre agence accessible du même tenant,
+      // mais non rattachée" est structurellement inatteignable ici — il se confond avec le cas
+      // "autre tenant" ci-dessus, qui est le seul cas réel de 404 lié à l'accès. Documenté plutôt
+      // que testé séparément (voir DOMAINRULES.md, section 2c1).
+    });
+
+    it("source DRAFT -> 409", async () => {
+      const source = await createRentalSourceWithStatus("DRAFT");
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: 1000, reason: "Source encore DRAFT" });
+      expect(response.status).toBe(409);
+    });
+
+    it("source VOID -> 409", async () => {
+      const source = await createRentalSourceWithStatus("VOID");
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: 1000, reason: "Source déjà VOID" });
+      expect(response.status).toBe(409);
+    });
+
+    it("source de type CREDIT_NOTE (avoir sur avoir) -> 409", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      const first = await createCreditNoteHttp(adminA, source.id, { amount: 1000, reason: "Avoir initial" });
+      expect(first.status).toBe(201);
+      const creditNoteId = (await first.json()).invoice.id;
+      const second = await createCreditNoteHttp(adminA, creditNoteId, { amount: 500, reason: "Avoir sur avoir" });
+      expect(second.status).toBe(409);
+    });
+  });
+
+  describe("Permission", () => {
+    it("rôle non-ADMIN (MEMBER) -> 403", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      const response = await createCreditNoteHttp(memberA, source.id, { amount: 1000, reason: "Tentative MEMBER" });
+      expect(response.status).toBe(403);
+    });
+  });
+
+  describe("Audit", () => {
+    it("l'audit invoice.credit_note_created est créé avec les métadonnées attendues", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED");
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: 4000, reason: "Vérification audit" });
+      expect(response.status).toBe(201);
+      const creditNoteId = (await response.json()).invoice.id;
+
+      const auditEntry = await prisma.auditLog.findFirst({
+        where: { tenantId: adminA.tenantId, action: "invoice.credit_note_created", resourceId: creditNoteId },
+      });
+      expect(auditEntry).not.toBeNull();
+      const metadata = auditEntry!.metadata as Record<string, unknown>;
+      expect(metadata.originalInvoiceId).toBe(source.id);
+      expect(metadata.sourceType).toBe("RENTAL");
+      expect(metadata.sourceStatus).toBe("ISSUED");
+      expect(metadata.originalTotal).toBe(source.totalAmount);
+      expect(metadata.creditNoteAmount).toBe(4000);
+      expect(metadata.reason).toBe("Vérification audit");
+      expect(metadata.agencyId).toBe(source.agencyId);
+    });
+  });
+
+  describe("Immuabilité de la source et absence d'effet financier (B1)", () => {
+    it("la facture source n'est jamais modifiée (status/amountPaid/totalAmount/subtotal/taxAmount/reason)", async () => {
+      const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+      const before = await prisma.invoice.findUniqueOrThrow({ where: { id: source.id } });
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: 1000, reason: "Vérification immuabilité" });
+      expect(response.status).toBe(201);
+      const after = await prisma.invoice.findUniqueOrThrow({ where: { id: source.id } });
+      expect(after.status).toBe(before.status);
+      expect(after.amountPaid).toBe(before.amountPaid);
+      expect(after.totalAmount).toBe(before.totalAmount);
+      expect(after.subtotal).toBe(before.subtotal);
+      expect(after.taxAmount).toBe(before.taxAmount);
+      expect(after.reason).toBe(before.reason);
+      expect(after.updatedAt).toEqual(before.updatedAt);
+    });
+
+    it("aucun Payment n'est modifié par la création de l'avoir", async () => {
+      const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+      const paymentsBefore = await prisma.payment.findMany({ where: { invoiceId: source.id } });
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: 1000, reason: "Vérification Payment" });
+      expect(response.status).toBe(201);
+      const paymentsAfter = await prisma.payment.findMany({ where: { invoiceId: source.id } });
+      expect(paymentsAfter).toEqual(paymentsBefore);
+    });
+
+    it("aucune CashEntry n'est créée par l'avoir", async () => {
+      const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+      const cashBefore = await prisma.cashEntry.count({ where: { tenantId: adminA.tenantId } });
+      const response = await createCreditNoteHttp(adminA, source.id, { amount: 1000, reason: "Vérification caisse" });
+      expect(response.status).toBe(201);
+      const cashAfter = await prisma.cashEntry.count({ where: { tenantId: adminA.tenantId } });
+      expect(cashAfter).toBe(cashBefore);
+    });
+  });
+
+  describe("Concurrence (service direct — jamais une course HTTP, next dev sérialise une même route dynamique)", () => {
+    it("deux créations concurrentes référençant la même source dont la somme dépasse le plafond : une seule réussit", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED"); // totalAmount 15000
+      const [r1, r2] = await Promise.allSettled([
+        createCreditNote({
+          tenantId: adminA.tenantId,
+          locationId: source.locationId,
+          originalInvoiceId: source.id,
+          amount: 9000,
+          reason: "Concurrence A",
+        }),
+        createCreditNote({
+          tenantId: adminA.tenantId,
+          locationId: source.locationId,
+          originalInvoiceId: source.id,
+          amount: 9000,
+          reason: "Concurrence B",
+        }),
+      ]);
+      const statuses = [r1.status, r2.status].sort();
+      expect(statuses).toEqual(["fulfilled", "rejected"]);
+      const rejected = (r1.status === "rejected" ? r1 : r2) as PromiseRejectedResult;
+      expect(rejected.reason).toBeInstanceOf(CreditNoteExceedsRemainingCreditError);
+
+      const total = await getTotalCreditedAmount(source.id);
+      expect(total).toBe(9000);
+      expect(total).toBeLessThanOrEqual(source.totalAmount);
+    });
+
+    it("deux créations concurrentes référençant la même source dont la somme reste sous le plafond : les deux réussissent", async () => {
+      const source = await createRentalSourceWithStatus("ISSUED"); // totalAmount 15000
+      const [r1, r2] = await Promise.all([
+        createCreditNote({
+          tenantId: adminA.tenantId,
+          locationId: source.locationId,
+          originalInvoiceId: source.id,
+          amount: 3000,
+          reason: "Concurrence C",
+        }),
+        createCreditNote({
+          tenantId: adminA.tenantId,
+          locationId: source.locationId,
+          originalInvoiceId: source.id,
+          amount: 4000,
+          reason: "Concurrence D",
+        }),
+      ]);
+      expect(r1.id).not.toBe(r2.id);
+      const total = await getTotalCreditedAmount(source.id);
+      expect(total).toBe(7000);
+    });
+
+    it("numéro AV : collision entre sources différentes absorbée par réessai de la transaction entière (concurrence réelle)", async () => {
+      const sources = await Promise.all(
+        Array.from({ length: 5 }, () => createRentalSourceWithStatus("ISSUED"))
+      );
+      const results = await Promise.all(
+        sources.map((source, i) =>
+          createCreditNote({
+            tenantId: adminA.tenantId,
+            locationId: source.locationId,
+            originalInvoiceId: source.id,
+            amount: 1000,
+            reason: `Réessai numérotation ${i}`,
+          })
+        )
+      );
+      expect(results).toHaveLength(5);
+      const numbers = results.map((r) => r.number);
+      expect(new Set(numbers).size).toBe(5); // aucun doublon malgré la concurrence
+      for (const number of numbers) {
+        expect(number).toMatch(/^AV-\d{4}-\d{5}$/);
+      }
     });
   });
 });
