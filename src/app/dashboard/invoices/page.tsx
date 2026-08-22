@@ -1,6 +1,11 @@
 import Link from "next/link";
 import { Plus } from "lucide-react";
-import type { InvoiceStatus } from "@prisma/client";
+import type { InvoiceStatus, DamageInvoiceStatus } from "@prisma/client";
+// Sprint 13E tâche 3 (correctif) : même liste que src/app/api/damage-invoices/route.ts —
+// nécessaire depuis le renommage InvoiceStatus.SENT/CANCELLED -> ISSUED/VOID, voir le
+// commentaire détaillé plus bas sur le filtre Statut partagé par les deux sections de cette
+// page.
+const DAMAGE_INVOICE_STATUSES: DamageInvoiceStatus[] = ["DRAFT", "SENT", "PARTIALLY_PAID", "PAID", "CANCELLED"];
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
@@ -8,12 +13,16 @@ import { getDamageInvoices } from "@/lib/damage-invoices";
 import { Button, Card, CardDescription, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { InvoicesTable, type InvoiceRow } from "./InvoicesTable";
 
+// Sprint 13E tâche 3 : ISSUED/VOID (ex-SENT/CANCELLED) — voir le commentaire sur le filtre
+// combiné Invoice/DamageInvoice plus bas : ces deux valeurs ne correspondent plus à rien côté
+// DamageInvoiceStatus (resté SENT/CANCELLED), contrairement à DRAFT/PARTIALLY_PAID/PAID qui
+// restent partagées entre les deux énumérations.
 const STATUS_OPTIONS: { value: InvoiceStatus; label: string }[] = [
   { value: "DRAFT", label: "Brouillon" },
-  { value: "SENT", label: "Envoyée" },
+  { value: "ISSUED", label: "Envoyée" },
   { value: "PARTIALLY_PAID", label: "Partiellement payée" },
   { value: "PAID", label: "Payée" },
-  { value: "CANCELLED", label: "Annulée" },
+  { value: "VOID", label: "Annulée" },
 ];
 
 const TYPE_OPTIONS = [
@@ -80,9 +89,24 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
       ? []
       : await getDamageInvoices(user.tenantId, {
           agencyIds: accessibleAgencyIds,
-          // Un DamageInvoiceStatus recouvre les mêmes valeurs qu'InvoiceStatus (voir
-          // prisma/schema.prisma) — le filtre Statut s'applique donc aux deux types identiquement.
-          status: params.status as InvoiceStatus | undefined,
+          // Sprint 13E tâche 3 (correctif nécessaire, pas une nouvelle fonctionnalité) :
+          // DamageInvoiceStatus (SENT/CANCELLED, inchangé) et InvoiceStatus (renommé ISSUED/VOID)
+          // ne partagent plus le même jeu de valeurs — seuls DRAFT/PARTIALLY_PAID/PAID restent
+          // communs. Avant ce correctif, un simple `as InvoiceStatus` laissait passer n'importe
+          // quelle valeur de params.status telle quelle vers getDamageInvoices ; avec l'ancien
+          // enum (identique à DamageInvoiceStatus), ça ne posait pas de problème. Depuis le
+          // renommage, sélectionner "Envoyée"/"Annulée" (ISSUED/VOID) sur cette page enverrait
+          // une valeur invalide pour DamageInvoiceStatus à Prisma — érreur runtime (Prisma valide
+          // les enums côté client avant la requête), pas un simple résultat vide. D'où la
+          // validation explicite ci-dessous (même liste/idiome que
+          // src/app/api/damage-invoices/route.ts, DAMAGE_INVOICE_STATUSES) : la section Dégâts
+          // ignore silencieusement un filtre Statut qui ne lui correspond pas (affiche alors tous
+          // les statuts pour ce cas précis) plutôt que de planter la page — comportement dégradé
+          // documenté, pas une extension du filtre.
+          status:
+            params.status && DAMAGE_INVOICE_STATUSES.includes(params.status as DamageInvoiceStatus)
+              ? (params.status as DamageInvoiceStatus)
+              : undefined,
           from: params.from ? new Date(params.from) : undefined,
           to: params.to ? new Date(params.to) : undefined,
         });

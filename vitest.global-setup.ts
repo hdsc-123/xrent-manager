@@ -122,6 +122,31 @@ async function startServer(): Promise<ChildProcess> {
     detached: true,
   });
 
+  // INC-3 (Sprint 13E tâche 2) — cause racine confirmée par profilage direct (`sample` sur le
+  // process `next-server` gelé : thread principal bloqué en synchrone dans l'appel système
+  // `write()`, via `node::StreamBase::WriteString`/`uv__try_write`, jamais dans du code
+  // applicatif ou Prisma). `stdio: ["ignore", "pipe", "pipe"]` ci-dessus redirige `stdout` du
+  // serveur vers un tube (pipe) dont la capacité est bornée par l'OS (16 Ko sur macOS) — sans
+  // lecteur côté parent, ce tube n'est jamais vidé. Next.js journalise une ligne par requête
+  // HTTP traitée (`GET ... 200 in Xms`) sur `stdout` ; sous le volume de requêtes de la suite
+  // complète (~900 tests, largement plus que ce qu'un groupe de `scripts/test-grouped.mjs`
+  // traite par serveur), ce tube finit par se remplir. Le prochain appel `write()` du process
+  // enfant devient alors bloquant tant que le parent ne lit rien — gelant le thread principal
+  // du serveur (mono-thread pour l'exécution JS/HTTP), d'où le blocage total observé
+  // jusqu'ici. Explique aussi pourquoi le runner groupé (nouveau serveur, donc tube vide, à
+  // chaque groupe de 7-8 fichiers) n'est jamais touché, et pourquoi la piste « chevauchement
+  // de requêtes au démarrage »/« volume de connexions Postgres » ne l'expliquait pas (testées
+  // et infirmées séparément — voir INCIDENTS.md). **Correction** : consommer `stdout` en
+  // continu élimine la possibilité même que le tube se remplisse — la même primitive que celle
+  // déjà en place pour `stderr` juste en dessous, jamais affichée (silencieuse par défaut, pour
+  // ne pas polluer la sortie des tests), sauf motif d'erreur explicite comme pour `stderr`.
+  proc.stdout?.on("data", (chunk: Buffer) => {
+    const text = chunk.toString();
+    if (/error/i.test(text)) {
+      process.stderr.write(`[next dev test server] ${text}`);
+    }
+  });
+
   proc.stderr?.on("data", (chunk: Buffer) => {
     const text = chunk.toString();
     if (/error/i.test(text)) {

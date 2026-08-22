@@ -81,7 +81,7 @@ export interface ProcessLocationPaymentResult {
 /**
  * Encaisse le paiement intégré (formulaire location/conversion) : chaque montant réellement
  * réglé passe par createPayment (src/lib/payments.ts) — le calcul du statut de facture
- * (SENT/PARTIALLY_PAID/PAID) reste entièrement dérivé de la somme réelle des paiements, et
+ * (ISSUED/PARTIALLY_PAID/PAID) reste entièrement dérivé de la somme réelle des paiements, et
  * l'écriture de caisse correspondante (Sprint 18 : centralisée dans createPayment lui-même,
  * pour que tout paiement en alimente une, quel que soit son point d'entrée) est créée avec.
  * Résilient par choix, même principe que la génération automatique de facture (Sprint 12B) :
@@ -98,11 +98,11 @@ export interface ProcessLocationPaymentResult {
  *
  * Finding F : une facture DRAFT ne peut plus recevoir de paiement (createPayment refuse
  * désormais DRAFT, voir InvoiceNotFinalizedError) — un paiement intégré à la création d'un
- * contrat/d'une location finalise donc automatiquement la facture (DRAFT → SENT) juste avant
+ * contrat/d'une location finalise donc automatiquement la facture (DRAFT → ISSUED) juste avant
  * de créer le(s) Payment, dans la même transaction que ce(s) paiement(s) (`finalizeAndPay`).
  * Si un paiement échoue (solde dépassé en situation de course, ligne suivante d'un paiement
  * mixte invalide, etc.), toute la transaction est rollback — finalisation, Payment et CashEntry
- * compris : jamais de facture SENT orpheline sans paiement, jamais de Payment/CashEntry partiel
+ * compris : jamais de facture ISSUED orpheline sans paiement, jamais de Payment/CashEntry partiel
  * pour un paiement mixte dont une ligne a échoué.
  */
 /**
@@ -167,7 +167,7 @@ export async function processLocationPayment(
     // uniquement (jamais avant/pendant), même principe que
     // POST /api/reservations/[id]/convert — un paiement ou une finalisation qui aurait été
     // rollback ne doit jamais laisser de trace dans l'AuditLog. Seule la finalisation
-    // (DRAFT → SENT) elle-même est journalisée ici, jamais la dérivation SENT →
+    // (DRAFT → ISSUED) elle-même est journalisée ici, jamais la dérivation ISSUED →
     // PARTIALLY_PAID/PAID qui suit (même convention que le paiement direct, PATCH
     // /api/payments/[id] : recomputeInvoiceStatus n'est jamais séparément audité, seul le
     // Payment qui la déclenche l'est, ci-dessous).
@@ -178,7 +178,7 @@ export async function processLocationPayment(
         action: "invoice.status_changed",
         resource: "Invoice",
         resourceId: result.invoice.id,
-        metadata: { from: result.finalizedFrom, to: "SENT", auto: true },
+        metadata: { from: result.finalizedFrom, to: "ISSUED", auto: true },
       });
     }
     for (const created of result.payments) {
@@ -204,11 +204,11 @@ export async function processLocationPayment(
 }
 
 /**
- * Finalise (DRAFT → SENT, si nécessaire) puis crée chaque ligne de paiement, entièrement dans
+ * Finalise (DRAFT → ISSUED, si nécessaire) puis crée chaque ligne de paiement, entièrement dans
  * la transaction `tx` fournie par l'appelant — délibérément sans aucun `try/catch` : toute
  * erreur (solde dépassé, facture introuvable, etc.) doit se propager telle quelle pour que la
  * transaction englobante (`processLocationPayment` ci-dessus) rollback l'ensemble — finalisation
- * SENT, Payment déjà créés et leur(s) CashEntry — plutôt que de committer un état partiel
+ * ISSUED, Payment déjà créés et leur(s) CashEntry — plutôt que de committer un état partiel
  * (Finding F).
  */
 async function finalizeAndPay(
@@ -220,7 +220,7 @@ async function finalizeAndPay(
   let currentInvoice = invoice;
   let finalizedFrom: InvoiceStatus | null = null;
   if (currentInvoice.status === "DRAFT") {
-    const finalized = await updateInvoice(tenantId, currentInvoice.id, { status: "SENT" }, tx);
+    const finalized = await updateInvoice(tenantId, currentInvoice.id, { status: "ISSUED" }, tx);
     if (!finalized) {
       throw new PaymentInvoiceNotFoundError();
     }
@@ -239,7 +239,7 @@ async function finalizeAndPay(
 
   // createPayment (ci-dessus) a déjà recalculé amountPaid/status en base
   // (recomputeInvoiceStatus, src/lib/payments.ts) ; relu ici pour refléter ce nouveau statut
-  // dans le résultat, sinon l'appelant renverrait à tort SENT au lieu de PARTIALLY_PAID/PAID.
+  // dans le résultat, sinon l'appelant renverrait à tort ISSUED au lieu de PARTIALLY_PAID/PAID.
   const refreshed = await getInvoiceById(tenantId, currentInvoice.id, tx);
   return { invoice: refreshed ?? currentInvoice, payments, finalizedFrom };
 }

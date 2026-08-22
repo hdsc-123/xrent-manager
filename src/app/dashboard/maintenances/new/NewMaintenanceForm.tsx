@@ -35,6 +35,7 @@ export function NewMaintenanceForm() {
   const [vehicleId, setVehicleId] = useState("");
   const [type, setType] = useState("OIL_CHANGE");
   const [scheduledDate, setScheduledDate] = useState("");
+  const [scheduledEndDate, setScheduledEndDate] = useState("");
   const [cost, setCost] = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +74,11 @@ export function NewMaintenanceForm() {
       return;
     }
 
+    if (scheduledEndDate && scheduledEndDate <= scheduledDate) {
+      setError("La date de fin prévue doit être postérieure à la date de début.");
+      return;
+    }
+
     let costCentimes: number | undefined;
     if (cost.trim() !== "") {
       const costEuros = Number(cost.replace(",", "."));
@@ -89,6 +95,7 @@ export function NewMaintenanceForm() {
         vehicleId,
         type,
         scheduledDate,
+        scheduledEndDate: scheduledEndDate || undefined,
         cost: costCentimes,
         notes: notes || undefined,
       });
@@ -162,6 +169,22 @@ export function NewMaintenanceForm() {
                   onChange={(e) => setScheduledDate(e.target.value)}
                 />
               </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="scheduledEndDate">
+                Date de fin prévue <span className="text-muted-foreground">— optionnel</span>
+              </Label>
+              <Input
+                id="scheduledEndDate"
+                type="date"
+                value={scheduledEndDate}
+                onChange={(e) => setScheduledEndDate(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Sans cette date, la maintenance bloque uniquement la journée du {" "}
+                {scheduledDate || "…"}.
+              </p>
             </div>
 
             <div className="flex flex-col gap-1.5">

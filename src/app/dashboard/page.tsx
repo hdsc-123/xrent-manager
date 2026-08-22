@@ -99,7 +99,7 @@ export default async function DashboardPage() {
           where: {
             tenantId: user.tenantId,
             ...agencyScope,
-            status: { in: ["SENT", "PARTIALLY_PAID"] },
+            status: { in: ["ISSUED", "PARTIALLY_PAID"] },
             dueDate: { lt: now },
           },
         })

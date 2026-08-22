@@ -42,7 +42,7 @@ interface VersionInvoiceBody {
 }
 
 /**
- * Sprint 26E : versionnement documentaire — jamais un avoir. Réservé aux factures SENT sans
+ * Sprint 26E : versionnement documentaire — jamais un avoir. Réservé aux factures ISSUED sans
  * aucun Payment (voir versionInvoice, src/lib/invoices.ts). Motif obligatoire, journalisé avec
  * l'utilisateur et les deux factures concernées. Une seule création concurrente réussit
  * (201), les autres reçoivent 409 (InvoiceVersionConflictError).

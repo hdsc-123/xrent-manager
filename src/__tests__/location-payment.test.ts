@@ -204,7 +204,7 @@ describe("POST /api/locations — paiement intégré", () => {
       where: { resourceId: body.invoice.id, resource: "Invoice", action: "invoice.status_changed" },
     });
     expect(auditLogs).toHaveLength(1);
-    expect(auditLogs[0].metadata).toMatchObject({ from: "DRAFT", to: "SENT", auto: true });
+    expect(auditLogs[0].metadata).toMatchObject({ from: "DRAFT", to: "ISSUED", auto: true });
 
     const paymentAuditLogs = await prisma.auditLog.findMany({
       where: { resource: "Payment", resourceId: body.payments[0].id, action: "payment.created" },

@@ -1,6 +1,6 @@
-import type { Client, Location, LocationStatus, PaymentMethod, Prisma, Vehicle, VehicleStatus } from "@prisma/client";
+import type { Client, Location, LocationStatus, Maintenance, PaymentMethod, Prisma, Vehicle, VehicleStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { checkAvailability, lockVehicleForUpdate } from "@/lib/vehicles";
+import { checkAvailability, lockVehicleForUpdate, findConflictingMaintenances } from "@/lib/vehicles";
 import { getClientById } from "@/lib/clients";
 import { createCorrectionCashEntry, CorrectionReasonRequiredError } from "@/lib/cash-register";
 
@@ -234,6 +234,65 @@ export class VehicleNotAvailableError extends Error {
   }
 }
 
+type ConflictingMaintenance = Pick<Maintenance, "id" | "scheduledDate" | "scheduledEndDate" | "status" | "type">;
+
+/**
+ * Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 2) : blocage strict, sans exception ADMIN
+ * — même philosophie que VehicleUnavailableForLocationError (Finding E, Sprint 28) : une nouvelle
+ * location (ou la modification d'un contrat encore PENDING, jamais confirmé) ne peut jamais
+ * chevaucher une maintenance planifiée/en cours. Distincte de MaintenanceExtensionConflictError
+ * ci-dessous, qui ne s'applique qu'à la prolongation d'un contrat déjà validé (règle 3).
+ */
+export class VehicleMaintenanceConflictError extends Error {
+  conflictingMaintenances: ConflictingMaintenance[];
+
+  constructor(conflictingMaintenances: ConflictingMaintenance[]) {
+    super("Le véhicule a une maintenance planifiée qui chevauche cette période.");
+    this.name = "VehicleMaintenanceConflictError";
+    this.conflictingMaintenances = conflictingMaintenances;
+  }
+}
+
+/**
+ * Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 3) : contrairement à
+ * VehicleMaintenanceConflictError ci-dessus, ceci n'est PAS un blocage définitif — une
+ * prolongation d'un contrat déjà validé (CONFIRMED/ACTIVE) qui chevauche une maintenance
+ * planifiée déclenche une alerte explicite plutôt qu'un refus systématique (brief Sprint 34
+ * étape 3) : levée une première fois pour informer, contournable uniquement par un appel
+ * explicite avec `confirmMaintenanceConflict: true`, réservé à `locations.maintenance_conflict.
+ * override` (vérifié côté route, jamais ici — ce module ne connaît pas les permissions). La
+ * maintenance elle-même n'est jamais déplacée/modifiée par ce contournement.
+ */
+export class MaintenanceExtensionConflictError extends Error {
+  conflictingMaintenances: ConflictingMaintenance[];
+
+  constructor(conflictingMaintenances: ConflictingMaintenance[]) {
+    super(
+      "Cette prolongation chevauche une maintenance planifiée pour ce véhicule. Confirmez " +
+        "explicitement pour prolonger malgré ce chevauchement (la maintenance ne sera jamais " +
+        "déplacée automatiquement), ou choisissez d'autres dates."
+    );
+    this.name = "MaintenanceExtensionConflictError";
+    this.conflictingMaintenances = conflictingMaintenances;
+  }
+}
+
+/**
+ * Sprint 13E tâche 2 (DOMAINRULES.md section 52) — parcours dédié « Prolonger la location » :
+ * contrairement à une modification de dates ADMIN générique (toujours acceptée tant que
+ * `nextEnd > nextStart`, y compris pour raccourcir un contrat), une prolongation n'a de sens
+ * métier que si la nouvelle date de retour est strictement postérieure à l'actuelle — une date
+ * ou une heure antérieure ou égale n'est jamais une "prolongation". Levée uniquement quand
+ * `UpdateLocationInput.extendReturnDate` est explicitement demandé (voir updateLocation
+ * ci-dessous) : n'affecte jamais le formulaire ADMIN existant de modification libre des dates.
+ */
+export class InvalidExtensionDateError extends Error {
+  constructor() {
+    super("La nouvelle date de retour doit être strictement postérieure à la date de retour actuelle.");
+    this.name = "InvalidExtensionDateError";
+  }
+}
+
 export class InvalidStatusTransitionError extends Error {
   constructor(from: LocationStatus, to: LocationStatus) {
     super(`Transition de statut invalide : ${from} → ${to}.`);
@@ -251,7 +310,7 @@ export class LocationNotDeletableError extends Error {
 export class LocationHasInvoiceError extends Error {
   constructor() {
     super(
-      "Cette location a une facture SENT/PARTIALLY_PAID/PAID, un paiement enregistré, ou un dégât " +
+      "Cette location a une facture ISSUED/PARTIALLY_PAID/PAID, un paiement enregistré, ou un dégât " +
         "déclaré ; annulez/supprimez la facture (voir DELETE /api/invoices/[id]) ou traitez le(s) " +
         "dégât(s) avant de supprimer la location."
     );
@@ -641,6 +700,20 @@ async function createLocationLocked(data: CreateLocationInput, tx: Prisma.Transa
     throw new VehicleNotAvailableError(availability?.conflictingLocations ?? []);
   }
 
+  // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 1/2) : une nouvelle location ne peut
+  // jamais chevaucher une maintenance planifiée/en cours — blocage strict, sans exception ADMIN,
+  // même raisonnement que VehicleUnavailableForLocationError ci-dessus.
+  const conflictingMaintenances = await findConflictingMaintenances(
+    data.vehicleId,
+    data.startDate,
+    data.endDate,
+    undefined,
+    tx
+  );
+  if (conflictingMaintenances.length > 0) {
+    throw new VehicleMaintenanceConflictError(conflictingMaintenances);
+  }
+
   const pricePerDay = data.pricePerDay ?? vehicle.pricePerDay ?? undefined;
   if (pricePerDay === undefined) {
     throw new MissingPriceError();
@@ -727,6 +800,26 @@ export interface UpdateLocationInput {
    * canTransition/LocationLockedError. Jamais un champ de corps de requête — toujours dérivé
    * côté serveur de user.role, voir DOMAINRULES.md section 37. */
   adminOverride?: boolean;
+  /** Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 3) — décision explicite de prolonger
+   * malgré un chevauchement avec une maintenance planifiée, sur un contrat déjà validé
+   * uniquement (PENDING reste soumis au blocage strict, comme une création). Honoré seulement
+   * si la route l'a déjà vérifié contre `locations.maintenance_conflict.override` — jamais une
+   * simple valeur de corps de requête faisant foi d'elle-même pour l'autorisation, seulement
+   * pour l'intention explicite de l'utilisateur (même distinction que adminOverride ci-dessus,
+   * qui dérive lui de user.role plutôt que du corps de requête — ici la permission est
+   * granulaire, pas liée au rôle, donc vérifiée côté route puis transmise). Contourne aussi
+   * LocationLockedError (voir plus bas) — sans quoi un utilisateur non-ADMIN titulaire de cette
+   * permission ne pourrait jamais atteindre une "prolongation" (par définition une modification
+   * de dates sur un contrat déjà validé, donc déjà verrouillé) ; ne contourne jamais la garde de
+   * transition de statut, distincte d'adminOverride sur ce point précis. */
+  confirmMaintenanceConflict?: boolean;
+  /** Sprint 13E tâche 2 (DOMAINRULES.md section 52) — décision explicite d'appeler ce PATCH
+   * depuis le parcours « Prolonger la location » plutôt que le formulaire ADMIN générique de
+   * modification des dates : seul ce chemin exige `endDate` strictement postérieure à
+   * `existing.endDate` (voir InvalidExtensionDateError ci-dessus). Toujours dérivé côté route
+   * d'un champ de corps de requête dédié (`extendReturnDate`), jamais combiné à un changement
+   * de `startDate` (vérifié côté route) — une prolongation ne déplace jamais le départ. */
+  extendReturnDate?: boolean;
 }
 
 /**
@@ -735,7 +828,13 @@ export interface UpdateLocationInput {
  * transaction d'`updateLocation` pour donner à toutes les gardes dépendant du statut (admin-cancel,
  * validité de transition) une vue à jour et stable, avant toute décision.
  */
-async function lockLocationForUpdate(
+/**
+ * Sprint 13E tâche 3 : exportée (auparavant privée à ce module) pour être réutilisée par
+ * getOrCreateMainInvoice (src/lib/invoices.ts) — invoices.ts importe déjà getLocationById depuis
+ * ce module (aucun cycle : locations.ts n'importe rien depuis invoices.ts). Comportement
+ * strictement inchangé.
+ */
+export async function lockLocationForUpdate(
   tenantId: string,
   locationId: string,
   tx: Prisma.TransactionClient
@@ -744,6 +843,53 @@ async function lockLocationForUpdate(
     SELECT id, status FROM "Location" WHERE id = ${locationId} AND "tenantId" = ${tenantId} FOR UPDATE
   `;
   return locked[0] ?? null;
+}
+
+/** Sprint 13E tâche 2 (DOMAINRULES.md section 52) — dupliqué localement depuis
+ * computeInvoiceTotals (src/lib/invoices.ts), même raisonnement que InvalidFuelLevelError/
+ * validateFuelLevel ci-dessus : invoices.ts importe déjà getLocationById depuis ce module, un
+ * import inverse créerait un cycle. */
+const INVOICE_TAX_RATE_BASIS = 10_000;
+
+/**
+ * Resynchronise le sous-total/TVA/total de la facture RENTAL d'une location avec son nouveau
+ * `totalPrice`, uniquement si elle est encore DRAFT — un simple sous-produit de la création du
+ * contrat (voir le commentaire équivalent sur deleteLocation ci-dessous), jamais encore envoyé.
+ * Une facture DRAFT ne peut structurellement avoir aucun Payment (InvoiceNotFinalizedError,
+ * src/lib/payments.ts) : aucun solde encaissé à préserver, la resynchronisation est donc
+ * toujours sûre. Une facture ISSUED/PARTIALLY_PAID/PAID/VOID n'est jamais modifiée ici
+ * (verrouillée — InvoiceNotEditableError, src/lib/invoices.ts) : une prolongation sur un
+ * contrat dont la facture a déjà été envoyée laisse volontairement la facture existante
+ * inchangée (voir DOMAINRULES.md section 52 pour la limite documentée plutôt qu'inventée).
+ *
+ * Sprint 13E tâche 3, sous-phase 2b : filtre explicitement `type: "RENTAL"` — depuis que des
+ * factures SUPPLEMENT/EXTENSION peuvent exister pour une même location, la recherche par
+ * simple `createdAt DESC` sans filtre de type sélectionnerait à tort la facture additionnelle
+ * la plus récente si elle est elle-même encore DRAFT, écrasant son montant (une charge
+ * additionnelle, pas le prix de la location) avec le `totalPrice` de la location.
+ */
+async function syncDraftInvoiceTotal(
+  tx: Prisma.TransactionClient,
+  locationId: string,
+  newSubtotal: number
+): Promise<void> {
+  const invoice = await tx.invoice.findFirst({
+    where: { locationId, type: "RENTAL" },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!invoice || invoice.status !== "DRAFT") {
+    return;
+  }
+  const taxAmount = Math.round((newSubtotal * invoice.taxRate) / INVOICE_TAX_RATE_BASIS);
+  const totalAmount = newSubtotal - invoice.discountAmount + taxAmount;
+  if (totalAmount < 0) {
+    // Ne peut arriver que si les dates sont raccourcies au point que la remise dépasse
+    // désormais le sous-total + TVA (jamais lors d'une prolongation, où le sous-total
+    // augmente) — même garde que computeInvoiceTotals (src/lib/invoices.ts) : la facture
+    // existante reste inchangée plutôt que de produire un montant négatif.
+    return;
+  }
+  await tx.invoice.update({ where: { id: invoice.id }, data: { subtotal: newSubtotal, taxAmount, totalAmount } });
 }
 
 export async function updateLocation(
@@ -779,7 +925,28 @@ export async function updateLocation(
   // (simple brouillon), pour ne pas régresser sur le comportement déjà testé/validé du Sprint 5.
   // Sprint 19 : un ADMIN passant adminOverride contourne ce verrou (voir DOMAINRULES.md
   // section 37) — action journalisée systématiquement côté route, jamais silencieuse.
-  if ((data.startDate || data.endDate) && existing.status !== "PENDING" && !data.adminOverride) {
+  // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 3) : `confirmMaintenanceConflict`
+  // contourne aussi ce verrou — sans quoi la permission granulaire
+  // `locations.maintenance_conflict.override` ne pourrait jamais s'exercer pour un non-ADMIN
+  // (une "prolongation" est par définition une modification de dates sur un contrat déjà
+  // validé, donc déjà verrouillé). Comme `adminOverride`, ce booléen n'est honoré que parce que
+  // la route a déjà vérifié la permission correspondante avant d'appeler cette fonction — jamais
+  // un simple champ de corps de requête faisant foi de lui-même. Reste distinct d'adminOverride :
+  // ne contourne que ce verrou précis, jamais la garde de transition de statut plus bas.
+  // Sprint 13E tâche 2 (DOMAINRULES.md section 52) : `extendReturnDate` contourne aussi ce
+  // verrou, indépendamment de `confirmMaintenanceConflict` — le parcours dédié « Prolonger la
+  // location » n'exige que `locations.edit` (déjà vérifiée côté route comme n'importe quel
+  // PATCH) pour une prolongation sans conflit ; `locations.maintenance_conflict.override` reste
+  // réservée à la confirmation d'un conflit de maintenance réel (voir plus bas), jamais à
+  // l'acte de prolonger lui-même — cohérent avec le libellé du catalogue de permissions
+  // (« Confirmer une prolongation malgré un conflit de maintenance », src/lib/permissions.ts).
+  if (
+    (data.startDate || data.endDate) &&
+    existing.status !== "PENDING" &&
+    !data.adminOverride &&
+    !data.confirmMaintenanceConflict &&
+    !data.extendReturnDate
+  ) {
     throw new LocationLockedError();
   }
 
@@ -788,6 +955,14 @@ export async function updateLocation(
 
   if (nextEnd <= nextStart) {
     throw new InvalidDateRangeError();
+  }
+
+  // Sprint 13E tâche 2 (DOMAINRULES.md section 52) — voir InvalidExtensionDateError ci-dessus :
+  // comparaison sur le DateTime complet (date ET heure), jamais seulement le jour calendaire —
+  // une nouvelle heure de retour antérieure ou strictement égale à l'heure actuelle est refusée,
+  // pas seulement une date antérieure/égale.
+  if (data.extendReturnDate && nextEnd <= existing.endDate) {
+    throw new InvalidExtensionDateError();
   }
 
   // Sprint 30 (DOMAINRULES.md section 45, point 7) : un second conducteur ajouté/modifié après
@@ -879,6 +1054,31 @@ export async function updateLocation(
         if (!availability?.available) {
           throw new VehicleNotAvailableError(availability?.conflictingLocations ?? []);
         }
+
+        // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 3) : un contrat encore PENDING
+        // (jamais confirmé, donc jamais une vraie "prolongation" pour un client déjà engagé)
+        // reste soumis au même blocage strict qu'une création — voir createLocationLocked. Seule
+        // la modification des dates d'un contrat déjà validé (CONFIRMED/ACTIVE, `locked.status`
+        // relu sous verrou ci-dessus, jamais `existing.status` périmé) est une vraie prolongation
+        // et bénéficie du parcours "alerte + décision explicite" au lieu d'un refus automatique.
+        const conflictingMaintenances = await findConflictingMaintenances(
+          existing.vehicleId,
+          nextStart,
+          nextEnd,
+          undefined,
+          tx
+        );
+        if (conflictingMaintenances.length > 0) {
+          if (locked.status === "PENDING") {
+            throw new VehicleMaintenanceConflictError(conflictingMaintenances);
+          }
+          if (!data.confirmMaintenanceConflict) {
+            throw new MaintenanceExtensionConflictError(conflictingMaintenances);
+          }
+          // Décision explicite déjà vérifiée côté route (permission granulaire) : la
+          // prolongation continue malgré le chevauchement, la maintenance reste inchangée —
+          // jamais un déplacement automatique (règle 3, brief Sprint 34 étape 3).
+        }
       }
 
       if (
@@ -890,6 +1090,7 @@ export async function updateLocation(
         throw new InvalidStatusTransitionError(existing.status, data.status);
       }
 
+      let updatedLocation: Location;
       if (statusChanging) {
         const { count } = await tx.location.updateMany({
           where: { id: locationId, status: existing.status },
@@ -898,10 +1099,20 @@ export async function updateLocation(
         if (count === 0) {
           throw new LocationStatusConflictError();
         }
-        return tx.location.findUniqueOrThrow({ where: { id: locationId } });
+        updatedLocation = await tx.location.findUniqueOrThrow({ where: { id: locationId } });
+      } else {
+        updatedLocation = await tx.location.update({ where: { id: locationId }, data: updateData });
       }
 
-      return tx.location.update({ where: { id: locationId }, data: updateData });
+      // Sprint 13E tâche 2 (DOMAINRULES.md section 52) : la facture DRAFT générée à la création
+      // (sous-produit, voir syncDraftInvoiceTotal ci-dessus) reste sinon un simple miroir figé
+      // de l'ancien totalPrice après toute modification de dates qui change le prix (ADMIN ou
+      // prolongation) — corrigé à la source ici, dans la même transaction que l'écriture.
+      if (datesChanging && totalPrice !== existing.totalPrice) {
+        await syncDraftInvoiceTotal(tx, locationId, totalPrice);
+      }
+
+      return updatedLocation;
     });
   }
 
@@ -996,7 +1207,7 @@ export interface AdminCancelLocationOptions {
  * `updateMany` conditionnée que le reste de ce fichier — c'est cette garde qui rend l'ensemble
  * de l'opération idempotente : un second appel, séquentiel ou concurrent, échoue ici avant
  * d'atteindre la boucle paiements/factures, voir LocationStatusConflictError/le test Sprint 23),
- * (2) l'annulation de toute Invoice non déjà CANCELLED de ce contrat — y compris depuis
+ * (2) l'annulation de toute Invoice non déjà VOID de ce contrat — y compris depuis
  * PAID/PARTIALLY_PAID, un cas que la machine à états normale d'Invoice (src/lib/invoices.ts,
  * canTransition) n'autorise jamais autrement, jamais exposé par la route PATCH générique des
  * factures — (3) pour chaque Payment de ces factures, marqué REFUNDED (Sprint 26D — jamais
@@ -1005,7 +1216,7 @@ export interface AdminCancelLocationOptions {
  * d'origine, pour que le solde de caisse redevienne exact sans jamais réécrire l'historique
  * (DOMAINRULES.md sections 10/23). Le contrat lui-même n'est jamais supprimé (reste
  * consultable, mention « Contrat annulé ») — voir LocationHasInvoiceError pour la suppression,
- * volontairement non assouplie après cette opération (une facture CANCELLED reste `!== DRAFT`).
+ * volontairement non assouplie après cette opération (une facture VOID reste `!== DRAFT`).
  */
 export async function adminCancelValidatedLocation(
   tenantId: string,
@@ -1035,8 +1246,8 @@ export async function adminCancelValidatedLocation(
     }
     const location = await tx.location.findUniqueOrThrow({ where: { id: locationId } });
 
-    // Ne force à CANCELLED que les factures qui reflètent une vraie activité — même prédicat
-    // que deleteLocation ci-dessus (hasNonDeletableInvoice) : SENT/PARTIALLY_PAID/PAID, ou
+    // Ne force à VOID que les factures qui reflètent une vraie activité — même prédicat
+    // que deleteLocation ci-dessus (hasNonDeletableInvoice) : ISSUED/PARTIALLY_PAID/PAID, ou
     // toute facture ayant reçu un paiement. Une facture DRAFT à 0 paiement n'est qu'un
     // sous-produit vide de la création du contrat (même commentaire que deleteLocation) —
     // la laisser DRAFT permet à un contrat validé annulé sans historique financier réel de
@@ -1044,7 +1255,7 @@ export async function adminCancelValidatedLocation(
     const invoicesToCancel = await tx.invoice.findMany({
       where: {
         locationId,
-        status: { not: "CANCELLED" },
+        status: { not: "VOID" },
         OR: [{ status: { not: "DRAFT" } }, { amountPaid: { gt: 0 } }],
       },
     });
@@ -1055,7 +1266,7 @@ export async function adminCancelValidatedLocation(
     const refunds: AdminCancelLocationResult["refunds"] = [];
 
     for (const invoice of invoicesToCancel) {
-      await tx.invoice.update({ where: { id: invoice.id }, data: { status: "CANCELLED" } });
+      await tx.invoice.update({ where: { id: invoice.id }, data: { status: "VOID" } });
 
       // Sprint 33 (DOMAINRULES.md section 48) : un paiement de dégât n'a plus jamais d'invoiceId
       // (Payment.invoiceId/damageInvoiceId mutuellement exclusifs, contrainte CHECK en base —

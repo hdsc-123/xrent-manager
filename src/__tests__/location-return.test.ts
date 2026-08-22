@@ -110,7 +110,7 @@ async function createActiveLocationWithInvoice(options: FixtureOptions = {}) {
     },
   });
   const invoice = await createInvoice({ tenantId, locationId: location.id });
-  await updateInvoice(tenantId, invoice.id, { status: "SENT" });
+  await updateInvoice(tenantId, invoice.id, { status: "ISSUED" });
   return { vehicle, location, invoiceId: invoice.id };
 }
 

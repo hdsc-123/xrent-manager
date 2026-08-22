@@ -25,7 +25,7 @@ interface AdminCancelInvoiceBody {
  * ADMIN, dérivé uniquement de `user.role` côté route (jamais une permission granulaire — même
  * principe que POST /api/locations/[id]/admin-cancel, SECURITY.md section 4) ; tenant-scopé via
  * getInvoiceById, jamais un id arbitraire d'un autre tenant. Distincte de la transition
- * `PATCH /api/invoices/[id] { status: "CANCELLED" }` (toujours refusée pour une facture
+ * `PATCH /api/invoices/[id] { status: "VOID" }` (toujours refusée pour une facture
  * PARTIALLY_PAID, voir InvoiceCancellationRequiresAdminError) — c'est la seule route qui le
  * permette.
  */

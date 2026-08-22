@@ -20,6 +20,7 @@ import {
   ClientNotFoundError,
   VehicleNotAvailableError,
   VehicleUnavailableForLocationError,
+  VehicleMaintenanceConflictError,
   MissingPriceError,
   MissingDriverLicenseExpiryError,
   DriverLicenseExpiredError,
@@ -505,6 +506,15 @@ export async function POST(request: Request, { params }: RouteParams) {
     // garde véhicule MAINTENANCE/TRANSFERRING/ON_TRIP, aucune exception pour cette route.
     if (error instanceof VehicleUnavailableForLocationError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 1/2/7) : la conversion réutilise
+    // createLocation — même garde chevauchement maintenance qu'une création directe, aucune
+    // exception pour cette route (une réservation convertie est toujours une nouvelle Location).
+    if (error instanceof VehicleMaintenanceConflictError) {
+      return NextResponse.json(
+        { error: error.message, conflictingMaintenances: error.conflictingMaintenances },
+        { status: 409 }
+      );
     }
     if (error instanceof InvalidReservationStatusTransitionError) {
       return NextResponse.json({ error: error.message }, { status: 409 });

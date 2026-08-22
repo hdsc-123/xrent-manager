@@ -367,12 +367,36 @@ model Location {
   @@index([startDate, endDate])
 }
 
+// Sprint 13E tâche 3 (règles métier de facturation, décision validée du propriétaire du projet) :
+// SENT renommé ISSUED, CANCELLED renommé VOID (ALTER TYPE ... RENAME VALUE, aucune perte de
+// données — voir la migration) ; CREDIT_NOTE ajoutée (ALTER TYPE ... ADD VALUE). PARTIALLY_PAID/
+// PAID restent toujours dérivés automatiquement (jamais atteints par une transition manuelle,
+// voir canTransition/recomputeInvoiceStatus, inchangé). CREDIT_NOTE est un état final atteint
+// directement à la création d'un avoir (createCreditNote), jamais via une transition depuis un
+// autre statut — voir Invoice.type ci-dessous pour la distinction type/statut.
 enum InvoiceStatus {
   DRAFT
-  SENT
+  ISSUED
   PARTIALLY_PAID
   PAID
-  CANCELLED
+  VOID
+  CREDIT_NOTE
+}
+
+// Sprint 13E tâche 3 : distingue la nature du document financier, orthogonale au statut
+// ci-dessus. RENTAL = facture principale (une seule active par Location, voir l'index unique
+// partiel sur Invoice ci-dessous et getOrCreateMainInvoice, src/lib/invoices.ts). SUPPLEMENT/
+// EXTENSION = factures complémentaires, non plafonnées en nombre par Location (aucune règle
+// métier fournie ne limite leur multiplicité, à la différence de RENTAL — voir DOMAINRULES.md).
+// CREDIT_NOTE = avoir, référence toujours une facture d'origine via Invoice.originalInvoiceId.
+// Ne contient volontairement aucune valeur DAMAGE : la facturation des dégâts reste
+// exclusivement gérée par le modèle séparé DamageInvoice/DamageInvoiceLine, jamais fusionné ici
+// (décision explicite du propriétaire du projet).
+enum InvoiceType {
+  RENTAL
+  SUPPLEMENT
+  EXTENSION
+  CREDIT_NOTE
 }
 
 enum PaymentMethod {
@@ -389,30 +413,48 @@ enum PaymentMethod {
 // agencyId/clientId/currency sont toujours dérivés de la Location côté serveur, jamais
 // fournis par le client (SECURITY.md section 4).
 model Invoice {
-  id             String        @id @default(cuid())
-  tenantId       String
-  agencyId       String
-  locationId     String
-  clientId       String
-  number         String
-  status         InvoiceStatus @default(DRAFT)
-  subtotal       Int
-  taxRate        Int           @default(0)
-  taxAmount      Int           @default(0)
-  discountAmount Int           @default(0)
-  totalAmount    Int
-  amountPaid     Int           @default(0)
-  currency       String        @default("MAD")
-  issuedAt       DateTime      @default(now())
-  dueDate        DateTime?
-  notes          String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  id               String        @id @default(cuid())
+  tenantId         String
+  agencyId         String
+  locationId       String
+  clientId         String
+  number           String
+  status           InvoiceStatus @default(DRAFT)
+  // Sprint 13E tâche 3 : RENTAL par défaut — toute facture déjà existante au moment de la
+  // migration *est* déjà conceptuellement une facture principale, backfill sans ambiguïté.
+  type             InvoiceType   @default(RENTAL)
+  // Motif obligatoire (validé côté application) pour deux usages mutuellement exclusifs dans le
+  // temps sur une même ligne : l'annulation logique (voidInvoice, rempli au moment du passage à
+  // VOID) et la création d'un avoir (createCreditNote, rempli à la création, jamais réécrit
+  // ensuite — un avoir est immuable). Toujours null pour une facture RENTAL/SUPPLEMENT/EXTENSION
+  // encore active.
+  reason           String?
+  // Sprint 13E tâche 3, sous-phase 2b : clés métier d'idempotence pour les factures
+  // additionnelles. Toujours NULL pour RENTAL/CREDIT_NOTE ; supplementKey seule pour SUPPLEMENT ;
+  // extensionEndDate seule pour EXTENSION — cohérence appliquée côté application ET par une
+  // contrainte CHECK Postgres (voir migration.sql, non exprimable en DSL Prisma). extensionEndDate
+  // est une clé provisoire et minimale (voir DOMAINRULES.md section 17) : elle garantit
+  // uniquement qu'une Location ne peut jamais avoir deux factures EXTENSION actives visant
+  // exactement la même date de retour cible — ce n'est pas un historique d'événements d'extension.
+  supplementKey    String?
+  extensionEndDate DateTime?
+  subtotal         Int
+  taxRate          Int           @default(0)
+  taxAmount        Int           @default(0)
+  discountAmount   Int           @default(0)
+  totalAmount      Int
+  amountPaid       Int           @default(0)
+  currency         String        @default("MAD")
+  issuedAt         DateTime      @default(now())
+  dueDate          DateTime?
+  notes            String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
   // Sprint 26E : versionnement documentaire (jamais un avoir — pas de montant négatif, pas de
-  // transfert de paiement, voir src/lib/invoices.ts, versionInvoice). Une facture SENT sans
-  // aucun Payment peut être remplacée par une nouvelle facture DRAFT ; l'ancienne passe
-  // CANCELLED, jamais supprimée ni réécrite dans ses montants — même principe append-only que
+  // transfert de paiement, voir src/lib/invoices.ts, versionInvoice). Une facture ISSUED sans
+  // aucun Payment peut être remplacée par une nouvelle facture DRAFT ; l'ancienne passe VOID,
+  // jamais supprimée ni réécrite dans ses montants — même principe append-only que
   // CashEntry.parentEntryId (Sprint 26D). replacesInvoiceId (sur la NOUVELLE facture) pointe
   // vers la version immédiatement précédente qu'elle remplace (null sur la toute première
   // facture d'une chaîne) — relation 1:1 réelle (@unique, une facture n'est jamais remplacée
@@ -421,9 +463,16 @@ model Invoice {
   // rootInvoiceId pointe vers la toute première facture de la chaîne (null sur elle-même) —
   // relation N:1 (plusieurs versions peuvent partager la même racine), inverse `versions`.
   // versionNumber par défaut 1 pour toute facture déjà existante (aucun backfill d'historique).
+  // Distinct d'originalInvoiceId ci-dessous : le versionnement REMPLACE un document (l'ancien
+  // devient VOID), un avoir RÉFÉRENCE un document sans jamais le remplacer ni le modifier.
   replacesInvoiceId String? @unique
   rootInvoiceId     String?
   versionNumber     Int     @default(1)
+
+  // Sprint 13E tâche 3 : obligatoire (validé côté application) si type = CREDIT_NOTE, toujours
+  // null sinon. Relation N:1 (plusieurs avoirs peuvent référencer la même facture d'origine,
+  // inverse `creditNotes`) — jamais @unique, à la différence de replacesInvoiceId ci-dessus.
+  originalInvoiceId String?
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id])
   agency   Agency    @relation(fields: [agencyId], references: [id])
@@ -436,6 +485,14 @@ model Invoice {
   root       Invoice?  @relation("InvoiceVersionRoot", fields: [rootInvoiceId], references: [id])
   versions   Invoice[] @relation("InvoiceVersionRoot")
 
+  // onDelete: Restrict explicite (même raisonnement que Payment.invoice/damageInvoice) : le
+  // défaut Prisma pour une relation optionnelle est SET NULL, qui romprait silencieusement le
+  // lien d'un avoir vers sa facture d'origine si celle-ci était supprimée — jamais souhaitable
+  // (la facture d'origine ne doit de toute façon jamais être supprimable tant qu'elle a des
+  // avoirs, garanti explicitement ici plutôt que par convention applicative seule).
+  original    Invoice?  @relation("InvoiceCreditNoteOriginal", fields: [originalInvoiceId], references: [id], onDelete: Restrict)
+  creditNotes Invoice[] @relation("InvoiceCreditNoteOriginal")
+
   @@unique([tenantId, number])
   @@index([tenantId])
   @@index([agencyId])
@@ -443,6 +500,8 @@ model Invoice {
   @@index([clientId])
   @@index([status])
   @@index([rootInvoiceId])
+  @@index([locationId, type])
+  @@index([originalInvoiceId])
 }
 
 // Sprint 26D (Finding D1) : ACTIVE = paiement encaissé normal, jamais modifié par ce
@@ -652,19 +711,25 @@ enum MaintenanceStatus {
 // section 7). Historique conservé : suppression bloquée dès que le statut est passé par
 // IN_PROGRESS/COMPLETED (voir MaintenanceNotDeletableError, src/lib/maintenances.ts).
 model Maintenance {
-  id            String            @id @default(cuid())
-  tenantId      String
-  agencyId      String
-  vehicleId     String
-  type          MaintenanceType
-  status        MaintenanceStatus @default(SCHEDULED)
-  scheduledDate DateTime
-  completedDate DateTime?
-  cost          Int?
-  currency      String            @default("MAD")
-  notes         String?
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
+  id               String            @id @default(cuid())
+  tenantId         String
+  agencyId         String
+  vehicleId        String
+  type             MaintenanceType
+  status           MaintenanceStatus @default(SCHEDULED)
+  scheduledDate    DateTime
+  // Sprint 34 étape 3 (DOMAINRULES.md section 50) : fin de la période bloquante — nullable,
+  // additive, aucun backfill (une maintenance existante sans fin connue est traitée comme un
+  // blocage d'une seule journée, voir getMaintenanceEffectiveEnd, src/lib/vehicles.ts). Permet à
+  // une maintenance planifiée de bloquer explicitement la disponibilité du véhicule sur une
+  // vraie période (pas seulement un instant), nécessaire à la coordination avec Location.
+  scheduledEndDate DateTime?
+  completedDate    DateTime?
+  cost             Int?
+  currency         String            @default("MAD")
+  notes            String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 
   tenant  Tenant  @relation(fields: [tenantId], references: [id])
   agency  Agency  @relation(fields: [agencyId], references: [id])

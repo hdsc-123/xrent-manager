@@ -69,6 +69,19 @@ export const PERMISSIONS: PermissionDefinition[] = [
     label: "Corriger la date/heure réelle de retour",
     category: "Locations",
   },
+  // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 3) : décision explicite de prolonger un
+  // contrat déjà validé malgré un chevauchement avec une maintenance planifiée (voir
+  // MaintenanceExtensionConflictError, src/lib/locations.ts) — capacité nouvelle, distincte de
+  // locations.edit (une simple modification de champ ne doit pas accorder implicitement le
+  // pouvoir de décider d'ignorer un conflit de maintenance). Non accordée à aucun groupe par
+  // défaut (voir DEFAULT_GROUPS ci-dessous, même principe que audit.delete/locations.return_time.
+  // edit) — un ADMIN y a toujours accès via le contournement de rôle de can(), un groupe
+  // personnalisé peut l'accorder explicitement à un MEMBER/AGENCE si souhaité.
+  {
+    key: "locations.maintenance_conflict.override",
+    label: "Confirmer une prolongation malgré un conflit de maintenance",
+    category: "Locations",
+  },
 
   { key: "reservations.view", label: "Voir les réservations", category: "Réservations" },
   { key: "reservations.create", label: "Créer des réservations", category: "Réservations" },

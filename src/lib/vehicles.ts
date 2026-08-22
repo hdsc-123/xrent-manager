@@ -1,8 +1,13 @@
-import type { Vehicle, VehicleStatus, TransmissionType, FuelType, Prisma } from "@prisma/client";
+import type { Vehicle, VehicleStatus, TransmissionType, FuelType, Maintenance, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 /** Statuts d'une Location qui occupent effectivement le véhicule sur sa période. */
 const BLOCKING_LOCATION_STATUSES = ["PENDING", "CONFIRMED", "ACTIVE"] as const;
+
+/** Statuts d'une Maintenance qui occupent effectivement le véhicule sur sa période (Sprint 34
+ * étape 3, DOMAINRULES.md section 50) — même principe que BLOCKING_LOCATION_STATUSES : seuls
+ * les statuts non terminaux bloquent, COMPLETED/CANCELLED ne comptent jamais. */
+const BLOCKING_MAINTENANCE_STATUSES = ["SCHEDULED", "IN_PROGRESS"] as const;
 
 export class VehicleHasLocationsError extends Error {
   constructor() {
@@ -169,7 +174,7 @@ export interface AvailabilityResult {
  * fournir explicitement pour lire l'état réellement à jour une fois le verrou Vehicle acquis
  * (voir lockVehicleForUpdate ci-dessous).
  */
-function findConflictingLocations(
+export function findConflictingLocations(
   vehicleId: string,
   start: Date,
   end: Date,
@@ -187,6 +192,66 @@ function findConflictingLocations(
     select: { id: true, startDate: true, endDate: true, status: true },
     orderBy: { startDate: "asc" },
   });
+}
+
+/**
+ * Sprint 34 étape 3 (DOMAINRULES.md section 50) : chevauchement strict entre deux périodes
+ * ([aStart, aEnd) vs [bStart, bEnd)) — définition unique, réutilisée par findConflictingLocations
+ * (formule dupliquée en ligne jusqu'ici, non touchée pour ne pas modifier une requête Prisma déjà
+ * en production sans besoin réel), findConflictingMaintenances ci-dessous, et par l'affichage de
+ * disponibilité du véhicule (/dashboard/vehicles/[id]) pour ne jamais recalculer un chevauchement
+ * différemment entre la validation serveur et son affichage.
+ */
+export function periodsOverlap(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date): boolean {
+  return aStart < bEnd && aEnd > bStart;
+}
+
+/**
+ * Sprint 34 étape 3 (DOMAINRULES.md section 50) : fin effective de la période bloquante d'une
+ * maintenance — `scheduledEndDate` si renseignée, sinon fin de la journée de `scheduledDate`
+ * (une maintenance créée sans fin explicite bloque au moins toute sa journée prévue, jamais un
+ * instant zéro qui ne bloquerait jamais rien). Factorisée ici pour être réutilisée à l'identique
+ * partout où une période de maintenance doit être comparée à une autre période (Location,
+ * VehicleTransfer, VehicleTrip) — jamais recalculée différemment d'un appelant à l'autre.
+ */
+export function getMaintenanceEffectiveEnd(maintenance: Pick<Maintenance, "scheduledDate" | "scheduledEndDate">): Date {
+  if (maintenance.scheduledEndDate) {
+    return maintenance.scheduledEndDate;
+  }
+  const endOfDay = new Date(maintenance.scheduledDate);
+  endOfDay.setHours(23, 59, 59, 999);
+  return endOfDay;
+}
+
+/**
+ * Sprint 34 étape 3 (DOMAINRULES.md section 50) : maintenances SCHEDULED/IN_PROGRESS d'un
+ * véhicule dont la période bloquante chevauche [start, end) — même formule de chevauchement
+ * strict que findConflictingLocations ci-dessus (newStart < existingEnd && newEnd > existingStart),
+ * réutilisée pour rester cohérente avec la définition déjà établie d'un "chevauchement". La fin
+ * effective n'étant pas une colonne stockée (voir getMaintenanceEffectiveEnd), le filtre SQL ne
+ * peut porter que sur un sur-ensemble (scheduledDate < end) ; le filtrage exact sur la fin
+ * effective se fait ensuite en mémoire — les volumes par véhicule restent faibles (quelques
+ * maintenances tout au plus), sans impact de performance réel.
+ */
+export async function findConflictingMaintenances(
+  vehicleId: string,
+  start: Date,
+  end: Date,
+  excludeMaintenanceId?: string,
+  tx: Prisma.TransactionClient = prisma
+): Promise<Pick<Maintenance, "id" | "scheduledDate" | "scheduledEndDate" | "status" | "type">[]> {
+  const candidates = await tx.maintenance.findMany({
+    where: {
+      vehicleId,
+      status: { in: [...BLOCKING_MAINTENANCE_STATUSES] },
+      scheduledDate: { lt: end },
+      ...(excludeMaintenanceId ? { id: { not: excludeMaintenanceId } } : {}),
+    },
+    select: { id: true, scheduledDate: true, scheduledEndDate: true, status: true, type: true },
+    orderBy: { scheduledDate: "asc" },
+  });
+
+  return candidates.filter((maintenance) => periodsOverlap(start, end, maintenance.scheduledDate, getMaintenanceEffectiveEnd(maintenance)));
 }
 
 /**

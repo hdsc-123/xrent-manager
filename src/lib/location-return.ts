@@ -350,10 +350,10 @@ export async function returnLocation(input: ReturnLocationInput): Promise<Return
         throw new LocationHasNoInvoiceError();
       }
       // Finding F (src/lib/location-payment.ts) : un paiement ne peut être enregistré que sur
-      // une facture finalisée (SENT et au-delà) — même correctif appliqué ici, jamais réservé
+      // une facture finalisée (ISSUED et au-delà) — même correctif appliqué ici, jamais réservé
       // au seul flux de création de contrat.
       if (invoice.status === "DRAFT") {
-        await updateInvoice(input.tenantId, invoice.id, { status: "SENT" }, tx);
+        await updateInvoice(input.tenantId, invoice.id, { status: "ISSUED" }, tx);
       }
       invoiceId = invoice.id;
     }
@@ -435,7 +435,7 @@ export async function returnLocation(input: ReturnLocationInput): Promise<Return
         );
         // createDamageInvoicePayments recalcule DamageInvoice.amountPaid/status en base — le
         // snapshot `damageInvoice` ci-dessus (pris à la création, avant tout paiement) serait
-        // sinon renvoyé périmé (toujours SENT) à l'appelant, même défaut que pour `damages` plus
+        // sinon renvoyé périmé (toujours ISSUED) à l'appelant, même défaut que pour `damages` plus
         // bas (déjà corrigé) avant ce correctif.
         damageInvoice = await tx.damageInvoice.findUniqueOrThrow({ where: { id: damageInvoice.id } });
       }

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
-import { getVehicleById } from "@/lib/vehicles";
+import { getVehicleById, getMaintenanceEffectiveEnd, periodsOverlap } from "@/lib/vehicles";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
 import { Badge } from "@/components/ui";
@@ -153,6 +153,31 @@ export default async function VehicleDetailPage({ params }: PageProps) {
     })),
   ].sort((a, b) => b.date.getTime() - a.date.getTime());
 
+  // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 5) : "Disponibilité" — statut, location
+  // active/prochaine + date de retour prévue, maintenances planifiées + leur période bloquante,
+  // et tout conflit éventuel entre les deux. Dérivé des données déjà chargées ci-dessus (aucune
+  // requête supplémentaire), même formule de chevauchement que la validation serveur
+  // (periodsOverlap/getMaintenanceEffectiveEnd, src/lib/vehicles.ts) pour ne jamais afficher un
+  // conflit différent de celui réellement appliqué à l'écriture.
+  const now = new Date();
+  const BLOCKING_LOCATION_STATUSES = new Set(["PENDING", "CONFIRMED", "ACTIVE"]);
+  const currentOrNextLocation =
+    locations
+      .filter((location) => BLOCKING_LOCATION_STATUSES.has(location.status) && location.endDate >= now)
+      .sort((a, b) => a.startDate.getTime() - b.startDate.getTime())[0] ?? null;
+
+  const blockingMaintenances = maintenances.filter(
+    (maintenance) => maintenance.status === "SCHEDULED" || maintenance.status === "IN_PROGRESS"
+  );
+  const maintenancesWithConflict = blockingMaintenances.map((maintenance) => {
+    const effectiveEnd = getMaintenanceEffectiveEnd(maintenance);
+    const conflict = currentOrNextLocation
+      ? periodsOverlap(currentOrNextLocation.startDate, currentOrNextLocation.endDate, maintenance.scheduledDate, effectiveEnd)
+      : false;
+    return { maintenance, effectiveEnd, conflict };
+  });
+  const hasConflict = maintenancesWithConflict.some((entry) => entry.conflict);
+
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-4">
       <div>
@@ -160,6 +185,63 @@ export default async function VehicleDetailPage({ params }: PageProps) {
         <p className="text-sm text-muted-foreground">
           {vehicle.make} {vehicle.model} ({vehicle.year}) — Agence : {agency?.name ?? "—"}
         </p>
+      </div>
+
+      <div className="rounded-md border border-border p-4">
+        <h2 className="mb-3 font-heading text-lg font-semibold">Disponibilité</h2>
+        <div className="flex flex-col gap-2 text-sm">
+          <div>
+            <span className="text-muted-foreground">Statut : </span>
+            <Badge variant="outline">{STATUS_LABELS[vehicle.status] ?? vehicle.status}</Badge>
+          </div>
+          <div>
+            <span className="text-muted-foreground">Location active / prochaine : </span>
+            {currentOrNextLocation ? (
+              <>
+                <Link
+                  href={`/dashboard/locations/${currentOrNextLocation.id}`}
+                  className="text-primary hover:underline"
+                >
+                  {currentOrNextLocation.client.name}
+                </Link>{" "}
+                ({STATUS_LABELS[currentOrNextLocation.status] ?? currentOrNextLocation.status}) — retour prévu le{" "}
+                {currentOrNextLocation.endDate.toLocaleString("fr-FR")}
+              </>
+            ) : (
+              "Aucune"
+            )}
+          </div>
+          {canViewMaintenances && (
+            <div>
+              <span className="text-muted-foreground">Maintenance(s) planifiée(s) : </span>
+              {maintenancesWithConflict.length === 0 ? (
+                "Aucune"
+              ) : (
+                <ul className="mt-1 flex flex-col gap-1">
+                  {maintenancesWithConflict.map(({ maintenance, effectiveEnd, conflict }) => (
+                    <li key={maintenance.id}>
+                      {MAINTENANCE_TYPE_LABELS[maintenance.type] ?? maintenance.type} — période bloquante :{" "}
+                      {maintenance.scheduledDate.toLocaleString("fr-FR")} → {effectiveEnd.toLocaleString("fr-FR")}
+                      {conflict && (
+                        <Badge variant="destructive" className="ml-2">
+                          Conflit avec la location ci-dessus
+                        </Badge>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          {hasConflict && (
+            <p role="alert" className="text-sm font-medium text-destructive">
+              Conflit détecté : ce véhicule a une maintenance planifiée qui chevauche sa location
+              active/prochaine. Aucun déplacement automatique n&apos;a lieu — une décision explicite
+              est nécessaire (prolongation confirmée malgré le conflit, ou replanification de la
+              maintenance).
+            </p>
+          )}
+        </div>
       </div>
 
       {canEdit ? (

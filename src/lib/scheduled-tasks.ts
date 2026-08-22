@@ -115,12 +115,12 @@ export async function checkReturnsToday(tenantId: string): Promise<Alert[]> {
   return created;
 }
 
-/** Crée une alerte INVOICE_OVERDUE pour chaque facture SENT/PARTIALLY_PAID dont l'échéance est dépassée. */
+/** Crée une alerte INVOICE_OVERDUE pour chaque facture ISSUED/PARTIALLY_PAID dont l'échéance est dépassée. */
 export async function checkOverdueInvoices(tenantId: string): Promise<Alert[]> {
   const overdueInvoices = await prisma.invoice.findMany({
     where: {
       tenantId,
-      status: { in: ["SENT", "PARTIALLY_PAID"] },
+      status: { in: ["ISSUED", "PARTIALLY_PAID"] },
       dueDate: { lt: new Date() },
     },
   });
@@ -177,12 +177,12 @@ export async function checkContractsAtRisk(tenantId: string): Promise<Alert[]> {
       tenantId,
       status: "ACTIVE",
       endDate: { lte: threshold },
-      invoices: { some: { status: { in: ["SENT", "PARTIALLY_PAID"] } } },
+      invoices: { some: { status: { in: ["ISSUED", "PARTIALLY_PAID"] } } },
     },
     include: {
       vehicle: { select: { name: true, licensePlate: true } },
       client: { select: { name: true } },
-      invoices: { where: { status: { in: ["SENT", "PARTIALLY_PAID"] } }, take: 1 },
+      invoices: { where: { status: { in: ["ISSUED", "PARTIALLY_PAID"] } }, take: 1 },
     },
   });
 
@@ -210,16 +210,16 @@ export async function checkContractsAtRisk(tenantId: string): Promise<Alert[]> {
   return created;
 }
 
-/** Location COMPLETED (contrat terminé) dont la facture reste SENT/PARTIALLY_PAID, sans égard à
- * un éventuel dueDate — comble le cas fréquent où Invoice.dueDate n'est pas renseigné (optionnel,
- * voir DOMAINRULES.md section 17), donc jamais couvert par INVOICE_OVERDUE. */
+/** Location COMPLETED (contrat terminé) dont la facture reste ISSUED/PARTIALLY_PAID, sans égard
+ * à un éventuel dueDate — comble le cas fréquent où Invoice.dueDate n'est pas renseigné
+ * (optionnel, voir DOMAINRULES.md section 17), donc jamais couvert par INVOICE_OVERDUE. */
 export async function checkPaymentsDue(tenantId: string): Promise<Alert[]> {
   const completedWithBalance = await prisma.location.findMany({
-    where: { tenantId, status: "COMPLETED", invoices: { some: { status: { in: ["SENT", "PARTIALLY_PAID"] } } } },
+    where: { tenantId, status: "COMPLETED", invoices: { some: { status: { in: ["ISSUED", "PARTIALLY_PAID"] } } } },
     include: {
       vehicle: { select: { name: true, licensePlate: true } },
       client: { select: { name: true } },
-      invoices: { where: { status: { in: ["SENT", "PARTIALLY_PAID"] } }, take: 1 },
+      invoices: { where: { status: { in: ["ISSUED", "PARTIALLY_PAID"] } }, take: 1 },
     },
   });
 
@@ -608,26 +608,44 @@ export async function maybeRunScheduledAlertChecks(tenantId: string): Promise<Sc
     return { ran: false, alertsCreated: 0 };
   }
 
-  try {
-    const results = await Promise.all([
-      checkDueMaintenances(tenantId),
-      checkReturnsToday(tenantId),
-      checkOverdueInvoices(tenantId),
-      checkContractsAtRisk(tenantId),
-      checkPaymentsDue(tenantId),
-      checkVehiclesUnavailable(tenantId),
-      checkOverdueReturns(tenantId),
-      checkExpiredDocuments(tenantId),
-      checkStockInconsistencies(tenantId),
-      checkInsuranceExpiring(tenantId),
-      checkVignetteExpiring(tenantId),
-      checkTechnicalInspectionDue(tenantId),
-      checkOilChangeDue(tenantId),
-    ]);
-    const alertsCreated = results.reduce((sum, alerts) => sum + alerts.length, 0);
-    return { ran: true, alertsCreated };
-  } catch (error) {
-    console.error("Erreur lors de la génération automatique des alertes :", error);
-    return { ran: true, alertsCreated: 0, error: error instanceof Error ? error.message : String(error) };
+  // Sprint 13E tâche 1 (revue INC-3) : chaque vérification est indépendante des autres (types
+  // d'alerte distincts, aucune ne dépend du résultat d'une autre) — un `Promise.all` classique
+  // est donc "tout ou rien" par accident, pas par nécessité : une seule vérification en échec
+  // transitoire (contention DB/serveur de test sous charge, cause déjà documentée pour ce
+  // projet, voir INCIDENTS.md INC-3) rejette tout le lot et annule silencieusement la création
+  // des alertes des 12 autres vérifications, qui avaient pourtant réussi. `Promise.allSettled`
+  // isole chaque vérification : une panne transitoire d'une seule n'empêche plus la création
+  // des alertes des autres. Trouvé pendant la revue d'un échec isolé et non reproductible de
+  // `vehicle-mobility-alerts.test.ts` (alerte MAINTENANCE_DUE absente malgré un chargement de
+  // page réussi, 200) — mécanisme cohérent avec le symptôme observé (silencieux, jamais un
+  // timeout), voir INCIDENTS.md pour le détail complet.
+  const outcomes = await Promise.allSettled([
+    checkDueMaintenances(tenantId),
+    checkReturnsToday(tenantId),
+    checkOverdueInvoices(tenantId),
+    checkContractsAtRisk(tenantId),
+    checkPaymentsDue(tenantId),
+    checkVehiclesUnavailable(tenantId),
+    checkOverdueReturns(tenantId),
+    checkExpiredDocuments(tenantId),
+    checkStockInconsistencies(tenantId),
+    checkInsuranceExpiring(tenantId),
+    checkVignetteExpiring(tenantId),
+    checkTechnicalInspectionDue(tenantId),
+    checkOilChangeDue(tenantId),
+  ]);
+
+  let alertsCreated = 0;
+  const errors: string[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.status === "fulfilled") {
+      alertsCreated += outcome.value.length;
+    } else {
+      const message = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+      errors.push(message);
+      console.error("Erreur lors de la génération automatique des alertes :", outcome.reason);
+    }
   }
+
+  return { ran: true, alertsCreated, ...(errors.length > 0 ? { error: errors.join(" | ") } : {}) };
 }

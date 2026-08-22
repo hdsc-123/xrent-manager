@@ -85,10 +85,10 @@ async function createActiveLocationWithSentInvoice(overrides: { dueDate?: string
   const finalizeResponse = await apiFetch(`/api/invoices/${invoiceId}`, {
     method: "PATCH",
     headers: { Cookie: admin.sessionCookie },
-    body: JSON.stringify({ status: "SENT", ...overrides }),
+    body: JSON.stringify({ status: "ISSUED", ...overrides }),
   });
   const invoice = (await finalizeResponse.json()).invoice;
-  expect(invoice.status).toBe("SENT");
+  expect(invoice.status).toBe("ISSUED");
   expect(invoice.amountPaid).toBe(0);
 
   return { locationId, invoiceId, vehicleId: vehicle.id };
@@ -103,6 +103,15 @@ beforeAll(async () => {
     password: "Correct-Horse-Battery-Staple9!",
   });
   createdTenantIds.push(admin.tenantId);
+
+  // Sprint 13E tâche 2 (revue INC-3) : réclame préventivement le throttle horaire de
+  // `maybeRunScheduledAlertChecks` pour ce tenant — le CRON global
+  // (`runScheduledAlertChecksForAllTenants`, scheduled-alerts-cron.test.ts) l'ignorera donc
+  // silencieusement pendant toute la durée de ce fichier, éliminant complètement (pas seulement
+  // en probabilité) le risque qu'il crée en avance, pour le compte d'un autre process, une alerte
+  // que les tests ci-dessous s'attendent à voir créée par leur propre appel explicite à
+  // `POST /api/tasks/check-alerts` (endpoint distinct, non throttlé).
+  await prisma.tenant.update({ where: { id: admin.tenantId }, data: { lastAlertCheckAt: new Date() } });
 
   const agencyResponse = await apiFetch("/api/agencies", {
     method: "POST",
@@ -143,6 +152,17 @@ describe("POST /api/tasks/check-alerts — Finding F, facture SENT sans paiement
   it("INVOICE_OVERDUE se déclenche pour une facture SENT (jamais payée) à échéance dépassée", async () => {
     const { invoiceId } = await createActiveLocationWithSentInvoice({ dueDate: "2020-02-01" });
 
+    // Sprint 13E tâche 2 (revue INC-3) : le CRON global (`runScheduledAlertChecksForAllTenants`,
+    // scheduled-alerts-cron.test.ts) scanne tous les tenants de la base de test, y compris
+    // celui-ci — sous la suite complète, il peut créer cette même alerte (dédoublonnage correct,
+    // comportement production voulu) entre la création de la facture ci-dessus et l'appel
+    // explicite ci-dessous, ce qui ferait légitimement remonter `created.overdueInvoices` à 0
+    // pour CET appel précis (l'alerte existe déjà, créée par ailleurs) — sans rapport avec le
+    // comportement réellement testé ici (que CET appel la déclenche). On garantit donc la
+    // précondition explicitement plutôt que de supposer qu'aucun autre processus global n'a pu
+    // intervenir entre-temps — n'affaiblit aucune assertion.
+    await prisma.alert.deleteMany({ where: { tenantId: admin.tenantId, entityType: "Invoice", entityId: invoiceId } });
+
     const response = await apiFetch("/api/tasks/check-alerts", {
       method: "POST",
       headers: { Cookie: admin.sessionCookie },
@@ -162,6 +182,11 @@ describe("POST /api/tasks/check-alerts — Finding F, facture SENT sans paiement
 
   it("CONTRACT_AT_RISK se déclenche pour un contrat ACTIVE dont le retour est dépassé, facture SENT sans paiement", async () => {
     const { locationId } = await createActiveLocationWithSentInvoice();
+
+    // Sprint 13E tâche 2 (revue INC-3) : même précaution que le test précédent — garantit que
+    // cet appel est bien celui qui déclenche l'alerte, indépendamment d'un CRON global
+    // concurrent (voir commentaire détaillé au test précédent).
+    await prisma.alert.deleteMany({ where: { tenantId: admin.tenantId, entityType: "LocationAtRisk", entityId: locationId } });
 
     const response = await apiFetch("/api/tasks/check-alerts", {
       method: "POST",
@@ -188,6 +213,9 @@ describe("POST /api/tasks/check-alerts — Finding F, facture SENT sans paiement
       headers: { Cookie: admin.sessionCookie },
       body: JSON.stringify({ status: "COMPLETED" }),
     });
+
+    // Sprint 13E tâche 2 (revue INC-3) : même précaution que les deux tests précédents.
+    await prisma.alert.deleteMany({ where: { tenantId: admin.tenantId, entityType: "InvoicePaymentDue", entityId: invoiceId } });
 
     const response = await apiFetch("/api/tasks/check-alerts", {
       method: "POST",

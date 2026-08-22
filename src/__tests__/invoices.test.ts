@@ -1,7 +1,20 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+// Sprint 13E tâche 3 : @/lib/invoices n'a aucune dépendance transitive vers @/lib/authz/@/lib/auth
+// (vérifié — invoices.ts → locations.ts/cash-register.ts, aucun des deux n'importe authz/auth),
+// donc sûr à importer directement ici, contrairement à @/lib/authz lui-même (échouerait hors du
+// serveur Next.js réel, voir helpers/http.ts et la convention déjà suivie par toute la suite).
+import {
+  getOrCreateMainInvoice,
+  getOrCreateSupplementInvoice,
+  getOrCreateExtensionInvoice,
+  validateSupplementaryAmount,
+  InvoiceLocationNotFoundError,
+  InvalidInvoiceAmountError,
+} from "@/lib/invoices";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -12,12 +25,53 @@ let memberA: AuthenticatedTestUser;
 let agencyAId: string;
 let locationAId: string; // totalPrice = 15000 (3 jours x 5000)
 let locationBId: string;
+// Sprint 13E tâche 3 : promues en portée module (auparavant locales à beforeAll) pour permettre
+// aux nouveaux tests getOrCreateMainInvoice de créer leurs propres locations fraîches, plutôt
+// que de réutiliser locationAId/locationBId — indispensable depuis que POST /api/invoices est
+// idempotent pour RENTAL (voir plus bas) : les scénarios ci-dessous ont besoin chacun d'une
+// location n'ayant encore aucune facture RENTAL. Valeurs inchangées, aucun comportement modifié.
+let vehicleAId: string;
+let vehicleBId: string;
+let clientAId: string;
+let clientBId: string;
 
+let freshLocationDateOffset = 5000; // loin de locationAId/locationBId/des autres locations codées en dur de ce fichier (2028-01/02), aucun chevauchement possible
+
+/** Sprint 13E tâche 3 : crée une Location fraîche (jamais locationAId/locationBId), avec sa
+ * propre facture RENTAL DRAFT auto-générée — indispensable depuis que POST /api/invoices est
+ * idempotent pour RENTAL (au plus une facture RENTAL active par Location) : réutiliser une
+ * location déjà dotée d'une facture (transitionnée par un test précédent dans ce même fichier)
+ * ne créerait plus une seconde facture indépendante, ce qui casserait tout test supposant une
+ * facture DRAFT fraîche. Dates dans une plage dédiée (2029+), déconnectée de celle des autres
+ * locations codées en dur de ce fichier (2028-01/02).
+ */
+async function createFreshLocation(actor: AuthenticatedTestUser, vehicleId: string, clientId: string): Promise<string> {
+  freshLocationDateOffset += 10;
+  const base = new Date(Date.UTC(2029, 0, 1));
+  const start = new Date(base.getTime() + freshLocationDateOffset * 24 * 60 * 60 * 1000);
+  const end = new Date(start.getTime() + 3 * 24 * 60 * 60 * 1000);
+  const response = await apiFetch("/api/locations", {
+    method: "POST",
+    headers: { Cookie: actor.sessionCookie },
+    body: JSON.stringify({ vehicleId, clientId, startDate: start.toISOString(), endDate: end.toISOString() }),
+  });
+  if (response.status !== 201) {
+    throw new Error(`Échec de création de la location de test (${response.status}) : ${await response.text()}`);
+  }
+  return (await response.json()).location.id as string;
+}
+
+/** Sprint 13E tâche 3 : crée par défaut sa propre Location fraîche (jamais locationAId) —
+ * POST /api/invoices étant désormais idempotent pour RENTAL, réutiliser une même location entre
+ * appels indépendants ne produirait plus des factures DRAFT distinctes (voir
+ * createFreshLocation ci-dessus). `overrides.locationId`, quand fourni explicitement (tests
+ * d'isolation tenant/agence utilisant locationBId), est toujours respecté tel quel. */
 async function createInvoice(admin: AuthenticatedTestUser, overrides: Record<string, unknown> = {}) {
+  const locationId = (overrides.locationId as string | undefined) ?? (await createFreshLocation(adminA, vehicleAId, clientAId));
   return apiFetch("/api/invoices", {
     method: "POST",
     headers: { Cookie: admin.sessionCookie },
-    body: JSON.stringify({ locationId: locationAId, ...overrides }),
+    body: JSON.stringify({ ...overrides, locationId }),
   });
 }
 
@@ -28,7 +82,7 @@ async function finalizeInvoice(admin: AuthenticatedTestUser, invoiceId: string) 
   const response = await apiFetch(`/api/invoices/${invoiceId}`, {
     method: "PATCH",
     headers: { Cookie: admin.sessionCookie },
-    body: JSON.stringify({ status: "SENT" }),
+    body: JSON.stringify({ status: "ISSUED" }),
   });
   expect(response.status).toBe(200);
 }
@@ -135,7 +189,7 @@ beforeAll(async () => {
       engineSize: 1.5,
     }),
   });
-  const vehicleAId = (await vehicleAResponse.json()).vehicle.id;
+  vehicleAId = (await vehicleAResponse.json()).vehicle.id;
 
   const vehicleBResponse = await apiFetch("/api/vehicles", {
     method: "POST",
@@ -158,21 +212,21 @@ beforeAll(async () => {
       engineSize: 1.5,
     }),
   });
-  const vehicleBId = (await vehicleBResponse.json()).vehicle.id;
+  vehicleBId = (await vehicleBResponse.json()).vehicle.id;
 
   const clientAResponse = await apiFetch("/api/clients", {
     method: "POST",
     headers: { Cookie: adminA.sessionCookie },
     body: JSON.stringify({ name: "Client A", email: `client-a-${runId}@test.local`, licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
   });
-  const clientAId = (await clientAResponse.json()).client.id;
+  clientAId = (await clientAResponse.json()).client.id;
 
   const clientBResponse = await apiFetch("/api/clients", {
     method: "POST",
     headers: { Cookie: adminB.sessionCookie },
     body: JSON.stringify({ name: "Client B", email: `client-b-${runId}@test.local`, licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
   });
-  const clientBId = (await clientBResponse.json()).client.id;
+  clientBId = (await clientBResponse.json()).client.id;
 
   const locationAResponse = await apiFetch("/api/locations", {
     method: "POST",
@@ -240,8 +294,13 @@ describe("POST /api/invoices", () => {
   });
 
   it("crée la facture DRAFT, numérotée INV-{année}-{5 chiffres}, sous-total = totalPrice de la location", async () => {
+    // Sprint 13E tâche 3 : createInvoice() (helper de test) crée une Location fraîche, qui
+    // auto-génère déjà sa facture RENTAL DRAFT (Sprint 12B) — l'appel POST /api/invoices qui
+    // suit est donc désormais idempotent (200, facture existante retournée telle quelle), plus
+    // jamais une création réelle (201) pour ce chemin. La facture elle-même (statut, sous-total,
+    // devise, format du numéro) reste inchangée et intégralement vérifiée ci-dessous.
     const response = await createInvoice(adminA);
-    expect(response.status).toBe(201);
+    expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.invoice.status).toBe("DRAFT");
     expect(body.invoice.subtotal).toBe(15000);
@@ -251,8 +310,21 @@ describe("POST /api/invoices", () => {
   });
 
   it("calcule taxAmount et totalAmount à partir de taxRate (points de base) et discountAmount", async () => {
-    const response = await createInvoice(adminA, { taxRate: 2000, discountAmount: 1000 });
-    expect(response.status).toBe(201);
+    // Sprint 13E tâche 3 : la facture RENTAL est déjà auto-générée (DRAFT, taxRate/discountAmount
+    // par défaut 0) à la création de la Location — POST /api/invoices est idempotent et ignore
+    // tout taxRate/discountAmount transmis dès qu'une facture RENTAL active existe déjà, ce champ
+    // ne peut donc plus être vérifié à la création pour ce type. Le calcul lui-même
+    // (computeInvoiceTotals) est partagé à l'identique entre createInvoice et updateInvoice — même
+    // garantie exercée ici via PATCH sur la facture DRAFT fraîchement auto-générée.
+    const createResponse = await createInvoice(adminA);
+    const invoiceId = (await createResponse.json()).invoice.id;
+
+    const response = await apiFetch(`/api/invoices/${invoiceId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ taxRate: 2000, discountAmount: 1000 }),
+    });
+    expect(response.status).toBe(200);
     const body = await response.json();
     // subtotal 15000, taxRate 20% => taxAmount 3000, total = 15000 - 1000 + 3000 = 17000
     expect(body.invoice.taxAmount).toBe(3000);
@@ -260,7 +332,17 @@ describe("POST /api/invoices", () => {
   });
 
   it("refuse une remise supérieure au sous-total + TVA", async () => {
-    const response = await createInvoice(adminA, { discountAmount: 999_999 });
+    // Même raison que le test précédent : validateAmountInputs/computeInvoiceTotals sont
+    // partagées entre créate et update — exercées ici via PATCH sur la facture DRAFT
+    // auto-générée plutôt qu'à la création (devenue idempotente pour RENTAL).
+    const createResponse = await createInvoice(adminA);
+    const invoiceId = (await createResponse.json()).invoice.id;
+
+    const response = await apiFetch(`/api/invoices/${invoiceId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ discountAmount: 999_999 }),
+    });
     expect(response.status).toBe(400);
   });
 
@@ -309,7 +391,7 @@ describe("PATCH /api/invoices/[id]", () => {
     const response = await apiFetch(`/api/invoices/${otherInvoiceId}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "SENT" }),
+      body: JSON.stringify({ status: "ISSUED" }),
     });
     expect(response.status).toBe(404);
   });
@@ -329,11 +411,11 @@ describe("PATCH /api/invoices/[id]", () => {
     const response = await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "SENT" }),
+      body: JSON.stringify({ status: "ISSUED" }),
     });
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.invoice.status).toBe("SENT");
+    expect(body.invoice.status).toBe("ISSUED");
     expect(body.invoice.amountPaid).toBe(0);
   });
 
@@ -351,7 +433,7 @@ describe("PATCH /api/invoices/[id]", () => {
     const response = await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "SENT" }),
+      body: JSON.stringify({ status: "ISSUED" }),
     });
     expect(response.status).toBe(409);
   });
@@ -368,7 +450,7 @@ describe("PATCH /api/invoices/[id]", () => {
     const response = await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "SENT" }),
+      body: JSON.stringify({ status: "ISSUED" }),
     });
     expect(response.status).toBe(409);
   });
@@ -421,15 +503,25 @@ describe("PATCH /api/invoices/[id]", () => {
   });
 
   it("Sprint 18 — une facture à 0 (remise intégrale) passe directement PAID à l'envoi, sans paiement", async () => {
-    // subtotal 15000, discountAmount 15000, taxRate par défaut 0 => totalAmount 0.
-    const createResponse = await createInvoice(adminA, { discountAmount: 15000 });
-    expect(createResponse.status).toBe(201);
+    // subtotal 15000, discountAmount 15000, taxRate par défaut 0 => totalAmount 0. Sprint 13E
+    // tâche 3 : la facture RENTAL DRAFT est déjà auto-générée à la création de la Location
+    // (POST /api/invoices idempotent ne peut plus accepter discountAmount à la création) — la
+    // remise intégrale est donc appliquée par un PATCH DRAFT préalable (même
+    // computeInvoiceTotals que createInvoice, voir les deux tests précédents) avant l'envoi.
+    const createResponse = await createInvoice(adminA);
     const invoiceId = (await createResponse.json()).invoice.id;
+    const discountResponse = await apiFetch(`/api/invoices/${invoiceId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ discountAmount: 15000 }),
+    });
+    expect(discountResponse.status).toBe(200);
+    expect((await discountResponse.json()).invoice.totalAmount).toBe(0);
 
     const response = await apiFetch(`/api/invoices/${invoiceId}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "SENT" }),
+      body: JSON.stringify({ status: "ISSUED" }),
     });
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -527,10 +619,10 @@ describe("POST /api/invoices/[id]/admin-cancel — Sprint 28 (Finding D2)", () =
     const response = await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "CANCELLED" }),
+      body: JSON.stringify({ status: "VOID" }),
     });
     expect(response.status).toBe(200);
-    expect((await response.json()).invoice.status).toBe("CANCELLED");
+    expect((await response.json()).invoice.status).toBe("VOID");
 
     const cashEntries = await prisma.cashEntry.findMany({ where: { tenantId: adminA.tenantId, category: "ANNULATION_FACTURE" } });
     expect(cashEntries).toHaveLength(0);
@@ -542,7 +634,7 @@ describe("POST /api/invoices/[id]/admin-cancel — Sprint 28 (Finding D2)", () =
     const response = await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "CANCELLED" }),
+      body: JSON.stringify({ status: "VOID" }),
     });
     expect(response.status).toBe(403);
     const body = await response.json();
@@ -565,7 +657,7 @@ describe("POST /api/invoices/[id]/admin-cancel — Sprint 28 (Finding D2)", () =
     });
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.invoice.status).toBe("CANCELLED");
+    expect(body.invoice.status).toBe("VOID");
     expect(body.reversedPaymentCount).toBe(1);
     expect(body.reversedAmountTotal).toBe(payment.amount);
 
@@ -807,8 +899,12 @@ describe("Sprint 15 — permissions granulaires (invoices.create)", () => {
       body: JSON.stringify({ permissionGroupId: grantedGroupId }),
     });
 
+    // Sprint 13E tâche 3 : createInvoice() (helper de test) crée d'abord une Location fraîche
+    // (comme admin A), qui auto-génère déjà sa facture RENTAL DRAFT — l'appel POST /api/invoices
+    // de grantedMember qui suit est donc structurellement idempotent (200), jamais 201, quel que
+    // soit l'acteur. Ce qui est réellement vérifié ici (accès autorisé, pas 403) reste intact.
     const response = await createInvoice(grantedMember);
-    expect(response.status).toBe(201);
+    expect(response.status).toBe(200);
   });
 
   it("un ADMIN crée une facture même rattaché à un groupe personnalisé vide (bypass systématique)", async () => {
@@ -826,8 +922,11 @@ describe("Sprint 15 — permissions granulaires (invoices.create)", () => {
     });
 
     try {
+      // Sprint 13E tâche 3 : même raison que le test précédent — la Location fraîche créée par
+      // createInvoice() a déjà sa facture RENTAL DRAFT auto-générée, l'appel devient idempotent
+      // (200). Ce qui est vérifié ici (le bypass ADMIN fonctionne, pas de 403) reste intact.
       const response = await createInvoice(adminA);
-      expect(response.status).toBe(201);
+      expect(response.status).toBe(200);
     } finally {
       await apiFetch(`/api/users/${adminA.userId}/permissions`, {
         method: "PATCH",
@@ -918,7 +1017,7 @@ describe("POST /api/invoices/[id]/versions — Sprint 26E (versionnement documen
     await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "CANCELLED" }),
+      body: JSON.stringify({ status: "VOID" }),
     });
 
     const response = await apiFetch(`/api/invoices/${invoice.id}/versions`, {
@@ -958,13 +1057,13 @@ describe("POST /api/invoices/[id]/versions — Sprint 26E (versionnement documen
     expect(body.invoice.currency).toBe(invoice.currency);
 
     expect(body.replacedInvoice.id).toBe(invoice.id);
-    expect(body.replacedInvoice.status).toBe("CANCELLED");
+    expect(body.replacedInvoice.status).toBe("VOID");
     // Sens inverse déjà couvert par body.invoice.replacesInvoiceId ci-dessus (relation 1:1 —
     // aucune colonne physique dupliquée sur l'ancienne facture, voir prisma/schema.prisma) et
     // par le test dédié « GET .../versions retourne l'historique complet » plus bas.
 
     const oldAfter = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
-    expect((await oldAfter.json()).invoice.status).toBe("CANCELLED");
+    expect((await oldAfter.json()).invoice.status).toBe("VOID");
   });
 
   it("chaîne linéaire illimitée : une deuxième version obtient -AV2, rootInvoiceId toujours la racine", async () => {
@@ -1215,7 +1314,7 @@ describe("Sprint 26E — non-régression : annulation ADMIN d'un contrat après 
 
     const oldInvoiceAfter = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
     const oldInvoiceBody = (await oldInvoiceAfter.json()).invoice;
-    expect(oldInvoiceBody.status).toBe("CANCELLED");
+    expect(oldInvoiceBody.status).toBe("VOID");
     // Sens inverse (old → new) déjà couvert par newInvoiceBody.replacesInvoiceId ci-dessous —
     // relation 1:1 réelle, aucune colonne physique dupliquée sur l'ancienne facture.
 
@@ -1228,5 +1327,701 @@ describe("Sprint 26E — non-régression : annulation ADMIN d'un contrat après 
 
     const locationAfter = await apiFetch(`/api/locations/${location.id}`, { headers: { Cookie: adminA.sessionCookie } });
     expect((await locationAfter.json()).location.status).toBe("CANCELLED");
+  });
+});
+
+/**
+ * Sprint 13E tâche 3 — getOrCreateMainInvoice : au plus une facture RENTAL active par Location.
+ * Chaque scénario crée sa propre Location fraîche (jamais locationAId/locationBId ci-dessus) :
+ * depuis que POST /api/invoices est idempotent pour RENTAL, réutiliser une location déjà dotée
+ * d'une facture (auto-générée par POST /api/locations, ou transitionnée par un test précédent)
+ * ne créerait plus une seconde facture indépendante — c'est précisément le comportement que
+ * cette tâche implémente, pas un défaut à contourner ici.
+ */
+describe("getOrCreateMainInvoice — facture RENTAL unique par Location (Sprint 13E tâche 3)", () => {
+  // createFreshLocation est désormais définie au niveau module (voir plus haut, réutilisée par
+  // createInvoice) — plus de définition locale dupliquée ici.
+
+  it("POST /api/locations auto-génère exactement une facture RENTAL DRAFT", async () => {
+    const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+    const invoices = await prisma.invoice.findMany({ where: { locationId } });
+    expect(invoices).toHaveLength(1);
+    expect(invoices[0].type).toBe("RENTAL");
+    expect(invoices[0].status).toBe("DRAFT");
+  });
+
+  it("deux appels séquentiels POST /api/invoices sur la même location retournent le même id — aucun doublon", async () => {
+    const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+    const auto = await prisma.invoice.findMany({ where: { locationId, type: "RENTAL" } });
+    expect(auto).toHaveLength(1);
+    const autoInvoiceId = auto[0].id;
+
+    const first = await apiFetch("/api/invoices", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ locationId }),
+    });
+    expect(first.status).toBe(200);
+    expect((await first.json()).invoice.id).toBe(autoInvoiceId);
+
+    const second = await apiFetch("/api/invoices", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ locationId }),
+    });
+    expect(second.status).toBe(200);
+    expect((await second.json()).invoice.id).toBe(autoInvoiceId);
+
+    const allRental = await prisma.invoice.findMany({ where: { locationId, type: "RENTAL" } });
+    expect(allRental).toHaveLength(1);
+  });
+
+  it("deux appels directs concurrents (Promise.all, jamais une course HTTP) retournent le même id, une seule ligne créée", async () => {
+    const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+    // Repart d'une Location sans aucune facture RENTAL, pour exercer réellement la branche
+    // "création" sous concurrence (jamais seulement sa branche "déjà existante").
+    await prisma.invoice.deleteMany({ where: { locationId, type: "RENTAL" } });
+
+    const [resultA, resultB] = await Promise.all([
+      getOrCreateMainInvoice(adminA.tenantId, locationId),
+      getOrCreateMainInvoice(adminA.tenantId, locationId),
+    ]);
+
+    expect(resultA.invoice.id).toBe(resultB.invoice.id);
+    // Exactement un des deux appels a réellement créé la facture — jamais les deux, jamais aucun.
+    expect([resultA.created, resultB.created].filter(Boolean)).toHaveLength(1);
+
+    const allRental = await prisma.invoice.findMany({ where: { locationId, type: "RENTAL" } });
+    expect(allRental).toHaveLength(1);
+  });
+
+  it("une facture SUPPLEMENT ou EXTENSION déjà présente n'empêche pas la récupération de la RENTAL", async () => {
+    const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+
+    // Sprint 13E tâche 3, sous-phase 2b : createSupplementInvoice/createExtensionInvoice
+    // existent désormais (src/lib/invoices.ts) — utilisées ici plutôt qu'une insertion brute,
+    // qui échouerait de toute façon contre Invoice_supplement_extension_fields_consistency
+    // (supplementKey/extensionEndDate obligatoires selon le type, migration 2b).
+    await getOrCreateSupplementInvoice(adminA.tenantId, locationId, "PRE_EXISTING_SUPPLEMENT", { amount: 1000 });
+    await getOrCreateExtensionInvoice(adminA.tenantId, locationId, new Date("2032-01-01T00:00:00.000Z"), {
+      amount: 500,
+    });
+
+    const response = await apiFetch("/api/invoices", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ locationId }),
+    });
+    expect(response.status).toBe(200); // récupère la RENTAL auto-générée par POST /api/locations
+    expect((await response.json()).invoice.type).toBe("RENTAL");
+
+    const rentalInvoices = await prisma.invoice.findMany({ where: { locationId, type: "RENTAL" } });
+    expect(rentalInvoices).toHaveLength(1);
+    const allInvoices = await prisma.invoice.findMany({ where: { locationId } });
+    expect(allInvoices).toHaveLength(3); // RENTAL + SUPPLEMENT + EXTENSION, coexistent sans conflit
+  });
+
+  it("isolation tenant : un tenantId erroné ne peut jamais voir/créer la facture RENTAL d'une location d'un autre tenant", async () => {
+    const locationAFresh = await createFreshLocation(adminA, vehicleAId, clientAId);
+    const locationBFresh = await createFreshLocation(adminB, vehicleBId, clientBId);
+
+    const { invoice: invoiceA } = await getOrCreateMainInvoice(adminA.tenantId, locationAFresh);
+    const { invoice: invoiceB } = await getOrCreateMainInvoice(adminB.tenantId, locationBFresh);
+    expect(invoiceA.tenantId).toBe(adminA.tenantId);
+    expect(invoiceB.tenantId).toBe(adminB.tenantId);
+    expect(invoiceA.id).not.toBe(invoiceB.id);
+
+    await expect(getOrCreateMainInvoice(adminB.tenantId, locationAFresh)).rejects.toThrow(InvoiceLocationNotFoundError);
+    await expect(getOrCreateMainInvoice(adminA.tenantId, locationBFresh)).rejects.toThrow(InvoiceLocationNotFoundError);
+  });
+
+  it("isolation agence : un MEMBER non rattaché à l'agence de la location est refusé (403) avant toute logique de facture", async () => {
+    const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+    const response = await apiFetch("/api/invoices", {
+      method: "POST",
+      headers: { Cookie: memberA.sessionCookie },
+      body: JSON.stringify({ locationId }),
+    });
+    expect(response.status).toBe(403);
+
+    // Aucune facture supplémentaire n'a pu être créée par cette tentative refusée — seule
+    // l'unique facture RENTAL déjà auto-générée par POST /api/locations subsiste.
+    const invoices = await prisma.invoice.findMany({ where: { locationId } });
+    expect(invoices).toHaveLength(1);
+  });
+
+  it("collision P2002 sur l'index unique partiel : une création directe hors verrou est bien rejetée par PostgreSQL (protection réelle, pas seulement applicative)", async () => {
+    const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+    // La facture RENTAL auto-générée par POST /api/locations existe déjà : une seconde tentative
+    // de création directe (contournant délibérément getOrCreateMainInvoice, qui ne l'aurait
+    // jamais tentée) doit être rejetée par l'index lui-même — preuve que la protection ne repose
+    // pas uniquement sur le verrou applicatif.
+    const location = await prisma.location.findUniqueOrThrow({ where: { id: locationId } });
+    // Le message d'erreur Prisma pour une violation de cet index partiel est le message
+    // générique "Unique constraint failed on the fields: (`locationId`)" — le nom de l'index
+    // lui-même n'apparaît jamais dans le message, seulement dans error.meta.target (vérifié
+    // empiriquement). C'est donc meta.target, pas le message, qui prouve sans ambiguïté que
+    // c'est bien CET index (et non @@unique([tenantId, number])) qui a rejeté l'insertion.
+    let caught: unknown;
+    try {
+      await prisma.invoice.create({
+        data: {
+          tenantId: adminA.tenantId,
+          agencyId: location.agencyId,
+          locationId,
+          clientId: location.clientId,
+          number: `DIRECT-BYPASS-${runId}`,
+          type: "RENTAL",
+          status: "DRAFT",
+          subtotal: 1000,
+          totalAmount: 1000,
+          currency: "MAD",
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+    const prismaError = caught as Prisma.PrismaClientKnownRequestError;
+    expect(prismaError.code).toBe("P2002");
+    expect(prismaError.meta?.target).toEqual(["locationId"]);
+
+    // getOrCreateMainInvoice, lui, absorbe ce même type de collision de façon idempotente —
+    // revérifié explicitement ici plutôt que supposé à partir du test de concurrence ci-dessus.
+    const { invoice, created } = await getOrCreateMainInvoice(adminA.tenantId, locationId);
+    expect(created).toBe(false);
+    const allRental = await prisma.invoice.findMany({ where: { locationId, type: "RENTAL" } });
+    expect(allRental).toHaveLength(1);
+    expect(allRental[0].id).toBe(invoice.id);
+  });
+
+  it("non-régression de la numérotation : plusieurs factures RENTAL fraîches restent uniques et séquentielles", async () => {
+    const before = await prisma.invoice.count({ where: { tenantId: adminA.tenantId } });
+
+    const locationOne = await createFreshLocation(adminA, vehicleAId, clientAId);
+    const locationTwo = await createFreshLocation(adminA, vehicleAId, clientAId);
+    const locationThree = await createFreshLocation(adminA, vehicleAId, clientAId);
+
+    const [invoiceOne, invoiceTwo, invoiceThree] = await Promise.all(
+      [locationOne, locationTwo, locationThree].map(
+        async (id) => (await prisma.invoice.findFirstOrThrow({ where: { locationId: id, type: "RENTAL" } })).number
+      )
+    );
+
+    const numbers = [invoiceOne, invoiceTwo, invoiceThree];
+    expect(new Set(numbers).size).toBe(3); // uniques
+    for (const number of numbers) {
+      expect(number).toMatch(/^INV-\d{4}-\d{5}$/);
+    }
+
+    const after = await prisma.invoice.count({ where: { tenantId: adminA.tenantId } });
+    expect(after).toBe(before + 3);
+  });
+});
+
+/**
+ * Sprint 13E tâche 3, sous-phase 2b — SUPPLEMENT/EXTENSION : factures additionnelles rattachées
+ * à une Location, jamais soumises à la contrainte « une seule facture active » propre à RENTAL.
+ * Montant (amount) toujours explicite, fourni par l'appelant — aucune formule automatique.
+ * Chaque scénario crée sa propre Location fraîche (createFreshLocation, décrite plus haut).
+ */
+describe("SUPPLEMENT/EXTENSION — factures additionnelles (Sprint 13E tâche 3, sous-phase 2b)", () => {
+  describe("validateSupplementaryAmount (unitaire, direct — Infinity/NaN non représentables en JSON HTTP)", () => {
+    it("rejette une valeur absente, non numérique, NaN, non finie, non entière, nulle ou négative ; accepte un entier positif", () => {
+      const invalid = [undefined, null, "100", NaN, Infinity, -Infinity, 10.5, 0, -100];
+      for (const value of invalid) {
+        expect(() => validateSupplementaryAmount(value)).toThrow(InvalidInvoiceAmountError);
+      }
+      expect(() => validateSupplementaryAmount(1)).not.toThrow();
+      expect(() => validateSupplementaryAmount(500000)).not.toThrow();
+    });
+  });
+
+  describe("SUPPLEMENT", () => {
+    it("création réussie via POST /api/invoices (201), montant explicite, taxRate/discountAmount réutilisent computeInvoiceTotals", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({
+          locationId,
+          type: "SUPPLEMENT",
+          supplementKey: "EXTRA_KM",
+          amount: 5000,
+          taxRate: 2000,
+          discountAmount: 1000,
+        }),
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.invoice.type).toBe("SUPPLEMENT");
+      expect(body.invoice.status).toBe("DRAFT");
+      expect(body.invoice.subtotal).toBe(5000);
+      // subtotal 5000, taxRate 20% => taxAmount 1000, total = 5000 - 1000 + 1000 = 5000
+      expect(body.invoice.taxAmount).toBe(1000);
+      expect(body.invoice.totalAmount).toBe(5000);
+      expect(body.invoice.supplementKey).toBe("EXTRA_KM");
+      expect(body.invoice.extensionEndDate).toBeNull();
+      expect(body.invoice.number).toMatch(/^INV-\d{4}-\d{5}$/);
+    });
+
+    it("répétition du même supplementKey via POST /api/invoices est idempotente (200, même id, aucun doublon)", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const first = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "SUPPLEMENT", supplementKey: "LATE_FEE", amount: 3000 }),
+      });
+      expect(first.status).toBe(201);
+      const firstId = (await first.json()).invoice.id;
+
+      const second = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "SUPPLEMENT", supplementKey: "LATE_FEE", amount: 3000 }),
+      });
+      expect(second.status).toBe(200);
+      expect((await second.json()).invoice.id).toBe(firstId);
+
+      const all = await prisma.invoice.findMany({ where: { locationId, type: "SUPPLEMENT", supplementKey: "LATE_FEE" } });
+      expect(all).toHaveLength(1);
+    });
+
+    it("normalisation de supplementKey : espaces de bord ignorés, même clé effective pour la recherche et l'insertion", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const first = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "SUPPLEMENT", supplementKey: "  SECOND_DRIVER  ", amount: 2000 }),
+      });
+      expect(first.status).toBe(201);
+      const firstBody = await first.json();
+      expect(firstBody.invoice.supplementKey).toBe("SECOND_DRIVER");
+
+      const second = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "SUPPLEMENT", supplementKey: "SECOND_DRIVER", amount: 2000 }),
+      });
+      expect(second.status).toBe(200);
+      expect((await second.json()).invoice.id).toBe(firstBody.invoice.id);
+    });
+
+    it("plusieurs SUPPLEMENT distincts (clés différentes) coexistent librement sur la même Location", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const keys = ["EXTRA_KM", "LATE_FEE", "SECOND_DRIVER"];
+      for (const key of keys) {
+        const response = await apiFetch("/api/invoices", {
+          method: "POST",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify({ locationId, type: "SUPPLEMENT", supplementKey: key, amount: 1000 }),
+        });
+        expect(response.status).toBe(201);
+      }
+      const all = await prisma.invoice.findMany({ where: { locationId, type: "SUPPLEMENT" } });
+      expect(all).toHaveLength(3);
+      expect(new Set(all.map((i) => i.supplementKey)).size).toBe(3);
+    });
+
+    it("deux appels concurrents avec la même clé (service direct, Promise.all — jamais une course HTTP) : une seule facture créée", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const [r1, r2] = await Promise.all([
+        getOrCreateSupplementInvoice(adminA.tenantId, locationId, "CONCURRENT_KEY", { amount: 4000 }),
+        getOrCreateSupplementInvoice(adminA.tenantId, locationId, "CONCURRENT_KEY", { amount: 4000 }),
+      ]);
+      expect([r1.created, r2.created].sort()).toEqual([false, true]);
+      expect(r1.invoice.id).toBe(r2.invoice.id);
+
+      const all = await prisma.invoice.findMany({ where: { locationId, type: "SUPPLEMENT", supplementKey: "CONCURRENT_KEY" } });
+      expect(all).toHaveLength(1);
+    });
+
+    it("amount absent -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "SUPPLEMENT", supplementKey: "X" }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("amount nul -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "SUPPLEMENT", supplementKey: "X", amount: 0 }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("amount négatif -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "SUPPLEMENT", supplementKey: "X", amount: -500 }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("amount non entier -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "SUPPLEMENT", supplementKey: "X", amount: 10.5 }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("supplementKey absente -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "SUPPLEMENT", amount: 1000 }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("supplementKey vide/blanche -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "SUPPLEMENT", supplementKey: "   ", amount: 1000 }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("champ incompatible : extensionEndDate fourni avec type SUPPLEMENT -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({
+          locationId,
+          type: "SUPPLEMENT",
+          supplementKey: "X",
+          amount: 1000,
+          extensionEndDate: new Date().toISOString(),
+        }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("factures VOID exclues de l'idempotence active : un nouveau SUPPLEMENT avec la même clé peut être créé après passage manuel à VOID", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const first = await getOrCreateSupplementInvoice(adminA.tenantId, locationId, "VOID_TEST_KEY", { amount: 1000 });
+      expect(first.created).toBe(true);
+
+      // Passage à VOID directement en base — voidInvoice n'est pas implémentée à ce stade
+      // (hors périmètre 2b), même idiome que les autres tests de ce fichier forçant un état non
+      // encore atteignable via l'API (ex. describe admin-cancel, Payment.status REFUNDED).
+      await prisma.invoice.update({ where: { id: first.invoice.id }, data: { status: "VOID" } });
+
+      const second = await getOrCreateSupplementInvoice(adminA.tenantId, locationId, "VOID_TEST_KEY", { amount: 1500 });
+      expect(second.created).toBe(true);
+      expect(second.invoice.id).not.toBe(first.invoice.id);
+
+      const all = await prisma.invoice.findMany({ where: { locationId, type: "SUPPLEMENT", supplementKey: "VOID_TEST_KEY" } });
+      expect(all).toHaveLength(2);
+    });
+
+    it("isolation tenant : locationId d'un autre tenant -> 404", async () => {
+      const locationBFresh = await createFreshLocation(adminB, vehicleBId, clientBId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId: locationBFresh, type: "SUPPLEMENT", supplementKey: "X", amount: 1000 }),
+      });
+      expect(response.status).toBe(404);
+    });
+
+    it("isolation agence : un MEMBER non rattaché à l'agence de la location est refusé (403) avant toute logique de facture", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: memberA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "SUPPLEMENT", supplementKey: "X", amount: 1000 }),
+      });
+      expect(response.status).toBe(403);
+      const all = await prisma.invoice.findMany({ where: { locationId, type: "SUPPLEMENT" } });
+      expect(all).toHaveLength(0);
+    });
+  });
+
+  describe("EXTENSION", () => {
+    it("création réussie via POST /api/invoices (201), montant explicite, taxRate/discountAmount réutilisent computeInvoiceTotals", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const targetDate = new Date("2031-03-01T00:00:00.000Z").toISOString();
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({
+          locationId,
+          type: "EXTENSION",
+          extensionEndDate: targetDate,
+          amount: 6000,
+          taxRate: 1000,
+          discountAmount: 500,
+        }),
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.invoice.type).toBe("EXTENSION");
+      expect(body.invoice.status).toBe("DRAFT");
+      expect(body.invoice.subtotal).toBe(6000);
+      // subtotal 6000, taxRate 10% => taxAmount 600, total = 6000 - 500 + 600 = 6100
+      expect(body.invoice.taxAmount).toBe(600);
+      expect(body.invoice.totalAmount).toBe(6100);
+      expect(new Date(body.invoice.extensionEndDate).toISOString()).toBe(targetDate);
+      expect(body.invoice.supplementKey).toBeNull();
+    });
+
+    it("répétition de la même extensionEndDate via POST /api/invoices est idempotente (200, même id, aucun doublon)", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const targetDate = new Date("2031-04-01T00:00:00.000Z").toISOString();
+      const first = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "EXTENSION", extensionEndDate: targetDate, amount: 2500 }),
+      });
+      expect(first.status).toBe(201);
+      const firstId = (await first.json()).invoice.id;
+
+      const second = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "EXTENSION", extensionEndDate: targetDate, amount: 2500 }),
+      });
+      expect(second.status).toBe(200);
+      expect((await second.json()).invoice.id).toBe(firstId);
+
+      const all = await prisma.invoice.findMany({ where: { locationId, type: "EXTENSION" } });
+      expect(all).toHaveLength(1);
+    });
+
+    it("plusieurs EXTENSION vers des dates cibles distinctes coexistent librement sur la même Location", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const dates = [
+        new Date("2031-05-01T00:00:00.000Z").toISOString(),
+        new Date("2031-05-02T00:00:00.000Z").toISOString(),
+        new Date("2031-05-03T00:00:00.000Z").toISOString(),
+      ];
+      for (const extensionEndDate of dates) {
+        const response = await apiFetch("/api/invoices", {
+          method: "POST",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify({ locationId, type: "EXTENSION", extensionEndDate, amount: 1000 }),
+        });
+        expect(response.status).toBe(201);
+      }
+      const all = await prisma.invoice.findMany({ where: { locationId, type: "EXTENSION" } });
+      expect(all).toHaveLength(3);
+    });
+
+    it("une extension vers une date déjà existante est récupérée idempotemment (service direct)", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const targetDate = new Date("2031-06-15T00:00:00.000Z");
+      const first = await getOrCreateExtensionInvoice(adminA.tenantId, locationId, targetDate, { amount: 3000 });
+      expect(first.created).toBe(true);
+      const second = await getOrCreateExtensionInvoice(adminA.tenantId, locationId, targetDate, { amount: 3000 });
+      expect(second.created).toBe(false);
+      expect(second.invoice.id).toBe(first.invoice.id);
+    });
+
+    it("deux appels concurrents vers la même date cible (service direct, Promise.all) : une seule facture créée", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const targetDate = new Date("2031-07-20T00:00:00.000Z");
+      const [r1, r2] = await Promise.all([
+        getOrCreateExtensionInvoice(adminA.tenantId, locationId, targetDate, { amount: 4500 }),
+        getOrCreateExtensionInvoice(adminA.tenantId, locationId, targetDate, { amount: 4500 }),
+      ]);
+      expect([r1.created, r2.created].sort()).toEqual([false, true]);
+      expect(r1.invoice.id).toBe(r2.invoice.id);
+
+      const all = await prisma.invoice.findMany({ where: { locationId, type: "EXTENSION" } });
+      expect(all).toHaveLength(1);
+    });
+
+    it("amount absent -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "EXTENSION", extensionEndDate: new Date().toISOString() }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("amount nul -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "EXTENSION", extensionEndDate: new Date().toISOString(), amount: 0 }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("amount négatif -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "EXTENSION", extensionEndDate: new Date().toISOString(), amount: -1 }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("amount non entier -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "EXTENSION", extensionEndDate: new Date().toISOString(), amount: 2.2 }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("extensionEndDate absente -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "EXTENSION", amount: 1000 }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("extensionEndDate invalide (chaîne non parseable) -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "EXTENSION", extensionEndDate: "pas-une-date", amount: 1000 }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("champ incompatible : supplementKey fourni avec type EXTENSION -> 400", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({
+          locationId,
+          type: "EXTENSION",
+          extensionEndDate: new Date().toISOString(),
+          amount: 1000,
+          supplementKey: "X",
+        }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("isolation tenant : locationId d'un autre tenant -> 404", async () => {
+      const locationBFresh = await createFreshLocation(adminB, vehicleBId, clientBId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ locationId: locationBFresh, type: "EXTENSION", extensionEndDate: new Date().toISOString(), amount: 1000 }),
+      });
+      expect(response.status).toBe(404);
+    });
+
+    it("isolation agence : un MEMBER non rattaché à l'agence de la location est refusé (403) avant toute logique de facture", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const response = await apiFetch("/api/invoices", {
+        method: "POST",
+        headers: { Cookie: memberA.sessionCookie },
+        body: JSON.stringify({ locationId, type: "EXTENSION", extensionEndDate: new Date().toISOString(), amount: 1000 }),
+      });
+      expect(response.status).toBe(403);
+      const all = await prisma.invoice.findMany({ where: { locationId, type: "EXTENSION" } });
+      expect(all).toHaveLength(0);
+    });
+  });
+
+  describe("RENTAL non affectée / validations croisées / protection de syncDraftInvoiceTotal", () => {
+    it("champ incompatible : supplementKey/extensionEndDate/amount refusés avec type RENTAL (ou type absent)", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      for (const overrides of [
+        { supplementKey: "X" },
+        { extensionEndDate: new Date().toISOString() },
+        { amount: 1000 },
+      ]) {
+        const response = await apiFetch("/api/invoices", {
+          method: "POST",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify({ locationId, ...overrides }),
+        });
+        expect(response.status).toBe(400);
+      }
+    });
+
+    it("type invalide (CREDIT_NOTE ou toute autre valeur) -> 400, CREDIT_NOTE non exposée à ce stade", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      for (const type of ["CREDIT_NOTE", "UNKNOWN_TYPE"]) {
+        const response = await apiFetch("/api/invoices", {
+          method: "POST",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify({ locationId, type }),
+        });
+        expect(response.status).toBe(400);
+      }
+    });
+
+    it("la facture RENTAL d'une Location reste strictement inchangée après création de SUPPLEMENT et EXTENSION", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const rentalBefore = await prisma.invoice.findFirstOrThrow({ where: { locationId, type: "RENTAL" } });
+
+      await getOrCreateSupplementInvoice(adminA.tenantId, locationId, "NO_IMPACT_ON_RENTAL", { amount: 1000 });
+      await getOrCreateExtensionInvoice(adminA.tenantId, locationId, new Date("2031-08-01T00:00:00.000Z"), { amount: 2000 });
+
+      const rentalAfter = await prisma.invoice.findFirstOrThrow({ where: { locationId, type: "RENTAL" } });
+      expect(rentalAfter).toEqual(rentalBefore);
+
+      const allForLocation = await prisma.invoice.findMany({ where: { locationId } });
+      expect(allForLocation).toHaveLength(3); // RENTAL + SUPPLEMENT + EXTENSION
+      expect(allForLocation.filter((i) => i.type === "RENTAL")).toHaveLength(1);
+    });
+
+    it("syncDraftInvoiceTotal (src/lib/locations.ts) ne resynchronise jamais une facture SUPPLEMENT/EXTENSION à la place de la RENTAL", async () => {
+      const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+      const rentalBefore = await prisma.invoice.findFirstOrThrow({ where: { locationId, type: "RENTAL" } });
+      expect(rentalBefore.subtotal).toBe(15000); // 3 jours x 5000 (createFreshLocation)
+
+      // La facture SUPPLEMENT créée ensuite est plus récente (createdAt) que la RENTAL — c'est
+      // précisément le scénario qui aurait fait échouer syncDraftInvoiceTotal sans le filtre
+      // type: "RENTAL" (elle aurait sélectionné cette facture-ci, la plus récente, au lieu de
+      // la RENTAL, lors du recalcul de totalPrice ci-dessous).
+      const supplement = await getOrCreateSupplementInvoice(adminA.tenantId, locationId, "SYNC_PROTECTION_TEST", {
+        amount: 7777,
+      });
+      expect(supplement.invoice.status).toBe("DRAFT");
+      expect(supplement.invoice.createdAt.getTime()).toBeGreaterThan(rentalBefore.createdAt.getTime());
+
+      const location = await prisma.location.findUniqueOrThrow({ where: { id: locationId } });
+      const newEndDate = new Date(location.endDate.getTime() + 24 * 60 * 60 * 1000); // +1 jour
+      const patchResponse = await apiFetch(`/api/locations/${locationId}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ endDate: newEndDate.toISOString() }),
+      });
+      expect(patchResponse.status).toBe(200);
+      expect((await patchResponse.json()).location.totalPrice).toBe(20000); // 4 jours x 5000
+
+      const rentalAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: rentalBefore.id } });
+      expect(rentalAfter.subtotal).toBe(20000); // resynchronisée avec le nouveau totalPrice
+      expect(rentalAfter.totalAmount).toBe(20000);
+
+      const supplementAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: supplement.invoice.id } });
+      expect(supplementAfter.subtotal).toBe(7777); // jamais touchée
+      expect(supplementAfter.totalAmount).toBe(7777);
+    });
   });
 });

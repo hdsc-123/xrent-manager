@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import type { InvoiceStatus } from "@prisma/client";
 import { apiPatch, apiPost, ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
 import {
@@ -22,24 +23,31 @@ import {
   Label,
 } from "@/components/ui";
 
-type InvoiceStatus = "DRAFT" | "SENT" | "PARTIALLY_PAID" | "PAID" | "CANCELLED";
 type PaymentMethod = "CASH" | "CARD" | "BANK_TRANSFER" | "CHECK" | "OTHER";
+
+// Sprint 13E tâche 3 : type importé depuis @prisma/client (au lieu d'une union locale dupliquée
+// SENT/CANCELLED) pour ne plus jamais diverger du schéma réel — c'est cette divergence qui a
+// rendu ce correctif nécessaire lors du renommage InvoiceStatus.SENT/CANCELLED -> ISSUED/VOID.
 
 /** Miroir client des transitions manuelles de src/lib/invoices.ts (ALLOWED_TRANSITIONS). */
 const ALLOWED_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
-  DRAFT: ["SENT", "CANCELLED"],
-  SENT: ["CANCELLED"],
-  PARTIALLY_PAID: ["CANCELLED"],
+  DRAFT: ["ISSUED", "VOID"],
+  ISSUED: ["VOID"],
+  PARTIALLY_PAID: ["VOID"],
   PAID: [],
-  CANCELLED: [],
+  VOID: [],
+  // CREDIT_NOTE est un état final atteint directement à la création d'un avoir
+  // (createCreditNote, non implémentée à ce stade) — jamais via une transition depuis cette UI.
+  CREDIT_NOTE: [],
 };
 
 const STATUS_LABELS: Record<InvoiceStatus, string> = {
   DRAFT: "Brouillon",
-  SENT: "Envoyée",
+  ISSUED: "Envoyée",
   PARTIALLY_PAID: "Partiellement payée",
   PAID: "Payée",
-  CANCELLED: "Annulée",
+  VOID: "Annulée",
+  CREDIT_NOTE: "Avoir",
 };
 
 const METHOD_OPTIONS: { value: PaymentMethod; label: string }[] = [
@@ -56,14 +64,14 @@ interface InvoiceActionsProps {
   remainingBalance: number;
   currency: string;
   /** invoices.edit (voir src/lib/permissions.ts) — autorise les transitions de statut non
-   * destructrices (ex. DRAFT → SENT), calculé côté serveur par la page appelante. */
+   * destructrices (ex. DRAFT → ISSUED), calculé côté serveur par la page appelante. */
   canEdit?: boolean;
-  /** invoices.delete — autorise la transition vers CANCELLED. */
+  /** invoices.delete — autorise la transition vers VOID. */
   canDelete?: boolean;
   /** payments.create — autorise l'enregistrement d'un paiement depuis cette facture. */
   canCreatePayment?: boolean;
   /** Sprint 26E : invoices.version — autorise la création d'une nouvelle version. Calculé côté
-   * serveur ; le bouton n'est de toute façon visible que si status === "SENT" (l'éligibilité
+   * serveur ; le bouton n'est de toute façon visible que si status === "ISSUED" (l'éligibilité
    * réelle — pas de Payment — est revalidée côté serveur par versionInvoice). */
   canVersion?: boolean;
 }
@@ -196,17 +204,17 @@ export function InvoiceActions({
   }
 
   const nextStatuses = ALLOWED_TRANSITIONS[status];
-  // Sprint 26E : visible seulement pour une facture SENT — l'éligibilité réelle (aucun Payment)
+  // Sprint 26E : visible seulement pour une facture ISSUED — l'éligibilité réelle (aucun Payment)
   // est revalidée côté serveur (InvoiceNotVersionableError sinon).
-  const canCreateVersion = status === "SENT" && canVersion;
-  // Filtrage par permission : CANCELLED s'apparente à une suppression (invoices.delete), les
-  // autres transitions (ex. DRAFT → SENT) à une modification (invoices.edit).
-  const visibleNextStatuses = nextStatuses.filter((next) => (next === "CANCELLED" ? canDelete : canEdit));
-  // Finding F : un paiement ne peut être enregistré que sur une facture finalisée (SENT ou
+  const canCreateVersion = status === "ISSUED" && canVersion;
+  // Filtrage par permission : VOID s'apparente à une suppression (invoices.delete), les
+  // autres transitions (ex. DRAFT → ISSUED) à une modification (invoices.edit).
+  const visibleNextStatuses = nextStatuses.filter((next) => (next === "VOID" ? canDelete : canEdit));
+  // Finding F : un paiement ne peut être enregistré que sur une facture finalisée (ISSUED ou
   // au-delà) — DRAFT exclu, sinon le clic aboutirait systématiquement à un 409
   // (InvoiceNotFinalizedError, src/lib/payments.ts).
   const canRecordPayment =
-    remainingBalance > 0 && status !== "CANCELLED" && status !== "DRAFT" && canCreatePayment;
+    remainingBalance > 0 && status !== "VOID" && status !== "DRAFT" && canCreatePayment;
 
   return (
     <Card>
@@ -228,7 +236,7 @@ export function InvoiceActions({
                     key={next}
                     type="button"
                     size="sm"
-                    variant={next === "CANCELLED" ? "destructive" : "default"}
+                    variant={next === "VOID" ? "destructive" : "default"}
                     disabled={isChangingStatus}
                     onClick={() => handleTransition(next)}
                   >

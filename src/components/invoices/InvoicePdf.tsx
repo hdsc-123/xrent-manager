@@ -11,10 +11,11 @@ function formatDatePdf(date: Date): string {
 
 const STATUS_LABELS: Record<string, string> = {
   DRAFT: "Brouillon",
-  SENT: "Envoyée",
+  ISSUED: "Envoyée",
   PARTIALLY_PAID: "Partiellement payée",
   PAID: "Payée",
-  CANCELLED: "Annulée",
+  VOID: "Annulée",
+  CREDIT_NOTE: "Avoir",
 };
 
 const styles = StyleSheet.create({

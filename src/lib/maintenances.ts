@@ -1,6 +1,6 @@
 import type { Maintenance, MaintenanceStatus, MaintenanceType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getVehicleById } from "@/lib/vehicles";
+import { lockVehicleForUpdate, findConflictingLocations, getMaintenanceEffectiveEnd } from "@/lib/vehicles";
 
 export class MaintenanceVehicleNotFoundError extends Error {
   constructor() {
@@ -13,6 +13,37 @@ export class InvalidMaintenanceCostError extends Error {
   constructor() {
     super("cost doit être un entier positif ou nul (plus petite unité monétaire).");
     this.name = "InvalidMaintenanceCostError";
+  }
+}
+
+export class InvalidMaintenancePeriodError extends Error {
+  constructor() {
+    super("scheduledEndDate doit être strictement postérieure à scheduledDate.");
+    this.name = "InvalidMaintenancePeriodError";
+  }
+}
+
+/**
+ * Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 1) : un véhicule actuellement loué (ou
+ * réservé sur une période chevauchant la maintenance proposée — PENDING/CONFIRMED/ACTIVE
+ * bloquent, même statuts que la disponibilité Location déjà établie, src/lib/vehicles.ts) ne
+ * peut recevoir une maintenance que si celle-ci commence après la date de retour prévue.
+ * Contrôle strict, sans exception ADMIN — même philosophie que VehicleUnavailableForLocationError
+ * (Sprint 28, Finding E) : un conflit physique réel (un véhicule ne peut pas être à la fois chez
+ * un client et à l'atelier) n'est jamais un choix éditorial.
+ */
+export class VehicleUnavailableForMaintenanceError extends Error {
+  conflictingLocations: Pick<Awaited<ReturnType<typeof findConflictingLocations>>[number], "id" | "startDate" | "endDate" | "status">[];
+
+  constructor(
+    conflictingLocations: Pick<Awaited<ReturnType<typeof findConflictingLocations>>[number], "id" | "startDate" | "endDate" | "status">[]
+  ) {
+    super(
+      "Ce véhicule est loué (ou réservé) sur une période qui chevauche la maintenance demandée — " +
+        "elle ne peut commencer qu'après la date de retour prévue."
+    );
+    this.name = "VehicleUnavailableForMaintenanceError";
+    this.conflictingLocations = conflictingLocations;
   }
 }
 
@@ -100,39 +131,77 @@ export interface CreateMaintenanceInput {
   vehicleId: string;
   type: MaintenanceType;
   scheduledDate: Date;
+  /** Sprint 34 étape 3 — fin de la période bloquante (voir getMaintenanceEffectiveEnd,
+   * src/lib/vehicles.ts, si absente). */
+  scheduledEndDate?: Date;
   cost?: number;
   notes?: string;
+}
+
+function validatePeriod(scheduledDate: Date, scheduledEndDate: Date | null | undefined): void {
+  if (scheduledEndDate && scheduledEndDate <= scheduledDate) {
+    throw new InvalidMaintenancePeriodError();
+  }
 }
 
 /**
  * agencyId/currency sont toujours dérivés du Vehicle côté serveur, jamais fournis par
  * le client (même principe que Location.agencyId dérivé de Vehicle.agencyId).
+ *
+ * Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 1) : transactionnelle, verrou du véhicule
+ * posé avant toute vérification de conflit — même primitive (lockVehicleForUpdate,
+ * src/lib/vehicles.ts) et même raisonnement de concurrence que createLocationLocked/
+ * createVehicleTransfer/createVehicleTrip (Sprint 26C/31B) : deux créations de maintenance (ou
+ * une maintenance et une location) quasi simultanées sur le même véhicule ne peuvent plus toutes
+ * deux lire un état "disponible" avant que l'une des deux n'écrive.
  */
 export async function createMaintenance(data: CreateMaintenanceInput): Promise<Maintenance> {
   validateCost(data.cost);
+  validatePeriod(data.scheduledDate, data.scheduledEndDate);
 
-  const vehicle = await getVehicleById(data.tenantId, data.vehicleId);
-  if (!vehicle) {
-    throw new MaintenanceVehicleNotFoundError();
-  }
+  return prisma.$transaction(async (tx) => {
+    const vehicle = await lockVehicleForUpdate(data.tenantId, data.vehicleId, tx);
+    if (!vehicle) {
+      throw new MaintenanceVehicleNotFoundError();
+    }
 
-  return prisma.maintenance.create({
-    data: {
-      tenantId: data.tenantId,
-      agencyId: vehicle.agencyId,
-      vehicleId: vehicle.id,
-      type: data.type,
+    const effectiveEnd = getMaintenanceEffectiveEnd({
       scheduledDate: data.scheduledDate,
-      cost: data.cost,
-      currency: vehicle.currency,
-      notes: data.notes,
-    },
+      scheduledEndDate: data.scheduledEndDate ?? null,
+    });
+    const conflictingLocations = await findConflictingLocations(
+      data.vehicleId,
+      data.scheduledDate,
+      effectiveEnd,
+      undefined,
+      tx
+    );
+    if (conflictingLocations.length > 0) {
+      throw new VehicleUnavailableForMaintenanceError(conflictingLocations);
+    }
+
+    return tx.maintenance.create({
+      data: {
+        tenantId: data.tenantId,
+        agencyId: vehicle.agencyId,
+        vehicleId: vehicle.id,
+        type: data.type,
+        scheduledDate: data.scheduledDate,
+        scheduledEndDate: data.scheduledEndDate,
+        cost: data.cost,
+        currency: vehicle.currency,
+        notes: data.notes,
+      },
+    });
   });
 }
 
 export interface UpdateMaintenanceInput {
   status?: MaintenanceStatus;
   scheduledDate?: Date;
+  /** Sprint 34 étape 3 — `null` retire explicitement la fin (retombe sur la fin de journée par
+   * défaut, voir getMaintenanceEffectiveEnd) ; `undefined` = inchangée. */
+  scheduledEndDate?: Date | null;
   completedDate?: Date;
   cost?: number;
   notes?: string;
@@ -149,7 +218,10 @@ export async function updateMaintenance(
   }
 
   const wantsFieldChange =
-    data.scheduledDate !== undefined || data.cost !== undefined || data.notes !== undefined;
+    data.scheduledDate !== undefined ||
+    data.scheduledEndDate !== undefined ||
+    data.cost !== undefined ||
+    data.notes !== undefined;
   if (wantsFieldChange && (existing.status === "COMPLETED" || existing.status === "CANCELLED")) {
     throw new MaintenanceNotEditableError();
   }
@@ -162,19 +234,55 @@ export async function updateMaintenance(
     validateCost(data.cost);
   }
 
+  const nextScheduledDate = data.scheduledDate ?? existing.scheduledDate;
+  const nextScheduledEndDate = data.scheduledEndDate !== undefined ? data.scheduledEndDate : existing.scheduledEndDate;
+  const periodChanging = data.scheduledDate !== undefined || data.scheduledEndDate !== undefined;
+  if (periodChanging) {
+    validatePeriod(nextScheduledDate, nextScheduledEndDate);
+  }
+
   // Passage à COMPLETED : completedDate par défaut à maintenant si non fournie.
   const completedDate =
     data.status === "COMPLETED" ? (data.completedDate ?? new Date()) : data.completedDate;
 
-  return prisma.maintenance.update({
-    where: { id: maintenanceId },
-    data: {
-      ...(data.status ? { status: data.status } : {}),
-      ...(data.scheduledDate ? { scheduledDate: data.scheduledDate } : {}),
-      ...(completedDate !== undefined ? { completedDate } : {}),
-      ...(data.cost !== undefined ? { cost: data.cost } : {}),
-      ...(data.notes !== undefined ? { notes: data.notes } : {}),
-    },
+  const updateData = {
+    ...(data.status ? { status: data.status } : {}),
+    ...(data.scheduledDate ? { scheduledDate: data.scheduledDate } : {}),
+    ...(data.scheduledEndDate !== undefined ? { scheduledEndDate: data.scheduledEndDate } : {}),
+    ...(completedDate !== undefined ? { completedDate } : {}),
+    ...(data.cost !== undefined ? { cost: data.cost } : {}),
+    ...(data.notes !== undefined ? { notes: data.notes } : {}),
+  };
+
+  if (!periodChanging) {
+    return prisma.maintenance.update({ where: { id: maintenanceId }, data: updateData });
+  }
+
+  // Sprint 34 étape 3 : re-vérification transactionnelle, même primitive de verrouillage que
+  // createMaintenance ci-dessus — un déplacement de la période d'une maintenance déjà planifiée
+  // ne doit pas plus pouvoir chevaucher une location active qu'à la création.
+  return prisma.$transaction(async (tx) => {
+    const vehicle = await lockVehicleForUpdate(tenantId, existing.vehicleId, tx);
+    if (!vehicle) {
+      throw new MaintenanceVehicleNotFoundError();
+    }
+
+    const effectiveEnd = getMaintenanceEffectiveEnd({
+      scheduledDate: nextScheduledDate,
+      scheduledEndDate: nextScheduledEndDate,
+    });
+    const conflictingLocations = await findConflictingLocations(
+      existing.vehicleId,
+      nextScheduledDate,
+      effectiveEnd,
+      undefined,
+      tx
+    );
+    if (conflictingLocations.length > 0) {
+      throw new VehicleUnavailableForMaintenanceError(conflictingLocations);
+    }
+
+    return tx.maintenance.update({ where: { id: maintenanceId }, data: updateData });
   });
 }
 

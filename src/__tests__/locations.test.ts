@@ -2,7 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
-import { getContractsOverview } from "@/lib/locations";
+import {
+  getContractsOverview,
+  updateLocation,
+  LocationStatusConflictError,
+  LocationCancellationRequiresAdminError,
+  InvalidStatusTransitionError,
+} from "@/lib/locations";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -256,7 +262,7 @@ describe("Sprint 23 — annulation d'un contrat validé, réservée ADMIN, avec 
     expect(body.reversedAmountTotal).toBe(paymentAmount);
 
     const invoiceAfter = await prisma.invoice.findUnique({ where: { id: invoice.id } });
-    expect(invoiceAfter?.status).toBe("CANCELLED");
+    expect(invoiceAfter?.status).toBe("VOID");
 
     // Le Payment d'origine n'est jamais supprimé, ni réécrit dans son amount/method/paidAt
     // (append-only, DOMAINRULES.md section 10/23) — seul son statut passe à REFUNDED (Sprint
@@ -386,71 +392,191 @@ describe("Sprint 23 — annulation d'un contrat validé, réservée ADMIN, avec 
 });
 
 describe("Sprint 23 — correctif de concurrence sur updateLocation (DOMAINRULES.md section 39, étend le correctif Sprint 22)", () => {
-  it("deux transitions de statut concurrentes sur la même location PENDING — une seule réussit (409 pour l'autre)", async () => {
-    // PENDING → CONFIRMED et PENDING → CANCELLED sont toutes deux des transitions normalement
-    // valides depuis PENDING (contrairement à CONFIRMED → CANCELLED, réservée ADMIN depuis ce
-    // sprint via admin-cancel) — le choix le plus propre pour exercer la garde de concurrence
-    // sans se heurter à cette nouvelle restriction.
+  // INC-4 (Sprint 34, tâche 1 — voir INCIDENTS.md et DOMAINRULES.md section 51) : ces deux tests
+  // exerçaient jusqu'ici la course via deux `fetch` PATCH concurrents (Promise.all) sur
+  // `/api/locations/[id]`. Cause exacte, confirmée par instrumentation directe (timestamps
+  // `process.hrtime.bigint()` de part et d'autre de chaque étape) : le serveur `next dev`
+  // (Turbopack, Next 16.3.0) sérialise en pratique les requêtes concurrentes adressées à une même
+  // route dynamique de l'App Router (`[id]/route.ts`) — y compris pour deux ressources
+  // différentes, y compris après une requête de préchauffage préalable sur la même route. Aucun
+  // chevauchement réel n'a jamais été observé côté application dans ce scénario HTTP : la
+  // deuxième requête ne commence son exécution qu'une fois la réponse de la première entièrement
+  // envoyée. Ce n'est donc ni un bug de verrou PostgreSQL, ni de nettoyage de données, ni de
+  // données partagées entre tests.
+  //
+  // Un deuxième constat, plus fin, a été fait en creusant la cause avec des appels directs et
+  // réellement concurrents à `updateLocation()` (même process Node, chevauchement réel garanti,
+  // vérifié par instrumentation) : lorsque les deux appels portent `adminOverride: true` (ce que
+  // fait la route pour un utilisateur ADMIN — c'était le cas du test d'origine avec `adminA`) ET
+  // que l'exécution se retrouve malgré tout totalement séquentielle (par accident de
+  // planification, même sans passer par next dev), les DEUX opérations peuvent réussir : la
+  // deuxième lit un `existing.status` exact (non périmé, l'autre a déjà committé), donc le verrou
+  // de ligne ne détecte aucune course — et `adminOverride` contourne alors légitimement
+  // `canTransition` (comportement voulu du Sprint 19 : un ADMIN peut forcer n'importe quelle
+  // transition). Un ADMIN qui exécute deux actions contradictoires l'une après l'autre (pas une
+  // vraie course) obtient donc deux succès, par conception. Ce n'est pas la garantie que ce test
+  // doit vérifier — cette garantie (deux opérations *concurrentes* et *non privilégiées* sur la
+  // même ligne → une seule réussit toujours) est celle que Sprint 22/23/31A ont réellement
+  // construite, et elle ne dépend jamais d'`adminOverride`.
+  //
+  // Correction à la source, sur les deux points : (1) exercer la garantie de concurrence via deux
+  // appels directs et réellement concurrents à `updateLocation()` (le service exporté par la
+  // route), dans le même process Node — un chevauchement réel est ainsi garanti, sans dépendre du
+  // dispatch des routes dynamiques de `next dev` ; (2) ne jamais passer `adminOverride` pour les
+  // deux opérations à la fois — PENDING → CONFIRMED et PENDING → CANCELLED sont toutes deux des
+  // transitions normalement valides depuis PENDING sans le moindre override, donc la perdante
+  // (qui tente une transition depuis un statut déjà changé) est TOUJOURS refusée, que
+  // l'exécution ait réellement chevauché (LocationStatusConflictError, Sprint 31A) ou se soit
+  // retrouvée séquentielle (LocationCancellationRequiresAdminError si CONFIRMED passe en premier,
+  // Sprint 23 ; InvalidStatusTransitionError si CANCELLED passe en premier, canTransition refuse
+  // CANCELLED → CONFIRMED sans override) — jamais un double succès. Voir DOMAINRULES.md
+  // section 51 pour le détail complet. Aucun test désactivé, aucun retry artificiel : la garantie
+  // testée est identique à celle voulue par Sprint 22/23/31A, seul le mécanisme d'invocation
+  // change pour la rendre déterministe et pour ne plus mélanger la question de la concurrence
+  // avec celle, distincte, du contournement ADMIN.
+  it("deux transitions de statut concurrentes sur la même location PENDING — une seule réussit (conflit explicite pour l'autre)", async () => {
+    const createResponse = await createLocation(adminA, nextTestDateRange());
+    const { location } = await createResponse.json();
+
+    const results = await Promise.allSettled([
+      updateLocation(adminA.tenantId, location.id, { status: "CONFIRMED" }),
+      updateLocation(adminA.tenantId, location.id, { status: "CANCELLED" }),
+    ]);
+
+    // Garantie non négociable (règle 7 du brief Sprint 34 tâche 1) : deux opérations
+    // incompatibles concurrentes ne doivent jamais produire deux succès (double écriture) — une
+    // seule doit réussir, quel que soit l'entrelacement réel des deux transactions.
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    // Sans adminOverride, la perdante est toujours refusée par l'une de ces trois gardes
+    // métier — jamais un succès en double. Voir le commentaire de describe ci-dessus.
+    const [loser] = rejected as PromiseRejectedResult[];
+    const legitimateLoserErrors = [
+      LocationStatusConflictError,
+      LocationCancellationRequiresAdminError,
+      InvalidStatusTransitionError,
+    ];
+    expect(legitimateLoserErrors.some((errorClass) => loser.reason instanceof errorClass)).toBe(true);
+    if (loser.reason instanceof LocationStatusConflictError) {
+      // Sprint 31A (DOMAINRULES.md section 43) : quand un chevauchement réel se produit, le
+      // message est toujours le message de conflit harmonisé.
+      expect(loser.reason.message).toBe(
+        "Cette opération n'a pas été appliquée. La location a déjà été modifiée par un autre utilisateur. Actualisez la page puis réessayez."
+      );
+    }
+
+    const finalLocation = await prisma.location.findUnique({ where: { id: location.id } });
+    expect(["CONFIRMED", "CANCELLED"]).toContain(finalLocation?.status);
+  });
+
+  it("scénario reproductible : 5 itérations indépendantes de la même course, un succès et un seul à chaque fois, jamais deux succès (preuve du caractère déterministe du verrou, indépendant du dispatch HTTP de next dev)", async () => {
+    // Sprint 34 tâche 1 (INC-4) : le nombre d'itérations reste volontairement celui d'origine
+    // (Sprint 31A) — `sprint23DateCounter` est un compteur global partagé par tout le fichier de
+    // test (voir sa définition plus haut) ; l'augmenter changerait les dates consommées par ce
+    // test et décalerait d'autant celles des tests suivants dans le fichier qui, eux, utilisent
+    // des dates codées en dur (ex. « refuse une location en conflit... », 2028-05-01). La
+    // vérification « au moins 10 exécutions » du brief porte sur le nombre de lancements de ce
+    // test (voir le rapport), pas sur son nombre d'itérations internes.
+    for (let i = 0; i < 5; i += 1) {
+      const createResponse = await createLocation(adminA, nextTestDateRange());
+      const { location } = await createResponse.json();
+
+      const results = await Promise.allSettled([
+        updateLocation(adminA.tenantId, location.id, { status: "CONFIRMED" }),
+        updateLocation(adminA.tenantId, location.id, { status: "CANCELLED" }),
+      ]);
+
+      // Le verrou de ligne (lockLocationForUpdate) garantit qu'un chevauchement réel des deux
+      // transactions produit toujours un succès et un conflit explicite ; sans adminOverride,
+      // une exécution séquentielle reste elle aussi toujours refusée pour la perdante (voir le
+      // test précédent pour le détail des trois refus légitimes possibles) — jamais deux succès.
+      const fulfilled = results.filter((result) => result.status === "fulfilled");
+      const rejected = results.filter((result) => result.status === "rejected");
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      const [loser] = rejected as PromiseRejectedResult[];
+      const legitimateLoserErrors = [
+        LocationStatusConflictError,
+        LocationCancellationRequiresAdminError,
+        InvalidStatusTransitionError,
+      ];
+      expect(legitimateLoserErrors.some((errorClass) => loser.reason instanceof errorClass)).toBe(true);
+
+      const finalLocation = await prisma.location.findUnique({ where: { id: location.id } });
+      expect(["CONFIRMED", "CANCELLED"]).toContain(finalLocation?.status);
+    }
+  });
+
+  // Sprint 34 tâche 1 (INC-4, revue) : les deux tests ci-dessus vérifient la garantie de
+  // concurrence au niveau du service (`updateLocation`), seul endroit où elle est réellement
+  // implémentée (verrou de ligne + `updateMany` conditionné) — la route HTTP ne fait
+  // qu'authentifier, vérifier les permissions et calculer `adminOverride`/`confirmMaintenanceConflict`
+  // avant de l'appeler, sans ajouter la moindre logique de concurrence propre. Ce test complète
+  // néanmoins la couverture en exerçant la chaîne complète (authentification, permissions
+  // granulaires, désérialisation JSON, mapping erreur → code HTTP) via deux vraies requêtes PATCH
+  // concurrentes, pour vérifier qu'aucun problème propre à la route ne se cache derrière l'appel
+  // direct au service. Comme pour les deux tests directs ci-dessus, l'acteur n'a délibérément pas
+  // `adminOverride` (MEMBER titulaire uniquement de `locations.confirm`/`locations.cancel`, pas
+  // ADMIN) — la garantie « une seule réussite » est ainsi assurée par construction (voir le
+  // commentaire de describe plus haut), qu'un chevauchement réel se produise ou que next dev
+  // sérialise les deux requêtes (comportement documenté, INCIDENTS.md INC-4) : ce test est donc
+  // stable et déterministe dans les deux cas, contrairement à l'ancienne version qui exigeait un
+  // chevauchement réel pour passer.
+  it("HTTP — deux PATCH concurrents (MEMBER, sans adminOverride) sur la même location PENDING : une seule réussit, jamais deux 200", async () => {
+    const groupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        name: `ConfirmCancel-${runId}`,
+        permissions: ["locations.view", "locations.confirm", "locations.cancel"],
+      }),
+    });
+    const groupId = (await groupResponse.json()).group.id;
+
+    const raceMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Race Member",
+      email: `race-member-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: raceMember.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${raceMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: groupId }),
+    });
+
     const createResponse = await createLocation(adminA, nextTestDateRange());
     const { location } = await createResponse.json();
 
     const [toConfirmed, toCancelled] = await Promise.all([
       apiFetch(`/api/locations/${location.id}`, {
         method: "PATCH",
-        headers: { Cookie: adminA.sessionCookie },
+        headers: { Cookie: raceMember.sessionCookie },
         body: JSON.stringify({ status: "CONFIRMED" }),
       }),
       apiFetch(`/api/locations/${location.id}`, {
         method: "PATCH",
-        headers: { Cookie: adminA.sessionCookie },
+        headers: { Cookie: raceMember.sessionCookie },
         body: JSON.stringify({ status: "CANCELLED" }),
       }),
     ]);
 
-    const [confirmedBody, cancelledBody] = await Promise.all([toConfirmed.json(), toCancelled.json()]);
-    const statuses = [toConfirmed.status, toCancelled.status].sort();
-    expect(statuses).toEqual([200, 409]);
-
-    // Sprint 31A (DOMAINRULES.md section 43) : le perdant reçoit désormais toujours le message de
-    // conflit harmonisé, jamais le message de refus admin-cancel (le perdant n'est pas
-    // nécessairement celui qui tente l'annulation — voir le test dédié au verrou plus bas).
-    const loserBody = toConfirmed.status === 409 ? confirmedBody : cancelledBody;
-    expect(loserBody.error).toBe(
-      "Cette opération n'a pas été appliquée. La location a déjà été modifiée par un autre utilisateur. Actualisez la page puis réessayez."
-    );
+    const statuses = [toConfirmed.status, toCancelled.status];
+    // Garantie non négociable, identique aux tests directs ci-dessus : exactement une réussite.
+    // Le perdant reçoit 403 (LocationCancellationRequiresAdminError) ou 409
+    // (LocationStatusConflictError / InvalidStatusTransitionError) selon l'entrelacement réel —
+    // jamais [200, 200].
+    const successCount = statuses.filter((status) => status === 200).length;
+    expect(successCount).toBe(1);
+    const loserStatus = statuses.find((status) => status !== 200);
+    expect([403, 409]).toContain(loserStatus);
 
     const finalLocation = await prisma.location.findUnique({ where: { id: location.id } });
     expect(["CONFIRMED", "CANCELLED"]).toContain(finalLocation?.status);
-  });
-
-  it("scénario reproductible : 5 itérations indépendantes de la même course, [200, 409] à chaque fois, jamais [200, 200] ni [200, 403] (Sprint 31A — preuve du caractère déterministe, indépendant du timing)", async () => {
-    for (let i = 0; i < 5; i += 1) {
-      const createResponse = await createLocation(adminA, nextTestDateRange());
-      const { location } = await createResponse.json();
-
-      const [toConfirmed, toCancelled] = await Promise.all([
-        apiFetch(`/api/locations/${location.id}`, {
-          method: "PATCH",
-          headers: { Cookie: adminA.sessionCookie },
-          body: JSON.stringify({ status: "CONFIRMED" }),
-        }),
-        apiFetch(`/api/locations/${location.id}`, {
-          method: "PATCH",
-          headers: { Cookie: adminA.sessionCookie },
-          body: JSON.stringify({ status: "CANCELLED" }),
-        }),
-      ]);
-
-      const statuses = [toConfirmed.status, toCancelled.status].sort();
-      // Le verrou de ligne (lockLocationForUpdate) sérialise les deux transactions au niveau de
-      // la base : quelle que soit l'ordonnancement réel des deux requêtes, l'issue est toujours
-      // un succès et un conflit explicite — jamais deux succès (double écriture), jamais un 403
-      // de façade (garde admin-cancel statuant sur un statut périmé, le bug corrigé ce sprint).
-      expect(statuses).toEqual([200, 409]);
-
-      const finalLocation = await prisma.location.findUnique({ where: { id: location.id } });
-      expect(["CONFIRMED", "CANCELLED"]).toContain(finalLocation?.status);
-    }
   });
 });
 

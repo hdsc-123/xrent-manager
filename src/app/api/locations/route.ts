@@ -12,6 +12,7 @@ import {
   ClientNotFoundError,
   VehicleNotAvailableError,
   VehicleUnavailableForLocationError,
+  VehicleMaintenanceConflictError,
   MissingPriceError,
   InvalidFuelLevelError,
   MissingDriverLicenseExpiryError,
@@ -20,7 +21,7 @@ import {
   InvalidDriverBirthDateError,
   DriverUnderMinimumAgeError,
 } from "@/lib/locations";
-import { createInvoice } from "@/lib/invoices";
+import { getOrCreateMainInvoice } from "@/lib/invoices";
 import { processLocationPayment, validatePaymentInput, type PaymentInput } from "@/lib/location-payment";
 import { logAction } from "@/lib/audit";
 
@@ -191,9 +192,15 @@ export async function POST(request: Request) {
     // après réessais, voir src/lib/invoices.ts) ne doit jamais faire échouer la création de la
     // location elle-même — la facture reste créable manuellement ensuite (POST /api/invoices,
     // déjà existant depuis le Sprint 6), même principe de résilience que logAction (src/lib/audit.ts).
+    // Sprint 13E tâche 3 : getOrCreateMainInvoice (au lieu de createInvoice directement) —
+    // garantit qu'une seule facture RENTAL active existe par Location ; sur cette Location tout
+    // juste créée ci-dessus, aucune facture RENTAL ne peut déjà exister, donc cet appel crée
+    // toujours une nouvelle facture en pratique (le comportement observable est inchangé), mais
+    // passe désormais par le point d'entrée idempotent unique plutôt que par createInvoice
+    // directement.
     let invoice = null;
     try {
-      invoice = await createInvoice({ tenantId: user.tenantId, locationId: location.id });
+      ({ invoice } = await getOrCreateMainInvoice(user.tenantId, location.id));
       await logAction({
         tenantId: user.tenantId,
         userId: user.id,
@@ -240,6 +247,14 @@ export async function POST(request: Request) {
     // appelant, y compris ADMIN (aucun override possible, contrairement à LocationLockedError).
     if (error instanceof VehicleUnavailableForLocationError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 1/2) : nouvelle location chevauchant
+    // une maintenance planifiée/en cours — blocage strict, sans exception ADMIN.
+    if (error instanceof VehicleMaintenanceConflictError) {
+      return NextResponse.json(
+        { error: error.message, conflictingMaintenances: error.conflictingMaintenances },
+        { status: 409 }
+      );
     }
     if (error instanceof MissingPriceError) {
       return NextResponse.json({ error: error.message }, { status: 400 });

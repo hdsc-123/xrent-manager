@@ -52,20 +52,30 @@ const TYPE_LABELS: Record<InvoiceRow["type"], string> = {
   DEGAT: "Dégât",
 };
 
+// Sprint 13E tâche 3 : ce tableau affiche côte à côte des lignes Invoice (status renommé
+// ISSUED/VOID, +CREDIT_NOTE) ET DamageInvoice (status resté SENT/CANCELLED, inchangé) — voir
+// le docstring d'InvoiceRow.type ci-dessus. Les deux vocabulaires doivent donc coexister ici,
+// jamais l'un remplacé par l'autre : SENT/CANCELLED restent nécessaires pour les lignes DEGAT.
 const STATUS_LABELS: Record<string, string> = {
   DRAFT: "Brouillon",
-  SENT: "Envoyée",
+  ISSUED: "Envoyée",
+  SENT: "Envoyée", // DamageInvoice uniquement (inchangée) — voir le commentaire ci-dessus.
   PARTIALLY_PAID: "Partiellement payée",
   PAID: "Payée",
-  CANCELLED: "Annulée",
+  VOID: "Annulée",
+  CANCELLED: "Annulée", // DamageInvoice uniquement (inchangée).
+  CREDIT_NOTE: "Avoir",
 };
 
 const STATUS_VARIANTS: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   DRAFT: "outline",
-  SENT: "secondary",
+  ISSUED: "secondary",
+  SENT: "secondary", // DamageInvoice uniquement (inchangée).
   PARTIALLY_PAID: "secondary",
   PAID: "default",
-  CANCELLED: "destructive",
+  VOID: "destructive",
+  CANCELLED: "destructive", // DamageInvoice uniquement (inchangée).
+  CREDIT_NOTE: "outline",
 };
 
 export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {

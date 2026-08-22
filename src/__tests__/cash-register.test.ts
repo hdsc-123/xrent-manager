@@ -894,7 +894,7 @@ body: JSON.stringify({ type: "EXPENSE", category: "Fournitures", amount: 20_000,
     await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "SENT" }),
+      body: JSON.stringify({ status: "ISSUED" }),
     });
 
     await apiFetch("/api/payments", {

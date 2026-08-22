@@ -119,7 +119,7 @@ async function createFixtureLocation() {
     },
   });
   const invoice = await createInvoice({ tenantId, locationId: location.id });
-  await updateInvoice(tenantId, invoice.id, { status: "SENT" });
+  await updateInvoice(tenantId, invoice.id, { status: "ISSUED" });
   return { vehicle, location, invoiceId: invoice.id, contractNumber };
 }
 
@@ -695,7 +695,7 @@ describe("adminCancelValidatedLocation — n'affecte jamais un paiement de dég�
   it("rembourse le paiement de solde locatif mais laisse un paiement de dégât intact", async () => {
     const { vehicle, location, invoiceId } = await createFixtureLocation();
 
-    await updateInvoice(tenantId, invoiceId, { status: "SENT" });
+    await updateInvoice(tenantId, invoiceId, { status: "ISSUED" });
     const rentalPayment = await createPayment({
       tenantId,
       invoiceId,

@@ -1,6 +1,6 @@
 import type { VehicleTransfer, VehicleTransferStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getVehicleById, lockVehicleForUpdate } from "@/lib/vehicles";
+import { getVehicleById, lockVehicleForUpdate, findConflictingMaintenances } from "@/lib/vehicles";
 
 export class VehicleTransferVehicleNotFoundError extends Error {
   constructor() {
@@ -60,6 +60,21 @@ export class InvalidVehicleTransferStatusTransitionError extends Error {
   constructor(from: VehicleTransferStatus, to: VehicleTransferStatus) {
     super(`Transition de statut invalide : ${from} → ${to}.`);
     this.name = "InvalidVehicleTransferStatusTransitionError";
+  }
+}
+
+/**
+ * Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 7) : un véhicule reste AVAILABLE en
+ * pratique (`Vehicle.status`, champ manuel — DOMAINRULES.md section 5) même s'il a une
+ * maintenance SCHEDULED/IN_PROGRESS en cours au moment précis du lancement — le statut du
+ * véhicule et la période de maintenance sont deux informations indépendantes. Sous-classe de
+ * VehicleNotAvailableForTransferError (même raisonnement que VehicleReservationConflictError
+ * ci-dessus) pour rester capturée par le `instanceof` déjà en place côté route, message distinct.
+ */
+export class VehicleMaintenanceConflictForTransferError extends VehicleNotAvailableForTransferError {
+  constructor() {
+    super("Ce véhicule a une maintenance planifiée/en cours à cette date — transfert impossible.");
+    this.name = "VehicleMaintenanceConflictForTransferError";
   }
 }
 
@@ -207,6 +222,22 @@ export async function createVehicleTransfer(data: CreateVehicleTransferInput): P
       throw new VehicleNotAvailableForTransferError();
     }
 
+    const departureDate = data.departureDate ?? new Date();
+    // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 7) : voir
+    // VehicleMaintenanceConflictForTransferError ci-dessus — fenêtre d'un instant (1ms) autour du
+    // départ, réutilise findConflictingMaintenances (src/lib/vehicles.ts) telle quelle plutôt
+    // qu'une seconde fonction dédiée au "point dans le temps".
+    const maintenanceConflicts = await findConflictingMaintenances(
+      lockedVehicle.id,
+      departureDate,
+      new Date(departureDate.getTime() + 1),
+      undefined,
+      tx
+    );
+    if (maintenanceConflicts.length > 0) {
+      throw new VehicleMaintenanceConflictForTransferError();
+    }
+
     const transfer = await tx.vehicleTransfer.create({
       data: {
         tenantId: data.tenantId,
@@ -215,7 +246,7 @@ export async function createVehicleTransfer(data: CreateVehicleTransferInput): P
         toAgencyId: data.toAgencyId,
         fromCity: data.fromCity,
         toCity: data.toCity,
-        departureDate: data.departureDate ?? new Date(),
+        departureDate,
         startOdometer: data.startOdometer,
         startFuelLevel: data.startFuelLevel,
         responsibleUserId: data.responsibleUserId,

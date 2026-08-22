@@ -5,14 +5,21 @@ import { can } from "@/lib/permissions";
 import { getLocationById } from "@/lib/locations";
 import {
   getInvoices,
-  createInvoice,
+  getOrCreateMainInvoice,
+  getOrCreateSupplementInvoice,
+  getOrCreateExtensionInvoice,
   type InvoiceFilters,
   InvoiceLocationNotFoundError,
   InvalidInvoiceAmountError,
+  InvalidSupplementKeyError,
+  InvalidExtensionEndDateError,
 } from "@/lib/invoices";
 import { logAction } from "@/lib/audit";
 
-const INVOICE_STATUSES: InvoiceStatus[] = ["DRAFT", "SENT", "PARTIALLY_PAID", "PAID", "CANCELLED"];
+// Sprint 13E tâche 3 : CREDIT_NOTE volontairement absente de cette liste — aucune facture ne
+// peut encore atteindre ce statut (createCreditNote non implémentée à ce stade), l'exposer ici
+// filtrerait/accepterait une valeur qu'aucune route ne sait produire.
+const INVOICE_STATUSES: InvoiceStatus[] = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "VOID"];
 
 export async function GET(request: Request) {
   const user = await getSessionUser();
@@ -62,10 +69,39 @@ export async function GET(request: Request) {
 
 interface CreateInvoiceBody {
   locationId?: string;
+  // Sprint 13E tâche 3, sous-phase 2b : type optionnel, défaut RENTAL (comportement existant
+  // strictement conservé pour toute requête qui ne le fournit pas). CREDIT_NOTE volontairement
+  // non acceptée ici (createCreditNote non implémentée à ce stade).
+  type?: string;
   taxRate?: number;
   discountAmount?: number;
   dueDate?: string;
   notes?: string;
+  // SUPPLEMENT uniquement — clé métier d'idempotence.
+  supplementKey?: string;
+  // EXTENSION uniquement — date de retour cible, clé métier d'idempotence.
+  extensionEndDate?: string;
+  // SUPPLEMENT/EXTENSION uniquement — montant explicite, jamais calculé côté serveur.
+  amount?: number;
+}
+
+/** Normalise les erreurs métier de src/lib/invoices.ts en réponses HTTP — jamais une erreur
+ * technique brute exposée à l'appelant. Partagée par les trois branches (RENTAL/SUPPLEMENT/
+ * EXTENSION) de POST ci-dessous pour ne pas tripler le même mappage. */
+function mapInvoiceCreationError(error: unknown): NextResponse {
+  if (error instanceof InvoiceLocationNotFoundError) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (
+    error instanceof InvalidInvoiceAmountError ||
+    error instanceof InvalidSupplementKeyError ||
+    error instanceof InvalidExtensionEndDateError
+  ) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
+  }
+
+  console.error("Erreur lors de la création de la facture :", error);
+  return NextResponse.json({ error: "Erreur interne." }, { status: 500 });
 }
 
 export async function POST(request: Request) {
@@ -90,11 +126,49 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "locationId est requis." }, { status: 400 });
   }
 
+  const type = body.type ?? "RENTAL";
+  if (type !== "RENTAL" && type !== "SUPPLEMENT" && type !== "EXTENSION") {
+    return NextResponse.json(
+      { error: "type invalide : RENTAL, SUPPLEMENT ou EXTENSION attendu." },
+      { status: 400 }
+    );
+  }
+
+  if (type === "RENTAL" && (body.supplementKey !== undefined || body.extensionEndDate !== undefined || body.amount !== undefined)) {
+    return NextResponse.json(
+      { error: "supplementKey/extensionEndDate/amount ne sont pas applicables à type RENTAL." },
+      { status: 400 }
+    );
+  }
+  if (type === "SUPPLEMENT" && body.extensionEndDate !== undefined) {
+    return NextResponse.json({ error: "extensionEndDate n'est pas applicable à type SUPPLEMENT." }, { status: 400 });
+  }
+  if (type === "EXTENSION" && body.supplementKey !== undefined) {
+    return NextResponse.json({ error: "supplementKey n'est pas applicable à type EXTENSION." }, { status: 400 });
+  }
+  if (type === "SUPPLEMENT" && (typeof body.supplementKey !== "string" || body.supplementKey.trim() === "")) {
+    return NextResponse.json({ error: "supplementKey est requis pour type SUPPLEMENT." }, { status: 400 });
+  }
+  if (type === "EXTENSION" && !body.extensionEndDate) {
+    return NextResponse.json({ error: "extensionEndDate est requis pour type EXTENSION." }, { status: 400 });
+  }
+  if ((type === "SUPPLEMENT" || type === "EXTENSION") && body.amount === undefined) {
+    return NextResponse.json({ error: "amount est requis pour type SUPPLEMENT/EXTENSION." }, { status: 400 });
+  }
+
   let dueDate: Date | undefined;
   if (body.dueDate) {
     dueDate = new Date(body.dueDate);
     if (Number.isNaN(dueDate.getTime())) {
       return NextResponse.json({ error: "dueDate doit être une date ISO valide." }, { status: 400 });
+    }
+  }
+
+  let extensionEndDate: Date | undefined;
+  if (type === "EXTENSION") {
+    extensionEndDate = new Date(body.extensionEndDate as string);
+    if (Number.isNaN(extensionEndDate.getTime())) {
+      return NextResponse.json({ error: "extensionEndDate doit être une date ISO valide." }, { status: 400 });
     }
   }
 
@@ -109,33 +183,98 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Accès refusé à cette agence." }, { status: 403 });
   }
 
-  try {
-    const invoice = await createInvoice({
-      tenantId: user.tenantId,
-      locationId,
-      taxRate: body.taxRate,
-      discountAmount: body.discountAmount,
-      dueDate,
-      notes: body.notes,
-    });
-    await logAction({
-      tenantId: user.tenantId,
-      userId: user.id,
-      action: "invoice.created",
-      resource: "Invoice",
-      resourceId: invoice.id,
-      metadata: { number: invoice.number, locationId: invoice.locationId },
-    });
-    return NextResponse.json({ invoice }, { status: 201 });
-  } catch (error) {
-    if (error instanceof InvoiceLocationNotFoundError) {
-      return NextResponse.json({ error: error.message }, { status: 404 });
+  if (type === "RENTAL") {
+    try {
+      // Sprint 13E tâche 3 : getOrCreateMainInvoice (au lieu de createInvoice directement) — au
+      // plus une facture RENTAL active par Location (verrou + index unique partiel, voir
+      // src/lib/invoices.ts). Un second appel sur une Location déjà pourvue d'une facture RENTAL
+      // active ne crée plus de doublon : la facture existante est retournée telle quelle (200),
+      // jamais une nouvelle ligne (201 réservé à une création réelle).
+      const { invoice, created } = await getOrCreateMainInvoice(user.tenantId, locationId, {
+        taxRate: body.taxRate,
+        discountAmount: body.discountAmount,
+        dueDate,
+        notes: body.notes,
+      });
+      if (created) {
+        await logAction({
+          tenantId: user.tenantId,
+          userId: user.id,
+          action: "invoice.created",
+          resource: "Invoice",
+          resourceId: invoice.id,
+          metadata: { number: invoice.number, locationId: invoice.locationId },
+        });
+      }
+      return NextResponse.json({ invoice }, { status: created ? 201 : 200 });
+    } catch (error) {
+      return mapInvoiceCreationError(error);
     }
-    if (error instanceof InvalidInvoiceAmountError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
+  }
 
-    console.error("Erreur lors de la création de la facture :", error);
-    return NextResponse.json({ error: "Erreur interne." }, { status: 500 });
+  if (type === "SUPPLEMENT") {
+    try {
+      // Sprint 13E tâche 3, sous-phase 2b : jamais acheminée par getOrCreateMainInvoice, jamais
+      // soumise à la contrainte « une seule facture active » propre à RENTAL — idempotente par
+      // (locationId, supplementKey) uniquement (voir src/lib/invoices.ts).
+      const { invoice, created } = await getOrCreateSupplementInvoice(
+        user.tenantId,
+        locationId,
+        body.supplementKey as string,
+        {
+          amount: body.amount as number,
+          taxRate: body.taxRate,
+          discountAmount: body.discountAmount,
+          dueDate,
+          notes: body.notes,
+        }
+      );
+      if (created) {
+        await logAction({
+          tenantId: user.tenantId,
+          userId: user.id,
+          action: "invoice.created",
+          resource: "Invoice",
+          resourceId: invoice.id,
+          metadata: { number: invoice.number, locationId: invoice.locationId, type: "SUPPLEMENT", supplementKey: invoice.supplementKey },
+        });
+      }
+      return NextResponse.json({ invoice }, { status: created ? 201 : 200 });
+    } catch (error) {
+      return mapInvoiceCreationError(error);
+    }
+  }
+
+  // type === "EXTENSION"
+  try {
+    // Sprint 13E tâche 3, sous-phase 2b : jamais acheminée par getOrCreateMainInvoice, jamais
+    // soumise à la contrainte « une seule facture active » propre à RENTAL — idempotente par
+    // (locationId, extensionEndDate) uniquement, clé provisoire et minimale (voir
+    // DOMAINRULES.md section 17 et src/lib/invoices.ts).
+    const { invoice, created } = await getOrCreateExtensionInvoice(
+      user.tenantId,
+      locationId,
+      extensionEndDate as Date,
+      {
+        amount: body.amount as number,
+        taxRate: body.taxRate,
+        discountAmount: body.discountAmount,
+        dueDate,
+        notes: body.notes,
+      }
+    );
+    if (created) {
+      await logAction({
+        tenantId: user.tenantId,
+        userId: user.id,
+        action: "invoice.created",
+        resource: "Invoice",
+        resourceId: invoice.id,
+        metadata: { number: invoice.number, locationId: invoice.locationId, type: "EXTENSION", extensionEndDate: invoice.extensionEndDate },
+      });
+    }
+    return NextResponse.json({ invoice }, { status: created ? 201 : 200 });
+  } catch (error) {
+    return mapInvoiceCreationError(error);
   }
 }

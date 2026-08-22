@@ -261,7 +261,7 @@ describe("Journal d'audit exhaustif sur le CRUD métier (Sprint 10)", () => {
     const finalizeResponse = await apiFetch(`/api/invoices/${invoiceId}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "SENT" }),
+      body: JSON.stringify({ status: "ISSUED" }),
     });
     expect(finalizeResponse.status).toBe(200);
     expect(

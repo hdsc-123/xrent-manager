@@ -23,7 +23,7 @@ export class InvoiceCancelledError extends Error {
 }
 
 /** Finding F : une facture DRAFT n'est pas encore finalisée (verrouillée, envoyée au
- * client) — un paiement ne peut être enregistré qu'à partir de SENT. Le paiement intégré à
+ * client) — un paiement ne peut être enregistré qu'à partir d'ISSUED. Le paiement intégré à
  * la création d'un contrat/d'une location (processLocationPayment, src/lib/location-payment.ts)
  * finalise automatiquement la facture avant d'appeler createPayment ; en dehors de ce flux, une
  * finalisation manuelle (PATCH /api/invoices/[id], bouton « Finaliser ») est requise au
@@ -134,14 +134,14 @@ async function recomputeInvoiceStatus(invoiceId: string, tx: Prisma.TransactionC
   const amountPaid = aggregate._sum.amount ?? 0;
 
   const nextStatus =
-    invoice.status === "CANCELLED"
+    invoice.status === "VOID"
       ? invoice.status
       : amountPaid >= invoice.totalAmount && invoice.totalAmount > 0
         ? "PAID"
         : amountPaid > 0
           ? "PARTIALLY_PAID"
           : invoice.status === "PARTIALLY_PAID" || invoice.status === "PAID"
-            ? "SENT"
+            ? "ISSUED"
             : invoice.status;
 
   await tx.invoice.update({
@@ -252,7 +252,7 @@ async function createPaymentLocked(data: CreatePaymentInput, tx: Prisma.Transact
     throw new PaymentInvoiceNotFoundError();
   }
 
-  if (invoice.status === "CANCELLED") {
+  if (invoice.status === "VOID") {
     throw new InvoiceCancelledError();
   }
   if (invoice.status === "DRAFT") {
@@ -602,7 +602,7 @@ async function createMixedPaymentsLocked(
   if (!invoice) {
     throw new PaymentInvoiceNotFoundError();
   }
-  if (invoice.status === "CANCELLED") {
+  if (invoice.status === "VOID") {
     throw new InvoiceCancelledError();
   }
   if (invoice.status === "DRAFT") {

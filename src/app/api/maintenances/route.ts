@@ -8,6 +8,8 @@ import {
   type MaintenanceFilters,
   MaintenanceVehicleNotFoundError,
   InvalidMaintenanceCostError,
+  InvalidMaintenancePeriodError,
+  VehicleUnavailableForMaintenanceError,
 } from "@/lib/maintenances";
 import { getVehicleById } from "@/lib/vehicles";
 import { logAction } from "@/lib/audit";
@@ -67,6 +69,8 @@ interface CreateMaintenanceBody {
   vehicleId?: string;
   type?: MaintenanceType;
   scheduledDate?: string;
+  /** Sprint 34 étape 3 — fin de la période bloquante (voir DOMAINRULES.md section 50). */
+  scheduledEndDate?: string;
   cost?: number;
   notes?: string;
 }
@@ -106,6 +110,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "scheduledDate doit être une date ISO valide." }, { status: 400 });
   }
 
+  let parsedEndDate: Date | undefined;
+  if (body.scheduledEndDate !== undefined) {
+    parsedEndDate = new Date(body.scheduledEndDate);
+    if (Number.isNaN(parsedEndDate.getTime())) {
+      return NextResponse.json({ error: "scheduledEndDate doit être une date ISO valide." }, { status: 400 });
+    }
+  }
+
   // L'agence de la maintenance est dérivée du véhicule côté serveur, jamais fournie par
   // le client (même principe que Location.agencyId, SECURITY.md section 4).
   const vehicle = await getVehicleById(user.tenantId, vehicleId);
@@ -123,6 +135,7 @@ export async function POST(request: Request) {
       vehicleId,
       type,
       scheduledDate: parsedDate,
+      scheduledEndDate: parsedEndDate,
       cost: body.cost,
       notes: body.notes,
     });
@@ -141,6 +154,17 @@ export async function POST(request: Request) {
     }
     if (error instanceof InvalidMaintenanceCostError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof InvalidMaintenancePeriodError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 1) : véhicule loué/réservé sur une
+    // période chevauchant la maintenance demandée — blocage strict, sans exception ADMIN.
+    if (error instanceof VehicleUnavailableForMaintenanceError) {
+      return NextResponse.json(
+        { error: error.message, conflictingLocations: error.conflictingLocations },
+        { status: 409 }
+      );
     }
 
     console.error("Erreur lors de la création de la maintenance :", error);

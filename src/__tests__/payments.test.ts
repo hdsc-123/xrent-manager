@@ -46,7 +46,7 @@ async function createFreshInvoice(admin: AuthenticatedTestUser, vehicleId: strin
   const finalizeResponse = await apiFetch(`/api/invoices/${invoice.id}`, {
     method: "PATCH",
     headers: { Cookie: admin.sessionCookie },
-    body: JSON.stringify({ status: "SENT" }),
+    body: JSON.stringify({ status: "ISSUED" }),
   });
   const finalized = (await finalizeResponse.json()).invoice;
   return finalized as { id: string; totalAmount: number; locationId: string; status: string };
@@ -307,7 +307,7 @@ describe("POST /api/payments", () => {
     await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify({ status: "CANCELLED" }),
+      body: JSON.stringify({ status: "VOID" }),
     });
 
     const response = await apiFetch("/api/payments", {
@@ -544,7 +544,7 @@ describe("Sprint 17 — POST /api/payments avec lines (paiement mixte atomique d
 
     const invoiceResponse = await apiFetch(`/api/invoices/${invoice.id}`, { headers: { Cookie: adminA.sessionCookie } });
     const untouchedInvoice = (await invoiceResponse.json()).invoice;
-    expect(untouchedInvoice.status).toBe("SENT");
+    expect(untouchedInvoice.status).toBe("ISSUED");
     expect(untouchedInvoice.amountPaid).toBe(0);
   });
 

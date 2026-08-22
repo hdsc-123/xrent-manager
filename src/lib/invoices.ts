@@ -1,6 +1,6 @@
 import type { Invoice, InvoiceStatus, Payment, PaymentMethod, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getLocationById } from "@/lib/locations";
+import { getLocationById, lockLocationForUpdate } from "@/lib/locations";
 import { createCorrectionCashEntry, CorrectionReasonRequiredError } from "@/lib/cash-register";
 
 export { CorrectionReasonRequiredError };
@@ -49,7 +49,7 @@ export class InvoiceNotDeletableError extends Error {
  * (ni compensation de caisse, ni Payment marqué REFUNDED). Distincte de
  * LocationCancellationRequiresAdminError (src/lib/locations.ts, Sprint 23) : même principe
  * (une transition sensible avec réversibilité financière doit passer par une route dédiée
- * réservée ADMIN), appliqué ici au niveau facture plutôt que contrat. `SENT → CANCELLED` sans
+ * réservée ADMIN), appliqué ici au niveau facture plutôt que contrat. `ISSUED → VOID` sans
  * aucun Payment n'est pas concerné (rien à compenser) et reste inchangé via PATCH.
  */
 export class InvoiceCancellationRequiresAdminError extends Error {
@@ -63,13 +63,13 @@ export class InvoiceCancellationRequiresAdminError extends Error {
 }
 
 /** Sprint 28 (Finding D2) : adminCancelInvoice n'accepte qu'une facture PARTIALLY_PAID — DRAFT
- * (rien à compenser, PATCH suffit), SENT sans paiement (idem), PAID (aucune transition manuelle
- * possible vers CANCELLED, voir canTransition) et CANCELLED (déjà terminale) sont refusées. */
+ * (rien à compenser, PATCH suffit), ISSUED sans paiement (idem), PAID (aucune transition manuelle
+ * possible vers VOID, voir canTransition) et VOID (déjà terminale) sont refusées. */
 export class InvoiceNotAdminCancellableError extends Error {
   constructor() {
     super(
       "Seule une facture PARTIALLY_PAID peut être annulée avec compensation " +
-        "(DRAFT/SENT sans paiement s'annulent directement via PATCH ; PAID/CANCELLED sont refusées)."
+        "(DRAFT/ISSUED sans paiement s'annulent directement via PATCH ; PAID/VOID sont refusées)."
     );
     this.name = "InvoiceNotAdminCancellableError";
   }
@@ -87,15 +87,15 @@ export class InvoiceAdminCancelConflictError extends Error {
 
 /**
  * Sprint 26E : versionnement documentaire d'une facture — jamais un avoir (pas de montant
- * négatif, pas de Payment négatif, aucun transfert de paiement). Seule une facture SENT sans
+ * négatif, pas de Payment négatif, aucun transfert de paiement). Seule une facture ISSUED sans
  * aucun Payment (compte réel, pas seulement amountPaid === 0 — voir versionInvoice) peut être
  * remplacée par une nouvelle version DRAFT.
  */
 export class InvoiceNotVersionableError extends Error {
   constructor() {
     super(
-      "Seule une facture SENT sans aucun paiement peut être versionnée " +
-        "(DRAFT se modifie directement ; PARTIALLY_PAID/PAID/CANCELLED sont refusées)."
+      "Seule une facture ISSUED sans aucun paiement peut être versionnée " +
+        "(DRAFT se modifie directement ; PARTIALLY_PAID/PAID/VOID sont refusées)."
     );
     this.name = "InvoiceNotVersionableError";
   }
@@ -131,11 +131,12 @@ export class InvoiceVersionConflictError extends Error {
  * amountPaid et status restent toujours cohérents.
  */
 const ALLOWED_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
-  DRAFT: ["SENT", "CANCELLED"],
-  SENT: ["CANCELLED"],
-  PARTIALLY_PAID: ["CANCELLED"],
+  DRAFT: ["ISSUED", "VOID"],
+  ISSUED: ["VOID"],
+  PARTIALLY_PAID: ["VOID"],
   PAID: [],
-  CANCELLED: [],
+  VOID: [],
+  CREDIT_NOTE: [],
 };
 
 export function canTransition(from: InvoiceStatus, to: InvoiceStatus): boolean {
@@ -306,6 +307,525 @@ export async function createInvoice(
   throw new Error("Impossible de générer un numéro de facture unique.");
 }
 
+/** Statuts considérés comme "actifs" pour une facture RENTAL — au plus une seule par Location
+ * (voir l'index unique partiel Invoice_one_active_rental_per_location, migration Sprint 13E
+ * tâche 3). VOID/CREDIT_NOTE en sont exclus : une facture RENTAL annulée ne bloque plus la
+ * création d'une nouvelle facture RENTAL active pour la même Location. */
+const ACTIVE_RENTAL_STATUSES: InvoiceStatus[] = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID"];
+
+/**
+ * Vérifié empiriquement (pas supposé) : pour une violation de l'index unique partiel
+ * `Invoice_one_active_rental_per_location` (créé par SQL brut, hors DSL Prisma — un index
+ * partiel filtré par WHERE ne s'exprime pas comme `@@unique`), `error.meta.target` contient les
+ * NOMS DE COLONNES de l'index (`["locationId"]`), jamais le nom de l'index lui-même — le nom de
+ * l'index n'apparaît nulle part dans l'erreur Prisma. C'est ce tableau à une seule colonne
+ * `["locationId"]` qui permet de le distinguer sans ambiguïté des deux autres contraintes
+ * uniques d'Invoice : `@@unique([tenantId, number])` (numérotation, cible deux colonnes) et
+ * `replacesInvoiceId @unique` (cible une autre colonne).
+ */
+function isActiveRentalIndexViolation(error: unknown): boolean {
+  if (!isUniqueConstraintError(error)) {
+    return false;
+  }
+  const target = (error as Prisma.PrismaClientKnownRequestError).meta?.target;
+  if (typeof target === "string") {
+    return target === "locationId";
+  }
+  if (Array.isArray(target)) {
+    return target.length === 1 && target[0] === "locationId";
+  }
+  return false;
+}
+
+async function findActiveRentalInvoice(
+  tenantId: string,
+  locationId: string,
+  tx: Prisma.TransactionClient
+): Promise<Invoice | null> {
+  return tx.invoice.findFirst({
+    where: { tenantId, locationId, type: "RENTAL", status: { in: ACTIVE_RENTAL_STATUSES } },
+  });
+}
+
+export interface GetOrCreateMainInvoiceResult {
+  invoice: Invoice;
+  /** false si une facture RENTAL active existait déjà (aucune écriture) — permet à l'appelant
+   * HTTP de choisir 200 (récupérée) vs 201 (créée), voir POST /api/invoices. */
+  created: boolean;
+}
+
+async function getOrCreateMainInvoiceLocked(
+  tenantId: string,
+  locationId: string,
+  input: Omit<CreateInvoiceInput, "tenantId" | "locationId">,
+  tx: Prisma.TransactionClient
+): Promise<GetOrCreateMainInvoiceResult> {
+  // Verrou tenant-scopé sur la Location, avant toute lecture décisionnelle — même primitive que
+  // le reste du projet (lockInvoiceRow/lockDamageForUpdate/lockVehicleForUpdate), réutilisée ici
+  // plutôt que dupliquée (invoices.ts importe déjà getLocationById du même module).
+  const lockedLocation = await lockLocationForUpdate(tenantId, locationId, tx);
+  if (!lockedLocation) {
+    throw new InvoiceLocationNotFoundError();
+  }
+
+  const existing = await findActiveRentalInvoice(tenantId, locationId, tx);
+  if (existing) {
+    // Facture principale déjà active : retournée telle quelle, aucune écriture. C'est cette
+    // ligne qui rend POST /api/locations et POST /api/invoices idempotents pour type RENTAL.
+    return { invoice: existing, created: false };
+  }
+
+  try {
+    // Réutilise createInvoice telle quelle (aucune modification) — type RENTAL par défaut
+    // (Invoice.type @default(RENTAL) dans le schéma), numérotation/calculs inchangés. `tx` étant
+    // partagé (jamais `=== prisma` ici), le réessai de numérotation de createInvoice est
+    // désactivé (une seule tentative) — comportement déjà existant et documenté pour tout appel
+    // depuis une transaction partagée (voir le commentaire sur `allowRetry` ci-dessus), pas une
+    // nouvelle limitation introduite ici.
+    const invoice = await createInvoice({ tenantId, locationId, ...input }, tx);
+    return { invoice, created: true };
+  } catch (error) {
+    if (isActiveRentalIndexViolation(error)) {
+      // Filet de sécurité : sous le verrou de ligne ci-dessus, une collision concurrente réelle
+      // ne devrait jamais atteindre ce point (le verrou sérialise déjà tout appel concurrent sur
+      // la même Location) — mais si l'index partiel est néanmoins celui qui a intercepté la
+      // violation, la facture qui vient d'être créée par l'autre chemin est retournée telle
+      // quelle : jamais l'erreur technique brute (P2002) exposée à l'appelant.
+      const raceWinner = await findActiveRentalInvoice(tenantId, locationId, tx);
+      if (raceWinner) {
+        return { invoice: raceWinner, created: false };
+      }
+    }
+    throw error;
+  }
+}
+
+/**
+ * Sprint 13E tâche 3 : garantit qu'une Location a au plus une facture RENTAL active
+ * (DRAFT/ISSUED/PARTIALLY_PAID/PAID) — récupère la facture existante de façon strictement
+ * idempotente (aucune écriture) plutôt que d'en créer une seconde. Double protection contre le
+ * doublon, comme demandé explicitement : (1) verrou de ligne applicatif (SELECT ... FOR UPDATE
+ * sur la Location, avant toute décision), (2) index unique partiel Postgres
+ * (Invoice_one_active_rental_per_location) comme filet de sécurité — jamais l'un sans l'autre.
+ *
+ * `tx` optionnel : si fourni, réutilisé tel quel (l'appelant tient déjà une transaction — jamais
+ * de transaction imbriquée, Prisma ne le permet pas) ; sinon, une transaction dédiée est ouverte
+ * ici pour tenir le verrou pendant toute la durée de la décision, même convention `tx?` que
+ * `createInvoice`/`getInvoiceById` (Sprint 26A, Finding A).
+ */
+export async function getOrCreateMainInvoice(
+  tenantId: string,
+  locationId: string,
+  input: Omit<CreateInvoiceInput, "tenantId" | "locationId"> = {},
+  tx?: Prisma.TransactionClient
+): Promise<GetOrCreateMainInvoiceResult> {
+  if (tx) {
+    return getOrCreateMainInvoiceLocked(tenantId, locationId, input, tx);
+  }
+  return prisma.$transaction((innerTx) => getOrCreateMainInvoiceLocked(tenantId, locationId, input, innerTx));
+}
+
+/**
+ * Sprint 13E tâche 3, sous-phase 2b : SUPPLEMENT/EXTENSION — factures additionnelles rattachées
+ * à une Location, jamais soumises à la contrainte « une seule facture active » (propre à
+ * RENTAL, voir getOrCreateMainInvoice ci-dessus). Montant (subtotal) toujours explicite, fourni
+ * par l'appelant (amount) — aucune formule automatique (ni pricePerDay × jours, ni dérivé
+ * d'extensionEndDate ou de toute autre donnée) : décision validée du propriétaire du projet, en
+ * l'absence de règle métier sur le contenu détaillé d'une prolongation/d'une option (voir
+ * DOMAINRULES.md section 17).
+ */
+export function validateSupplementaryAmount(amount: unknown): asserts amount is number {
+  if (
+    typeof amount !== "number" ||
+    Number.isNaN(amount) ||
+    !Number.isFinite(amount) ||
+    !Number.isInteger(amount) ||
+    amount <= 0
+  ) {
+    throw new InvalidInvoiceAmountError(
+      "amount doit être un entier fini strictement positif (plus petite unité monétaire)."
+    );
+  }
+}
+
+export class InvalidSupplementKeyError extends Error {
+  constructor() {
+    super("supplementKey est obligatoire et ne peut pas être vide.");
+    this.name = "InvalidSupplementKeyError";
+  }
+}
+
+export class InvalidExtensionEndDateError extends Error {
+  constructor() {
+    super("extensionEndDate est obligatoire et doit être une date valide.");
+    this.name = "InvalidExtensionEndDateError";
+  }
+}
+
+/** Même valeur qu'ACTIVE_RENTAL_STATUSES (voir plus haut) mais délibérément dupliquée plutôt que
+ * réutilisée/renommée — SUPPLEMENT/EXTENSION restent des fonctions strictement séparées de
+ * RENTAL, y compris sur cette constante, pour ne courir aucun risque qu'un futur changement de
+ * l'une affecte silencieusement l'autre. */
+export const ACTIVE_SUPPLEMENTARY_STATUSES: InvoiceStatus[] = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID"];
+
+/**
+ * Normalisation unique de supplementKey (trim, aucune autre transformation — reste une clé
+ * opaque fournie par l'appelant, jamais une valeur métier interprétée) — appliquée
+ * identiquement à la recherche, à l'insertion et donc à l'idempotence, jamais une valeur
+ * différente entre ces trois usages.
+ */
+function normalizeSupplementKey(supplementKey: string): string {
+  return supplementKey.trim();
+}
+
+// ---------------------------------------------------------------------------------------------
+// SUPPLEMENT
+// ---------------------------------------------------------------------------------------------
+
+export interface CreateSupplementInvoiceInput {
+  tenantId: string;
+  locationId: string;
+  supplementKey: string;
+  amount: number;
+  taxRate?: number;
+  discountAmount?: number;
+  dueDate?: Date;
+  notes?: string;
+}
+
+/**
+ * Création directe (non idempotente) d'une facture SUPPLEMENT — jamais appelée directement par
+ * une route, toujours via getOrCreateSupplementInvoice ci-dessous (même division des
+ * responsabilités que createInvoice/getOrCreateMainInvoice). Duplique volontairement la boucle
+ * de réessai de numérotation de createInvoice plutôt que d'y toucher : CreateInvoiceInput et
+ * createInvoice restent strictement inchangées, comportement RENTAL non affecté.
+ */
+export async function createSupplementInvoice(
+  data: CreateSupplementInvoiceInput,
+  tx: Prisma.TransactionClient = prisma
+): Promise<Invoice> {
+  validateSupplementaryAmount(data.amount);
+  const supplementKey = normalizeSupplementKey(data.supplementKey);
+  if (!supplementKey) {
+    throw new InvalidSupplementKeyError();
+  }
+  const taxRate = data.taxRate ?? 0;
+  const discountAmount = data.discountAmount ?? 0;
+  validateAmountInputs(taxRate, discountAmount);
+
+  const location = await getLocationById(data.tenantId, data.locationId, tx);
+  if (!location) {
+    throw new InvoiceLocationNotFoundError();
+  }
+
+  const subtotal = data.amount;
+  const { taxAmount, totalAmount } = computeInvoiceTotals(subtotal, taxRate, discountAmount);
+  const year = new Date().getFullYear();
+
+  const allowRetry = tx === prisma;
+  const maxAttempts = allowRetry ? MAX_NUMBER_GENERATION_ATTEMPTS : 1;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const number = await generateInvoiceNumber(data.tenantId, year, tx);
+    try {
+      return await tx.invoice.create({
+        data: {
+          tenantId: data.tenantId,
+          agencyId: location.agencyId,
+          locationId: location.id,
+          clientId: location.clientId,
+          number,
+          type: "SUPPLEMENT",
+          supplementKey,
+          subtotal,
+          taxRate,
+          taxAmount,
+          discountAmount,
+          totalAmount,
+          currency: location.currency,
+          dueDate: data.dueDate,
+          notes: data.notes,
+        },
+      });
+    } catch (error) {
+      if (isUniqueConstraintError(error) && attempt < maxAttempts - 1) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error("Impossible de générer un numéro de facture unique.");
+}
+
+/**
+ * Vérifié empiriquement (script de diagnostic temporaire, xrent_test, supprimé après usage) :
+ * pour une violation de l'index unique partiel Invoice_one_active_supplement_per_key (2
+ * colonnes), error.meta.target = ["locationId","supplementKey"] — même principe que l'index
+ * RENTAL à 1 colonne (noms de colonnes, jamais le nom de l'index). Distingué sans ambiguïté de
+ * l'index EXTENSION (colonnes différentes) et des deux autres contraintes uniques d'Invoice par
+ * la comparaison exacte de l'ensemble des deux noms de colonnes.
+ */
+function isSupplementIndexViolation(error: unknown): boolean {
+  if (!isUniqueConstraintError(error)) {
+    return false;
+  }
+  const target = (error as Prisma.PrismaClientKnownRequestError).meta?.target;
+  if (!Array.isArray(target)) {
+    return false;
+  }
+  return target.length === 2 && target.includes("locationId") && target.includes("supplementKey");
+}
+
+async function findActiveSupplementInvoice(
+  tenantId: string,
+  locationId: string,
+  supplementKey: string,
+  tx: Prisma.TransactionClient
+): Promise<Invoice | null> {
+  return tx.invoice.findFirst({
+    where: {
+      tenantId,
+      locationId,
+      type: "SUPPLEMENT",
+      supplementKey,
+      status: { in: ACTIVE_SUPPLEMENTARY_STATUSES },
+    },
+  });
+}
+
+export interface GetOrCreateSupplementaryInvoiceResult {
+  invoice: Invoice;
+  /** false si une facture active existait déjà pour cette clé métier (aucune écriture) — permet
+   * à l'appelant HTTP de choisir 200 (récupérée) vs 201 (créée). */
+  created: boolean;
+}
+
+async function getOrCreateSupplementInvoiceLocked(
+  tenantId: string,
+  locationId: string,
+  supplementKey: string,
+  input: Omit<CreateSupplementInvoiceInput, "tenantId" | "locationId" | "supplementKey">,
+  tx: Prisma.TransactionClient
+): Promise<GetOrCreateSupplementaryInvoiceResult> {
+  const normalizedKey = normalizeSupplementKey(supplementKey);
+  if (!normalizedKey) {
+    throw new InvalidSupplementKeyError();
+  }
+
+  // Verrou tenant-scopé sur la Location — même primitive que getOrCreateMainInvoice.
+  const lockedLocation = await lockLocationForUpdate(tenantId, locationId, tx);
+  if (!lockedLocation) {
+    throw new InvoiceLocationNotFoundError();
+  }
+
+  const existing = await findActiveSupplementInvoice(tenantId, locationId, normalizedKey, tx);
+  if (existing) {
+    return { invoice: existing, created: false };
+  }
+
+  try {
+    const invoice = await createSupplementInvoice(
+      { tenantId, locationId, supplementKey: normalizedKey, ...input },
+      tx
+    );
+    return { invoice, created: true };
+  } catch (error) {
+    if (isSupplementIndexViolation(error)) {
+      const raceWinner = await findActiveSupplementInvoice(tenantId, locationId, normalizedKey, tx);
+      if (raceWinner) {
+        return { invoice: raceWinner, created: false };
+      }
+    }
+    throw error;
+  }
+}
+
+/**
+ * Garantit qu'une Location a au plus une facture SUPPLEMENT active par supplementKey — jamais
+ * acheminée par getOrCreateMainInvoice, jamais soumise à la contrainte « une seule facture
+ * active » propre à RENTAL (plusieurs SUPPLEMENT distincts, à clés différentes, coexistent
+ * librement sur une même Location). Double protection identique à RENTAL : verrou de ligne
+ * applicatif puis index unique partiel Postgres (Invoice_one_active_supplement_per_key) en
+ * filet de sécurité — jamais l'un sans l'autre. `tx` optionnel, même convention que
+ * getOrCreateMainInvoice.
+ */
+export async function getOrCreateSupplementInvoice(
+  tenantId: string,
+  locationId: string,
+  supplementKey: string,
+  input: Omit<CreateSupplementInvoiceInput, "tenantId" | "locationId" | "supplementKey">,
+  tx?: Prisma.TransactionClient
+): Promise<GetOrCreateSupplementaryInvoiceResult> {
+  if (tx) {
+    return getOrCreateSupplementInvoiceLocked(tenantId, locationId, supplementKey, input, tx);
+  }
+  return prisma.$transaction((innerTx) =>
+    getOrCreateSupplementInvoiceLocked(tenantId, locationId, supplementKey, input, innerTx)
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// EXTENSION
+// ---------------------------------------------------------------------------------------------
+
+export interface CreateExtensionInvoiceInput {
+  tenantId: string;
+  locationId: string;
+  extensionEndDate: Date;
+  amount: number;
+  taxRate?: number;
+  discountAmount?: number;
+  dueDate?: Date;
+  notes?: string;
+}
+
+/** Voir createSupplementInvoice ci-dessus — même structure, jamais partagée avec elle ni avec
+ * createInvoice (fonctions dédiées, comme demandé). */
+export async function createExtensionInvoice(
+  data: CreateExtensionInvoiceInput,
+  tx: Prisma.TransactionClient = prisma
+): Promise<Invoice> {
+  validateSupplementaryAmount(data.amount);
+  if (!(data.extensionEndDate instanceof Date) || Number.isNaN(data.extensionEndDate.getTime())) {
+    throw new InvalidExtensionEndDateError();
+  }
+  const taxRate = data.taxRate ?? 0;
+  const discountAmount = data.discountAmount ?? 0;
+  validateAmountInputs(taxRate, discountAmount);
+
+  const location = await getLocationById(data.tenantId, data.locationId, tx);
+  if (!location) {
+    throw new InvoiceLocationNotFoundError();
+  }
+
+  const subtotal = data.amount;
+  const { taxAmount, totalAmount } = computeInvoiceTotals(subtotal, taxRate, discountAmount);
+  const year = new Date().getFullYear();
+
+  const allowRetry = tx === prisma;
+  const maxAttempts = allowRetry ? MAX_NUMBER_GENERATION_ATTEMPTS : 1;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const number = await generateInvoiceNumber(data.tenantId, year, tx);
+    try {
+      return await tx.invoice.create({
+        data: {
+          tenantId: data.tenantId,
+          agencyId: location.agencyId,
+          locationId: location.id,
+          clientId: location.clientId,
+          number,
+          type: "EXTENSION",
+          extensionEndDate: data.extensionEndDate,
+          subtotal,
+          taxRate,
+          taxAmount,
+          discountAmount,
+          totalAmount,
+          currency: location.currency,
+          dueDate: data.dueDate,
+          notes: data.notes,
+        },
+      });
+    } catch (error) {
+      if (isUniqueConstraintError(error) && attempt < maxAttempts - 1) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error("Impossible de générer un numéro de facture unique.");
+}
+
+/** Vérifié empiriquement (même méthode que isSupplementIndexViolation ci-dessus) :
+ * error.meta.target = ["locationId","extensionEndDate"] pour une violation de
+ * Invoice_one_active_extension_per_end_date. */
+function isExtensionIndexViolation(error: unknown): boolean {
+  if (!isUniqueConstraintError(error)) {
+    return false;
+  }
+  const target = (error as Prisma.PrismaClientKnownRequestError).meta?.target;
+  if (!Array.isArray(target)) {
+    return false;
+  }
+  return target.length === 2 && target.includes("locationId") && target.includes("extensionEndDate");
+}
+
+async function findActiveExtensionInvoice(
+  tenantId: string,
+  locationId: string,
+  extensionEndDate: Date,
+  tx: Prisma.TransactionClient
+): Promise<Invoice | null> {
+  return tx.invoice.findFirst({
+    where: {
+      tenantId,
+      locationId,
+      type: "EXTENSION",
+      extensionEndDate,
+      status: { in: ACTIVE_SUPPLEMENTARY_STATUSES },
+    },
+  });
+}
+
+async function getOrCreateExtensionInvoiceLocked(
+  tenantId: string,
+  locationId: string,
+  extensionEndDate: Date,
+  input: Omit<CreateExtensionInvoiceInput, "tenantId" | "locationId" | "extensionEndDate">,
+  tx: Prisma.TransactionClient
+): Promise<GetOrCreateSupplementaryInvoiceResult> {
+  if (!(extensionEndDate instanceof Date) || Number.isNaN(extensionEndDate.getTime())) {
+    throw new InvalidExtensionEndDateError();
+  }
+
+  const lockedLocation = await lockLocationForUpdate(tenantId, locationId, tx);
+  if (!lockedLocation) {
+    throw new InvoiceLocationNotFoundError();
+  }
+
+  const existing = await findActiveExtensionInvoice(tenantId, locationId, extensionEndDate, tx);
+  if (existing) {
+    return { invoice: existing, created: false };
+  }
+
+  try {
+    const invoice = await createExtensionInvoice({ tenantId, locationId, extensionEndDate, ...input }, tx);
+    return { invoice, created: true };
+  } catch (error) {
+    if (isExtensionIndexViolation(error)) {
+      const raceWinner = await findActiveExtensionInvoice(tenantId, locationId, extensionEndDate, tx);
+      if (raceWinner) {
+        return { invoice: raceWinner, created: false };
+      }
+    }
+    throw error;
+  }
+}
+
+/**
+ * Garantit qu'une Location n'a jamais deux factures EXTENSION actives visant exactement la même
+ * date de retour cible (extensionEndDate) — clé provisoire et minimale (voir DOMAINRULES.md
+ * section 17) : ne modélise pas un événement d'extension à part entière, ne distingue pas deux
+ * opérations différentes visant accidentellement la même date, ne permet pas de reconstituer un
+ * historique si la date est modifiée après coup. Jamais acheminée par getOrCreateMainInvoice, ni
+ * soumise à la contrainte RENTAL. Double protection identique à SUPPLEMENT/RENTAL.
+ */
+export async function getOrCreateExtensionInvoice(
+  tenantId: string,
+  locationId: string,
+  extensionEndDate: Date,
+  input: Omit<CreateExtensionInvoiceInput, "tenantId" | "locationId" | "extensionEndDate">,
+  tx?: Prisma.TransactionClient
+): Promise<GetOrCreateSupplementaryInvoiceResult> {
+  if (tx) {
+    return getOrCreateExtensionInvoiceLocked(tenantId, locationId, extensionEndDate, input, tx);
+  }
+  return prisma.$transaction((innerTx) =>
+    getOrCreateExtensionInvoiceLocked(tenantId, locationId, extensionEndDate, input, innerTx)
+  );
+}
+
 export interface UpdateInvoiceInput {
   status?: InvoiceStatus;
   taxRate?: number;
@@ -314,7 +834,7 @@ export interface UpdateInvoiceInput {
   notes?: string;
 }
 
-/** `tx` optionnel (Finding F) — permet d'appeler la finalisation DRAFT → SENT depuis une
+/** `tx` optionnel (Finding F) — permet d'appeler la finalisation DRAFT → ISSUED depuis une
  * transaction partagée (voir `processLocationPayment`, src/lib/location-payment.ts), même
  * convention que `createInvoice`/`getInvoiceById` (Sprint 26A, Finding A). Comportement
  * inchangé pour tout appel sans transaction partagée (ex. PATCH /api/invoices/[id]). */
@@ -332,9 +852,9 @@ export async function updateInvoice(
   // Sprint 28 (Finding D2) : une facture PARTIALLY_PAID a un Payment réel — son annulation
   // doit passer par POST /api/invoices/[id]/admin-cancel (adminCancelInvoice ci-dessous), qui
   // orchestre la compensation de caisse et le remboursement des Payment dans une transaction
-  // unique. SENT → CANCELLED (aucun Payment, voir Finding F) reste inconditionnel ci-dessous,
+  // unique. ISSUED → VOID (aucun Payment, voir Finding F) reste inconditionnel ci-dessous,
   // comportement inchangé.
-  if (data.status === "CANCELLED" && existing.status === "PARTIALLY_PAID") {
+  if (data.status === "VOID" && existing.status === "PARTIALLY_PAID") {
     throw new InvoiceCancellationRequiresAdminError();
   }
 
@@ -356,10 +876,10 @@ export async function updateInvoice(
     ? computeInvoiceTotals(existing.subtotal, taxRate, discountAmount)
     : { taxAmount: existing.taxAmount, totalAmount: existing.totalAmount };
 
-  // Finding F (Sprint 26F) : la finalisation manuelle ou automatique (DRAFT → SENT) est
-  // désormais inconditionnelle vis-à-vis du solde — SENT signifie « facture verrouillée, en
+  // Finding F (Sprint 26F) : la finalisation manuelle ou automatique (DRAFT → ISSUED) est
+  // désormais inconditionnelle vis-à-vis du solde — ISSUED signifie « facture verrouillée, en
   // attente de paiement », pas « soldée » (voir DOMAINRULES.md). Le gate Sprint 26D
-  // (InvoiceNotFullyPaidError) rendait SENT structurellement inatteignable puisque
+  // (InvoiceNotFullyPaidError) rendait ISSUED structurellement inatteignable puisque
   // recomputeInvoiceStatus (src/lib/payments.ts, Finding B, inchangée) fait déjà passer une
   // facture directement de DRAFT à PARTIALLY_PAID/PAID dès le premier paiement — retiré sur
   // décision explicite du propriétaire du projet.
@@ -367,10 +887,10 @@ export async function updateInvoice(
   // Une facture à 0 (remise à 100 %) n'a par construction jamais de Payment (createPayment
   // refuse tout montant contre un solde restant nul) : recomputeInvoiceStatus
   // (src/lib/payments.ts) ne s'exécute donc jamais pour elle, et elle resterait sinon
-  // indéfiniment SENT malgré un solde déjà nul (bug réel, Sprint 18 — pilote terrain :
+  // indéfiniment ISSUED malgré un solde déjà nul (bug réel, Sprint 18 — pilote terrain :
   // location offerte/remise commerciale intégrale). Au moment où elle est effectivement
-  // finalisée (DRAFT → SENT), un total nul la fait donc atterrir directement en PAID.
-  const resolvedStatus = data.status === "SENT" && totalAmount === 0 ? "PAID" : data.status;
+  // finalisée (DRAFT → ISSUED), un total nul la fait donc atterrir directement en PAID.
+  const resolvedStatus = data.status === "ISSUED" && totalAmount === 0 ? "PAID" : data.status;
 
   return tx.invoice.update({
     where: { id: invoiceId },
@@ -394,7 +914,7 @@ export async function deleteInvoice(tenantId: string, invoiceId: string): Promis
 
   // Sprint 26E : une facture née d'un versionnement (replacesInvoiceId renseigné) n'est jamais
   // supprimable, même DRAFT sans paiement — c'est le document courant d'une chaîne de versions ;
-  // la supprimer romprait le lien vers la facture qu'elle remplace, restée CANCELLED sans jamais
+  // la supprimer romprait le lien vers la facture qu'elle remplace, restée VOID sans jamais
   // pouvoir redevenir active.
   if (existing.replacesInvoiceId) {
     throw new InvoiceNotDeletableError();
@@ -452,9 +972,9 @@ export interface VersionInvoiceResult {
 /**
  * Sprint 26E : versionnement documentaire — jamais un avoir (aucun montant négatif, aucun
  * Payment négatif, aucun transfert de paiement, aucune nouvelle logique de remboursement).
- * Seule une facture SENT sans aucun Payment (compte réel via tx.payment.count, pas seulement
+ * Seule une facture ISSUED sans aucun Payment (compte réel via tx.payment.count, pas seulement
  * amountPaid === 0 — couvre le cas résiduel d'un Payment physiquement supprimé, voir
- * deletePayment, src/lib/payments.ts) peut être remplacée. L'ancienne facture passe CANCELLED
+ * deletePayment, src/lib/payments.ts) peut être remplacée. L'ancienne facture passe VOID
  * (jamais supprimée, jamais réécrite dans ses montants) ; elle est retrouvable depuis la
  * nouvelle via `replacesInvoiceId` (FK réelle, `@unique` — relation 1:1, une facture n'est
  * jamais remplacée deux fois) et, dans l'autre sens, via la relation inverse Prisma
@@ -467,11 +987,11 @@ export interface VersionInvoiceResult {
  *
  * Concurrence (une seule création doit réussir, les autres 409) : verrou de ligne
  * (lockInvoiceForVersioning) posé avant toute lecture d'éligibilité, puis `updateMany`
- * conditionné sur `status: "SENT"` comme réclamation atomique — même double primitive (verrou +
+ * conditionné sur `status: "ISSUED"` comme réclamation atomique — même double primitive (verrou +
  * transition conditionnée) que adminCancelValidatedLocation (src/lib/locations.ts). `status`
- * seul suffit : cette même fonction est la seule à faire quitter `SENT` vers `CANCELLED` pour ce
- * motif, donc une seule facture SENT existe par chaîne à un instant donné (les versions
- * précédentes sont déjà CANCELLED) — verrouiller cette ligne sérialise structurellement toute
+ * seul suffit : cette même fonction est la seule à faire quitter `ISSUED` vers `VOID` pour ce
+ * motif, donc une seule facture ISSUED existe par chaîne à un instant donné (les versions
+ * précédentes sont déjà VOID) — verrouiller cette ligne sérialise structurellement toute
  * tentative concurrente de remplacement de cette chaîne précise.
  *
  * Numérotation : `${numéroRacine}-AV${versionNumber - 1}` — déterministe sous le verrou de
@@ -503,13 +1023,13 @@ export async function versionInvoice(
     }
 
     const paymentCount = await tx.payment.count({ where: { invoiceId: locked.id } });
-    if (locked.status !== "SENT" || paymentCount > 0) {
+    if (locked.status !== "ISSUED" || paymentCount > 0) {
       throw new InvoiceNotVersionableError();
     }
 
     const { count } = await tx.invoice.updateMany({
-      where: { id: locked.id, tenantId, status: "SENT" },
-      data: { status: "CANCELLED" },
+      where: { id: locked.id, tenantId, status: "ISSUED" },
+      data: { status: "VOID" },
     });
     if (count === 0) {
       throw new InvoiceVersionConflictError();
@@ -557,7 +1077,7 @@ export async function versionInvoice(
       throw error;
     }
 
-    // Relit l'ancienne facture après le updateMany (status déjà CANCELLED) — aucune écriture
+    // Relit l'ancienne facture après le updateMany (status déjà VOID) — aucune écriture
     // supplémentaire nécessaire : la FK replacesInvoiceId posée sur newInvoice ci-dessus est la
     // seule source de vérité du lien entre les deux factures.
     const oldInvoice = await tx.invoice.findUniqueOrThrow({ where: { id: locked.id } });
@@ -612,14 +1132,14 @@ export interface AdminCancelInvoiceResult {
  * ci-dessous, jamais par une simple omission côté boucle.
  *
  * Éligibilité : seule une facture PARTIALLY_PAID est acceptée (InvoiceNotAdminCancellableError
- * sinon) — DRAFT/SENT sans paiement n'ont rien à compenser (PATCH suffit, inchangé) ; PAID/
- * CANCELLED sont des états terminaux (PAID n'a d'ailleurs aucune transition manuelle possible,
+ * sinon) — DRAFT/ISSUED sans paiement n'ont rien à compenser (PATCH suffit, inchangé) ; PAID/
+ * VOID sont des états terminaux (PAID n'a d'ailleurs aucune transition manuelle possible,
  * voir canTransition). Concurrence : verrou de ligne (lockInvoiceRow) posé avant toute lecture
  * d'éligibilité, puis `updateMany` conditionné sur `status: "PARTIALLY_PAID"` comme réclamation
  * atomique — une seule annulation concurrente réussit, les autres 409
  * (InvoiceAdminCancelConflictError), même double primitive que versionInvoice/
  * adminCancelValidatedLocation. Atomicité : toute la boucle de compensation s'exécute dans la
- * même transaction Prisma que le passage à CANCELLED — un échec à n'importe quelle itération
+ * même transaction Prisma que le passage à VOID — un échec à n'importe quelle itération
  * (ex. createCorrectionCashEntry) annule l'intégralité de la transaction : le statut de la
  * facture, les CashEntry déjà créées et les Payment déjà marqués REFUNDED dans ce même appel
  * sont tous défaits par Prisma, jamais d'état partiel.
@@ -650,7 +1170,7 @@ export async function adminCancelInvoice(
 
     const { count } = await tx.invoice.updateMany({
       where: { id: invoiceId, tenantId, status: "PARTIALLY_PAID" },
-      data: { status: "CANCELLED" },
+      data: { status: "VOID" },
     });
     if (count === 0) {
       throw new InvoiceAdminCancelConflictError();

@@ -152,12 +152,15 @@ describe("Scénario complet Sprint 10 : inscription → sélection de tenant →
     expect(confirmResponse.status).toBe(200);
 
     // 5. Facturation et paiement.
+    // Sprint 13E tâche 3 : POST /api/locations a déjà auto-généré la facture RENTAL de cette
+    // location (getOrCreateMainInvoice) — cet appel la récupère donc de façon idempotente (200),
+    // il n'en crée plus une seconde (comportement volontairement changé, voir DOMAINRULES.md).
     const invoiceResponse = await apiFetch("/api/invoices", {
       method: "POST",
       headers: { Cookie: admin.sessionCookie },
       body: JSON.stringify({ locationId: location.id }),
     });
-    expect(invoiceResponse.status).toBe(201);
+    expect(invoiceResponse.status).toBe(200);
     const invoice = (await invoiceResponse.json()).invoice;
 
     // Finding F : un paiement direct est refusé sur une facture encore DRAFT — finalise
@@ -165,7 +168,7 @@ describe("Scénario complet Sprint 10 : inscription → sélection de tenant →
     const finalizeResponse = await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
       headers: { Cookie: admin.sessionCookie },
-      body: JSON.stringify({ status: "SENT" }),
+      body: JSON.stringify({ status: "ISSUED" }),
     });
     expect(finalizeResponse.status).toBe(200);
 

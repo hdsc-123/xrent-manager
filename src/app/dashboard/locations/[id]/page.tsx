@@ -8,6 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { LocationActions } from "./LocationActions";
+import { ExtendLocationDialog } from "./ExtendLocationDialog";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -39,6 +40,12 @@ export default async function LocationDetailPage({ params }: PageProps) {
   const hasLocationsActivate = await can(user, "locations.activate");
   const hasLocationsComplete = await can(user, "locations.complete");
   const hasLocationsCancel = await can(user, "locations.cancel");
+  // Sprint 13E tâche 2 (DOMAINRULES.md section 52) — voir ExtendLocationDialog.tsx : la
+  // permission granulaire n'est requise que pour confirmer explicitement une prolongation
+  // malgré un conflit de maintenance réel, jamais pour l'acte de prolonger lui-même (voir le
+  // libellé du catalogue, src/lib/permissions.ts) — cohérent avec le contournement de verrou
+  // dédié ajouté côté service (updateLocation, `extendReturnDate`).
+  const hasMaintenanceConflictOverride = await can(user, "locations.maintenance_conflict.override");
 
   // Sprint 19 : une agence de retour (dropoffAgencyId) sans accès à l'agence de rattachement
   // du contrat ne peut que gérer la réception — voir PATCH /api/locations/[id] pour
@@ -49,6 +56,16 @@ export default async function LocationDetailPage({ params }: PageProps) {
     hasPickupAccess &&
     (hasLocationsEdit || hasLocationsConfirm || hasLocationsActivate || hasLocationsComplete || hasLocationsCancel);
   const canManageReturnOnly = !hasPickupAccess && hasLocationsComplete;
+
+  // Sprint 13E tâche 2 (DOMAINRULES.md section 52) : « Prolonger la location » — visible
+  // seulement pour un contrat ACTIVE (parcours utilisateur demandé), avec le même droit de base
+  // qu'une modification de contrat normale (locations.edit + accès agence de rattachement, ou
+  // ADMIN). Masqué en interface sans cette base, mais PATCH /api/locations/[id] revérifie de
+  // toute façon tout ceci côté serveur (locations.edit) — voir requiredPermissionForLocation
+  // StatusChange, src/app/api/locations/[id]/route.ts.
+  const isAdmin = user.role === "ADMIN";
+  const canExtend = location.status === "ACTIVE" && (isAdmin || (canManageFullEdit && hasLocationsEdit));
+  const canConfirmMaintenanceConflict = isAdmin || hasMaintenanceConflictOverride;
 
   const [vehicle, client, secondDriver, agency, dropoffAgency, invoice] = await Promise.all([
     prisma.vehicle.findUnique({ where: { id: location.vehicleId } }),
@@ -90,6 +107,19 @@ export default async function LocationDetailPage({ params }: PageProps) {
               <Icon icon={FileText} className="size-4" />
               Voir facture
             </Button>
+          )}
+          {/* Sprint 13E tâche 2 (DOMAINRULES.md section 52) — voir ExtendLocationDialog.tsx. */}
+          {canExtend && (
+            <ExtendLocationDialog
+              id={location.id}
+              startDate={location.startDate.toISOString()}
+              endDate={location.endDate.toISOString()}
+              pricePerDay={location.pricePerDay}
+              currency={location.currency}
+              totalPrice={location.totalPrice}
+              invoice={invoice ? { totalAmount: invoice.totalAmount, amountPaid: invoice.amountPaid } : null}
+              canConfirmMaintenanceConflict={canConfirmMaintenanceConflict}
+            />
           )}
           {/* Sprint 32 (DOMAINRULES.md section 32) : écran de retour dédié — même condition que
               le bouton "Terminée" de LocationActions.tsx (locations.complete + accès agence,
@@ -188,7 +218,7 @@ export default async function LocationDetailPage({ params }: PageProps) {
         canComplete={canManageFullEdit && hasLocationsComplete}
         canCancel={canManageFullEdit && hasLocationsCancel}
         canManageReturnOnly={canManageReturnOnly}
-        isAdmin={user.role === "ADMIN"}
+        isAdmin={isAdmin}
       />
     </div>
   );

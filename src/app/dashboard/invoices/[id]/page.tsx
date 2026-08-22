@@ -13,12 +13,15 @@ interface PageProps {
   params: Promise<{ id: string }>;
 }
 
+// Sprint 13E tâche 3 : Record<string, string> (pas Record<InvoiceStatus, string>) — tsc ne
+// détecte donc pas une clé obsolète ici, vérifié manuellement lors du renommage.
 const STATUS_LABELS: Record<string, string> = {
   DRAFT: "Brouillon",
-  SENT: "Envoyée",
+  ISSUED: "Envoyée",
   PARTIALLY_PAID: "Partiellement payée",
   PAID: "Payée",
-  CANCELLED: "Annulée",
+  VOID: "Annulée",
+  CREDIT_NOTE: "Avoir",
 };
 
 const METHOD_LABELS: Record<string, string> = {

@@ -72,6 +72,15 @@ beforeAll(async () => {
   });
   createdTenantIds.push(adminA.tenantId);
 
+  // Sprint 13E tâche 2 (revue INC-3) : réclame préventivement le throttle horaire de
+  // `maybeRunScheduledAlertChecks` pour ce tenant — le CRON global
+  // (`runScheduledAlertChecksForAllTenants`, scheduled-alerts-cron.test.ts) l'ignorera donc
+  // silencieusement pendant toute la durée de ce fichier, éliminant complètement (pas seulement
+  // en probabilité) le risque qu'il crée en avance, pour le compte d'un autre process, une alerte
+  // que les tests ci-dessous s'attendent à voir créée par leur propre appel explicite à
+  // `POST /api/tasks/check-alerts` (endpoint distinct, non throttlé).
+  await prisma.tenant.update({ where: { id: adminA.tenantId }, data: { lastAlertCheckAt: new Date() } });
+
   adminB = await registerTenantAdmin({
     tenantName: "Maintenances Test B",
     tenantSlug: `maintenances-test-b-${runId}`,
@@ -282,6 +291,14 @@ describe("POST /api/tasks/check-alerts (génération d'alertes de maintenance)",
     });
     const dueMaintenanceId = (await dueMaintenanceResponse.json()).maintenance.id;
 
+    // Sprint 13E tâche 2 (revue INC-3) : le CRON global (`runScheduledAlertChecksForAllTenants`,
+    // scheduled-alerts-cron.test.ts) scanne tous les tenants de la base de test — sous la suite
+    // complète, il peut créer cette même alerte (dédoublonnage correct, comportement production
+    // voulu) entre la création de la maintenance ci-dessus et l'appel explicite ci-dessous,
+    // faisant légitimement remonter `created.dueMaintenances` à 0 pour CET appel précis (l'alerte
+    // existe déjà). On garantit donc la précondition explicitement — n'affaiblit aucune assertion.
+    await prisma.alert.deleteMany({ where: { tenantId: adminA.tenantId, entityType: "Maintenance", entityId: dueMaintenanceId } });
+
     const response = await apiFetch("/api/tasks/check-alerts", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
@@ -325,6 +342,17 @@ describe("Sprint 19 — alertes véhicule proactives (assurance/vignette/contrô
       technicalInspectionExpiryDate: "2020-01-01",
     });
     const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    // Sprint 13E tâche 2 (revue INC-3) : même précaution que le test précédent (garantit que cet
+    // appel est bien celui qui déclenche ces trois alertes, indépendamment d'un CRON global
+    // concurrent scannant tous les tenants de la base de test).
+    await prisma.alert.deleteMany({
+      where: {
+        tenantId: adminA.tenantId,
+        entityId: vehicleId,
+        entityType: { in: ["VehicleInsuranceExpiring", "VehicleVignetteExpiring", "VehicleTechnicalInspectionDue"] },
+      },
+    });
 
     const response = await apiFetch("/api/tasks/check-alerts", {
       method: "POST",
@@ -373,6 +401,17 @@ describe("Sprint 19 — alertes véhicule proactives (assurance/vignette/contrô
       headers: { Cookie: adminA.sessionCookie },
       // Sprint 24 : endFuelLevel/arrivalDriverName désormais obligatoires en plus d'endOdometer.
       body: JSON.stringify({ endOdometer: 1200, endFuelLevel: 50, arrivalDriverName: "Chauffeur Test" }),
+    });
+
+    // Sprint 13E tâche 2 (revue INC-3) : même précaution que les tests précédents (garantit que
+    // cet appel est bien celui qui déclenche ces deux alertes, indépendamment d'un CRON global
+    // concurrent scannant tous les tenants de la base de test).
+    await prisma.alert.deleteMany({
+      where: {
+        tenantId: adminA.tenantId,
+        entityType: "VehicleOilChangeDue",
+        entityId: { in: [byDateVehicleId, byKmVehicleId] },
+      },
     });
 
     const response = await apiFetch("/api/tasks/check-alerts", {

@@ -191,7 +191,7 @@ describe("getRevenueReport", () => {
     await apiFetch(`/api/invoices/${invoice.id}`, {
       method: "PATCH",
       headers: { Cookie: admin.sessionCookie },
-      body: JSON.stringify({ status: "SENT" }),
+      body: JSON.stringify({ status: "ISSUED" }),
     });
 
     await apiFetch("/api/payments", {

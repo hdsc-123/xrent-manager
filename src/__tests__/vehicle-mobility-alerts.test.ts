@@ -52,6 +52,20 @@ beforeAll(async () => {
   });
   createdTenantIds.push(admin.tenantId);
 
+  // Sprint 13E tâche 2 (revue INC-3) : réclame préventivement le throttle horaire de
+  // `maybeRunScheduledAlertChecks` pour ce tenant, dès sa création. Le CRON global
+  // (`runScheduledAlertChecksForAllTenants`, scheduled-alerts-cron.test.ts) scanne tous les
+  // tenants de la base de test à chaque exécution et ignore silencieusement (sans erreur) tout
+  // tenant dont le throttle a déjà été réclamé dans l'heure — ce tenant devient donc
+  // structurellement invisible à ce CRON pour toute la durée (bien plus courte qu'une heure) de
+  // ce fichier, éliminant complètement (pas seulement en probabilité) le risque qu'il crée en
+  // avance, pour le compte d'un autre process, une alerte que les tests ci-dessous s'attendent à
+  // voir créée par leur propre appel explicite à `POST /api/tasks/check-alerts` (endpoint
+  // distinct, non throttlé, donc jamais affecté par cette réclamation). Sans effet sur le test
+  // dédié au déclenchement automatique plus bas, qui utilise son propre tenant `freshAdmin`,
+  // jamais touché ici.
+  await prisma.tenant.update({ where: { id: admin.tenantId }, data: { lastAlertCheckAt: new Date() } });
+
   const agencyResponse = await apiFetch("/api/agencies", {
     method: "POST",
     headers: { Cookie: admin.sessionCookie },
@@ -116,6 +130,22 @@ describe("POST /api/tasks/check-alerts — nouvelles vérifications Sprint 14C",
     // Désynchronisation délibérée : le véhicule reste marqué "AVAILABLE" alors qu'une location
     // ACTIVE existe désormais (reproduit le scénario réel visé par STOCK_INCONSISTENCY).
     await prisma.vehicle.update({ where: { id: vehicle.id }, data: { status: "AVAILABLE" } });
+
+    // Sprint 13E tâche 2 (revue INC-3) : le CRON global (`runScheduledAlertChecksForAllTenants`,
+    // scheduled-alerts-cron.test.ts) scanne tous les tenants de la base de test — sous la suite
+    // complète, il peut créer ces mêmes alertes (dédoublonnage correct, comportement production
+    // voulu) entre la désynchronisation ci-dessus et l'appel explicite ci-dessous, faisant
+    // légitimement remonter ces compteurs à 0 pour CET appel précis. On garantit donc la
+    // précondition explicitement — n'affaiblit aucune assertion.
+    await prisma.alert.deleteMany({
+      where: {
+        tenantId: admin.tenantId,
+        OR: [
+          { entityType: "VehicleStockInconsistency", entityId: vehicle.id },
+          { entityType: "LocationOverdueReturn", entityId: locationId },
+        ],
+      },
+    });
 
     const response = await apiFetch("/api/tasks/check-alerts", {
       method: "POST",
@@ -264,6 +294,26 @@ describe("Sprint 22 — déclenchement automatique des vérifications d'alertes 
         scheduledDate: new Date().toISOString().slice(0, 10),
       }),
     });
+
+    // Sprint 13E tâche 2 (revue INC-3) : le throttle horaire (`Tenant.lastAlertCheckAt`) est un
+    // état partagé au niveau de la base de test entière, pas propre à ce fichier — le CRON
+    // global (`runScheduledAlertChecksForAllTenants`, `scheduled-alerts-cron.test.ts`) scanne
+    // littéralement tous les tenants de la base de test à chaque exécution (comportement
+    // production correct : un vrai CRON doit balayer tous les tenants). Sous la suite complète
+    // (fichiers exécutés en parallèle), ce CRON peut donc réclamer le throttle de CE tenant
+    // fraîchement créé pendant la fenêtre entre son enregistrement et la création de la
+    // maintenance ci-dessus (avant qu'il n'y ait quoi que ce soit à détecter) — la vérification
+    // ci-dessous, déclenchée par le chargement de page, échouerait alors silencieusement
+    // (throttle déjà consommé, donc jamais réexécuté dans cette même heure), sans rapport avec
+    // le comportement testé lui-même. Observé une fois sur 8 exécutions de la suite complète
+    // (`npx vitest run`), jamais en isolation ni en groupe (surface d'interférence minimale
+    // hors de la suite complète). Ce n'est ni INC-3 (aucune erreur de connexion), ni une
+    // régression de `Promise.allSettled` (aucune exception journalisée). Puisque cette
+    // précondition (throttle jamais réclamé) est exactement ce que ce test a toujours eu
+    // l'intention de garantir avec un tenant « frais » (voir commentaire au-dessus), on la
+    // rétablit explicitement ici plutôt que de supposer qu'aucun autre processus global n'a pu
+    // interférer entre-temps — ne modifie aucune assertion, ne masque aucun échec réel.
+    await prisma.tenant.update({ where: { id: freshAdmin.tenantId }, data: { lastAlertCheckAt: null } });
 
     // Avant ce sprint, rien ne générait jamais cette alerte en usage réel (seul un POST
     // ADMIN manuel sur /api/tasks/check-alerts, jamais exposé par aucune UI, le faisait) —

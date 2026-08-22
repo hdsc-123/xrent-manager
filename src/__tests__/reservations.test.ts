@@ -2186,7 +2186,7 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
         // Finding F : un paiement direct est refusé sur une facture encore DRAFT
         // (InvoiceNotFinalizedError) — finalise d'abord dans la même transaction, exactement
         // ce que fait processLocationPayment/finalizeAndPay en production.
-        await updateInvoice(adminA.tenantId, invoice.id, { status: "SENT" }, tx);
+        await updateInvoice(adminA.tenantId, invoice.id, { status: "ISSUED" }, tx);
 
         // Ligne 1 : montant valide, écrite pour de vrai dans cette transaction encore ouverte.
         await createPayment(

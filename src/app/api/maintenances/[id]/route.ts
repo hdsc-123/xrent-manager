@@ -8,6 +8,8 @@ import {
   deleteMaintenance,
   InvalidMaintenanceCostError,
   InvalidMaintenanceStatusTransitionError,
+  InvalidMaintenancePeriodError,
+  VehicleUnavailableForMaintenanceError,
   MaintenanceNotEditableError,
   MaintenanceNotDeletableError,
 } from "@/lib/maintenances";
@@ -42,6 +44,8 @@ export async function GET(_request: Request, { params }: RouteParams) {
 interface UpdateMaintenanceBody {
   status?: MaintenanceStatus;
   scheduledDate?: string;
+  /** Sprint 34 étape 3 — fin de la période bloquante ; `null` la retire explicitement. */
+  scheduledEndDate?: string | null;
   completedDate?: string;
   cost?: number;
   notes?: string;
@@ -96,12 +100,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
   const scheduledDate = body.scheduledDate ? new Date(body.scheduledDate) : undefined;
   const completedDate = body.completedDate ? new Date(body.completedDate) : undefined;
+  const scheduledEndDate =
+    body.scheduledEndDate === null ? null : body.scheduledEndDate ? new Date(body.scheduledEndDate) : undefined;
   if (
     (scheduledDate && Number.isNaN(scheduledDate.getTime())) ||
-    (completedDate && Number.isNaN(completedDate.getTime()))
+    (completedDate && Number.isNaN(completedDate.getTime())) ||
+    (scheduledEndDate && Number.isNaN(scheduledEndDate.getTime()))
   ) {
     return NextResponse.json(
-      { error: "scheduledDate/completedDate doivent être des dates ISO valides." },
+      { error: "scheduledDate/scheduledEndDate/completedDate doivent être des dates ISO valides." },
       { status: 400 }
     );
   }
@@ -110,6 +117,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     const updated = await updateMaintenance(user.tenantId, maintenance.id, {
       status: body.status,
       scheduledDate,
+      scheduledEndDate,
       completedDate,
       cost: body.cost,
       notes: body.notes,
@@ -132,6 +140,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     }
     if (error instanceof MaintenanceNotEditableError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof InvalidMaintenancePeriodError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof VehicleUnavailableForMaintenanceError) {
+      return NextResponse.json(
+        { error: error.message, conflictingLocations: error.conflictingLocations },
+        { status: 409 }
+      );
     }
 
     console.error("Erreur lors de la modification de la maintenance :", error);

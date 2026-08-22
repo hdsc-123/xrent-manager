@@ -10,6 +10,9 @@ import {
   InvalidDateRangeError,
   VehicleNotAvailableError,
   VehicleUnavailableForLocationError,
+  VehicleMaintenanceConflictError,
+  MaintenanceExtensionConflictError,
+  InvalidExtensionDateError,
   InvalidStatusTransitionError,
   LocationNotDeletableError,
   LocationHasInvoiceError,
@@ -65,6 +68,16 @@ interface UpdateLocationBody {
   deposit?: number | null;
   /** Sprint 19 — second conducteur (voir Location.secondDriverId). */
   secondDriverId?: string | null;
+  /** Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 3) — décision explicite de prolonger
+   * malgré un chevauchement avec une maintenance planifiée, réservée à
+   * locations.maintenance_conflict.override (vérifiée ci-dessous avant tout appel à
+   * updateLocation, jamais un simple champ de corps de requête faisant foi de lui-même). */
+  confirmMaintenanceConflict?: boolean;
+  /** Sprint 13E tâche 2 (DOMAINRULES.md section 52) — parcours dédié « Prolonger la location » :
+   * exige endDate strictement postérieure à la date de retour actuelle (voir
+   * InvalidExtensionDateError, src/lib/locations.ts), et jamais combiné à startDate (vérifié
+   * ci-dessous) — une prolongation ne modifie jamais la date de départ. */
+  extendReturnDate?: boolean;
 }
 
 /** Sprint 24 — voir le commentaire sur PATCH ci-dessous. */
@@ -144,6 +157,28 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "startDate/endDate doivent être des dates ISO valides." }, { status: 400 });
   }
 
+  // Sprint 13E tâche 2 (DOMAINRULES.md section 52) : le parcours « Prolonger la location » ne
+  // modifie jamais startDate (ambiguïté sinon avec une modification de dates ADMIN générique) et
+  // exige endDate — la comparaison stricte à la date de retour actuelle est vérifiée côté
+  // service (InvalidExtensionDateError, updateLocation).
+  if (body.extendReturnDate === true) {
+    if (!endDate) {
+      return NextResponse.json({ error: "endDate est requis pour prolonger une location." }, { status: 400 });
+    }
+    if (startDate) {
+      return NextResponse.json(
+        { error: "Une prolongation ne modifie jamais la date de départ." },
+        { status: 400 }
+      );
+    }
+    if (body.status !== undefined) {
+      return NextResponse.json(
+        { error: "Une prolongation ne modifie jamais le statut du contrat." },
+        { status: 400 }
+      );
+    }
+  }
+
   for (const field of ["startOdometer", "endOdometer", "deposit"] as const) {
     const fieldValue = body[field];
     if (fieldValue !== undefined && fieldValue !== null && (!Number.isInteger(fieldValue) || fieldValue < 0)) {
@@ -162,6 +197,19 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     ((body.status !== undefined && body.status !== location.status && !canTransition(location.status, body.status)) ||
       ((startDate || endDate) && location.status !== "PENDING"));
 
+  // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 3) : `confirmMaintenanceConflict` n'est
+  // jamais honoré tel quel — réservé à locations.maintenance_conflict.override, vérifiée ici et
+  // uniquement ici (updateLocation ne connaît pas les permissions). Une tentative de confirmation
+  // sans cette permission est refusée immédiatement (403), avant même de savoir si un conflit
+  // réel existe — la décision explicite requise par la règle 3 est réservée à un utilisateur
+  // autorisé, jamais un simple booléen de corps de requête faisant foi de lui-même.
+  if (body.confirmMaintenanceConflict === true && !(await can(user, "locations.maintenance_conflict.override"))) {
+    return NextResponse.json(
+      { error: "Accès refusé (confirmation d'un conflit de maintenance réservée)." },
+      { status: 403 }
+    );
+  }
+
   try {
     const updated = await updateLocation(user.tenantId, location.id, {
       status: body.status,
@@ -175,6 +223,8 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       deposit: body.deposit,
       secondDriverId: body.secondDriverId,
       adminOverride: isAdmin,
+      confirmMaintenanceConflict: body.confirmMaintenanceConflict === true,
+      extendReturnDate: body.extendReturnDate === true,
     });
     if (wouldOverride) {
       await logAction({
@@ -189,10 +239,25 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     await logAction({
       tenantId: user.tenantId,
       userId: user.id,
-      action: body.status && body.status !== location.status ? "location.status_changed" : "location.updated",
+      action:
+        body.extendReturnDate === true
+          ? "location.extended"
+          : body.status && body.status !== location.status
+            ? "location.status_changed"
+            : "location.updated",
       resource: "Location",
       resourceId: location.id,
-      metadata: { from: location.status, changes: body } as unknown as Prisma.InputJsonValue,
+      // Sprint 13E tâche 2 (DOMAINRULES.md section 52) : pour une prolongation, l'ancienne
+      // date de retour et l'ancien totalPrice sont journalisés explicitement en plus de
+      // `changes` (qui ne contient que la nouvelle valeur) — l'historique avant/après doit
+      // rester lisible sans recalculer quoi que ce soit depuis d'autres tables.
+      metadata: {
+        from: location.status,
+        changes: body,
+        ...(body.extendReturnDate === true
+          ? { previousEndDate: location.endDate, previousTotalPrice: location.totalPrice }
+          : {}),
+      } as unknown as Prisma.InputJsonValue,
     });
     return NextResponse.json({ location: updated });
   } catch (error) {
@@ -209,6 +274,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof InvalidDateRangeError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof InvalidExtensionDateError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof InvalidStatusTransitionError) {
@@ -236,6 +304,23 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     // appelant, y compris ADMIN via adminOverride (qui ne contourne que LocationLockedError).
     if (error instanceof VehicleUnavailableForLocationError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 1/2) : contrat encore PENDING modifié
+    // sur des dates chevauchant une maintenance — même blocage strict qu'à la création.
+    if (error instanceof VehicleMaintenanceConflictError) {
+      return NextResponse.json(
+        { error: error.message, conflictingMaintenances: error.conflictingMaintenances },
+        { status: 409 }
+      );
+    }
+    // Sprint 34 étape 3, règle 3 : prolongation d'un contrat déjà validé chevauchant une
+    // maintenance planifiée — alerte explicite, jamais un blocage systématique (voir
+    // confirmMaintenanceConflict ci-dessus pour la décision explicite d'un utilisateur autorisé).
+    if (error instanceof MaintenanceExtensionConflictError) {
+      return NextResponse.json(
+        { error: error.message, conflictingMaintenances: error.conflictingMaintenances },
+        { status: 409 }
+      );
     }
 
     console.error("Erreur lors de la modification de la location :", error);

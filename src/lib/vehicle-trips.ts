@@ -1,6 +1,6 @@
 import type { VehicleTrip, VehicleTripStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getVehicleById, lockVehicleForUpdate } from "@/lib/vehicles";
+import { getVehicleById, lockVehicleForUpdate, findConflictingMaintenances } from "@/lib/vehicles";
 
 export class VehicleTripVehicleNotFoundError extends Error {
   constructor() {
@@ -34,6 +34,21 @@ export class VehicleReservationConflictError extends VehicleNotAvailableForTripE
       "Cette opération n'a pas été appliquée. Le véhicule a déjà été réservé par un autre utilisateur. Actualisez la page puis réessayez."
     );
     this.name = "VehicleReservationConflictError";
+  }
+}
+
+/**
+ * Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 7) : même raisonnement que
+ * VehicleMaintenanceConflictForTransferError (src/lib/vehicle-transfers.ts) — Vehicle.status
+ * (manuel) et la période d'une Maintenance sont deux informations indépendantes, un véhicule
+ * AVAILABLE peut malgré tout avoir une maintenance SCHEDULED/IN_PROGRESS en cours au moment
+ * précis du départ. Sous-classe de VehicleNotAvailableForTripError, capturée par le même
+ * `instanceof` déjà en place côté route.
+ */
+export class VehicleMaintenanceConflictForTripError extends VehicleNotAvailableForTripError {
+  constructor() {
+    super("Ce véhicule a une maintenance planifiée/en cours à cette date — déplacement impossible.");
+    this.name = "VehicleMaintenanceConflictForTripError";
   }
 }
 
@@ -165,6 +180,20 @@ export async function createVehicleTrip(data: CreateVehicleTripInput): Promise<V
       throw new VehicleNotAvailableForTripError();
     }
 
+    const departureDate = data.departureDate ?? new Date();
+    // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 7) : voir
+    // VehicleMaintenanceConflictForTripError ci-dessus.
+    const maintenanceConflicts = await findConflictingMaintenances(
+      lockedVehicle.id,
+      departureDate,
+      new Date(departureDate.getTime() + 1),
+      undefined,
+      tx
+    );
+    if (maintenanceConflicts.length > 0) {
+      throw new VehicleMaintenanceConflictForTripError();
+    }
+
     const trip = await tx.vehicleTrip.create({
       data: {
         tenantId: data.tenantId,
@@ -173,7 +202,7 @@ export async function createVehicleTrip(data: CreateVehicleTripInput): Promise<V
         employeeUserId: data.employeeUserId,
         reason: data.reason,
         destination: data.destination,
-        departureDate: data.departureDate ?? new Date(),
+        departureDate,
         startOdometer: data.startOdometer,
         startFuelLevel: data.startFuelLevel,
         remarks: data.remarks,

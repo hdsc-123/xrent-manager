@@ -14,7 +14,10 @@ import {
 } from "@/lib/invoices";
 import { logAction } from "@/lib/audit";
 
-const INVOICE_STATUSES: InvoiceStatus[] = ["DRAFT", "SENT", "PARTIALLY_PAID", "PAID", "CANCELLED"];
+// Sprint 13E tâche 3 : CREDIT_NOTE volontairement absente de cette liste — aucune facture ne
+// peut encore atteindre ce statut (createCreditNote non implémentée à ce stade), l'exposer ici
+// accepterait une transition qu'aucune route ne sait produire ni gérer.
+const INVOICE_STATUSES: InvoiceStatus[] = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "VOID"];
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -110,7 +113,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     if (error instanceof InvoiceNotEditableError || error instanceof InvalidInvoiceStatusTransitionError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
-    // Sprint 28 (Finding D2) : PARTIALLY_PAID → CANCELLED n'est plus une simple transition de
+    // Sprint 28 (Finding D2) : PARTIALLY_PAID → VOID n'est plus une simple transition de
     // statut — elle doit passer par POST /api/invoices/[id]/admin-cancel (compensation de
     // caisse + remboursement des Payment, réservé ADMIN). 403, même code que
     // LocationCancellationRequiresAdminError (src/app/api/locations/[id]/route.ts).

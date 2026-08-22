@@ -1,42 +1,18 @@
 "use client";
 
-import Papa from "papaparse";
 import { Download } from "lucide-react";
 import { Button, Icon } from "@/components/ui";
+// Sprint 13E tâche 3 : sanitizeCsvCell/buildCsvFileContent déplacées vers src/lib/csv.ts (module
+// serveur-safe, réutilisé par les nouvelles routes d'export /api/exports/[entity]) — réexportées
+// ici à l'identique pour ne rien changer pour les appelants existants (ce composant, la page
+// Audit, et le test unitaire src/__tests__/csv-export-sanitization.test.ts qui importe depuis ce
+// même chemin).
+import { sanitizeCsvCell, buildCsvFileContent } from "@/lib/csv";
+export { sanitizeCsvCell, buildCsvFileContent };
 
 interface ExportCsvButtonProps {
   filename: string;
   rows: Record<string, string | number>[];
-}
-
-// Sprint 16 (audit sécurité) : neutralise l'injection de formule CSV — un champ texte libre
-// (ex. nom d'utilisateur, nom de client) commençant par =, +, -, @, tab ou retour chariot serait
-// interprété comme une formule par Excel/LibreOffice à l'ouverture du fichier exporté. Préfixer
-// d'une apostrophe force son interprétation en texte, comportement standard recommandé OWASP.
-export function sanitizeCsvCell(value: string | number): string | number {
-  if (typeof value !== "string" || value.length === 0) {
-    return value;
-  }
-  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
-}
-
-function sanitizeCsvRows(
-  rows: Record<string, string | number>[]
-): Record<string, string | number>[] {
-  return rows.map((row) =>
-    Object.fromEntries(Object.entries(row).map(([key, value]) => [key, sanitizeCsvCell(value)]))
-  );
-}
-
-/**
- * Sprint 18 : BOM UTF-8 (U+FEFF) en tête du fichier — sans lui, Excel ouvert en double-clic
- * (le geste le plus probable pour un utilisateur non technique) suppose l'encodage de la
- * locale système (souvent Windows-1252) plutôt que l'UTF-8 réel du fichier, et affiche les
- * caractères accentués (noms de clients/agences) de façon illisible (mojibake). Exportée
- * (même principe que sanitizeCsvCell) pour être testée unitairement sans DOM.
- */
-export function buildCsvFileContent(rows: Record<string, string | number>[]): string {
-  return "﻿" + Papa.unparse(sanitizeCsvRows(rows));
 }
 
 export function ExportCsvButton({ filename, rows }: ExportCsvButtonProps) {
