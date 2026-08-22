@@ -346,6 +346,12 @@ describe("Sprint 23 — throttle des vérifications d'alertes porté en base, mu
     });
     createdTenantIds.push(freshAdmin.tenantId);
 
+    // Même garde défensive que le test Sprint 22 ci-dessus (voir son commentaire détaillé,
+    // ligne ~298) : le CRON global (`scheduled-alerts-cron.test.ts`, même groupe) scanne tous
+    // les tenants de la base de test et peut réclamer le throttle de ce tenant fraîchement créé
+    // avant la lecture ci-dessous, sous suite complète avec parallélisme de fichiers.
+    await prisma.tenant.update({ where: { id: freshAdmin.tenantId }, data: { lastAlertCheckAt: null } });
+
     const before = await prisma.tenant.findUnique({ where: { id: freshAdmin.tenantId } });
     expect(before?.lastAlertCheckAt).toBeNull();
 
