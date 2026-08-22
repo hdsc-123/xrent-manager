@@ -34,6 +34,11 @@ export interface InvoiceRow {
    * dédié (/dashboard/damage-invoices/[id]) et n'est jamais sélectionnable pour le lot PDF
    * (/api/documents/batch-pdf ne gère que les factures locatives). */
   type: "LOCATION" | "DEGAT";
+  /** Sous-phase 2c2-D : type Invoice réel (RENTAL/SUPPLEMENT/EXTENSION/CREDIT_NOTE), présent
+   * uniquement sur une ligne type==="LOCATION" (toujours absent sur une ligne DEGAT, qui n'est
+   * pas un Invoice) — nécessaire pour exclure un avoir de la sélection lot PDF ci-dessous, que
+   * `type` seul ("LOCATION") ne permet pas de distinguer d'une facture locative ordinaire. */
+  invoiceType?: "RENTAL" | "SUPPLEMENT" | "EXTENSION" | "CREDIT_NOTE";
   number: string;
   contractNumber: string | null;
   clientName: string;
@@ -89,7 +94,14 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
   // Sprint 33 : seules les factures locatives sont sélectionnables pour le lot PDF
   // (/api/documents/batch-pdf ne gère pas les DamageInvoice) — une DamageInvoice se télécharge
   // individuellement depuis son propre écran (/dashboard/damage-invoices/[id]).
-  const selectableInvoices = useMemo(() => invoices.filter((invoice) => invoice.type === "LOCATION"), [invoices]);
+  // Sous-phase 2c2-D : un avoir (CREDIT_NOTE) est également exclu — /api/documents/batch-pdf
+  // rend chaque facture du lot via InvoicePdfPage (gabarit "location"), qui afficherait un avoir
+  // comme une facture ordinaire (voir CreditNotePdf.tsx pour le gabarit dédié, jamais assemblé
+  // dans le lot). Un avoir se télécharge individuellement depuis sa propre page de détail.
+  const selectableInvoices = useMemo(
+    () => invoices.filter((invoice) => invoice.type === "LOCATION" && invoice.invoiceType !== "CREDIT_NOTE"),
+    [invoices]
+  );
   const allSelected =
     selectableInvoices.length > 0 && selectableInvoices.every((invoice) => selectedIds.has(invoice.id));
 
@@ -158,7 +170,7 @@ export function InvoicesTable({ invoices }: { invoices: InvoiceRow[] }) {
           />
         ),
         cell: ({ row }) =>
-          row.original.type === "LOCATION" ? (
+          row.original.type === "LOCATION" && row.original.invoiceType !== "CREDIT_NOTE" ? (
             <Checkbox
               checked={selectedIds.has(row.original.id)}
               onCheckedChange={(checked: boolean) => toggleSelected(row.original.id, checked === true)}

@@ -885,6 +885,20 @@ const CREDIT_NOTE_ELIGIBLE_SOURCE_TYPES: InvoiceType[] = ["RENTAL", "SUPPLEMENT"
 const CREDIT_NOTE_ELIGIBLE_SOURCE_STATUSES: InvoiceStatus[] = ["ISSUED", "PARTIALLY_PAID", "PAID"];
 
 /**
+ * Sous-phase 2c2-D : même règle d'éligibilité que createCreditNoteAttempt ci-dessous, exportée
+ * pour que l'UI (bouton "Créer un avoir") puisse la réutiliser telle quelle plutôt que de
+ * dupliquer CREDIT_NOTE_ELIGIBLE_SOURCE_TYPES/STATUSES — l'affichage du bouton n'est qu'un
+ * confort visuel, la route POST .../credit-notes revalide de toute façon les mêmes conditions
+ * côté serveur.
+ */
+export function isCreditNoteEligibleSource(invoice: Pick<Invoice, "type" | "status">): boolean {
+  return (
+    CREDIT_NOTE_ELIGIBLE_SOURCE_TYPES.includes(invoice.type) &&
+    CREDIT_NOTE_ELIGIBLE_SOURCE_STATUSES.includes(invoice.status)
+  );
+}
+
+/**
  * Génère un numéro d'avoir unique par tenant, au format AV-{année}-{5 chiffres} — délibérément
  * distinct de INV-{année}-{5 chiffres} (generateInvoiceNumber) et du suffixe -AV{n} du
  * versionnement (Sprint 26E, qui désigne une "version", pas un "avoir" — même sigle, sens
@@ -1358,6 +1372,64 @@ async function refundCreditNoteLocked(
   );
 
   return { creditNote, cashEntry };
+}
+
+export interface CreditNoteSummaryItem {
+  id: string;
+  number: string;
+  totalAmount: number;
+  reason: string | null;
+  createdAt: Date;
+  currency: string;
+  /** Somme des CashEntry de remboursement déjà liées à CET avoir (voir getCreditNoteRefundableAmount). */
+  refundedAmount: number;
+  /** Montant encore remboursable pour CET avoir, à cet instant — plafond partagé avec les
+   * autres avoirs de la même source (voir getCreditNoteRefundableAmount). */
+  refundableAmount: number;
+}
+
+/**
+ * Sous-phase 2c2-D : liste des avoirs actifs (type=CREDIT_NOTE, status=CREDIT_NOTE) référençant
+ * une facture source, chacun avec son statut de remboursement dérivé — même formule que
+ * getCreditNoteRefundableAmount ci-dessus, jamais recalculée différemment ici. Réutilisée à la
+ * fois par GET /api/invoices/[id] (Phase 2) et par la page de détail (Server Component,
+ * src/app/dashboard/invoices/[id]/page.tsx) pour ne jamais dupliquer cette agrégation.
+ * Retourne un tableau vide si sourceInvoiceId ne correspond à aucune facture de ce tenant.
+ */
+export async function getCreditNotesForSource(
+  tenantId: string,
+  sourceInvoiceId: string,
+  tx: Prisma.TransactionClient = prisma
+): Promise<CreditNoteSummaryItem[]> {
+  const source = await tx.invoice.findFirst({ where: { id: sourceInvoiceId, tenantId } });
+  if (!source) {
+    return [];
+  }
+
+  const creditNotes = await tx.invoice.findMany({
+    where: { tenantId, originalInvoiceId: sourceInvoiceId, type: "CREDIT_NOTE", status: "CREDIT_NOTE" },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const items: CreditNoteSummaryItem[] = [];
+  for (const creditNote of creditNotes) {
+    const { refundableAmount, totalRefundedForCreditNote } = await getCreditNoteRefundableAmount(
+      creditNote,
+      source,
+      tx
+    );
+    items.push({
+      id: creditNote.id,
+      number: creditNote.number,
+      totalAmount: creditNote.totalAmount,
+      reason: creditNote.reason,
+      createdAt: creditNote.createdAt,
+      currency: creditNote.currency,
+      refundedAmount: totalRefundedForCreditNote,
+      refundableAmount,
+    });
+  }
+  return items;
 }
 
 export interface UpdateInvoiceInput {

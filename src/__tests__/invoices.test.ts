@@ -18,6 +18,8 @@ import {
   getInvoiceNetAmounts,
   refundCreditNote,
   getCreditNoteRefundableAmount,
+  getCreditNotesForSource,
+  isCreditNoteEligibleSource,
   InvoiceLocationNotFoundError,
   InvalidInvoiceAmountError,
   CreditNoteExceedsRemainingCreditError,
@@ -2987,5 +2989,215 @@ describe("POST /api/invoices/[id]/refund — remboursement d'un avoir (Sprint 13
       const damageInvoiceCountAfter = await prisma.damageInvoice.count();
       expect(damageInvoiceCountAfter).toBe(damageInvoiceCountBefore);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Sous-phase 2c2-D — PDF et interface des avoirs
+// ---------------------------------------------------------------------------------------------
+
+async function createCreditNoteOnSource(sourceId: string, amount: number, reason: string) {
+  const response = await apiFetch(`/api/invoices/${sourceId}/credit-notes`, {
+    method: "POST",
+    headers: { Cookie: adminA.sessionCookie },
+    body: JSON.stringify({ amount, reason }),
+  });
+  expect(response.status).toBe(201);
+  return (await response.json()).invoice as { id: string; number: string; totalAmount: number };
+}
+
+describe("isCreditNoteEligibleSource — sous-phase 2c2-D", () => {
+  it("RENTAL/SUPPLEMENT/EXTENSION ISSUED/PARTIALLY_PAID/PAID sont éligibles", () => {
+    for (const type of ["RENTAL", "SUPPLEMENT", "EXTENSION"] as const) {
+      for (const status of ["ISSUED", "PARTIALLY_PAID", "PAID"] as const) {
+        expect(isCreditNoteEligibleSource({ type, status })).toBe(true);
+      }
+    }
+  });
+
+  it("DRAFT/VOID/CREDIT_NOTE ne sont jamais éligibles, quel que soit le type", () => {
+    expect(isCreditNoteEligibleSource({ type: "RENTAL", status: "DRAFT" })).toBe(false);
+    expect(isCreditNoteEligibleSource({ type: "RENTAL", status: "VOID" })).toBe(false);
+    expect(isCreditNoteEligibleSource({ type: "CREDIT_NOTE", status: "CREDIT_NOTE" })).toBe(false);
+    expect(isCreditNoteEligibleSource({ type: "RENTAL", status: "CREDIT_NOTE" })).toBe(false);
+  });
+});
+
+describe("getCreditNotesForSource — sous-phase 2c2-D", () => {
+  it("liste vide pour une facture sans avoir", async () => {
+    const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+    const items = await getCreditNotesForSource(adminA.tenantId, source.id);
+    expect(items).toEqual([]);
+  });
+
+  it("liste vide pour un sourceInvoiceId inconnu du tenant (jamais une exception)", async () => {
+    const items = await getCreditNotesForSource(adminA.tenantId, "nonexistent-source-id");
+    expect(items).toEqual([]);
+  });
+
+  it("reflète le statut de remboursement par avoir (deux avoirs, un seul partiellement remboursé)", async () => {
+    const source = await createRentalSourceWithStatus("PARTIALLY_PAID"); // amountPaid = 5000
+    const creditNote1 = await createCreditNoteOnSource(source.id, 2000, "Avoir 1");
+    const creditNote2 = await createCreditNoteOnSource(source.id, 1000, "Avoir 2");
+
+    const refundResponse = await apiFetch(`/api/invoices/${creditNote1.id}/refund`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ amount: 1500, reason: "Remboursement partiel avoir 1" }),
+    });
+    expect(refundResponse.status).toBe(201);
+
+    const items = await getCreditNotesForSource(adminA.tenantId, source.id);
+    expect(items).toHaveLength(2);
+    expect(items[0].id).toBe(creditNote1.id); // ordre createdAt asc
+    expect(items[0].refundedAmount).toBe(1500);
+    expect(items[0].refundableAmount).toBe(500); // min(2000-1500, max(0,5000-1500)) = 500
+    expect(items[1].id).toBe(creditNote2.id);
+    expect(items[1].refundedAmount).toBe(0);
+    // Plafond PARTAGÉ avec l'avoir 1 : disponible = 5000-1500 = 3500, min(1000, 3500) = 1000.
+    expect(items[1].refundableAmount).toBe(1000);
+  });
+});
+
+describe("GET /api/invoices/[id] — enrichissement creditNote/creditNotesSummary (sous-phase 2c2-D)", () => {
+  it("facture ordinaire sans avoir : creditNotesSummary présent, creditNotes vide, contrat { invoice } inchangé", async () => {
+    const source = await createRentalSourceWithStatus("ISSUED");
+    const response = await apiFetch(`/api/invoices/${source.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.invoice.id).toBe(source.id);
+    expect(body.creditNote).toBeUndefined();
+    expect(body.creditNotesSummary.creditedAmount).toBe(0);
+    expect(body.creditNotesSummary.creditNotes).toEqual([]);
+  });
+
+  it("facture source avec un avoir : creditNotesSummary reflète le montant crédité et liste l'avoir", async () => {
+    const source = await createRentalSourceWithStatus("PARTIALLY_PAID"); // totalAmount=15000, amountPaid=5000
+    const creditNote = await createCreditNoteOnSource(source.id, 3000, "Avoir pour test GET enrichi");
+
+    const response = await apiFetch(`/api/invoices/${source.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    const body = await response.json();
+    expect(body.creditNotesSummary.creditedAmount).toBe(3000);
+    expect(body.creditNotesSummary.netAmount).toBe(12000);
+    expect(body.creditNotesSummary.creditNotes).toHaveLength(1);
+    expect(body.creditNotesSummary.creditNotes[0].id).toBe(creditNote.id);
+    expect(body.creditNotesSummary.creditNotes[0].refundableAmount).toBe(3000); // min(3000, 5000)
+  });
+
+  it("avoir (CREDIT_NOTE) : creditNote présent avec les montants dérivés, jamais creditNotesSummary", async () => {
+    const source = await createRentalSourceWithStatus("PARTIALLY_PAID"); // amountPaid=5000
+    const creditNote = await createCreditNoteOnSource(source.id, 3000, "Avoir pour test GET enrichi (avoir)");
+
+    const response = await apiFetch(`/api/invoices/${creditNote.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.invoice.type).toBe("CREDIT_NOTE");
+    expect(body.creditNotesSummary).toBeUndefined();
+    expect(body.creditNote.sourceInvoiceId).toBe(source.id);
+    expect(body.creditNote.sourceInvoiceNumber).toBe(source.number);
+    expect(body.creditNote.sourceAmountPaid).toBe(5000);
+    expect(body.creditNote.refundedAmount).toBe(0);
+    expect(body.creditNote.refundableAmount).toBe(3000);
+  });
+
+  it("avoir remboursé partiellement : refundedAmount/refundableAmount reflètent le remboursement réel", async () => {
+    const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+    const creditNote = await createCreditNoteOnSource(source.id, 3000, "Avoir remboursé pour test GET");
+    const refundResponse = await apiFetch(`/api/invoices/${creditNote.id}/refund`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ amount: 1200, reason: "Remboursement partiel pour test GET" }),
+    });
+    expect(refundResponse.status).toBe(201);
+
+    const response = await apiFetch(`/api/invoices/${creditNote.id}`, { headers: { Cookie: adminA.sessionCookie } });
+    const body = await response.json();
+    expect(body.creditNote.refundedAmount).toBe(1200);
+    expect(body.creditNote.refundableAmount).toBe(1800);
+  });
+
+  it("isolation tenant : GET sur l'avoir d'un autre tenant -> 404, jamais creditNote exposé", async () => {
+    const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+    const creditNote = await createCreditNoteOnSource(source.id, 2000, "Avoir tenant A pour isolation");
+    const response = await apiFetch(`/api/invoices/${creditNote.id}`, { headers: { Cookie: adminB.sessionCookie } });
+    expect(response.status).toBe(404);
+  });
+});
+
+describe("GET /api/invoices/[id]/pdf — gabarit dédié pour un avoir (sous-phase 2c2-D)", () => {
+  it("génère un PDF pour un avoir (jamais le gabarit facture ordinaire)", async () => {
+    const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+    const creditNote = await createCreditNoteOnSource(source.id, 2000, "Avoir pour test PDF");
+
+    const response = await apiFetch(`/api/invoices/${creditNote.id}/pdf`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/pdf");
+  });
+
+  it("refuse l'accès au PDF d'un avoir d'un autre tenant (404)", async () => {
+    const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+    const creditNote = await createCreditNoteOnSource(source.id, 2000, "Avoir isolation PDF");
+
+    const response = await apiFetch(`/api/invoices/${creditNote.id}/pdf`, {
+      headers: { Cookie: adminB.sessionCookie },
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("la génération du PDF d'un avoir non remboursé ne crée aucune CashEntry, ne modifie ni amountPaid ni status", async () => {
+    const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+    const creditNote = await createCreditNoteOnSource(source.id, 2000, "Avoir sans effet de bord PDF");
+    const cashEntryCountBefore = await prisma.cashEntry.count({ where: { creditNoteId: creditNote.id } });
+    const sourceBefore = await prisma.invoice.findUniqueOrThrow({ where: { id: source.id } });
+
+    const response = await apiFetch(`/api/invoices/${creditNote.id}/pdf`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(200);
+
+    const cashEntryCountAfter = await prisma.cashEntry.count({ where: { creditNoteId: creditNote.id } });
+    expect(cashEntryCountAfter).toBe(cashEntryCountBefore);
+    const sourceAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: source.id } });
+    expect(sourceAfter.amountPaid).toBe(sourceBefore.amountPaid);
+    expect(sourceAfter.status).toBe(sourceBefore.status);
+    const creditNoteAfter = await prisma.invoice.findUniqueOrThrow({ where: { id: creditNote.id } });
+    expect(creditNoteAfter.status).toBe("CREDIT_NOTE"); // toujours son propre statut immuable
+  });
+
+  it("le PDF d'une facture ordinaire reste inchangé (non-régression)", async () => {
+    const source = await createRentalSourceWithStatus("ISSUED");
+    const response = await apiFetch(`/api/invoices/${source.id}/pdf`, { headers: { Cookie: adminA.sessionCookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/pdf");
+  });
+});
+
+describe("POST /api/documents/batch-pdf — un avoir (CREDIT_NOTE) est toujours exclu du lot (sous-phase 2c2-D)", () => {
+  it("sélection composée d'un seul avoir -> 404 (aucune facture éligible dans le lot)", async () => {
+    const source = await createRentalSourceWithStatus("PARTIALLY_PAID");
+    const creditNote = await createCreditNoteOnSource(source.id, 2000, "Avoir seul, exclu du lot");
+
+    const response = await apiFetch("/api/documents/batch-pdf", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "INVOICE", ids: [creditNote.id] }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("sélection mixte (facture ordinaire + avoir) : le lot est généré en ignorant l'avoir", async () => {
+    const source = await createRentalSourceWithStatus("ISSUED");
+    const creditNoteSource = await createRentalSourceWithStatus("PARTIALLY_PAID");
+    const creditNote = await createCreditNoteOnSource(creditNoteSource.id, 2000, "Avoir exclu d'un lot mixte");
+
+    const response = await apiFetch("/api/documents/batch-pdf", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ type: "INVOICE", ids: [source.id, creditNote.id] }),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/pdf");
   });
 });

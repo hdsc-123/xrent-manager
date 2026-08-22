@@ -6,17 +6,23 @@ import {
   getInvoiceById,
   updateInvoice,
   deleteInvoice,
+  getInvoiceNetAmounts,
+  getCreditNoteRefundableAmount,
+  getCreditNotesForSource,
   InvalidInvoiceAmountError,
   InvoiceNotEditableError,
   InvalidInvoiceStatusTransitionError,
   InvoiceNotDeletableError,
   InvoiceCancellationRequiresAdminError,
 } from "@/lib/invoices";
+import { prisma } from "@/lib/prisma";
 import { logAction } from "@/lib/audit";
 
-// Sprint 13E tâche 3 : CREDIT_NOTE volontairement absente de cette liste — aucune facture ne
-// peut encore atteindre ce statut (createCreditNote non implémentée à ce stade), l'exposer ici
-// accepterait une transition qu'aucune route ne sait produire ni gérer.
+// Sprint 13E tâche 3, corrigé sous-phase 2c2-D : CREDIT_NOTE volontairement absente de cette
+// liste — un avoir est créé exclusivement via POST /api/invoices/[id]/credit-notes
+// (createCreditNote, 2c1), jamais par une transition PATCH status sur une facture existante ;
+// l'accepter ici permettrait de faire passer n'importe quelle facture à CREDIT_NOTE sans passer
+// par cette route dédiée (locationId dérivé de la source, plafond de crédit, numérotation propre).
 const INVOICE_STATUSES: InvoiceStatus[] = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "VOID"];
 
 interface RouteParams {
@@ -38,6 +44,42 @@ export async function GET(_request: Request, { params }: RouteParams) {
 
   if (!invoice || !(await canAccessAgency(user, invoice.agencyId))) {
     return NextResponse.json({ error: "Facture introuvable." }, { status: 404 });
+  }
+
+  // Sous-phase 2c2-D : enrichissement additif, jamais un remplacement du contrat existant
+  // { invoice } — une facture ordinaire (RENTAL/SUPPLEMENT/EXTENSION/VOID) continue de recevoir
+  // exactement la même réponse qu'avant, plus `creditNotesSummary` (toujours calculé, avoirs
+  // éventuellement vide) ; un avoir (CREDIT_NOTE) reçoit en plus `creditNote` (jamais les deux
+  // en même temps, mutuellement exclusifs comme le sont RENTAL/CREDIT_NOTE eux-mêmes).
+  if (invoice.type === "CREDIT_NOTE" && invoice.originalInvoiceId) {
+    const source = await prisma.invoice.findUnique({ where: { id: invoice.originalInvoiceId } });
+    if (source) {
+      const { refundableAmount, totalRefundedForCreditNote } = await getCreditNoteRefundableAmount(
+        invoice,
+        source
+      );
+      return NextResponse.json({
+        invoice,
+        creditNote: {
+          sourceInvoiceId: source.id,
+          sourceInvoiceNumber: source.number,
+          sourceAmountPaid: source.amountPaid,
+          refundedAmount: totalRefundedForCreditNote,
+          refundableAmount,
+        },
+      });
+    }
+  }
+
+  if (invoice.type !== "CREDIT_NOTE") {
+    const [netAmounts, creditNotes] = await Promise.all([
+      getInvoiceNetAmounts(invoice),
+      getCreditNotesForSource(user.tenantId, invoice.id),
+    ]);
+    return NextResponse.json({
+      invoice,
+      creditNotesSummary: { ...netAmounts, creditNotes },
+    });
   }
 
   return NextResponse.json({ invoice });

@@ -1669,6 +1669,47 @@ Voir DOMAINRULES.md section 54 pour le détail métier complet. Nouveau fichier 
 
 **Fichiers modifiés** : `prisma/schema.prisma`, nouvelle migration `20260822154218_add_credit_note_refunds/`, `src/lib/invoices.ts`, `src/lib/audit.ts` (signalé), `src/lib/cash-register.ts` (signalé), nouvelle route `src/app/api/invoices/[id]/refund/route.ts`, `src/__tests__/invoices.test.ts`, `DOMAINRULES.md` (nouvelle section 57), `TESTREPORT.md`, `HANDOFF.md`.
 
+## Tests Sprint 13E tâche 3, sous-phase 2c2-D (PDF et interface des avoirs)
+
+**Contexte** : rend un avoir (CREDIT_NOTE) et sa facture source pleinement utilisables dans l'application réelle. **Aucune migration** (0 changement de schéma, aucun champ persisté ajouté). **Aucune nouvelle formule financière** : tout montant dérivé affiché réutilise `getInvoiceNetAmounts`/`getCreditNoteRefundableAmount` (2c2-A/2c2-C), jamais recalculé différemment.
+
+**Fonctions créées** (`src/lib/invoices.ts`) : `getCreditNotesForSource` (liste les avoirs actifs d'une source, chacun avec `refundedAmount`/`refundableAmount` dérivés via `getCreditNoteRefundableAmount` — réutilisée par la route JSON et par la page Server Component, jamais dupliquée) ; `isCreditNoteEligibleSource` (exporte la règle d'éligibilité déjà interne à `createCreditNoteAttempt`, pour que le bouton « Créer un avoir » ne soit jamais une seconde source de vérité divergente de la route).
+
+**`GET /api/invoices/[id]` enrichi** (`src/app/api/invoices/[id]/route.ts`) : contrat `{ invoice }` strictement préservé pour toute facture ordinaire ; `creditNote {...}` ajouté uniquement pour un avoir, `creditNotesSummary {...}` ajouté pour toute facture non-CREDIT_NOTE (avoirs éventuellement vides, jamais un bloc silencieusement absent).
+
+**PDF dédié** (`src/components/invoices/CreditNotePdf.tsx`, nouveau composant) : un avoir n'est plus jamais rendu avec le gabarit facture ordinaire (`InvoicePdf`/`InvoicePdfPage`), qui afficherait des jours de location/prix par jour/solde dû sans aucun sens pour un avoir. `GET /api/invoices/[id]/pdf` branche désormais explicitement sur `invoice.type`. `POST /api/documents/batch-pdf` exclut désormais `type: { not: "CREDIT_NOTE" }` de sa requête `INVOICE` (défense en profondeur — `InvoicesTable.tsx` excluait déjà l'avoir de la sélection côté client, mais le client n'est jamais la seule barrière pour une décision de rendu).
+
+**Interface** (`src/app/dashboard/invoices/[id]/page.tsx`) : branchement complet sur `invoice.type === "CREDIT_NOTE"` — carte « Facture source et remboursement » (statut non/partiellement/intégralement remboursé, dérivé de `refundedAmount` vs `totalAmount`, jamais du seul `refundableAmount`) pour un avoir ; nouvelle carte « Avoirs » (toujours affichée, y compris vide) et « Solde dû » recalculé via `getInvoiceNetAmounts` pour une facture ordinaire. Deux nouveaux composants client, siblings de `InvoiceActions.tsx` : `CreateCreditNoteButton.tsx`/`RefundCreditNoteButton.tsx` — gating ADMIN à l'affichage uniquement (`user.role === "ADMIN"`), jamais la seule barrière réelle (routes strictement ADMIN côté serveur, indépendamment de l'UI).
+
+**Correction de commentaires obsolètes trouvée pendant l'implémentation (Phase 8)** : `InvoiceActions.tsx`, `GET /api/invoices/[id]/route.ts` et `GET /api/invoices/route.ts` affirmaient encore que `createCreditNote` n'était « pas implémentée à ce stade » (obsolète depuis 2c1) — corrigés pour la raison réelle actuelle (CREDIT_NOTE reste inatteignable par une transition de statut générique, créée exclusivement via sa route dédiée), comportement inchangé.
+
+**Tests** (`src/__tests__/invoices.test.ts`, nouveaux describes en fin de fichier) — **23 nouveaux** :
+- `isCreditNoteEligibleSource` (2) : combinaisons type/statut éligibles/non éligibles.
+- `getCreditNotesForSource` (3) : liste vide (sans avoir, source inconnue) ; statut de remboursement par avoir avec plafond partagé entre deux avoirs de la même source.
+- `GET /api/invoices/[id]` enrichi (5) : `creditNotesSummary` sur facture sans avoir / avec avoir ; `creditNote` sur un avoir (avant/après remboursement partiel) ; isolation tenant.
+- `GET /api/invoices/[id]/pdf` pour un avoir (4) : génération réussie ; isolation tenant (404) ; aucun effet de bord (CashEntry/amountPaid/status inchangés après un simple téléchargement) ; PDF facture ordinaire inchangé (non-régression).
+- `POST /api/documents/batch-pdf` (2) : sélection composée d'un seul avoir → 404 ; sélection mixte (facture ordinaire + avoir) → 200, avoir ignoré.
+
+**Tests UI SSR** (`src/__tests__/credit-notes-ui.test.tsx`, nouveau fichier, même paradigme que `damage-invoices-ui.test.tsx` — un vrai serveur `next dev` de test rend les pages, HTML vérifié directement, aucune dépendance jsdom/@testing-library) — **7 nouveaux** : section « Avoirs » + bouton « Créer un avoir » (ADMIN) sur la facture source, absent pour un MEMBER, message d'absence si aucun avoir ; page de l'avoir (motif, source, statut « Non remboursé », bouton « Rembourser » pour ADMIN, jamais pour MEMBER) ; transition du statut après remboursement partiel puis intégral (bouton disparaît une fois `refundableAmount = 0`) ; isolation tenant (page « introuvable »).
+
+**Smoke test manuel sur `xrent_dev`** (tenant fictif `SMOKETEST-2c2D-<horodatage>`, serveur `next dev` temporaire sur le port 3100 contre `.env`, 23/23 vérifications réussies) : facture RENTAL (15000) → `ISSUED` → paiement partiel (5000, `PARTIALLY_PAID`) → `GET` source (`creditNotesSummary` vide confirmé) → avoir (2000) → `GET` avoir (`creditNote.refundableAmount=2000`) → `GET` source (`creditNotesSummary` reflète l'avoir) → PDF avoir (200, `application/pdf`, corps non vide) → page HTML avoir (motif/source/« Non remboursé »/bouton « Rembourser » présents) → page HTML source (avoir listé, bouton « Créer un avoir » présent) → remboursement partiel (1200, 201) → page HTML (« Partiellement remboursé », bouton toujours visible) → remboursement du solde (800, 201) → page HTML (« Remboursé intégralement », bouton absent) → sur-remboursement (1, 409 refusé) → lot PDF composé du seul avoir (404, exclu). Toutes les données temporaires (2 tenants, dont un de la première itération corrigée du script) supprimées après coup dans l'ordre des clés étrangères — 0 tenant résiduel confirmé par requête directe.
+
+**Résultats** :
+
+| Vérification | Résultat |
+|---|---|
+| `npx prisma validate` | ✅ |
+| `npx prisma migrate status` | ✅ à jour (aucune migration créée) |
+| `npx tsc --noEmit` | ✅ |
+| `npx eslint` (fichiers modifiés) | ✅ |
+| Ciblé (`invoices.test.ts` + `credit-notes-ui.test.tsx`) | **189/189** |
+| Suite complète (`node scripts/test-grouped.mjs`, 5 groupes) | **1096/1096**, 0 échec, 0 timeout, 0 redémarrage watchdog, 0 processus résiduel |
+| Smoke test manuel `xrent_dev` | **23/23** vérifications, 0 tenant résiduel après nettoyage |
+
+**Aucun test désactivé, aucun `.only`/`.skip`, aucun retry ni délai artificiel, aucune assertion supprimée. Schéma Prisma, migrations, `payments.ts`, `cash-register.ts`, `refundCreditNote`/`createCreditNote` (2c1/2c2-C), `package.json`/`package-lock.json` : non modifiés — vérifié par `git diff --name-status`.**
+
+**Fichiers modifiés** : `src/lib/invoices.ts`, `src/app/api/invoices/[id]/route.ts`, `src/app/api/invoices/route.ts` (commentaire), `src/app/api/invoices/[id]/pdf/route.tsx`, `src/app/api/documents/batch-pdf/route.tsx`, nouveau composant `src/components/invoices/CreditNotePdf.tsx`, `src/app/dashboard/invoices/[id]/page.tsx`, `src/app/dashboard/invoices/[id]/InvoiceActions.tsx` (commentaire), nouveaux composants `src/app/dashboard/invoices/[id]/CreateCreditNoteButton.tsx`/`RefundCreditNoteButton.tsx`, `src/app/dashboard/invoices/InvoicesTable.tsx`, `src/app/dashboard/invoices/page.tsx`, `src/__tests__/invoices.test.ts`, nouveau fichier `src/__tests__/credit-notes-ui.test.tsx`, `DOMAINRULES.md` (nouvelle section 58), `TESTREPORT.md`, `HANDOFF.md`.
+
 ## 4. Format attendu des futurs rapports
 
 Chaque exécution future de la suite de tests devra être consignée dans ce document (ou dans un rapport daté associé) selon le format suivant :

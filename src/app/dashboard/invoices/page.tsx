@@ -23,6 +23,10 @@ const STATUS_OPTIONS: { value: InvoiceStatus; label: string }[] = [
   { value: "PARTIALLY_PAID", label: "Partiellement payée" },
   { value: "PAID", label: "Payée" },
   { value: "VOID", label: "Annulée" },
+  // Sous-phase 2c2-D : ce filtre passe directement params.status à Prisma ci-dessous, sans
+  // liste blanche intermédiaire (contrairement à GET /api/invoices) — CREDIT_NOTE était donc
+  // déjà acceptable en valeur brute, seule cette option de menu manquait.
+  { value: "CREDIT_NOTE", label: "Avoir" },
 ];
 
 const TYPE_OPTIONS = [
@@ -131,6 +135,7 @@ export default async function InvoicesPage({ searchParams }: PageProps) {
       (invoice): InvoiceRow => ({
         id: invoice.id,
         type: "LOCATION",
+        invoiceType: invoice.type,
         number: invoice.number,
         contractNumber: invoice.location.contractNumber,
         clientName: invoice.client.name,

@@ -247,6 +247,13 @@ export async function POST(request: Request) {
     where: {
       tenantId: user.tenantId,
       ...agencyScope,
+      // Sous-phase 2c2-D : un avoir (CREDIT_NOTE) n'est jamais éligible au lot PDF, même fourni
+      // explicitement par `ids` — InvoicePdfPage ci-dessous rend un gabarit "facture locative"
+      // (jours × prix/jour, solde dû) qui n'a pas de sens pour un avoir (voir CreditNotePdf.tsx,
+      // gabarit dédié, jamais assemblé dans un lot). Défense en profondeur : InvoicesTable.tsx
+      // exclut déjà un avoir de la sélection côté client, mais le client n'est jamais la seule
+      // barrière pour une décision de rendu.
+      type: { not: "CREDIT_NOTE" },
       ...(hasIds ? { id: { in: body.ids } } : {}),
       ...(hasDateRange
         ? {

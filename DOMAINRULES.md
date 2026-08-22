@@ -964,5 +964,51 @@ Réutilise `validateSupplementaryAmount` (entier fini strictement positif) — c
 
 - Pas de moyen de remboursement par défaut obligatoire (`paymentMethod` optionnel, cohérent avec `CashEntry.paymentMethod` déjà nullable ailleurs).
 - Pas de statut de suivi dédié sur l'avoir (`refundStatus`/`refundedAt` volontairement absents) — le montant remboursé est toujours dérivé des `CashEntry` liées, jamais stocké.
-- PDF/interface du remboursement : 2c2-D, non commencé.
+- PDF/interface du remboursement : voir section 58 (2c2-D).
 - **Atomicité audit+CashEntry vérifiée par inspection du code et des garanties transactionnelles de Prisma (toute erreur non interceptée dans le callback `$transaction` provoque un rollback complet), pas par un test forçant artificiellement l'échec de l'un des deux** — forcer un tel échec exigerait une injection de faute (mock), contraire à la philosophie « aucun mock » déjà établie pour ce projet (voir TESTREPORT.md, Sprint 13E tâche 2). Le sens inverse (échec de la `CashEntry` → aucun audit créé) est en revanche garanti par l'ordre du code lui-même (`logAction` n'est appelé qu'après le succès de `createCashEntry`), pas seulement par la transaction.
+
+## 58. PDF et interface des avoirs (Sprint 13E tâche 3, sous-phase 2c2-D)
+
+Rend un avoir (CREDIT_NOTE) et sa facture source pleinement utilisables dans l'application réelle (listes, pages de détail, PDF, création/remboursement) — **aucune nouvelle formule financière** : tout montant dérivé affiché réutilise `getInvoiceNetAmounts`/`getCreditNoteRefundableAmount` (2c2-A/2c2-C), jamais recalculé différemment côté UI/API/PDF. **Explicitement hors périmètre** : nouvelle permission granulaire (le gating ADMIN reste dérivé de `user.role`, comme 2c1/2c2-C), nouvelle migration (aucune n'a été nécessaire).
+
+### `getCreditNotesForSource` — nouvel helper partagé
+
+`src/lib/invoices.ts` : liste les avoirs actifs d'une facture source, chacun avec son propre `refundedAmount`/`refundableAmount` dérivés via `getCreditNoteRefundableAmount` (jamais une agrégation réimplémentée). Réutilisé à la fois par `GET /api/invoices/[id]` et par `src/app/dashboard/invoices/[id]/page.tsx` (Server Component, appel direct — pas de round-trip HTTP) pour ne jamais dupliquer cette logique entre les deux.
+
+`isCreditNoteEligibleSource` — exporte la même règle d'éligibilité que `createCreditNoteAttempt` (type ∈ {RENTAL, SUPPLEMENT, EXTENSION} ET status ∈ {ISSUED, PARTIALLY_PAID, PAID}), pour que le bouton « Créer un avoir » ne soit qu'un confort d'affichage — jamais une seconde source de vérité divergente de la route.
+
+### `GET /api/invoices/[id]` — enrichissement additif
+
+Le contrat existant `{ invoice }` est **strictement préservé**. Deux blocs mutuellement exclusifs, ajoutés seulement :
+- `creditNote` (uniquement si `type === "CREDIT_NOTE"`) : `sourceInvoiceId`/`sourceInvoiceNumber`/`sourceAmountPaid`/`refundedAmount`/`refundableAmount`.
+- `creditNotesSummary` (pour toute facture non-CREDIT_NOTE, même sans aucun avoir — jamais absent silencieusement) : `{ creditedAmount, netAmount, remainingBalance, creditedCollectedAmount, creditNotes: [...] }` (le tableau, potentiellement vide, vient de `getCreditNotesForSource`).
+
+### PDF dédié — `CreditNotePdf.tsx`
+
+Un avoir ne doit **jamais** être rendu avec le gabarit facture ordinaire (`InvoicePdf`/`InvoicePdfPage`) : il n'a ni jours de location, ni prix/jour, ni « solde dû » au sens d'une facture à encaisser. `src/components/invoices/CreditNotePdf.tsx` est un composant entièrement distinct (props propres : motif, facture source, montants dérivés, statut de remboursement) — ne lit ni n'écrit rien, tous les montants sont reçus déjà calculés par l'appelant. `GET /api/invoices/[id]/pdf` (`route.tsx`) branche désormais explicitement sur `invoice.type === "CREDIT_NOTE"` avant d'atteindre le chemin `InvoicePdf` existant, resté par ailleurs inchangé.
+
+**Exclusion du lot PDF** : `POST /api/documents/batch-pdf` exclut désormais explicitement `type: { not: "CREDIT_NOTE" }` de sa requête `INVOICE` (défense en profondeur, en plus de l'exclusion déjà appliquée côté client dans `InvoicesTable.tsx`) — ce endpoint assemble chaque facture du lot via `InvoicePdfPage` (gabarit « location »), jamais adapté à un avoir. Un avoir sélectionné seul dans un lot retourne désormais 404 (« aucune facture éligible »), cohérent avec le comportement déjà existant pour une sélection vide.
+
+### Interface — page de détail (`src/app/dashboard/invoices/[id]/page.tsx`)
+
+Branchement strict sur `invoice.type === "CREDIT_NOTE"` :
+- **Avoir** : carte « Détails » réduite (montant de l'avoir, motif — jamais Payé/Solde dû, qui n'ont pas de sens pour un avoir), nouvelle carte « Facture source et remboursement » (lien vers la source, montants dérivés, statut « Non remboursé »/« Partiellement remboursé »/« Remboursé intégralement », dérivé uniquement de `refundedAmount` vs `totalAmount` — jamais du seul `refundableAmount`, qui peut atteindre 0 sans que l'avoir soit intégralement remboursé si la source elle-même n'a pas été davantage encaissée). Jamais de carte « Paiements » (un avoir n'a structurellement aucun `Payment`, déjà garanti par `payments.ts`).
+- **Facture ordinaire** : nouvelle carte « Avoirs » (toujours affichée, y compris vide — jamais masquée silencieusement) listant chaque avoir actif avec son propre statut de remboursement ; « Solde dû » recalculé via `getInvoiceNetAmounts` (jamais `totalAmount - amountPaid` seul, qui ignorerait les avoirs).
+- `InvoiceActions` reçoit désormais `remainingBalance` dérivé de `getInvoiceNetAmounts` (0 pour un avoir) plutôt que la formule brute précédente — cohérent avec le plafond déjà appliqué côté serveur par `createPaymentLocked`/`createMixedPaymentsLocked`.
+
+### Boutons « Créer un avoir » / « Rembourser »
+
+Deux nouveaux composants client (`CreateCreditNoteButton.tsx`, `RefundCreditNoteButton.tsx`, siblings de `InvoiceActions.tsx`, volontairement séparés plutôt que d'alourdir ce fichier). Gating ADMIN uniquement à l'affichage (`user.role === "ADMIN"`, calculé côté page/Server Component) — **jamais la seule barrière réelle** : les routes `POST .../credit-notes` et `POST .../refund` restent strictement ADMIN côté serveur, indépendamment de ce que l'UI affiche. Pré-validation client (montant/motif/plafond affiché) explicitement non autoritaire — toujours revalidée côté serveur sous verrou au moment de l'écriture ; `router.refresh()` systématique après succès, jamais de mutation locale optimiste d'un montant avant confirmation serveur.
+
+### Correction de commentaires obsolètes (Phase 8 — trouvé pendant l'implémentation)
+
+Plusieurs commentaires affirmaient encore « `createCreditNote` non implémentée à ce stade » (dans `InvoiceActions.tsx`, `GET /api/invoices/[id]/route.ts`, `GET /api/invoices/route.ts`) — obsolètes depuis 2c1 (Sprint 13E tâche 3). Corrigés pour refléter la raison réelle actuelle (CREDIT_NOTE reste inatteignable par `PATCH .../[id]` ou `POST /api/invoices` : elle est créée exclusivement via `POST .../[id]/credit-notes`, jamais par une transition de statut générique) — comportement inchangé, seule la justification documentée était fausse.
+
+### Non-régression
+
+Aucune migration nécessaire (0 changement de schéma). Suite complète : 1096/1096 tests passés (`node scripts/test-grouped.mjs`), incluant les nouveaux tests API (`GET /api/invoices/[id]` enrichi, PDF avoir, exclusion batch-pdf, `getCreditNotesForSource`/`isCreditNoteEligibleSource`) et UI SSR (`src/__tests__/credit-notes-ui.test.tsx`, même paradigme que `damage-invoices-ui.test.tsx` — pas de jsdom/@testing-library, ce projet n'en dépend pas).
+
+### Limites connues
+
+- Pas d'historique de remboursement détaillé affiché (liste des `CashEntry` individuelles) sur la page de l'avoir — seuls les montants agrégés (`refundedAmount`/`refundableAmount`) sont affichés, cohérent avec l'absence de tout champ de suivi dédié sur `Invoice` (2c2-C).
+- Le filtre de statut `CREDIT_NOTE` a été ajouté à `/dashboard/invoices` (menu déroulant) mais pas à `GET /api/invoices` (liste JSON, `INVOICE_STATUSES` y reste volontairement restreinte — cohérent avec le choix déjà documenté en 2c1/2c2-A de ne pas exposer CREDIT_NOTE comme statut filtrable via cette API générique).

@@ -16,9 +16,11 @@ import {
 } from "@/lib/invoices";
 import { logAction } from "@/lib/audit";
 
-// Sprint 13E tâche 3 : CREDIT_NOTE volontairement absente de cette liste — aucune facture ne
-// peut encore atteindre ce statut (createCreditNote non implémentée à ce stade), l'exposer ici
-// filtrerait/accepterait une valeur qu'aucune route ne sait produire.
+// Sprint 13E tâche 3, corrigé sous-phase 2c2-D : CREDIT_NOTE volontairement absente de cette
+// liste de filtre — un avoir se filtre par ?status=CREDIT_NOTE tout de même accepté ci-dessous
+// serait incohérent avec cette liste ; en pratique CREDIT_NOTE est visible dans /dashboard/invoices
+// sans filtre dédié (liste non filtrée par défaut), et créé exclusivement via
+// POST /api/invoices/[id]/credit-notes (createCreditNote, 2c1), jamais via ce endpoint générique.
 const INVOICE_STATUSES: InvoiceStatus[] = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "VOID"];
 
 export async function GET(request: Request) {

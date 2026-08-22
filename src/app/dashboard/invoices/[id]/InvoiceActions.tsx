@@ -36,8 +36,9 @@ const ALLOWED_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
   PARTIALLY_PAID: ["VOID"],
   PAID: [],
   VOID: [],
-  // CREDIT_NOTE est un état final atteint directement à la création d'un avoir
-  // (createCreditNote, non implémentée à ce stade) — jamais via une transition depuis cette UI.
+  // Sous-phase 2c2-D (correctif) : CREDIT_NOTE est un état final atteint directement à la
+  // création d'un avoir (createCreditNote, POST /api/invoices/[id]/credit-notes, implémentée
+  // depuis 2c1) — jamais via une transition PATCH depuis cette UI, ni depuis aucune autre.
   CREDIT_NOTE: [],
 };
 
