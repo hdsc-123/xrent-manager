@@ -12,18 +12,55 @@
  * Usage : node scripts/test-grouped.mjs [--no-file-parallelism]
  */
 import { spawn } from "node:child_process";
+import { readdirSync } from "node:fs";
 
 const GROUPS = [
   ["reservations", "permissions", "vehicle-mobility-alerts", "invoice-status-alerts", "reports", "db", "password-policy", "scheduled-alerts-cron"],
   ["locations", "location-extension", "location-chains", "location-chain-balance", "dashboard-route-guards", "data-reset", "invoices", "audit-deletion", "auth", "csv-export-sanitization", "csv-exports", "damages", "location-return"],
-  ["vehicles", "agencies", "audit", "ui", "e2e-full", "invitations", "location-return-route"],
-  ["users", "maintenances", "clients", "vehicle-trips", "batch-pdf", "location-payment", "damages-route"],
+  ["vehicles", "agencies", "audit", "ui", "e2e-full", "invitations", "location-return-route", "credit-notes-ui", "damage-invoices-ui", "icon-hydration"],
+  ["users", "maintenances", "clients", "vehicle-trips", "batch-pdf", "location-payment", "damages-route", "damage-invoices-route", "test-grouped-integrity"],
   ["cash-register", "vehicle-transfers", "payments", "alerts", "e2e", "tenants", "return-damages-ui", "maintenance-location-coordination"],
 ];
 
+const UI_TSX_FILES = new Set(["ui", "credit-notes-ui", "damage-invoices-ui", "icon-hydration"]);
+
 function filePathFor(name) {
-  if (name === "ui") return "src/__tests__/ui.test.tsx";
+  if (UI_TSX_FILES.has(name)) return `src/__tests__/${name}.test.tsx`;
   return `src/__tests__/${name}.test.ts`;
+}
+
+// Sprint technique 4 — TESTREPORT.md/INCIDENTS.md documentaient depuis plusieurs sprints
+// des "suites complètes" 100% vertes obtenues via ce script, alors que 4 fichiers de
+// src/__tests__/ (36 tests) n'avaient jamais été ajoutés à GROUPS et n'étaient donc jamais
+// exécutés par lui. Ce garde-fou empêche toute régression silencieuse équivalente à l'avenir :
+// GROUPS doit couvrir exactement les fichiers réellement présents dans src/__tests__/, ni plus
+// (fichier supprimé, entrée orpheline) ni moins (nouveau fichier de test jamais ajouté).
+// `computeGroupsDrift` est une fonction pure (pas de process.exit) pour rester testable par
+// src/__tests__/test-grouped-integrity.test.ts sans dupliquer cette logique.
+function computeGroupsDrift(testsDirUrl) {
+  const actualNames = readdirSync(testsDirUrl)
+    .filter((f) => f.endsWith(".test.ts") || f.endsWith(".test.tsx"))
+    .map((f) => f.replace(/\.test\.tsx?$/, ""))
+    .sort();
+  const groupedNames = GROUPS.flat().slice().sort();
+
+  const missing = actualNames.filter((n) => !groupedNames.includes(n));
+  const orphaned = groupedNames.filter((n) => !actualNames.includes(n));
+  const duplicated = groupedNames.filter((n, i) => groupedNames.indexOf(n) !== i);
+
+  return { missing, orphaned, duplicated };
+}
+
+function verifyGroupsMatchDirectory() {
+  const { missing, orphaned, duplicated } = computeGroupsDrift(new URL("../src/__tests__/", import.meta.url));
+
+  if (missing.length > 0 || orphaned.length > 0 || duplicated.length > 0) {
+    console.error("[test-grouped] GROUPS désynchronisé de src/__tests__/ :");
+    if (missing.length > 0) console.error(`  Fichiers présents mais absents de GROUPS : ${missing.join(", ")}`);
+    if (orphaned.length > 0) console.error(`  Entrées de GROUPS sans fichier correspondant : ${orphaned.join(", ")}`);
+    if (duplicated.length > 0) console.error(`  Entrées dupliquées dans GROUPS : ${duplicated.join(", ")}`);
+    process.exit(1);
+  }
 }
 
 const sequential = process.argv.includes("--no-file-parallelism");
@@ -120,6 +157,8 @@ async function residualPids() {
 }
 
 async function main() {
+  verifyGroupsMatchDirectory();
+
   const overallStart = Date.now();
   let totalPassed = 0;
   let totalFailed = 0;
@@ -213,4 +252,12 @@ async function main() {
   process.exit(totalFailed > 0 || anyGroupExitNonZero ? 1 : 0);
 }
 
-main();
+// Sprint technique 4 : export pour permettre au test de non-régression
+// (src/__tests__/test-grouped-integrity.test.ts) de vérifier GROUPS sans exécuter la suite —
+// `main()` ne se déclenche que lors d'une invocation directe du script (`node scripts/...`),
+// jamais lors d'un `import`.
+export { GROUPS, computeGroupsDrift };
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main();
+}

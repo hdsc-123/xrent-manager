@@ -1,4 +1,5 @@
 import type { Invitation } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 
@@ -100,18 +101,33 @@ export async function acceptInvitation(id: string, data: AcceptInvitationInput) 
 
   const passwordHash = await bcrypt.hash(data.password, 12);
 
-  const [, user] = await prisma.$transaction([
-    prisma.invitation.update({ where: { id }, data: { status: "ACCEPTED" } }),
-    prisma.user.create({
-      data: {
-        tenantId: invitation.tenantId,
-        email: invitation.email,
-        name: data.name,
-        passwordHash,
-        role: invitation.role,
-      },
-    }),
-  ]);
+  let user;
+  try {
+    [, user] = await prisma.$transaction([
+      prisma.invitation.update({ where: { id }, data: { status: "ACCEPTED" } }),
+      prisma.user.create({
+        data: {
+          tenantId: invitation.tenantId,
+          email: invitation.email,
+          name: data.name,
+          passwordHash,
+          role: invitation.role,
+        },
+      }),
+    ]);
+  } catch (error) {
+    // Sprint technique 4 : deux acceptations concurrentes de la même invitation passent
+    // toutes deux la vérification PENDING ci-dessus (lue avant toute écriture) ; seule la
+    // contrainte unique `tenantId_email` départage le gagnant. Sans ce filet, la perdante
+    // remontait un P2002 brut (500) au lieu du 409 `UserAlreadyExistsError` déjà géré par
+    // la route — le transaction array annule alors aussi la mise à jour du statut de
+    // l'invitation, donc aucune incohérence de données n'en résultait, seulement une
+    // erreur HTTP incorrecte.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      throw new UserAlreadyExistsError();
+    }
+    throw error;
+  }
 
   return { invitation, user };
 }

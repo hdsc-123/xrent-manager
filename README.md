@@ -81,7 +81,7 @@ npm run dev     # Serveur de développement Next.js
 npm run build   # Build de production (Turbopack) — validé ✅
 npm run start   # Démarre le serveur en mode production (build requis au préalable)
 npm run lint    # Lint ESLint — validé ✅
-npm run test    # Suite de tests Vitest (206 tests, contre xrent_test) — validé ✅
+npm run test    # Suite de tests Vitest (1244 tests, contre xrent_test) — validé ✅
 ```
 
 `npm run test` démarre automatiquement un vrai serveur `next dev` de test (voir `vitest.global-setup.ts`) sur un port dédié, exécute la suite contre `xrent_test`, puis l'arrête — aucune donnée résiduelle n'est laissée après l'exécution (chaque suite nettoie les données qu'elle crée). Voir [TESTREPORT.md](./TESTREPORT.md) pour le détail de la couverture.
@@ -89,8 +89,8 @@ npm run test    # Suite de tests Vitest (206 tests, contre xrent_test) — valid
 Pour une exécution complète et fiable de la suite (recyclage préventif du serveur de test entre groupes de fichiers, résout INC-3 — voir [INCIDENTS.md](./INCIDENTS.md)), utiliser plutôt :
 
 ```bash
-node scripts/test-grouped.mjs                       # recommandé — 610/610, ~150s
-node scripts/test-grouped.mjs --no-file-parallelism  # variante strictement séquentielle, ~195s
+node scripts/test-grouped.mjs                       # recommandé — 1244/1244, ~310s
+node scripts/test-grouped.mjs --no-file-parallelism  # variante strictement séquentielle, plus lente
 ```
 
 ## Règles importantes

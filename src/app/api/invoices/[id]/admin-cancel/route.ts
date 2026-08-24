@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSessionUser } from "@/lib/authz";
+import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import {
   getInvoiceById,
   adminCancelInvoice,
@@ -53,6 +53,14 @@ export async function POST(request: Request, { params }: RouteParams) {
   const { id } = await params;
   const existing = await getInvoiceById(user.tenantId, id);
   if (!existing) {
+    return NextResponse.json({ error: "Facture introuvable." }, { status: 404 });
+  }
+  // Sprint technique 4 : contrôle défensif ajouté pour rester cohérent avec les routes
+  // soeurs (POST .../credit-notes, POST .../refund) — sans effet aujourd'hui puisque cette
+  // route est déjà réservée ADMIN et que canAccessAgency autorise toujours un ADMIN sur son
+  // propre tenant, mais évite qu'un futur cantonnement d'ADMIN par agence ne réintroduise un
+  // IDOR silencieux ici.
+  if (!(await canAccessAgency(user, existing.agencyId))) {
     return NextResponse.json({ error: "Facture introuvable." }, { status: 404 });
   }
 

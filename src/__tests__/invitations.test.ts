@@ -147,6 +147,38 @@ describe("POST /api/invitations/[id]/accept", () => {
     expect(response.status).toBe(409);
   });
 
+  it("deux acceptations concurrentes de la même invitation : une seule réussit (200), l'autre reçoit un 409 propre (jamais un 500 brut), un seul user créé", async () => {
+    const email = `accept-race-${runId}@test.local`;
+    const createResponse = await apiFetch("/api/invitations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ email }),
+    });
+    const invitationId = (await createResponse.json()).invitation.id;
+
+    const [responseA, responseB] = await Promise.all([
+      apiFetch(`/api/invitations/${invitationId}/accept`, {
+        method: "POST",
+        body: JSON.stringify({ name: "Concurrent A", password }),
+      }),
+      apiFetch(`/api/invitations/${invitationId}/accept`, {
+        method: "POST",
+        body: JSON.stringify({ name: "Concurrent B", password }),
+      }),
+    ]);
+
+    const statuses = [responseA.status, responseB.status].sort();
+    expect(statuses).toEqual([200, 409]);
+
+    const users = await prisma.user.findMany({
+      where: { tenantId: adminA.tenantId, email },
+    });
+    expect(users).toHaveLength(1);
+
+    const invitation = await prisma.invitation.findUnique({ where: { id: invitationId } });
+    expect(invitation?.status).toBe("ACCEPTED");
+  });
+
   it("refuse une invitation expirée", async () => {
     const email = `expired-${runId}@test.local`;
     const createResponse = await apiFetch("/api/invitations", {
