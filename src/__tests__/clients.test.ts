@@ -229,6 +229,52 @@ describe("GET /api/clients/[id]", () => {
 });
 
 describe("PATCH /api/clients/[id]", () => {
+  it("Sprint technique 5 (audit de sécurité, faille corrigée) : un champ `tenantId` injecté dans le corps de la requête ne rattache jamais le client à un autre tenant", async () => {
+    const createResponse = await createClient(adminA, { name: `Sécurité mass-assignment ${runId}` });
+    const clientId = (await createResponse.json()).client.id;
+
+    // Avant correction, PATCH construisait sa mise à jour Prisma à partir d'un spread du corps
+    // brut de la requête (`...body`) : `tenantId` est une colonne réelle de Client, acceptée sans
+    // filtrage par Prisma — un simple appel API (hors de toute interface, qui n'envoie jamais ce
+    // champ) suffisait à faire passer un client d'un tenant à l'autre, cassant l'isolation tenant
+    // (SECURITY.md section 1) pour quiconque a seulement `clients.edit`.
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ tenantId: adminB.tenantId, phone: "0622222222" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    // Le champ légitime de la requête est bien appliqué...
+    expect(body.client.phone).toBe("0622222222");
+    // ...mais tenantId reste strictement inchangé.
+    expect(body.client.tenantId).toBe(adminA.tenantId);
+
+    const persisted = await prisma.client.findUniqueOrThrow({ where: { id: clientId } });
+    expect(persisted.tenantId).toBe(adminA.tenantId);
+
+    // Le client reste invisible depuis le tenant B (aucune fuite inter-tenant provoquée).
+    const fromTenantB = await apiFetch(`/api/clients/${clientId}`, {
+      headers: { Cookie: adminB.sessionCookie },
+    });
+    expect(fromTenantB.status).toBe(404);
+  });
+
+  it("Sprint technique 5 (audit de sécurité, faille corrigée) : `id`/`createdAt` injectés dans le corps de la requête sont sans effet", async () => {
+    const createResponse = await createClient(adminA, { name: `Sécurité id/createdAt ${runId}` });
+    const created = (await createResponse.json()).client;
+
+    const response = await apiFetch(`/api/clients/${created.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ id: "attacker-chosen-id", createdAt: "2000-01-01T00:00:00.000Z" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.client.id).toBe(created.id);
+    expect(body.client.createdAt).toBe(created.createdAt);
+  });
+
   it("permet de modifier le nom, l'email et le téléphone", async () => {
     const createResponse = await createClient(adminA, { name: "Avant modif" });
     const clientId = (await createResponse.json()).client.id;

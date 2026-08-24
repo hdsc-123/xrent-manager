@@ -135,6 +135,16 @@ describe("POST /api/vehicles", () => {
     expect(body.vehicle.currency).toBe("MAD");
   });
 
+  it("Sprint technique 5 (audit de sécurité) : ignore un `currency` fourni par le client, jamais exposé par le formulaire ni validé côté serveur", async () => {
+    const response = await createVehicle(adminA, agencyA1Id, { currency: "EUR" });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    // Reste à la valeur par défaut du schéma — un `currency` arbitraire non gardé fausserait
+    // silencieusement les agrégats financiers (src/lib/reports.ts) qui additionnent des montants
+    // sans jamais les regrouper par devise.
+    expect(body.vehicle.currency).toBe("MAD");
+  });
+
   it("refuse une immatriculation dupliquée pour le même tenant", async () => {
     const plate = `DUP-${runId}`;
     const first = await createVehicle(adminA, agencyA1Id, { licensePlate: plate });
@@ -253,6 +263,66 @@ describe("GET /api/vehicles/[id]", () => {
 });
 
 describe("PATCH /api/vehicles/[id]", () => {
+  it("Sprint technique 5 (audit de sécurité, faille corrigée) : un champ `tenantId` injecté dans le corps de la requête ne rattache jamais le véhicule à un autre tenant", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await createResponse.json()).vehicle.id;
+
+    // Avant correction, PATCH construisait sa mise à jour Prisma à partir d'un spread du corps
+    // brut de la requête (`...bodyWithoutDates`) : `tenantId` est une colonne réelle de Vehicle,
+    // acceptée sans filtrage par Prisma — un simple appel API (hors de toute interface, qui
+    // n'envoie jamais ce champ) suffisait à faire passer un véhicule d'un tenant à l'autre,
+    // cassant l'isolation tenant (SECURITY.md section 1) pour quiconque a seulement
+    // `vehicles.edit`, sans avoir besoin d'aucun privilège supplémentaire.
+    const response = await apiFetch(`/api/vehicles/${vehicleId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ tenantId: adminB.tenantId, color: "Vert" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    // Le champ légitime de la requête est bien appliqué...
+    expect(body.vehicle.color).toBe("Vert");
+    // ...mais tenantId reste strictement inchangé.
+    expect(body.vehicle.tenantId).toBe(adminA.tenantId);
+
+    const persisted = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleId } });
+    expect(persisted.tenantId).toBe(adminA.tenantId);
+
+    // Le véhicule reste invisible depuis le tenant B (aucune fuite inter-tenant provoquée).
+    const fromTenantB = await apiFetch(`/api/vehicles/${vehicleId}`, {
+      headers: { Cookie: adminB.sessionCookie },
+    });
+    expect(fromTenantB.status).toBe(404);
+  });
+
+  it("Sprint technique 5 (audit de sécurité, faille corrigée) : `id`/`createdAt` injectés dans le corps de la requête sont sans effet", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id);
+    const created = (await createResponse.json()).vehicle;
+
+    const response = await apiFetch(`/api/vehicles/${created.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ id: "attacker-chosen-id", createdAt: "2000-01-01T00:00:00.000Z" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.vehicle.id).toBe(created.id);
+    expect(body.vehicle.createdAt).toBe(created.createdAt);
+  });
+
+  it("Sprint technique 5 (audit de sécurité) : `currency` ne peut plus être modifié via PATCH", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await createResponse.json()).vehicle.id;
+
+    const response = await apiFetch(`/api/vehicles/${vehicleId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ currency: "EUR" }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).vehicle.currency).toBe("MAD");
+  });
+
   it("permet de modifier le prix et le statut", async () => {
     const createResponse = await createVehicle(adminA, agencyA1Id);
     const vehicleId = (await createResponse.json()).vehicle.id;

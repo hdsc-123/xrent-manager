@@ -105,8 +105,28 @@ export async function PATCH(request: Request, { params }: RouteParams) {
           .trim() || undefined
       : undefined;
 
+  // Sprint technique 5 (audit de sécurité) : construction explicite champ par champ, jamais un
+  // spread du corps brut de la requête (`...body`, retiré) — celui-ci transmettait tel quel tout
+  // champ réellement présent dans le JSON reçu, y compris des colonnes jamais destinées à être
+  // modifiables par le client (`tenantId`, `id`, `createdAt`, `updatedAt`), toutes acceptées sans
+  // filtrage par `Prisma.ClientUncheckedUpdateInput` côté moteur Prisma — un appelant disposant
+  // seulement de `clients.edit` pouvait ainsi rattacher silencieusement un client à un tenant
+  // arbitraire en ajoutant `tenantId` au corps de la requête, en dehors de toute interface,
+  // cassant l'isolation tenant (SECURITY.md section 1).
   const updated = await updateClient(user.tenantId, client.id, {
-    ...body,
+    ...(body.name !== undefined ? { name: body.name } : {}),
+    ...(body.firstName !== undefined ? { firstName: body.firstName } : {}),
+    ...(body.lastName !== undefined ? { lastName: body.lastName } : {}),
+    ...(body.email !== undefined ? { email: body.email } : {}),
+    ...(body.phone !== undefined ? { phone: body.phone } : {}),
+    ...(body.altPhone !== undefined ? { altPhone: body.altPhone } : {}),
+    ...(body.address !== undefined ? { address: body.address } : {}),
+    ...(body.city !== undefined ? { city: body.city } : {}),
+    ...(body.country !== undefined ? { country: body.country } : {}),
+    ...(body.idNumber !== undefined ? { idNumber: body.idNumber } : {}),
+    ...(body.idType !== undefined ? { idType: body.idType } : {}),
+    ...(body.licenseNumber !== undefined ? { licenseNumber: body.licenseNumber } : {}),
+    ...(body.notes !== undefined ? { notes: body.notes } : {}),
     ...(derivedName ? { name: derivedName } : {}),
     licenseIssueDate:
       body.licenseIssueDate !== undefined

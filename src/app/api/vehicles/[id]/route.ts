@@ -7,6 +7,7 @@ import {
   updateVehicle,
   deleteVehicle,
   VehicleHasLocationsError,
+  type UpdateVehicleInput,
 } from "@/lib/vehicles";
 import { logAction } from "@/lib/audit";
 
@@ -69,7 +70,9 @@ interface UpdateVehicleBody {
   category?: string;
   status?: VehicleStatus;
   pricePerDay?: number | null;
-  currency?: string;
+  // Sprint technique 5 : `currency` retiré de ce type — jamais exposé par le formulaire
+  // dashboard, jamais validé côté serveur ; un client ne doit plus pouvoir le modifier via
+  // cette route (voir le commentaire sur `updateData` plus bas).
   ww?: string | null;
   chassisNumber?: string | null;
   color?: string | null;
@@ -253,20 +256,48 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Accès refusé à cette agence." }, { status: 403 });
   }
 
-  // Champs date bruts (chaînes ISO) retirés avant l'appel à updateVehicle — remplacés par
-  // parsedDates (Date réelles) ci-dessous, voir OPTIONAL_DATE_FIELDS.
-  /* eslint-disable @typescript-eslint/no-unused-vars */
-  const {
-    insuranceExpiryDate,
-    vignetteExpiryDate,
-    technicalInspectionExpiryDate,
-    nextOilChangeDate,
-    ...bodyWithoutDates
-  } = body;
-  /* eslint-enable @typescript-eslint/no-unused-vars */
+  // Sprint technique 5 (audit de sécurité) : construction explicite champ par champ, jamais un
+  // spread du corps brut de la requête — `bodyWithoutDates` (retiré) transmettait tel quel tout
+  // champ réellement présent dans le JSON reçu, y compris des colonnes jamais destinées à être
+  // modifiables par le client (`tenantId`, `id`, `createdAt`, `updatedAt`), toutes acceptées sans
+  // filtrage par `Prisma.VehicleUncheckedUpdateInput` côté moteur Prisma — un appelant disposant
+  // seulement de `vehicles.edit` pouvait ainsi rattacher silencieusement un véhicule à un tenant
+  // arbitraire en ajoutant `tenantId` au corps de la requête, en dehors de toute interface,
+  // cassant l'isolation tenant (SECURITY.md section 1). `currency` est volontairement exclu de la
+  // liste ci-dessous (jamais exposé par le formulaire dashboard, jamais validé jusqu'ici) : reste
+  // à sa valeur existante, même principe que les champs dérivés côté serveur ailleurs dans le
+  // projet (agencyId de Location, currency d'Invoice/Payment — jamais fournis par le client).
+  const updateData: UpdateVehicleInput = {
+    ...(body.agencyId !== undefined ? { agencyId: body.agencyId } : {}),
+    ...(body.name !== undefined ? { name: body.name } : {}),
+    ...(body.licensePlate !== undefined ? { licensePlate: body.licensePlate } : {}),
+    ...(body.make !== undefined ? { make: body.make } : {}),
+    ...(body.model !== undefined ? { model: body.model } : {}),
+    ...(body.year !== undefined ? { year: body.year } : {}),
+    ...(body.category !== undefined ? { category: body.category } : {}),
+    ...(body.status !== undefined ? { status: body.status } : {}),
+    ...(body.pricePerDay !== undefined ? { pricePerDay: body.pricePerDay } : {}),
+    ...(body.ww !== undefined ? { ww: body.ww } : {}),
+    ...(body.chassisNumber !== undefined ? { chassisNumber: body.chassisNumber } : {}),
+    ...(body.color !== undefined ? { color: body.color } : {}),
+    ...(body.doors !== undefined ? { doors: body.doors } : {}),
+    ...(body.seats !== undefined ? { seats: body.seats } : {}),
+    ...(body.transmission !== undefined ? { transmission: body.transmission } : {}),
+    ...(body.fuel !== undefined ? { fuel: body.fuel } : {}),
+    ...(body.horsepower !== undefined ? { horsepower: body.horsepower } : {}),
+    ...(body.powerKW !== undefined ? { powerKW: body.powerKW } : {}),
+    ...(body.engineSize !== undefined ? { engineSize: body.engineSize } : {}),
+    ...(body.ac !== undefined ? { ac: body.ac } : {}),
+    ...(body.gps !== undefined ? { gps: body.gps } : {}),
+    ...(body.imageUrl !== undefined ? { imageUrl: body.imageUrl } : {}),
+    ...(body.currentOdometer !== undefined ? { currentOdometer: body.currentOdometer } : {}),
+    ...(body.currentFuelLevel !== undefined ? { currentFuelLevel: body.currentFuelLevel } : {}),
+    ...(body.nextOilChangeKm !== undefined ? { nextOilChangeKm: body.nextOilChangeKm } : {}),
+    ...parsedDates,
+  };
 
   try {
-    const updated = await updateVehicle(user.tenantId, vehicle.id, { ...bodyWithoutDates, ...parsedDates });
+    const updated = await updateVehicle(user.tenantId, vehicle.id, updateData);
     await logAction({
       tenantId: user.tenantId,
       userId: user.id,

@@ -83,7 +83,15 @@ interface CreateVehicleBody {
   category?: string;
   status?: VehicleStatus;
   pricePerDay?: number;
-  currency?: string;
+  // Sprint technique 5 (audit de sécurité) : `currency` retiré de ce type — jamais exposé par le
+  // formulaire dashboard, jamais validé côté serveur (aucune liste blanche, contrairement à
+  // status/transmission/fuel ci-dessus), et propagé sans contrôle à toute Location créée depuis
+  // ce véhicule (`currency: vehicle.currency`, src/lib/locations.ts) puis à l'Invoice/Payment/
+  // CashEntry associés — un simple appel API sans passer par l'interface pouvait ainsi introduire
+  // une devise arbitraire non gardée, faussant silencieusement les agrégats financiers
+  // (src/lib/reports.ts, getVehiclePerformanceReport) qui additionnent des montants sans jamais
+  // les regrouper par devise. Toute nouvelle Vehicle reçoit désormais systématiquement la valeur
+  // par défaut du schéma ("MAD", seule devise réellement en usage — voir HANDOFF.md point 22).
   ww?: string;
   chassisNumber?: string;
   color?: string;
@@ -262,7 +270,6 @@ export async function POST(request: Request) {
       category,
       status: body.status,
       pricePerDay,
-      currency: body.currency,
       ww: body.ww,
       chassisNumber: body.chassisNumber,
       color: body.color,
