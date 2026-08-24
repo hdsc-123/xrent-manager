@@ -19,7 +19,8 @@ Ce document définit les règles de sécurité de XRent Manager. Il mélange des
 **Implémenté (Sprint 3)** : NextAuth.js (Auth.js) v5, avec un unique fournisseur `CredentialsProvider` (email/password, pas d'OAuth à ce stade — décision explicite du propriétaire du projet). Les mots de passe sont hashés avec `bcryptjs` (`src/app/api/auth/register/route.ts`), jamais stockés ni retournés en clair (voir section 10).
 
 - `src/app/api/auth/login/route.ts` renvoie systématiquement le même message d'erreur (« Identifiants invalides. », HTTP 401) pour un mot de passe incorrect et pour un email inexistant — vérifié par test (`src/__tests__/auth.test.ts`), conformément à l'exigence de ne pas distinguer un compte existant d'un compte inexistant.
-- **Non implémenté** : limitation du nombre de tentatives (protection brute force), mécanisme de récupération de compte (mot de passe oublié), MFA — tous **À DÉCIDER**, à traiter avant mise en production.
+- **Non implémenté à ce jour, spécification validée (cadrage 2026-08-24)** : limitation du nombre de tentatives (protection brute force) — voir section 33 pour la spécification complète. **Spécification validée, implémentation non confirmée ou non terminée** — ne pas considérer ce point comme opérationnel sans preuve dans le code et les tests.
+- **Non implémenté, À DÉCIDER** : mécanisme de récupération de compte (mot de passe oublié), MFA — MFA à rendre obligatoire pour les comptes `ADMIN` dès que disponible (préférence exprimée par le propriétaire du projet, cadrage 2026-08-24), sans engagement de date.
 - **Résolu (Sprint 9, Option B)** : `User.email` reste unique par tenant seulement (`@@unique([tenantId, email])`, pas globalement), mais l'ambiguïté à la connexion est désormais gérée explicitement. `resolveLoginTenants(email, password)` (`src/lib/auth.ts`) vérifie le mot de passe contre **tous** les users partageant cet email, tous tenants confondus, **avant** de révéler quoi que ce soit — principe crucial pour ne pas fuiter l'appartenance multi-tenant d'un email sans preuve d'identité (cohérent avec le paragraphe ci-dessus). `POST /api/auth/login` : 0 correspondance → 401 générique (inchangé) ; exactement 1 → connexion directe (comportement historique, inchangé) ; plusieurs → `200 { requiresTenantSelection: true, tenants: [...] }` **sans poser de cookie de session**, le client (`LoginForm.tsx`) affiche alors une sélection explicite du tenant puis resoumet avec `tenantId`. `authorize()` (NextAuth) accepte ce `tenantId` optionnel pour un lookup non ambigu (`findUnique` sur `tenantId_email`).
 - **Piège technique découvert pendant ce sprint** : `signIn()` de NextAuth appelé côté serveur sérialise ses options via `URLSearchParams`, qui coerce une valeur JavaScript `undefined` en la chaîne littérale `"undefined"` — passer `tenantId: undefined` directement cassait silencieusement le lookup tenant-scopé. Corrigé en n'incluant la clé `tenantId` dans les options que lorsqu'elle est réellement définie.
 
@@ -55,8 +56,9 @@ Ce document définit les règles de sécurité de XRent Manager. Il mélange des
 ## 8. Secrets et variables d'environnement
 
 - Les secrets (clés API, identifiants de base de données, clés de chiffrement) ne doivent jamais être codés en dur dans le code source ni dans la documentation.
-- Les fichiers `.env*` sont déjà exclus du suivi git via `.gitignore` ; c'est le seul emplacement local prévu pour les secrets, en complément d'un gestionnaire de secrets externe le cas échéant (À DÉCIDER pour la production).
+- Les fichiers `.env*` sont déjà exclus du suivi git via `.gitignore` ; c'est le seul emplacement local prévu pour les secrets en développement/test.
 - Voir également [PROJECT_MAP.md](./PROJECT_MAP.md) section 6 pour la liste des fichiers ne devant jamais contenir de secrets.
+- **Secrets de production (cadrage validé, 2026-08-24)** : `DATABASE_URL`, `AUTH_SECRET`, `CRON_SECRET` doivent avoir des valeurs distinctes en développement, test et production — jamais une valeur de développement/test réutilisée en production. Store retenu : celui natif de la plateforme d'hébergement de production (voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 20) ; un gestionnaire externe dédié reste une option à évaluer ultérieurement, non nécessaire pour démarrer. Rotation : documentée mais non encore réalisée (aucun secret de production n'existe à ce jour) — à exécuter en fenêtre de faible trafic, secret applicatif mis à jour avant le déclencheur externe qui l'utilise (ex. `CRON_SECRET` côté planificateur externe). Accès aux secrets de production limité aux personnes explicitement autorisées par le propriétaire du projet.
 
 ## 9. Cartes bancaires
 
@@ -107,7 +109,8 @@ Ce document définit les règles de sécurité de XRent Manager. Il mélange des
 
 ## 16. Sauvegardes
 
-- Stratégie de sauvegarde (fréquence, rétention, chiffrement, lieu de stockage) : **À DÉCIDER**, à définir avant la mise en production.
+- **Statut : non mises en place, tests futurs à prévoir** (spécification validée 2026-08-24, aucun environnement de production n'existe) : sauvegardes automatiques quotidiennes, rétention 30 jours minimum, stockage indépendant du serveur applicatif, restauration testée obligatoirement avant le lancement public puis périodiquement ensuite. RPO cible provisoire 24h, RTO cible provisoire 4h — à confirmer selon les possibilités réelles de l'hébergeur retenu. Détail complet : [ARCHITECTURE.md](./ARCHITECTURE.md) section 21.
+- **Clarification importante** : cette rétention de 30 jours concerne exclusivement les copies de sauvegarde techniques, jamais les données de production actuelles. La conservation des données métier (clients, contrats, factures, paiements, audits) suit une politique distincte, indépendante — voir [DOMAINRULES.md](./DOMAINRULES.md) section 61 (conservation minimale d'un exercice comptable, sous réserve de validation par le comptable marocain).
 - Toute sauvegarde contenant des données sensibles (personnelles ou financières) doit être protégée au moins au même niveau que la base de données de production.
 
 ## 17. Reset sécurisé
@@ -162,7 +165,7 @@ Checklist de conformité MVP, vérifiée section par section de ce document :
 | 7 | Aucune donnée de carte bancaire stockée | ✅ Respecté (aucune fonctionnalité de paiement en ligne n'existe, section 9) |
 | 8 | Audit exhaustif sur le CRUD métier | ✅ Implémenté ce sprint (section 13) |
 | 9 | Garde « dernier ADMIN » (self et tiers) | ✅ Confirmé (HANDOFF.md section 6) |
-| 10 | Rate limiting / protection brute force sur l'authentification | ❌ **Non implémenté** — à traiter avant mise en production (section 3) |
+| 10 | Rate limiting / protection brute force sur l'authentification | ❌ **Non implémenté — spécification validée (cadrage 2026-08-24), voir section 33** — à traiter avant mise en production (section 3) |
 | 11 | MFA | ❌ **Non implémenté**, **À DÉCIDER** (section 3) |
 | 12 | Headers de sécurité (CSP, HSTS, etc.) | ❌ **Non implémenté**, **À DÉCIDER** (section 19) |
 | 13 | Environnement de production / stratégie de sauvegarde | ❌ **Non défini**, **À DÉCIDER** (section 16, HANDOFF.md section 8) |
@@ -300,3 +303,91 @@ Voir DOMAINRULES.md section 50 pour le détail métier complet. Nouvelle permiss
 Aucune nouvelle faille d'isolation tenant/agence : le contrôle d'agence existant (`canAccessLocationAgency`) s'applique avant toute logique de conflit de maintenance, inchangé par ce sprint.
 
 **Mise à jour (Sprint 13E, tâche 2 — voir DOMAINRULES.md section 54)** : le risque accepté ci-dessus (« un titulaire peut modifier les dates de n'importe quel contrat validé, pas seulement en cas de conflit réel ») ne concerne plus que le champ `confirmMaintenanceConflict` du formulaire ADMIN générique — un nouveau champ dédié, `extendReturnDate` (parcours « Prolonger la location »), contourne désormais le même verrou `LocationLockedError` **sans exiger `locations.maintenance_conflict.override`**, réservée depuis cette tâche à la seule confirmation d'un conflit de maintenance réel, conformément à son libellé au catalogue. `extendReturnDate` reste plus étroit que `confirmMaintenanceConflict` sur trois points, tous vérifiés côté serveur : (1) exige `endDate` strictement postérieure à la date de retour actuelle (`InvalidExtensionDateError`, 400) — ne peut jamais raccourcir un contrat ; (2) refuse toute combinaison avec `startDate` — ne peut jamais modifier la date de départ ; (3) refuse toute combinaison avec `status` — ne modifie jamais rien d'autre que la date de retour. Un titulaire de `locations.edit` (sans `locations.maintenance_conflict.override`) peut donc désormais prolonger un contrat validé tant qu'aucun conflit de maintenance réel n'existe — dès qu'un conflit est détecté, `MaintenanceExtensionConflictError` (409) bloque la tentative et seule la permission granulaire (ou ADMIN) peut la confirmer explicitement, exactement comme avant cette tâche.
+
+**Écart avec le cadrage métier du 2026-08-24, schéma et création implémentés depuis (Sprint technique 1)** : le cadrage validé par le propriétaire du projet demande que chaque prolongation crée un nouveau contrat indépendant (numéro propre, référence au contrat parent et au contrat racine) — implémenté (`src/lib/location-chains.ts`, `POST /api/locations/[id]/extend`, permission dédiée `locations.extension.create`, non accordée par défaut). Le mécanisme `extendReturnDate` décrit ci-dessus **reste inchangé et coexiste** avec le nouveau (retrait du parcours utilisateur non encore planifié, voir DOMAINRULES.md section 60). Revue de sécurité du nouveau parcours : isolation tenant (contrat d'un autre tenant → 404), permission dédiée revérifiée côté serveur, contrôle d'accès à l'agence de référence si changée, verrouillage explicite du contrat parent et du véhicule avant toute écriture (mêmes primitives que `createLocation`) — couvert par 21 tests dédiés (`src/__tests__/location-chains.test.ts`, voir TESTREPORT.md).
+
+## 33. Rate limiting d'authentification — spécification validée, non implémentée (cadrage 2026-08-24)
+
+**Statut : spécification validée, implémentation à confirmer ou à réaliser.** Aucune occurrence de rate limiting n'existe dans le code à la date de cette mise à jour (vérifié : aucun mécanisme de throttling/limitation de tentatives dans `src/lib` ni `src/app/api/auth`). Ne pas marquer ce point comme opérationnel tant que le code et les tests correspondants ne l'attestent pas.
+
+**Spécification validée** :
+
+- Mécanisme obligatoire avant toute exposition publique.
+- Première implémentation retenue : **PostgreSQL**, pas Redis — Redis explicitement différé, à n'ajouter que si le volume ou les performances le justifient réellement (pas par anticipation).
+- Portée minimale à couvrir : tentatives de connexion répétées ; essais répétés sur un même compte ; essais répétés depuis une même adresse/origine lorsque c'est techniquement possible ; résistance au contournement par changement d'identifiant (un attaquant changeant d'email à chaque tentative ne doit pas échapper à la limite par IP/origine).
+- Mécanisme **atomique** : même patron de conception que le throttle déjà en production dans ce projet pour les alertes CRON (`Tenant.lastAlertCheckAt`, `UPDATE … WHERE` conditionnel via `prisma.tenant.updateMany`, `src/lib/scheduled-tasks.ts`, section 31) — une seule instruction Postgres atomique, jamais un compteur en mémoire (`Map`/`Set`) qui ne protégerait qu'une seule instance.
+- **Compatible nativement avec un déploiement multi-instance futur** de par ce choix (contrairement au verrou en mémoire du reset de données, section 17, qui reste à corriger séparément avant un tel déploiement — voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 21).
+
+**Non fait par cette tâche documentaire** : aucun code écrit, aucune table/colonne ajoutée, aucune migration créée. Cette section documente une exigence à implémenter, pas un état déjà atteint.
+
+## 34. Affichage de la chaîne contractuelle et soldes — gate de permission corrigé, IDOR sur les contrats liés (Sprint technique 2, 2026-08-24)
+
+Voir DOMAINRULES.md section 60 pour le détail métier complet (`getLocationChain`/`getLocationBalance`, `src/lib/location-chains.ts`).
+
+**Écart de contrôle d'accès trouvé et corrigé pendant ce sprint** (découvert en préparant l'affichage de la chaîne, pas par un audit dédié — même format que les sections 23-30) :
+
+| # | Faille/incohérence | Sévérité | Correctif |
+|---|---|---|---|
+| 1 | `/dashboard/locations/[id]/page.tsx` ne vérifiait jusqu'ici que l'accès à l'agence (`canAccessLocationAgency`), jamais la permission `locations.view` — contrairement à `GET /api/locations/[id]` et à `/dashboard/locations` (liste), qui vérifient les deux. Un `MEMBER` sans `locations.view` mais avec un accès `UserAgency` à l'agence du contrat pouvait consulter la fiche complète d'un contrat (dates, véhicule, client, montants) malgré l'API et la liste le lui refusant — incohérence de contrôle d'accès entre deux couches de la même fonctionnalité (même famille que le point 2 de la section 27, Sprint 18) | Moyenne | `can(user, "locations.view")` ajouté en tête de la page, `notFound()` sinon — même garde que l'API et la liste |
+
+**IDOR sur les contrats liés d'une chaîne — conçu et vérifié dans ce sprint** : `getLocationChain` ne charge jamais un contrat lié (parent, racine, prolongation directe) par son seul identifiant — chaque contrat de la chaîne, à l'exception du contrat courant déjà vérifié par l'appelant, est revérifié individuellement (`canAccessLocationAgency`) avant d'être inclus dans la réponse. Un contrat inaccessible (agence hors du périmètre de l'utilisateur) est exclu du détail — jamais son numéro, ses dates, son véhicule, son agence ou ses montants ne sont exposés, que ce soit sur `/dashboard/locations/[id]` ou sur `GET /api/locations/[id]/chain` — seul un compte agrégé (`hiddenCount`) signale que la chaîne réelle est plus longue que ce qui est affiché, sans jamais identifier lequel de ses maillons est masqué. Le solde consolidé de la chaîne n'additionne que les contrats effectivement listés (jamais un contrat masqué), pour ne jamais laisser deviner par différence le solde d'un contrat auquel l'utilisateur n'a pas accès. Vérifié par 6 tests dédiés (`src/__tests__/location-chain-balance.test.ts`, describe « isolation tenant »/« isolation agence » et le test HTML « n'expose aucune donnée d'un contrat lié d'une agence non accessible »).
+
+**`GET /api/locations/[id]/chain` (nouvelle route)** : même garde exactement que `GET /api/locations/[id]` (`locations.view` puis `canAccessLocationAgency`, tenant + agence de rattachement ou de retour) — aucune nouvelle surface d'autorisation introduite, réutilise les primitives déjà auditées (`src/lib/authz.ts`).
+
+Aucune nouvelle faille d'isolation tenant/agence trouvée par ailleurs — l'isolation tenant repose sur le filtre `tenantId` de la requête (`WHERE tenantId = ..., rootLocationId = rootId`), combiné à l'unicité globale des identifiants `cuid` : aucun contrat d'un autre tenant ne peut jamais correspondre à `rootLocationId`, vérifié par test.
+
+## 35. Correction du soft 404 sous `/dashboard/*` — garde de route centralisé (2026-08-24)
+
+**Statut : corrigé et vérifié pour l'intégralité des routes concernées identifiées — aucune route laissée en soft 404.** Voir ARCHITECTURE.md section 24 pour le rôle étendu de `proxy.ts` et DOMAINRULES.md section 64 pour le détail métier complet (registre exhaustif, tests, décisions d'ingénierie).
+
+### Le problème
+
+`notFound()`/`redirect()` invoqués depuis une page `/dashboard/*` enveloppée par un `loading.tsx` ancêtre (`dashboard/loading.tsx`, présent à la racine de toute la section, ou un `loading.tsx` de liste plus spécifique) ne peuvent plus changer le code HTTP une fois le flux de réponse démarré — Next.js documente ce comportement explicitement (`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/loading.md`, section « Status Codes » : *« When streaming, a 200 status code will be returned [...] Because the response headers have already been sent to the client, the status code of the response cannot be updated »*). Un utilisateur refusé recevait donc un statut `200` (avec `<meta name="robots" content="noindex">` et le contenu réel substitué) au lieu d'un `404`/redirection HTTP réels — un « soft 404 »/« soft redirect ». Confirmé caractéristique du framework (streaming SSR de l'App Router), pas un bug applicatif : 23 pages sous `/dashboard/*` utilisaient `notFound()`, toutes structurellement concernées, plus 2 pages ADMIN-only utilisant `redirect()` pour le même type de décision d'accès.
+
+### La correction — garde de route centralisé, exécuté depuis `proxy`
+
+`proxy.ts` s'exécute avant tout rendu de page (avant toute frontière `Suspense`), donc avant que le streaming ne démarre — seul point où un vrai code HTTP peut encore être choisi. Point technique déterminant, propre à cette version de Next.js : *« Proxy defaults to using the Node.js runtime »* (depuis `v16.0.0`, contrairement aux versions antérieures où le middleware tournait sur un runtime Edge incompatible avec Prisma) — `proxy` peut donc appeler directement les mêmes fonctions déjà utilisées par chaque page/route API (`getSessionUser`, `can`, `getXById`, `canAccessAgency`/`canAccessLocationAgency`/`canAccessReservationAgencies`/`canEditReservationAgency`), sans réécrire la moindre règle métier.
+
+Nouveau module **`src/lib/route-guards.ts`** — registre de 23 motifs de route couvrant exhaustivement :
+
+| Catégorie | Routes couvertes |
+|---|---|
+| Fiches détail par identifiant | agences, clients, factures, factures de dégâts, locations (+ `/return`), réservations (+ `/convert`, `/edit`) , véhicules |
+| ADMIN-only (contrôle de rôle strict, jamais `can()`) | groupes de permissions, tenants, utilisateurs (+ `/permissions`) |
+| Création/import (permission seule) | agencies/new, clients/new, invoices/new, locations/new, maintenances/new, reservations/new, reservations/import, vehicle-transfers/new, vehicle-trips/new, vehicles/new |
+
+Chaque motif est ancré (`^...$`), avec exclusion explicite par lookahead négatif des segments littéraux voisins (`new`, `import`) pour ne jamais confondre un identifiant réel avec un nom de sous-route — vérifié par test unitaire des expressions régulières et par test HTTP réel (aucune collision, aucun faux positif/négatif sur les 25+ chemins testés, y compris `/dashboard/locations` sans suffixe, segments encodés, identifiants malformés).
+
+**Comportement produit** :
+- Ressource inexistante, autre tenant, autre agence, permission absente → **404 HTTP réel**, corps HTML neutre (`renderDashboardNotFoundHtml()`), identique dans tous les cas — jamais de distinction entre « n'existe pas » et « accès refusé » (principe IDOR déjà en vigueur, section 7).
+- Page réservée ADMIN dont le comportement existant était `redirect()` (`permission-groups/[id]`, `users/[id]/permissions`) → **redirection HTTP 307 réelle** vers `/dashboard`, jamais de contenu protégé rendu avant.
+- Page réservée ADMIN dont le comportement existant était `notFound()` (`users/[id]`) → 404, comportement de la page reproduit fidèlement, jamais unifié avec le cas ci-dessus (aucun changement de comportement fonctionnel, uniquement le code HTTP).
+- Erreur technique inattendue pendant l'évaluation du garde (panne base de données, etc.) → **jamais transformée en 404** : journalisée (`console.error`), la requête continue vers la page, qui gère l'erreur comme aujourd'hui.
+- Cas non couvert par le registre (pages liste, routes hors `/dashboard/*`) → inchangé, aucune régression possible.
+
+### Corps de la réponse 404 — options évaluées
+
+Réécriture vers une page/route dédiée (écartée — dépend de la résolution interne non documentée comme stable du routeur pour rester synchrone) ; page 404 existante (aucune dans le projet). Retenu : réponse HTTP construite directement par `proxy` (pattern officiellement documenté, « Producing a response »), reprenant les valeurs oklch clair/sombre exactes de `globals.css` (bascule `prefers-color-scheme`, la feuille de styles compilée ayant un nom haché à chaque build donc non fiable à référencer depuis `proxy`), `lang="fr"`, `<meta name="robots" content="noindex">`, viewport responsive, lien de retour vers `/dashboard`. Contenu volontairement identique quel que soit le motif de blocage — aucune donnée de la requête (numéro de contrat, identifiant client, tenant, agence) n'apparaît jamais dans le corps.
+
+### Distinction autorisation / navigation métier — jamais dupliquée dans `proxy`
+
+Les `redirect()` de `reservations/[id]/convert`/`edit` liés à `reservation.status` (déjà terminal — réservation déjà convertie/non éditable) sont des navigations de confort **après** un contrôle d'accès déjà validé plus haut dans la même fonction (lui-même couvert par le garde centralisé, testé). Ce ne sont pas des décisions d'autorisation — aucune fuite de données puisque rien n'est chargé/affiché avant. Les reproduire dans `proxy` dupliquerait une règle métier changeante (`status`) dans une couche où ce projet a explicitement choisi de ne jamais le faire (« n'y duplique pas des règles métier fragiles »). Laissés inchangés, documentés explicitement plutôt qu'ignorés silencieusement.
+
+### `proxy` n'est jamais la seule protection
+
+Chaque page et chaque route API conserve intégralement sa propre vérification (authentification, permission, tenant, agence) — le garde centralisé est additif, jamais un remplacement (conforme à l'avertissement explicite de la documentation Next.js elle-même : *« Always verify authentication and authorization inside each Server Function rather than relying on Proxy alone »*). Aucun état stocké dans `proxy` (pas de cache, pas de compteur). Un filtre synchrone (`matchesDashboardRouteGuard`, sans accès base) précède tout appel à `getSessionUser()` — la charge base de données supplémentaire reste strictement limitée aux ~23 routes réellement gardées, jamais aux ~27 autres pages `/dashboard/*` non couvertes par ce registre.
+
+### Incohérences de permission `.view` découvertes et corrigées pendant l'audit exhaustif de ce sprint
+
+Sans rapport direct avec le mécanisme HTTP ci-dessus, mais découvertes en inspectant systématiquement chaque page `[id]` pour construire le registre — même famille que le correctif `locations.view` de la section 34 (Sprint technique 2) :
+
+| # | Faille/incohérence | Sévérité | Correctif |
+|---|---|---|---|
+| 1 | `clients/[id]/page.tsx` ne vérifiait jamais `clients.view`, contrairement à `/dashboard/clients` (liste) et `GET /api/clients/[id]` | Moyenne | `can(user, "clients.view")` ajouté |
+| 2 | `vehicles/[id]/page.tsx` ne vérifiait jamais `vehicles.view`, contrairement à `/dashboard/vehicles` (liste) et `GET /api/vehicles/[id]` | Moyenne | `can(user, "vehicles.view")` ajouté |
+| 3 | `agencies/[id]/page.tsx` ne vérifiait jamais `agencies.view`, contrairement à `/dashboard/agencies` (liste) et `GET /api/agencies/[id]` | Moyenne | `can(user, "agencies.view")` ajouté |
+| 4 | `reservations/new/page.tsx` était un Client Component pur, **sans aucune garde serveur** (contrairement aux 8 autres pages de création et à `reservations/import`, déjà corrigée pour la même raison au Sprint 18) — le formulaire s'affichait à tout utilisateur authentifié quel que soit son rôle, l'échec n'intervenant qu'à la soumission (`403` de `POST /api/reservations`) | Moyenne | Scindée en Server Component (`can(user, "reservations.create")` + `notFound()`) + Client Component (`NewReservationForm.tsx`), même découpage que `import`/`convert`/`edit` |
+
+Ces 4 gates sont désormais également couverts par le registre centralisé (défense en profondeur : la page ET le garde `proxy` vérifient tous les deux).
+
+Aucune nouvelle faille d'isolation tenant/agence ni IDOR trouvée au-delà de ces points — l'audit a couvert exhaustivement `src/app/dashboard/**/page.tsx` (50 fichiers), toute occurrence de `notFound(`/`redirect(` (35 occurrences sur 23 fichiers), tout `loading.tsx`/`error.tsx`/`not-found.tsx`/`template.tsx`/`generateMetadata` (aucun `error.tsx`/`not-found.tsx`/`template.tsx`/`generateMetadata` dans le projet), toute Server Function (`"use server"`, aucune dans le projet — toutes les mutations passent par des routes API).

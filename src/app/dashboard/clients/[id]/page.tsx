@@ -25,6 +25,14 @@ export default async function ClientDetailPage({ params }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
+  // Correctif sprint soft 404 (2026-08-24) : gate manquant découvert lors de l'audit exhaustif
+  // — cette page ne vérifiait jusqu'ici que l'existence tenant-scopée du client, jamais
+  // clients.view, contrairement à /dashboard/clients (liste) et GET /api/clients/[id], qui
+  // l'exigent tous les deux. Même correctif que locations/[id] (Sprint technique 2).
+  if (!(await can(user, "clients.view"))) {
+    notFound();
+  }
+
   const client = await getClientById(user.tenantId, id);
   if (!client) {
     notFound();

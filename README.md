@@ -10,7 +10,7 @@ Fournir une plateforme permettant à des sociétés de location de véhicules de
 
 ## Statut actuel
 
-**Sprint 10 — MVP production-ready (au sens fonctionnel).** Le projet dispose désormais de l'authentification multi-tenant, de l'autorisation serveur (tenant/agence/rôle), et des modules métier véhicules, locations, clients, facturation, paiements, rapports, maintenance, alertes, gestion des utilisateurs/invitations et journal d'audit exhaustif — voir [HANDOFF.md](./HANDOFF.md) pour l'état détaillé sprint par sprint et les points encore **À DÉCIDER** avant un déploiement en production réelle (aucun environnement de staging/production, aucune stratégie de sauvegarde ou de rate-limiting définie à ce jour).
+Le projet dispose de l'authentification multi-tenant, de l'autorisation serveur (tenant/agence/rôle), et de nombreux modules métier (véhicules, locations, clients, facturation, paiements, rapports, maintenance, alertes, gestion des utilisateurs/invitations, journal d'audit exhaustif, avoirs) — voir [HANDOFF.md](./HANDOFF.md) pour l'état détaillé sprint par sprint. Aucun environnement de staging/production n'existe à ce jour ; le cadrage de l'architecture de production cible (hébergeur Render ou Railway à départager, budget, sauvegardes, rate limiting) est validé mais **non implémenté** — voir [ARCHITECTURE.md](./ARCHITECTURE.md) et [SECURITY.md](./SECURITY.md) pour le détail, et [HANDOFF.md](./HANDOFF.md) section 8/9 pour les points encore **À DÉCIDER** avant un déploiement réel.
 
 ## Stack technique
 

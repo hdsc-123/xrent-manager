@@ -299,6 +299,16 @@ enum LocationStatus {
   CANCELLED
 }
 
+// Sprint technique 1 (DOMAINRULES.md section 60) : chaînage de contrats liés — une prolongation
+// est un nouveau contrat (Location) à part entière, jamais une modification du contrat existant
+// (distinct d'extendReturnDate, DOMAINRULES.md section 54, non remplacé par ce champ). INITIAL
+// = contrat d'origine (issu d'une réservation ou créé directement) ; EXTENSION = prolongation
+// d'un contrat déjà ACTIVE (voir Location.parentLocationId/rootLocationId ci-dessous).
+enum ContractKind {
+  INITIAL
+  EXTENSION
+}
+
 model Location {
   id              String         @id @default(cuid())
   tenantId        String
@@ -343,6 +353,23 @@ model Location {
   // modifiables uniquement par un titulaire de locations.return_time.edit — voir POST
   // .../return (non codé à cette étape, DOMAINRULES.md section 32).
   actualReturnAt  DateTime?
+  // Sprint technique 1 (DOMAINRULES.md section 60) : INITIAL par défaut — toute Location déjà
+  // existante au moment de la migration *est* déjà conceptuellement un contrat initial, backfill
+  // sans ambiguïté (même raisonnement que Invoice.type au Sprint 13E tâche 3).
+  contractKind ContractKind @default(INITIAL)
+  // Contrat directement précédent dans la chaîne — @unique : un contrat ne peut avoir qu'un seul
+  // enfant direct (chaîne strictement linéaire, aucun embranchement, DOMAINRULES.md section 60
+  // règle 3). Null pour un contrat INITIAL. Jamais modifié après création (le contrat parent
+  // n'est jamais réécrit par la création d'une prolongation).
+  parentLocationId String? @unique
+  // Contrat initial de la chaîne. Auto-référencé sur son propre id pour un contrat INITIAL
+  // (décision explicite du propriétaire du projet — distinct du patron Invoice.rootInvoiceId,
+  // qui reste null sur la facture racine elle-même) : permet une seule requête d'égalité
+  // (`WHERE rootLocationId = X`) pour retrouver toute la chaîne, y compris son propre contrat
+  // racine, sans cas particulier. Renseigné par un second appel dans la même transaction que la
+  // création (id non connu avant l'insertion) — voir contrainte CHECK en migration pour la
+  // fenêtre transitoire où il est encore `NULL` juste après l'INSERT.
+  rootLocationId   String?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
@@ -355,6 +382,16 @@ model Location {
   invoices       Invoice[]
   damages        Damage[]
   damageInvoices DamageInvoice[]
+  // Chaînage de contrats liés (Sprint technique 1, DOMAINRULES.md section 60) — deux relations
+  // auto-référentielles distinctes, même patron que Invoice.replacesInvoiceId/rootInvoiceId
+  // (Sprint 26E) : parentLocation/childLocation pour le lien direct (immédiat), root/extensions
+  // pour un accès direct à la racine et à tous les contrats de la chaîne sans traversée
+  // récursive. onDelete: Restrict (comme Payment.invoice, Sprint 33) — un contrat ayant un
+  // enfant ou un descendant ne doit jamais pouvoir être supprimé silencieusement sous eux.
+  parentLocation Location?  @relation("LocationExtensionChain", fields: [parentLocationId], references: [id], onDelete: Restrict)
+  childLocation  Location?  @relation("LocationExtensionChain")
+  root           Location?  @relation("LocationExtensionRoot", fields: [rootLocationId], references: [id], onDelete: Restrict)
+  descendants    Location[] @relation("LocationExtensionRoot")
 
   @@unique([tenantId, contractNumber])
   @@index([tenantId])
@@ -363,6 +400,8 @@ model Location {
   @@index([vehicleId])
   @@index([clientId])
   @@index([secondDriverId])
+  @@index([parentLocationId])
+  @@index([rootLocationId])
   @@index([status])
   @@index([startDate, endDate])
 }

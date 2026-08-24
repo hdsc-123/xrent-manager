@@ -13,6 +13,14 @@ export default async function AgencyDetailPage({ params }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
+  // Correctif sprint soft 404 (2026-08-24) : gate manquant découvert lors de l'audit exhaustif
+  // — cette page ne vérifiait jusqu'ici que l'accès à l'agence, jamais agencies.view,
+  // contrairement à /dashboard/agencies (liste) et GET /api/agencies/[id], qui l'exigent tous
+  // les deux. Même correctif que locations/[id] (Sprint technique 2).
+  if (!(await can(user, "agencies.view"))) {
+    notFound();
+  }
+
   const agency = await getAgencyById(user.tenantId, id);
   if (!agency || !(await canAccessAgency(user, agency.id))) {
     notFound();

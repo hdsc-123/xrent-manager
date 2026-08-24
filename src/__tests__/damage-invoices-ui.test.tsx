@@ -209,7 +209,11 @@ describe("/dashboard/damage-invoices/[id] — détail", () => {
     createdTenantIds.push(adminB.tenantId);
 
     const response = await apiFetch(`/dashboard/damage-invoices/${invoiceId}`, { headers: { Cookie: adminB.sessionCookie } });
-    expect(response.status).toBe(200);
+    // Correctif sprint soft 404 (2026-08-24) : /dashboard/damage-invoices/[id] est désormais
+    // couverte par le garde de route centralisé (src/lib/route-guards.ts, exécuté depuis
+    // src/proxy.ts avant toute frontière Suspense) — vrai statut HTTP 404, plus un "soft 404"
+    // (200 + noindex). Voir SECURITY.md section 35 et DOMAINRULES.md section 64.
+    expect(response.status).toBe(404);
     const html = await response.text();
     expect(html).toContain('name="robots" content="noindex"');
   });

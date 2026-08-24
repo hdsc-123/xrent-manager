@@ -199,11 +199,11 @@ describe("Sprint 18 — /dashboard/reservations/import : garde serveur + reserva
     const response = await apiFetch("/dashboard/reservations/import", {
       headers: { Cookie: comptaMember.sessionCookie },
     });
-    // notFound() dans un Server Component de cette version de Next.js (même contexte de
-    // streaming que redirect(), voir le test /dashboard/users ci-dessus) renvoie un 200 avec
-    // l'UI "not found" (balise <meta name="robots" content="noindex">) plutôt qu'un vrai 404
-    // HTTP brut, une fois que le shell du dashboard a déjà commencé à streamer.
-    expect(response.status).toBe(200);
+    // Correctif sprint soft 404 (2026-08-24) : /dashboard/reservations/import est désormais
+    // couverte par le garde de route centralisé (src/lib/route-guards.ts, exécuté depuis
+    // src/proxy.ts avant toute frontière Suspense) — vrai statut HTTP 404, plus un "soft 404"
+    // (200 + noindex). Voir SECURITY.md section 35 et DOMAINRULES.md section 64.
+    expect(response.status).toBe(404);
     const html = await response.text();
     expect(html).toContain('name="robots" content="noindex"');
     expect(html).not.toContain("Importer des réservations (Excel)");

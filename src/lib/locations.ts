@@ -84,7 +84,12 @@ function toUtcDateOnly(date: Date): number {
  * section 44) : un contrat PENDING dont la date de retour est repoussée après création n'est
  * pas revérifié par cette règle.
  */
-function assertDriverLicenseCoversReturn(client: Client, endDate: Date): void {
+// Sprint technique 1 : export ajouté pour être réutilisée telle quelle par
+// src/lib/location-chains.ts — une prolongation repousse la date de retour, la validité du
+// permis jusqu'à cette nouvelle date doit donc être revérifiée (elle ne l'était, jusqu'ici, qu'à
+// la création du contrat initial). Comportement inchangé pour tout appelant existant de ce
+// fichier.
+export function assertDriverLicenseCoversReturn(client: Client, endDate: Date): void {
   if (!client.licenseExpiryDate) {
     throw new MissingDriverLicenseExpiryError();
   }
@@ -218,7 +223,10 @@ const VEHICLE_STATUSES_BLOCKING_LOCATION: VehicleStatus[] = ["MAINTENANCE", "TRA
  * créée dont le véhicule change de statut ensuite (aucune fonction ne parcourt les Location
  * existantes pour les annuler/suspendre) — comportement délibéré, DOMAINRULES.md section 30.
  */
-function assertVehicleStatusAllowsLocation(vehicle: Vehicle): void {
+// Sprint technique 1 (DOMAINRULES.md section 60) : export ajouté pour être réutilisée telle
+// quelle par src/lib/location-chains.ts (changement de véhicule lors d'une prolongation) —
+// aucun changement de comportement pour les appelants existants de ce fichier.
+export function assertVehicleStatusAllowsLocation(vehicle: Vehicle): void {
   if (VEHICLE_STATUSES_BLOCKING_LOCATION.includes(vehicle.status)) {
     throw new VehicleUnavailableForLocationError(vehicle.status);
   }
@@ -610,7 +618,9 @@ const MAX_CONTRACT_NUMBER_ATTEMPTS = CONTRACT_NUMBER_SAVEPOINTS.length;
  * unique de `Location` (voir prisma/schema.prisma) — avant de la traiter comme une collision de
  * numéro de contrat à réessayer. Toute autre erreur (y compris un autre `P2002` improbable)
  * n'est jamais réinterprétée comme une simple collision : elle se propage telle quelle. */
-function isContractNumberCollision(error: unknown): boolean {
+// Sprint technique 1 : export ajouté pour être réutilisée telle quelle par
+// src/lib/location-chains.ts (même réessai de numérotation, même contrainte unique visée).
+export function isContractNumberCollision(error: unknown): boolean {
   if (!isUniqueConstraintError(error)) {
     return false;
   }
@@ -758,7 +768,12 @@ async function createLocationLocked(data: CreateLocationInput, tx: Prisma.Transa
         },
       });
       await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${savepoint}`);
-      return location;
+      // Sprint technique 1 (DOMAINRULES.md section 60) : un contrat INITIAL est sa propre racine
+      // de chaîne (rootLocationId auto-référencé) — id inconnu avant l'INSERT ci-dessus, donc
+      // renseigné par un second appel dans la même transaction plutôt qu'à la création (même
+      // principe que le SAVEPOINT ci-dessus : aucune écriture hors de cette transaction). Ne
+      // change rien pour un appelant existant au-delà de ce champ supplémentaire.
+      return tx.location.update({ where: { id: location.id }, data: { rootLocationId: location.id } });
     } catch (error) {
       // Toute erreur qui n'est pas précisément une collision de numéro de contrat se propage
       // telle quelle, sans y toucher : la transaction principale (partagée ou non) sera

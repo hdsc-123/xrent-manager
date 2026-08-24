@@ -73,6 +73,14 @@ export default async function VehicleDetailPage({ params }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
 
+  // Correctif sprint soft 404 (2026-08-24) : gate manquant découvert lors de l'audit exhaustif
+  // — cette page ne vérifiait jusqu'ici que l'accès à l'agence, jamais vehicles.view,
+  // contrairement à /dashboard/vehicles (liste) et GET /api/vehicles/[id], qui l'exigent tous
+  // les deux. Même correctif que locations/[id] (Sprint technique 2).
+  if (!(await can(user, "vehicles.view"))) {
+    notFound();
+  }
+
   const vehicle = await getVehicleById(user.tenantId, id);
   if (!vehicle || !(await canAccessAgency(user, vehicle.agencyId))) {
     notFound();

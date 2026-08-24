@@ -79,13 +79,85 @@ Le projet utilise l'App Router de Next.js (dossier `src/app`), déjà en place p
 ## 14. Environnements : développement, test, staging et production
 
 - **Décision validée (Sprint 1)** : les environnements développement, test, staging et production devront être strictement séparés.
-- **Développement** : environnement actuel, exécuté localement via `npm run dev`.
-- **Test** : aucun environnement de test dédié n'existe à ce jour ; aucune stratégie de test automatisé n'est encore en place (voir [TESTREPORT.md](./TESTREPORT.md)).
+- **Développement** : environnement actuel, exécuté localement via `npm run dev` (base `xrent_dev`).
+- **Test** : base dédiée `xrent_test`, distincte de `xrent_dev` (voir [TESTREPORT.md](./TESTREPORT.md)).
 - **Staging** : non défini à ce jour. Hébergeur et configuration restent **À DÉCIDER**.
-- **Production** : non défini à ce jour. Hébergeur, domaine, gestionnaire de secrets et stratégie de sauvegarde restent **À DÉCIDER**.
+- **Production** : **cadrage validé par le propriétaire du projet (2026-08-24), aucun environnement encore réellement créé.** Hébergeur cible, base de données, secrets et sauvegardes de production doivent être **strictement séparés** de `xrent_dev`/`xrent_test` — aucune variable ni base de développement/test ne doit être réutilisée en production. Détail du cadrage : sections 16 à 21 ci-dessous.
 
-Aucun de ces environnements (hormis le développement local) n'est actuellement configuré ou déployé.
+Aucun de ces environnements (hormis le développement local) n'est actuellement configuré ou déployé — le cadrage ci-dessous fixe des décisions à appliquer lors du déploiement, pas un état déjà en place.
 
 ## 15. Migrations de production
 
-Prisma étant désormais retenu comme ORM cible (section 7, **non installé à ce jour**), les migrations de production devront, lors de son introduction effective, être appliquées de façon contrôlée et non interactive, via `npx prisma migrate deploy`, jamais via une commande de migration interactive ou destructive en environnement de production.
+- Prisma est déjà installé et utilisé en développement/test (section 7).
+- **Décision validée (cadrage 2026-08-24)** : les migrations de production doivent utiliser exclusivement `npx prisma migrate deploy`, exécuté de façon contrôlée et non interactive, en étape de déploiement séparée (jamais dans un build concurrent non maîtrisé).
+- **Interdit en production, sans exception** : `npx prisma migrate dev`, `npx prisma db push`, `npx prisma db seed`.
+- Cette procédure est **documentée ici comme exigence à respecter lors du déploiement** ; elle n'a pas été exécutée dans le cadre de ce cadrage documentaire, conformément à la contrainte de ne lancer aucune migration.
+
+## 16. Hébergement de production — options validées, choix final non arrêté
+
+**Statut : options validées, choix final non arrêté** (décision de périmètre validée par le propriétaire du projet, 2026-08-24) : l'hébergeur cible est **Render ou Railway** — catégorie PaaS à conteneur long-running. **Aucun des deux n'est retenu de façon définitive** : le choix final doit être départagé par une comparaison documentée portant sur le prix réel, la région disponible, la latence depuis le Maroc, la qualité du PostgreSQL managé, les sauvegardes proposées, la facilité de restauration, la gestion du CRON, les limites de l'offre retenue, et la compatibilité avec le budget maximal (section 19). Cette comparaison reste à réaliser et à documenter avant toute création d'environnement.
+
+- **Vercel** : écarté pour le moment (architecture serverless incompatible en l'état avec le verrou en mémoire du reset de données — section 21 — et nécessiterait un store externe pour le rate limiting dès le premier jour). Peut être reconsidéré sur décision explicite ultérieure du propriétaire du projet, pas par défaut.
+- **VPS administré manuellement** : écarté pour le lancement (charge opérationnelle disproportionnée à ce stade : patching OS, TLS, supervision, sauvegardes toutes à la charge de l'équipe).
+- **Application** : processus Next.js long-running (`next start`), **une seule instance au lancement**, sans scaling horizontal prévu au démarrage. L'architecture doit rester compatible avec plusieurs instances futures — voir section 21 pour les mécanismes qui devront être adaptés avant ce passage.
+
+## 17. Région d'hébergement et localisation des données
+
+**Priorité au Maroc** si une offre fiable, performante et correctement sauvegardée y est disponible chez l'hébergeur retenu (section 16). À défaut, une région de l'Union européenne suffisamment proche du Maroc. Le choix final doit prendre en compte la latence depuis le Maroc, la localisation réelle des données, la fiabilité de la région, la disponibilité de sauvegardes et de restauration dans cette région, le coût, et les obligations légales applicables (dépend de la juridiction cible — voir [DOMAINRULES.md](./DOMAINRULES.md), point encore ouvert au niveau juridique/comptable).
+
+## 18. Base de données de production
+
+- PostgreSQL **managé**, jamais installé manuellement sur le même serveur que l'application.
+- Séparation stricte development/test/production : trois bases distinctes, trois jeux de secrets distincts (section 20).
+- Procédure de migration : voir section 15.
+
+## 19. Tâches planifiées (CRON) en production
+
+- Utiliser le planificateur CRON natif de la plateforme retenue (section 16), aucune configuration réelle créée à ce stade.
+- Route déjà implémentée et vérifiée dans le code : `POST /api/tasks/scheduled-alerts` (`src/app/api/tasks/scheduled-alerts/route.ts`), authentification par secret partagé `Authorization: Bearer <CRON_SECRET>` (comparaison à temps constant, échec fermé si le secret n'est pas configuré côté serveur).
+- Idempotence et protection contre les doubles exécutions déjà garanties côté code par un verrou atomique PostgreSQL (`Tenant.lastAlertCheckAt`, `src/lib/scheduled-tasks.ts`) — pas un mécanisme à construire, déjà en place et testé.
+- À prévoir lors du déploiement (non fait à ce stade) : visibilité des échecs dans les logs de la plateforme et, si possible, une alerte dédiée en cas d'échec récurrent de cette route.
+- `CRON_SECRET` de production : propre à l'environnement de production, jamais réutilisé depuis `.env`/`.env.test` — voir section 20.
+
+## 20. Secrets de production
+
+Trois secrets identifiés dans le code : `DATABASE_URL`, `AUTH_SECRET`, `CRON_SECRET`. Règles validées (cadrage 2026-08-24) :
+
+- valeurs de production distinctes de développement et de test, sans exception ;
+- aucun secret dans Git (déjà garanti par `.gitignore` sur `.env*`) ;
+- aucun secret dans les logs applicatifs (voir [SECURITY.md](./SECURITY.md) section 12) ;
+- rotation documentée (voir [SECURITY.md](./SECURITY.md) pour la procédure) ;
+- accès limité aux personnes autorisées ;
+- store de secrets : celui natif de la plateforme d'hébergement retenue (section 16), suffisant à ce stade — un gestionnaire externe dédié reste une option à évaluer plus tard si des exigences de conformité l'imposent, non nécessaire pour démarrer.
+
+## 21. Sauvegardes, restauration et instance unique — exigences à respecter lors du déploiement
+
+**Aucune sauvegarde n'est configurée à ce jour — cette section documente des exigences à appliquer lors du déploiement, pas un état déjà en place.**
+
+- Sauvegardes automatiques **quotidiennes**, stockées indépendamment du serveur applicatif (jamais uniquement dans le conteneur/la base colocalisée).
+- Rétention des sauvegardes : **30 jours minimum**. Cette rétention concerne uniquement les copies de restauration techniques — elle est **indépendante** de la politique de conservation des données métier elles-mêmes (clients, contrats, factures, paiements, audits), qui suit sa propre règle : voir [DOMAINRULES.md](./DOMAINRULES.md), conservation ≥ un exercice comptable complet. Aucune donnée de production active n'est supprimée après 30 jours du seul fait de cette politique de sauvegarde.
+- **Restauration testée obligatoirement avant le lancement public**, puis testée périodiquement ensuite (fréquence à fixer par le propriétaire du projet).
+- RPO cible provisoire : **24 heures maximum**. RTO cible provisoire : **4 heures maximum**. Ces deux valeurs devront être confirmées selon les possibilités réelles de l'hébergeur finalement retenu (section 16) — elles ne sont pas encore garanties par un fournisseur précis.
+- **Instance unique au lancement** : aucun scaling horizontal prévu au démarrage, mais l'architecture doit rester compatible avec plusieurs instances futures. **Mécanisme identifié dans le code comme reposant sur la mémoire du processus, à corriger avant toute activation multi-instance** : le verrou anti-double-exécution du reset de données (`tenantsResetting`, `src/lib/data-reset.ts`) — déjà documenté comme limite connue dans [SECURITY.md](./SECURITY.md) section 17. **Non corrigé dans le cadre de cette tâche documentaire** (signalé comme point technique à traiter, conformément au cadrage). À l'inverse, le throttle des tâches CRON d'alertes (section 19) utilise déjà un verrou atomique PostgreSQL et n'a pas besoin d'être revu pour un déploiement multi-instance.
+- **Déploiement progressif retenu** : configuration de l'environnement → secrets → base PostgreSQL managée → activation des sauvegardes → test de restauration → déploiement de l'application → migrations contrôlées (`prisma migrate deploy`) → vérification d'un endpoint de santé (`/api/health`, **à créer, absent du code à ce jour**) → **pilote interne dans une seule agence** → correction des problèmes observés → extension progressive aux autres agences. Le déploiement public ou l'usage opérationnel généralisé ne doit pas commencer avant la validation du pilote interne.
+
+## 22. Budget infrastructure
+
+**Budget maximum validé : 60 € par mois**, pour l'ensemble infrastructure + services indispensables. Composition indicative : application PaaS long-running + PostgreSQL managé d'entrée de gamme + sauvegardes incluses ou peu coûteuses + monitoring simple. Explicitement exclus au départ, sauf besoin démontré : Redis, APM premium, architecture multi-instance, VPS administré manuellement. Toute dépense prévisible dépassant ce plafond doit être signalée et validée par le propriétaire du projet avant adoption d'un nouveau service.
+
+## 23. Dimensionnement cible (voir aussi [DOMAINRULES.md](./DOMAINRULES.md))
+
+Déploiement initial prévu pour environ 5 agences (une par ville), ~200 véhicules pour le tenant, ~16 à 18 utilisateurs, volumétrie 10-30 réservations/jour/agence (50-150 opérations/jour à 5 agences). L'architecture (instance unique, PostgreSQL managé, rate limiting Postgres) est jugée par le propriétaire du projet comme suffisante pour ce dimensionnement, avec évolution possible vers 10-15 agences sans refonte immédiate. Aucun mode offline requis (connexion stable + secours 4G/5G supposés disponibles pour chaque utilisateur/agence).
+
+## 24. `proxy.ts` — rôle étendu : garde de route centralisé pour `/dashboard/*` (correctif soft 404, 2026-08-24)
+
+**Décision technique validée et implémentée** — précise la section 6 ci-dessus (revalidation systématique côté serveur) pour un cas particulier propre au rendu streamé de l'App Router : `src/proxy.ts` (anciennement `middleware.ts`, renommé dans cette version de Next.js) conservait jusqu'ici un rôle strictement limité à une vérification "optimiste" de session (redirection vers `/login` si non authentifié, lecture du JWT côté cookie uniquement, aucun accès base de données). Il porte désormais, en plus, un **registre centralisé de gardes de route** (`src/lib/route-guards.ts`) qui revérifie, avant tout rendu de page, l'existence d'une ressource, l'appartenance au tenant, l'accès à l'agence et la permission requise — pour les seules pages `/dashboard/*` adressées par identifiant (`[id]`) ou par permission de création, dont la liste exhaustive vit dans ce registre.
+
+**Raison technique** : sous cette version de Next.js, `notFound()`/`redirect()` invoqués depuis une page enveloppée par un `loading.tsx` ancêtre (`dashboard/loading.tsx` et les `loading.tsx` de chaque liste) ne peuvent plus changer le code HTTP une fois le flux de réponse démarré (statut `200` déjà émis) — voir SECURITY.md section 35 et DOMAINRULES.md section 64 pour l'analyse complète et la liste des routes couvertes. `proxy` s'exécutant avant toute frontière `Suspense`, c'est le seul point où un vrai code HTTP (`404`/redirection) peut encore être choisi.
+
+**Garanties de conception, applicables à toute évolution future de ce mécanisme** :
+- Runtime Node.js (par défaut dans cette version de `proxy`, vérifié) — Prisma et les mêmes fonctions déjà utilisées par chaque page/route API sont directement réutilisées, aucune règle métier n'est réécrite dans `proxy`.
+- `proxy` n'est jamais la seule protection : chaque page et chaque route API conserve intégralement sa propre vérification (authentification, permission, tenant, agence) — défense en profondeur, pas un remplacement.
+- Lecture seule, aucun état stocké, aucune écriture en base.
+- Un filtre synchrone (`matchesDashboardRouteGuard`) évite tout accès base pour les pages `/dashboard/*` non couvertes par le registre — la charge supplémentaire reste strictement limitée aux routes réellement gardées.
+- Les redirections de confort liées à un état métier (ex. réservation déjà convertie) ne sont volontairement pas dupliquées dans `proxy` — voir la distinction documentée en SECURITY.md section 35.

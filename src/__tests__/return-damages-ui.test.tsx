@@ -221,10 +221,11 @@ describe("Écran de retour — affichage du formulaire", () => {
     const forbidden = await apiFetch(`/dashboard/locations/${locationId}/return`, {
       headers: { Cookie: noPermMember.sessionCookie },
     });
-    // notFound() dans un Server Component sous /dashboard/** renvoie un 200 avec l'UI "not
-    // found" (shell déjà en streaming), pas un 404 HTTP brut — même caveat documenté et déjà
-    // géré dans ui.test.tsx (voir son commentaire équivalent sur /dashboard/reservations/import).
-    expect(forbidden.status).toBe(200);
+    // Correctif sprint soft 404 (2026-08-24) : /dashboard/locations/[id]/return est désormais
+    // couverte par le garde de route centralisé (src/lib/route-guards.ts, exécuté depuis
+    // src/proxy.ts avant toute frontière Suspense) — vrai statut HTTP 404, plus un "soft 404"
+    // (200 + noindex). Voir SECURITY.md section 35 et DOMAINRULES.md section 64.
+    expect(forbidden.status).toBe(404);
     const forbiddenHtml = await forbidden.text();
     expect(forbiddenHtml).toContain('name="robots" content="noindex"');
     expect(forbiddenHtml).not.toContain('id="endOdometer"');

@@ -4,11 +4,14 @@ import { FileText, Download } from "lucide-react";
 import { getSessionUser, canAccessAgency, canAccessLocationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getLocationById } from "@/lib/locations";
+import { getLocationChain } from "@/lib/location-chains";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { LocationActions } from "./LocationActions";
 import { ExtendLocationDialog } from "./ExtendLocationDialog";
+import { CreateExtensionButton } from "./CreateExtensionButton";
+import { ContractChainSection } from "./ContractChainSection";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -26,6 +29,19 @@ export default async function LocationDetailPage({ params }: PageProps) {
   const { id } = await params;
   const user = await getSessionUser();
   if (!user) return null;
+
+  // Sprint technique 2 : gate manquant découvert en préparant l'affichage de la chaîne
+  // contractuelle — contrairement à GET /api/locations/[id] (route.ts, même dossier) et à
+  // /dashboard/locations (liste), cette page ne vérifiait jusqu'ici que l'accès à l'agence
+  // (canAccessLocationAgency ci-dessous), jamais locations.view : un MEMBER sans cette
+  // permission mais avec accès à l'agence (UserAgency) pouvait consulter la fiche complète
+  // d'un contrat malgré /dashboard/locations et l'API le lui refusant. Corrigé ici pour
+  // rester cohérent avec les deux autres couches, notFound() plutôt qu'un message dédié pour
+  // ne jamais distinguer « permission refusée » de « contrat introuvable » (même principe
+  // IDOR que le reste de la page).
+  if (!(await can(user, "locations.view"))) {
+    notFound();
+  }
 
   const location = await getLocationById(user.tenantId, id);
   // Sprint 19 (DOMAINRULES.md section 37) : visible aussi par l'agence de retour.
@@ -67,7 +83,17 @@ export default async function LocationDetailPage({ params }: PageProps) {
   const canExtend = location.status === "ACTIVE" && (isAdmin || (canManageFullEdit && hasLocationsEdit));
   const canConfirmMaintenanceConflict = isAdmin || hasMaintenanceConflictOverride;
 
-  const [vehicle, client, secondDriver, agency, dropoffAgency, invoice] = await Promise.all([
+  // Sprint technique 1 (DOMAINRULES.md section 60, HANDOFF.md point 43) : « Créer une
+  // prolongation » — nouveau contrat lié, permission dédiée locations.extension.create
+  // (distincte de locations.edit ci-dessus, jamais accordée par défaut). Visible uniquement sur
+  // un contrat ACTIVE sans enfant direct déjà existant (chaîne strictement linéaire, DOMAINRULES.
+  // md section 60 règle 3) — POST /api/locations/[id]/extend revérifie de toute façon tout ceci
+  // côté serveur (src/lib/location-chains.ts), ce contrôle d'affichage n'est qu'un confort.
+  const hasExtensionCreate = await can(user, "locations.extension.create");
+  const canCreateExtension =
+    location.status === "ACTIVE" && hasPickupAccess && (isAdmin || hasExtensionCreate);
+
+  const [vehicle, client, secondDriver, agency, dropoffAgency, invoice, existingChild] = await Promise.all([
     prisma.vehicle.findUnique({ where: { id: location.vehicleId } }),
     prisma.client.findUnique({ where: { id: location.clientId } }),
     location.secondDriverId ? prisma.client.findUnique({ where: { id: location.secondDriverId } }) : null,
@@ -76,7 +102,23 @@ export default async function LocationDetailPage({ params }: PageProps) {
       ? prisma.agency.findUnique({ where: { id: location.dropoffAgencyId }, select: { name: true } })
       : null,
     prisma.invoice.findFirst({ where: { locationId: location.id }, orderBy: { createdAt: "desc" } }),
+    prisma.location.findFirst({ where: { parentLocationId: location.id }, select: { id: true } }),
   ]);
+
+  // Sprint technique 2 (DOMAINRULES.md section 60, règle 12) : chaîne contractuelle + soldes
+  // (individuel par contrat + consolidé). Erreur contrôlée : une panne de ce bloc de lecture
+  // seule (agrégation financière, plusieurs requêtes) ne doit jamais faire échouer l'affichage
+  // du reste de la fiche contrat (actions, détails déjà chargés ci-dessus) — capturée ici et
+  // journalisée côté serveur, jamais renvoyée telle quelle à l'utilisateur (SECURITY.md section
+  // 18), une carte de repli est affichée à la place de la section.
+  let chain: Awaited<ReturnType<typeof getLocationChain>> | null = null;
+  let chainLoadFailed = false;
+  try {
+    chain = await getLocationChain(user.tenantId, user, location);
+  } catch (error) {
+    console.error("Erreur lors du chargement de la chaîne contractuelle :", error);
+    chainLoadFailed = true;
+  }
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-4">
@@ -119,6 +161,15 @@ export default async function LocationDetailPage({ params }: PageProps) {
               totalPrice={location.totalPrice}
               invoice={invoice ? { totalAmount: invoice.totalAmount, amountPaid: invoice.amountPaid } : null}
               canConfirmMaintenanceConflict={canConfirmMaintenanceConflict}
+            />
+          )}
+          {/* Sprint technique 1 (DOMAINRULES.md section 60) — voir CreateExtensionButton.tsx.
+              Masqué si une prolongation directe existe déjà (chaîne linéaire, POST .../extend
+              revérifie de toute façon @@unique(parentLocationId) côté serveur). */}
+          {canCreateExtension && !existingChild && (
+            <CreateExtensionButton
+              parentLocationId={location.id}
+              parentEndDate={location.endDate.toISOString()}
             />
           )}
           {/* Sprint 32 (DOMAINRULES.md section 32) : écran de retour dédié — même condition que
@@ -202,6 +253,21 @@ export default async function LocationDetailPage({ params }: PageProps) {
           )}
         </CardContent>
       </Card>
+
+      {chain ? (
+        <ContractChainSection chain={chain} />
+      ) : chainLoadFailed ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Chaîne contractuelle</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              Impossible d&apos;afficher la chaîne contractuelle pour le moment. Réessayez plus tard.
+            </p>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <LocationActions
         id={location.id}

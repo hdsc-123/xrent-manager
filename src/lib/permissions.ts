@@ -82,6 +82,18 @@ export const PERMISSIONS: PermissionDefinition[] = [
     label: "Confirmer une prolongation malgré un conflit de maintenance",
     category: "Locations",
   },
+  // Sprint technique 1 (DOMAINRULES.md section 60, règle 10) : capacité nouvelle, distincte de
+  // locations.create — créer un nouveau contrat lié (prolongation, src/lib/location-chains.ts)
+  // n'est pas la même action que créer un contrat initial. Non accordée à aucun groupe par
+  // défaut (voir DEFAULT_GROUPS ci-dessous, même principe que locations.maintenance_conflict.
+  // override/locations.return_time.edit/audit.delete) — refusée par défaut, y compris pour le
+  // groupe MEMBER ; un ADMIN y a toujours accès via le contournement de rôle de can(), un groupe
+  // personnalisé peut l'accorder explicitement.
+  {
+    key: "locations.extension.create",
+    label: "Créer une prolongation (nouveau contrat lié)",
+    category: "Locations",
+  },
 
   { key: "reservations.view", label: "Voir les réservations", category: "Réservations" },
   { key: "reservations.create", label: "Créer des réservations", category: "Réservations" },
