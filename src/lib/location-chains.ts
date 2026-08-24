@@ -24,12 +24,17 @@ import {
 
 /**
  * Sprint technique 1 (DOMAINRULES.md section 60, HANDOFF.md point 43) : création d'une
- * prolongation comme nouveau contrat indépendant — jamais une modification du contrat existant
- * (distinct d'extendReturnDate, DOMAINRULES.md section 54, non remplacé/non modifié par ce
- * module). Module séparé de locations.ts/invoices.ts, même principe que location-payment.ts/
- * location-return.ts : orchestre les deux domaines dans une seule transaction, ce que
- * locations.ts ne peut pas faire lui-même (invoices.ts importe déjà getLocationById depuis
- * locations.ts — un import inverse y créerait un cycle, déjà documenté dans ce fichier).
+ * prolongation comme nouveau contrat indépendant — jamais une modification du contrat existant.
+ * Depuis le Sprint technique 3 (règle 11), c'est l'**unique** mécanisme officiel de
+ * prolongation : l'ancien parcours `extendReturnDate` (Sprint 13E tâche 2, DOMAINRULES.md
+ * section 54) a été entièrement retiré du parcours utilisateur, et `updateLocation`
+ * (src/lib/locations.ts) rejette désormais sans exception toute requête le portant encore
+ * (LocationExtensionMechanismRemovedError) ainsi que toute modification de date sur un contrat
+ * déjà chaîné, même par un ADMIN (LocationHasExtensionChainError). Module séparé de
+ * locations.ts/invoices.ts, même principe que location-payment.ts/location-return.ts : orchestre
+ * les deux domaines dans une seule transaction, ce que locations.ts ne peut pas faire lui-même
+ * (invoices.ts importe déjà getLocationById depuis locations.ts — un import inverse y créerait
+ * un cycle, déjà documenté dans ce fichier).
  */
 
 export class LocationExtensionParentNotFoundError extends Error {

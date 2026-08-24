@@ -5,13 +5,14 @@ import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser }
 
 /**
  * Sprint technique 1 (DOMAINRULES.md section 60, HANDOFF.md point 43) — prolongations comme
- * nouveaux contrats liés : POST /api/locations/[id]/extend (src/lib/location-chains.ts).
- * Distinct de location-extension.test.ts (mécanisme extendReturnDate existant, non modifié, non
- * dupliqué ici) : ce fichier couvre spécifiquement le nouveau modèle — nouveau contrat, propre
- * numéro, propre facture RENTAL, chaînage parent/racine, statuts interdits, chaîne strictement
- * linéaire, isolation tenant/agence, permission dédiée, changement de véhicule/agence,
- * tarification propre (y compris gratuite), audit, rollback transactionnel complet, et la
- * contrainte CHECK de la migration (auto-rattachement).
+ * nouveaux contrats liés : POST /api/locations/[id]/extend (src/lib/location-chains.ts), unique
+ * mécanisme officiel de prolongation depuis le Sprint technique 3 (règle 11 — retrait complet de
+ * l'ancien parcours `extendReturnDate`, voir location-extension.test.ts pour sa compatibilité
+ * bloquée et la protection de chaîne). Ce fichier couvre spécifiquement le modèle de chaîne :
+ * nouveau contrat, propre numéro, propre facture RENTAL, chaînage parent/racine, statuts
+ * interdits, chaîne strictement linéaire, isolation tenant/agence, permission dédiée, changement
+ * de véhicule/agence, tarification propre (y compris gratuite), audit, rollback transactionnel
+ * complet, et la contrainte CHECK de la migration (auto-rattachement).
  */
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;

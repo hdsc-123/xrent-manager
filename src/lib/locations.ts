@@ -286,18 +286,48 @@ export class MaintenanceExtensionConflictError extends Error {
 }
 
 /**
- * Sprint 13E tâche 2 (DOMAINRULES.md section 52) — parcours dédié « Prolonger la location » :
- * contrairement à une modification de dates ADMIN générique (toujours acceptée tant que
- * `nextEnd > nextStart`, y compris pour raccourcir un contrat), une prolongation n'a de sens
- * métier que si la nouvelle date de retour est strictement postérieure à l'actuelle — une date
- * ou une heure antérieure ou égale n'est jamais une "prolongation". Levée uniquement quand
- * `UpdateLocationInput.extendReturnDate` est explicitement demandé (voir updateLocation
- * ci-dessous) : n'affecte jamais le formulaire ADMIN existant de modification libre des dates.
+ * Sprint technique 3 (DOMAINRULES.md section 60, règle 11) : l'ancien parcours dédié
+ * « Prolonger la location » (`UpdateLocationInput.extendReturnDate`, introduit Sprint 13E
+ * tâche 2) est retiré du parcours utilisateur — `createLocationExtension`
+ * (`src/lib/location-chains.ts`, `POST /api/locations/[id]/extend`) est désormais l'unique
+ * mécanisme officiel de prolongation. Ce champ reste reconnu côté serveur (compatibilité d'un
+ * ancien client/appel direct) mais ne réussit plus jamais, quel que soit l'état du contrat, la
+ * permission de l'appelant, ou tout autre champ du corps de requête (voir updateLocation
+ * ci-dessous : vérifié en tout premier, avant toute autre logique — aucune écriture possible).
  */
-export class InvalidExtensionDateError extends Error {
+export class LocationExtensionMechanismRemovedError extends Error {
   constructor() {
-    super("La nouvelle date de retour doit être strictement postérieure à la date de retour actuelle.");
-    this.name = "InvalidExtensionDateError";
+    super(
+      "Ce mécanisme de prolongation a été retiré. Créez une nouvelle prolongation via " +
+        "POST /api/locations/[id]/extend (voir DOMAINRULES.md section 60)."
+    );
+    this.name = "LocationExtensionMechanismRemovedError";
+  }
+}
+
+/**
+ * Sprint technique 3 (DOMAINRULES.md section 60, règle 11) : une fois une chaîne de
+ * prolongations créée (`createLocationExtension`), la contiguïté entre deux contrats liés
+ * (`child.startDate === parent.endDate`, garantie par construction à la création — voir
+ * `src/lib/location-chains.ts`) ne doit plus jamais pouvoir être rompue par ce PATCH générique.
+ * Contrairement à `LocationLockedError`, ce verrou n'est **jamais** contournable — ni par
+ * `adminOverride` ni par `confirmMaintenanceConflict` — même principe de conception que le refus
+ * d'une transition `CANCELLED` sur un contrat déjà validé via ce même PATCH (voir
+ * `LocationCancellationRequiresAdminError` ci-dessus) : une action structurellement sensible à
+ * l'intégrité d'une donnée liée (ici, une autre `Location` de la même chaîne) est réservée à un
+ * mécanisme qui la connaît, jamais à cette route générique. Bug identifié et corrigé Sprint
+ * technique 3 : avant ce correctif, `adminOverride`/`extendReturnDate` pouvaient repousser
+ * `endDate` d'un contrat parent au-delà de `startDate` de son enfant (silencieusement si le
+ * véhicule différait entre les deux, `checkAvailability` ne portant que sur un même véhicule).
+ */
+export class LocationHasExtensionChainError extends Error {
+  constructor() {
+    super(
+      "Ce contrat fait partie d'une chaîne de prolongations : ses dates ne sont plus modifiables " +
+        "directement (la contiguïté avec le contrat lié serait rompue). Créez une nouvelle " +
+        "prolongation (POST /api/locations/[id]/extend) pour prolonger la chaîne."
+    );
+    this.name = "LocationHasExtensionChainError";
   }
 }
 
@@ -828,12 +858,11 @@ export interface UpdateLocationInput {
    * de dates sur un contrat déjà validé, donc déjà verrouillé) ; ne contourne jamais la garde de
    * transition de statut, distincte d'adminOverride sur ce point précis. */
   confirmMaintenanceConflict?: boolean;
-  /** Sprint 13E tâche 2 (DOMAINRULES.md section 52) — décision explicite d'appeler ce PATCH
-   * depuis le parcours « Prolonger la location » plutôt que le formulaire ADMIN générique de
-   * modification des dates : seul ce chemin exige `endDate` strictement postérieure à
-   * `existing.endDate` (voir InvalidExtensionDateError ci-dessus). Toujours dérivé côté route
-   * d'un champ de corps de requête dédié (`extendReturnDate`), jamais combiné à un changement
-   * de `startDate` (vérifié côté route) — une prolongation ne déplace jamais le départ. */
+  /** Sprint technique 3 (DOMAINRULES.md section 60, règle 11) : ancien parcours « Prolonger la
+   * location » (Sprint 13E tâche 2), **retiré** — ce champ n'est plus reconnu que pour rejeter
+   * explicitement toute requête qui le porte encore (voir LocationExtensionMechanismRemovedError
+   * ci-dessus), jamais pour modifier quoi que ce soit. `createLocationExtension`
+   * (`src/lib/location-chains.ts`) est l'unique mécanisme officiel de prolongation. */
   extendReturnDate?: boolean;
 }
 
@@ -917,6 +946,14 @@ export async function updateLocation(
     return null;
   }
 
+  // Sprint technique 3 (DOMAINRULES.md section 60, règle 11) : vérifié en tout premier, avant
+  // toute autre lecture/écriture — un ancien client ou un appel direct portant encore ce champ
+  // ne doit jamais pouvoir réussir, quel que soit l'état du contrat ou tout autre champ du corps
+  // de requête (voir LocationExtensionMechanismRemovedError ci-dessus).
+  if (data.extendReturnDate) {
+    throw new LocationExtensionMechanismRemovedError();
+  }
+
   validateFuelLevel(data.startFuelLevel);
   validateFuelLevel(data.endFuelLevel);
 
@@ -948,19 +985,15 @@ export async function updateLocation(
   // la route a déjà vérifié la permission correspondante avant d'appeler cette fonction — jamais
   // un simple champ de corps de requête faisant foi de lui-même. Reste distinct d'adminOverride :
   // ne contourne que ce verrou précis, jamais la garde de transition de statut plus bas.
-  // Sprint 13E tâche 2 (DOMAINRULES.md section 52) : `extendReturnDate` contourne aussi ce
-  // verrou, indépendamment de `confirmMaintenanceConflict` — le parcours dédié « Prolonger la
-  // location » n'exige que `locations.edit` (déjà vérifiée côté route comme n'importe quel
-  // PATCH) pour une prolongation sans conflit ; `locations.maintenance_conflict.override` reste
-  // réservée à la confirmation d'un conflit de maintenance réel (voir plus bas), jamais à
-  // l'acte de prolonger lui-même — cohérent avec le libellé du catalogue de permissions
-  // (« Confirmer une prolongation malgré un conflit de maintenance », src/lib/permissions.ts).
+  // Sprint technique 3 : `extendReturnDate` retiré de cette liste de contournements — la
+  // requête a déjà été rejetée sans exception ci-dessus (LocationExtensionMechanismRemovedError)
+  // avant d'atteindre cette garde ; seuls `adminOverride`/`confirmMaintenanceConflict` restent
+  // des contournements valides pour un contrat hors PENDING.
   if (
     (data.startDate || data.endDate) &&
     existing.status !== "PENDING" &&
     !data.adminOverride &&
-    !data.confirmMaintenanceConflict &&
-    !data.extendReturnDate
+    !data.confirmMaintenanceConflict
   ) {
     throw new LocationLockedError();
   }
@@ -970,14 +1003,6 @@ export async function updateLocation(
 
   if (nextEnd <= nextStart) {
     throw new InvalidDateRangeError();
-  }
-
-  // Sprint 13E tâche 2 (DOMAINRULES.md section 52) — voir InvalidExtensionDateError ci-dessus :
-  // comparaison sur le DateTime complet (date ET heure), jamais seulement le jour calendaire —
-  // une nouvelle heure de retour antérieure ou strictement égale à l'heure actuelle est refusée,
-  // pas seulement une date antérieure/égale.
-  if (data.extendReturnDate && nextEnd <= existing.endDate) {
-    throw new InvalidExtensionDateError();
   }
 
   // Sprint 30 (DOMAINRULES.md section 45, point 7) : un second conducteur ajouté/modifié après
@@ -1053,6 +1078,30 @@ export async function updateLocation(
       }
 
       if (datesChanging) {
+        // Sprint technique 3 (DOMAINRULES.md section 60, règle 11) : protection de chaîne,
+        // jamais contournable (ni adminOverride ni confirmMaintenanceConflict — voir
+        // LocationHasExtensionChainError ci-dessus). Vérifiée sous le même verrou de ligne que
+        // ci-dessus (lockLocationForUpdate), donc sérialisée contre une création concurrente de
+        // prolongation (createLocationExtension verrouille la même ligne parent avant d'écrire
+        // son enfant, src/lib/location-chains.ts) : aucune fenêtre de course possible où un
+        // enfant apparaîtrait juste après cette lecture sans être vu par cette transaction.
+        // `endDate` est le bord partagé avec un enfant éventuel (`child.startDate ===
+        // existing.endDate`, garanti par construction à la création de l'enfant) ; `startDate`
+        // est le bord partagé avec un parent éventuel (`existing.startDate ===
+        // parent.endDate`) — seul le bord réellement modifié par cette requête est vérifié.
+        if (data.endDate !== undefined) {
+          const child = await tx.location.findFirst({
+            where: { parentLocationId: locationId },
+            select: { id: true },
+          });
+          if (child) {
+            throw new LocationHasExtensionChainError();
+          }
+        }
+        if (data.startDate !== undefined && existing.parentLocationId) {
+          throw new LocationHasExtensionChainError();
+        }
+
         const vehicle = await lockVehicleForUpdate(tenantId, existing.vehicleId, tx);
         if (!vehicle) {
           throw new VehicleNotFoundError();

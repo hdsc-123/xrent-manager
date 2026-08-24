@@ -78,6 +78,13 @@ interface LocationActionsProps {
    * transitions autorisées) et les dates redeviennent modifiables à tout statut (override
    * serveur, systématiquement journalisé — voir DOMAINRULES.md section 37). */
   isAdmin: boolean;
+  /** Sprint technique 3 (DOMAINRULES.md section 60, règle 11) : ce contrat fait partie d'une
+   * chaîne de prolongations (a un enfant direct, ou a lui-même un parent) — ses dates ne sont
+   * plus modifiables via le formulaire administrateur générique ci-dessous, quel que soit le
+   * rôle (PATCH /api/locations/[id] les refuse désormais sans exception, voir
+   * LocationHasExtensionChainError, src/lib/locations.ts). Masque le formulaire au profit d'une
+   * explication, plutôt que de laisser l'utilisateur découvrir le refus après soumission. */
+  hasExtensionChain: boolean;
 }
 
 export function LocationActions({
@@ -96,6 +103,7 @@ export function LocationActions({
   canCancel,
   canManageReturnOnly,
   isAdmin,
+  hasExtensionChain,
 }: LocationActionsProps) {
   const router = useRouter();
   const [notes, setNotes] = useState(initialNotes ?? "");
@@ -375,7 +383,17 @@ export function LocationActions({
         {isAdmin && (
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">Dates (action administrateur)</span>
-            {showAdminDatesForm ? (
+            {hasExtensionChain ? (
+              // Sprint technique 3 (DOMAINRULES.md section 60, règle 11) : contrat parent ou
+              // enfant d'une chaîne de prolongations — le serveur refuse désormais toute
+              // modification de dates ici, sans exception (LocationHasExtensionChainError) ;
+              // formulaire masqué plutôt que de laisser échouer une soumission.
+              <p className="text-sm text-muted-foreground">
+                Ce contrat fait partie d&apos;une chaîne de prolongations : ses dates ne sont plus
+                modifiables directement. Utilisez le mécanisme officiel de prolongation, plus haut
+                sur cette fiche, pour l&apos;étendre.
+              </p>
+            ) : showAdminDatesForm ? (
               <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 p-2">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex flex-col gap-1.5">

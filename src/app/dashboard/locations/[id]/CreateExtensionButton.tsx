@@ -19,16 +19,16 @@ import {
 /**
  * Sprint technique 1 (DOMAINRULES.md section 60, HANDOFF.md point 43) : « Créer une
  * prolongation » — nouveau contrat indépendant, lié au contrat parent et à la racine de la
- * chaîne (POST /api/locations/[id]/extend, src/lib/location-chains.ts). Distinct
- * d'ExtendLocationDialog.tsx (extendReturnDate, mécanisme actuel non modifié/non retiré à ce
- * stade — les deux coexistent tant que le nouveau mécanisme n'a pas remplacé l'ancien dans le
- * parcours utilisateur, DOMAINRULES.md section 60 règle 11).
+ * chaîne (POST /api/locations/[id]/extend, src/lib/location-chains.ts). Depuis le Sprint
+ * technique 3 (règle 11), c'est l'**unique** mécanisme officiel de prolongation :
+ * `ExtendLocationDialog.tsx`/`extendReturnDate` (ancien parcours, Sprint 13E tâche 2) ont été
+ * entièrement retirés — PATCH /api/locations/[id] refuse désormais ce champ sans exception,
+ * quel que soit l'appelant.
  *
- * Formulaire volontairement minimal pour ce sprint (nouvelle date de retour uniquement) —
- * changement de véhicule/agence/tarif restent possibles via l'API (createLocationExtension
- * accepte déjà ces champs) mais ne sont pas encore exposés dans cette interface, explicitement
- * hors périmètre de ce sprint (affichage de la chaîne, solde consolidé, PDF dédié, retours
- * spécifiques : sprints suivants).
+ * Formulaire volontairement minimal (nouvelle date de retour uniquement) — changement de
+ * véhicule/agence/tarif restent possibles via l'API (createLocationExtension accepte déjà ces
+ * champs) mais ne sont pas encore exposés dans cette interface, hors périmètre à ce stade
+ * (retours spécifiques à une chaîne, PDF dédié : sprints suivants, voir DOMAINRULES.md section 60).
  */
 
 function safeErrorMessage(err: unknown, fallback: string): string {

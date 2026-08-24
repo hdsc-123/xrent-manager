@@ -12,7 +12,8 @@ import {
   VehicleUnavailableForLocationError,
   VehicleMaintenanceConflictError,
   MaintenanceExtensionConflictError,
-  InvalidExtensionDateError,
+  LocationExtensionMechanismRemovedError,
+  LocationHasExtensionChainError,
   InvalidStatusTransitionError,
   LocationNotDeletableError,
   LocationHasInvoiceError,
@@ -73,10 +74,11 @@ interface UpdateLocationBody {
    * locations.maintenance_conflict.override (vérifiée ci-dessous avant tout appel à
    * updateLocation, jamais un simple champ de corps de requête faisant foi de lui-même). */
   confirmMaintenanceConflict?: boolean;
-  /** Sprint 13E tâche 2 (DOMAINRULES.md section 52) — parcours dédié « Prolonger la location » :
-   * exige endDate strictement postérieure à la date de retour actuelle (voir
-   * InvalidExtensionDateError, src/lib/locations.ts), et jamais combiné à startDate (vérifié
-   * ci-dessous) — une prolongation ne modifie jamais la date de départ. */
+  /** Sprint technique 3 (DOMAINRULES.md section 60, règle 11) : ancien parcours « Prolonger la
+   * location » (Sprint 13E tâche 2), **retiré** — transmis tel quel à updateLocation
+   * (src/lib/locations.ts) uniquement pour être rejeté explicitement (voir
+   * LocationExtensionMechanismRemovedError), jamais pour modifier quoi que ce soit.
+   * createLocationExtension (POST /api/locations/[id]/extend) est l'unique mécanisme officiel. */
   extendReturnDate?: boolean;
 }
 
@@ -157,27 +159,10 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "startDate/endDate doivent être des dates ISO valides." }, { status: 400 });
   }
 
-  // Sprint 13E tâche 2 (DOMAINRULES.md section 52) : le parcours « Prolonger la location » ne
-  // modifie jamais startDate (ambiguïté sinon avec une modification de dates ADMIN générique) et
-  // exige endDate — la comparaison stricte à la date de retour actuelle est vérifiée côté
-  // service (InvalidExtensionDateError, updateLocation).
-  if (body.extendReturnDate === true) {
-    if (!endDate) {
-      return NextResponse.json({ error: "endDate est requis pour prolonger une location." }, { status: 400 });
-    }
-    if (startDate) {
-      return NextResponse.json(
-        { error: "Une prolongation ne modifie jamais la date de départ." },
-        { status: 400 }
-      );
-    }
-    if (body.status !== undefined) {
-      return NextResponse.json(
-        { error: "Une prolongation ne modifie jamais le statut du contrat." },
-        { status: 400 }
-      );
-    }
-  }
+  // Sprint technique 3 (DOMAINRULES.md section 60, règle 11) : `extendReturnDate` n'est plus
+  // validé ici — quel que soit le reste du corps de requête, updateLocation le rejette
+  // désormais en tout premier, avant toute autre logique (LocationExtensionMechanismRemovedError).
+  // Aucune validation de forme n'a donc plus de sens pour ce champ précis.
 
   for (const field of ["startOdometer", "endOdometer", "deposit"] as const) {
     const fieldValue = body[field];
@@ -240,24 +225,10 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       tenantId: user.tenantId,
       userId: user.id,
       action:
-        body.extendReturnDate === true
-          ? "location.extended"
-          : body.status && body.status !== location.status
-            ? "location.status_changed"
-            : "location.updated",
+        body.status && body.status !== location.status ? "location.status_changed" : "location.updated",
       resource: "Location",
       resourceId: location.id,
-      // Sprint 13E tâche 2 (DOMAINRULES.md section 52) : pour une prolongation, l'ancienne
-      // date de retour et l'ancien totalPrice sont journalisés explicitement en plus de
-      // `changes` (qui ne contient que la nouvelle valeur) — l'historique avant/après doit
-      // rester lisible sans recalculer quoi que ce soit depuis d'autres tables.
-      metadata: {
-        from: location.status,
-        changes: body,
-        ...(body.extendReturnDate === true
-          ? { previousEndDate: location.endDate, previousTotalPrice: location.totalPrice }
-          : {}),
-      } as unknown as Prisma.InputJsonValue,
+      metadata: { from: location.status, changes: body } as unknown as Prisma.InputJsonValue,
     });
     return NextResponse.json({ location: updated });
   } catch (error) {
@@ -276,13 +247,20 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     if (error instanceof InvalidDateRangeError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
-    if (error instanceof InvalidExtensionDateError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
     if (error instanceof InvalidStatusTransitionError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     if (error instanceof LocationLockedError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    // Sprint technique 3 (DOMAINRULES.md section 60, règle 11) : ancien parcours « Prolonger la
+    // location » retiré — toute requête le portant encore échoue explicitement, sans exception.
+    if (error instanceof LocationExtensionMechanismRemovedError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    // Sprint technique 3 : protection de chaîne, jamais contournable (voir
+    // LocationHasExtensionChainError, src/lib/locations.ts).
+    if (error instanceof LocationHasExtensionChainError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     if (error instanceof LocationCancellationRequiresAdminError) {

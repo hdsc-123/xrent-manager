@@ -9,7 +9,6 @@ import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { LocationActions } from "./LocationActions";
-import { ExtendLocationDialog } from "./ExtendLocationDialog";
 import { CreateExtensionButton } from "./CreateExtensionButton";
 import { ContractChainSection } from "./ContractChainSection";
 
@@ -56,12 +55,6 @@ export default async function LocationDetailPage({ params }: PageProps) {
   const hasLocationsActivate = await can(user, "locations.activate");
   const hasLocationsComplete = await can(user, "locations.complete");
   const hasLocationsCancel = await can(user, "locations.cancel");
-  // Sprint 13E tâche 2 (DOMAINRULES.md section 52) — voir ExtendLocationDialog.tsx : la
-  // permission granulaire n'est requise que pour confirmer explicitement une prolongation
-  // malgré un conflit de maintenance réel, jamais pour l'acte de prolonger lui-même (voir le
-  // libellé du catalogue, src/lib/permissions.ts) — cohérent avec le contournement de verrou
-  // dédié ajouté côté service (updateLocation, `extendReturnDate`).
-  const hasMaintenanceConflictOverride = await can(user, "locations.maintenance_conflict.override");
 
   // Sprint 19 : une agence de retour (dropoffAgencyId) sans accès à l'agence de rattachement
   // du contrat ne peut que gérer la réception — voir PATCH /api/locations/[id] pour
@@ -73,22 +66,16 @@ export default async function LocationDetailPage({ params }: PageProps) {
     (hasLocationsEdit || hasLocationsConfirm || hasLocationsActivate || hasLocationsComplete || hasLocationsCancel);
   const canManageReturnOnly = !hasPickupAccess && hasLocationsComplete;
 
-  // Sprint 13E tâche 2 (DOMAINRULES.md section 52) : « Prolonger la location » — visible
-  // seulement pour un contrat ACTIVE (parcours utilisateur demandé), avec le même droit de base
-  // qu'une modification de contrat normale (locations.edit + accès agence de rattachement, ou
-  // ADMIN). Masqué en interface sans cette base, mais PATCH /api/locations/[id] revérifie de
-  // toute façon tout ceci côté serveur (locations.edit) — voir requiredPermissionForLocation
-  // StatusChange, src/app/api/locations/[id]/route.ts.
   const isAdmin = user.role === "ADMIN";
-  const canExtend = location.status === "ACTIVE" && (isAdmin || (canManageFullEdit && hasLocationsEdit));
-  const canConfirmMaintenanceConflict = isAdmin || hasMaintenanceConflictOverride;
 
-  // Sprint technique 1 (DOMAINRULES.md section 60, HANDOFF.md point 43) : « Créer une
-  // prolongation » — nouveau contrat lié, permission dédiée locations.extension.create
-  // (distincte de locations.edit ci-dessus, jamais accordée par défaut). Visible uniquement sur
-  // un contrat ACTIVE sans enfant direct déjà existant (chaîne strictement linéaire, DOMAINRULES.
-  // md section 60 règle 3) — POST /api/locations/[id]/extend revérifie de toute façon tout ceci
-  // côté serveur (src/lib/location-chains.ts), ce contrôle d'affichage n'est qu'un confort.
+  // Sprint technique 1 (DOMAINRULES.md section 60, HANDOFF.md point 43), unique mécanisme
+  // officiel depuis le Sprint technique 3 (retrait complet d'extendReturnDate, règle 11) :
+  // « Créer une prolongation » — nouveau contrat lié, permission dédiée
+  // locations.extension.create (distincte de locations.edit, jamais accordée par défaut).
+  // Visible uniquement sur un contrat ACTIVE sans enfant direct déjà existant (chaîne
+  // strictement linéaire, DOMAINRULES.md section 60 règle 3) — POST /api/locations/[id]/extend
+  // revérifie de toute façon tout ceci côté serveur (src/lib/location-chains.ts), ce contrôle
+  // d'affichage n'est qu'un confort.
   const hasExtensionCreate = await can(user, "locations.extension.create");
   const canCreateExtension =
     location.status === "ACTIVE" && hasPickupAccess && (isAdmin || hasExtensionCreate);
@@ -150,22 +137,11 @@ export default async function LocationDetailPage({ params }: PageProps) {
               Voir facture
             </Button>
           )}
-          {/* Sprint 13E tâche 2 (DOMAINRULES.md section 52) — voir ExtendLocationDialog.tsx. */}
-          {canExtend && (
-            <ExtendLocationDialog
-              id={location.id}
-              startDate={location.startDate.toISOString()}
-              endDate={location.endDate.toISOString()}
-              pricePerDay={location.pricePerDay}
-              currency={location.currency}
-              totalPrice={location.totalPrice}
-              invoice={invoice ? { totalAmount: invoice.totalAmount, amountPaid: invoice.amountPaid } : null}
-              canConfirmMaintenanceConflict={canConfirmMaintenanceConflict}
-            />
-          )}
           {/* Sprint technique 1 (DOMAINRULES.md section 60) — voir CreateExtensionButton.tsx.
-              Masqué si une prolongation directe existe déjà (chaîne linéaire, POST .../extend
-              revérifie de toute façon @@unique(parentLocationId) côté serveur). */}
+              Unique action de prolongation depuis le Sprint technique 3 (extendReturnDate/
+              ExtendLocationDialog.tsx retirés). Masqué si une prolongation directe existe déjà
+              (chaîne linéaire, POST .../extend revérifie de toute façon
+              @@unique(parentLocationId) côté serveur). */}
           {canCreateExtension && !existingChild && (
             <CreateExtensionButton
               parentLocationId={location.id}
@@ -285,6 +261,13 @@ export default async function LocationDetailPage({ params }: PageProps) {
         canCancel={canManageFullEdit && hasLocationsCancel}
         canManageReturnOnly={canManageReturnOnly}
         isAdmin={isAdmin}
+        // Sprint technique 3 (DOMAINRULES.md section 60, règle 11) : contrat parent (a un
+        // enfant, `existingChild`) ou enfant (`parentLocationId` non nul) d'une chaîne de
+        // prolongations — ses dates ne sont plus modifiables via le formulaire administrateur
+        // générique (PATCH /api/locations/[id] les refuse désormais sans exception, voir
+        // LocationHasExtensionChainError, src/lib/locations.ts) ; ce booléen ne fait que masquer
+        // le formulaire côté interface pour éviter l'ambiguïté, jamais la seule protection.
+        hasExtensionChain={Boolean(location.parentLocationId) || Boolean(existingChild)}
       />
     </div>
   );
