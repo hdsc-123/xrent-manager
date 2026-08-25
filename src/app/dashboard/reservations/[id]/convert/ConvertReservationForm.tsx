@@ -14,6 +14,7 @@ import {
   CardHeader,
   CardTitle,
   Checkbox,
+  FuelLevelSelect,
   Input,
   Label,
   PhoneInput,
@@ -113,6 +114,15 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
   const [deposit, setDeposit] = useState("");
   const [notes, setNotes] = useState(reservation.notes ?? "");
 
+  // Kilométrage/carburant de départ (correctif finding F-3, validation manuelle 2026-08-25) :
+  // jusqu'ici absents de ce formulaire, contrairement à /dashboard/locations/new — un contrat
+  // issu d'une conversion n'avait donc jamais de Location.startOdometer connu, désactivant
+  // silencieusement le contrôle du kilométrage au retour. Optionnels et préremplis depuis le
+  // dernier état connu du véhicule (même source que la création directe, DOMAINRULES.md
+  // section 40 point 2), modifiables ensuite librement (jamais verrouillés).
+  const [startOdometer, setStartOdometer] = useState("");
+  const [startFuelLevel, setStartFuelLevel] = useState("");
+
   function handleStartTimeChange(value: string) {
     setStartTime(value);
     setEndTime(value);
@@ -210,6 +220,32 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
     return Number.isFinite(value) && value > 0 ? Math.round(value * 100) : null;
   }, [pricePerDay]);
 
+  // Correctif (finding F-3) : même source/pattern que NewLocationForm.tsx — le kilométrage/
+  // carburant de départ du contrat prennent comme point de départ le dernier état connu du
+  // véhicule (getVehicleLastKnownState, src/lib/vehicles.ts), rechargé à chaque changement de
+  // véhicule. Les champs restent modifiables ensuite (jamais verrouillés) : un contrat capture
+  // un état réel constaté au comptoir, qui peut légitimement différer de la dernière valeur
+  // enregistrée en base.
+  useEffect(() => {
+    if (!vehicleId) return;
+    let cancelled = false;
+    apiGet<{ odometer: number | null; fuelLevel: number | null }>(`/api/vehicles/${vehicleId}/last-known-state`)
+      .then((data) => {
+        if (cancelled) return;
+        setStartOdometer(data.odometer !== null ? String(data.odometer) : "");
+        setStartFuelLevel(data.fuelLevel !== null ? String(data.fuelLevel) : "");
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setStartOdometer("");
+          setStartFuelLevel("");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [vehicleId]);
+
   const startDateTime = useMemo(() => {
     if (!startDate || !startTime) return null;
     const value = new Date(`${startDate}T${startTime}`);
@@ -294,6 +330,8 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
       pricePerDay: pricePerDayCentimes ?? undefined,
       totalPrice: finalTotalPrice,
       notes: finalNotes,
+      startOdometer: startOdometer ? Number(startOdometer) : undefined,
+      startFuelLevel: startFuelLevel ? Number(startFuelLevel) : undefined,
       client: {
         firstName,
         lastName,
@@ -616,6 +654,29 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
                 )}
               </div>
             )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="startOdometer">
+                  Kilométrage départ{" "}
+                  <span className="text-muted-foreground">
+                    — optionnel, prérempli depuis le dernier état connu du véhicule
+                  </span>
+                </Label>
+                <Input
+                  id="startOdometer"
+                  type="number"
+                  value={startOdometer}
+                  onChange={(e) => setStartOdometer(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="startFuelLevel">
+                  Carburant départ <span className="text-muted-foreground">— optionnel</span>
+                </Label>
+                <FuelLevelSelect id="startFuelLevel" value={startFuelLevel} onChange={setStartFuelLevel} />
+              </div>
+            </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">

@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { getSessionUser } from "@/lib/authz";
 import { getTenantById } from "@/lib/db";
 import { TenantsTable, type TenantRow } from "./TenantsTable";
@@ -5,6 +6,15 @@ import { TenantsTable, type TenantRow } from "./TenantsTable";
 export default async function TenantsPage() {
   const user = await getSessionUser();
   if (!user) return null;
+
+  // Gestion des tenants réservée ADMIN, même patron que /dashboard/users, /dashboard/
+  // invitations et /dashboard/permission-groups (DOMAINRULES.md — modules strictement
+  // réservés au rôle, voir aussi le commentaire sur PERMISSIONS dans src/lib/permissions.ts).
+  // Correctif (validation manuelle 2026-08-25, finding F-1) : cette page n'avait jusqu'ici
+  // aucune garde, contrairement à ses pages sœurs.
+  if (user.role !== "ADMIN") {
+    redirect("/dashboard");
+  }
 
   const tenant = await getTenantById(user.tenantId);
   const tenants: TenantRow[] = tenant

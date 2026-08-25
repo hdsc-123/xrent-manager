@@ -27,6 +27,7 @@ import {
   MissingDriverBirthDateError,
   InvalidDriverBirthDateError,
   DriverUnderMinimumAgeError,
+  InvalidFuelLevelError,
 } from "@/lib/locations";
 import { createInvoice } from "@/lib/invoices";
 import { processLocationPayment, validatePaymentInput, type PaymentInput } from "@/lib/location-payment";
@@ -75,6 +76,20 @@ interface ConvertBody {
   /** Prix/jour réel (centimes) — voir DOMAINRULES.md section 5/7. Optionnel : retombe sur le
    * prix informatif du véhicule choisi s'il en a un ; sinon 400 (voir MissingPriceError). */
   pricePerDay?: number;
+  /** Correctif (validation manuelle 2026-08-25, finding F-3) : kilométrage/carburant de départ
+   * du contrat — jusqu'ici jamais collectés par ce parcours (contrairement à POST /api/locations,
+   * la création directe), laissant `Location.startOdometer` toujours `null` pour tout contrat
+   * issu d'une conversion, ce qui désactivait silencieusement le contrôle du kilométrage de
+   * retour (`assertValidOdometer`, src/lib/location-return.ts). Optionnels ici comme sur le
+   * parcours direct (DOMAINRULES.md section 40, point 2 : décision délibérée — un contrat capture
+   * un état réel constaté au comptoir, jamais verrouillé), mêmes règles de validation
+   * (`startOdometer` : entier positif ou nul ; `startFuelLevel` : entier 0-100, voir
+   * InvalidFuelLevelError). Le formulaire (`ConvertReservationForm.tsx`) les préremplit
+   * automatiquement depuis le dernier état connu du véhicule (`GET /api/vehicles/[id]/
+   * last-known-state`, même source que le formulaire de création directe), de sorte qu'en usage
+   * normal via l'interface le contrôle de retour reste effectif. */
+  startOdometer?: number;
+  startFuelLevel?: number;
   /** Sprint 19 : montant total explicite (centimes), prioritaire sur pricePerDay × jours —
    * voir CreateLocationInput.totalPrice, src/lib/locations.ts. */
   totalPrice?: number;
@@ -194,6 +209,12 @@ export async function POST(request: Request, { params }: RouteParams) {
   }
   if (body.totalPrice !== undefined && (!Number.isInteger(body.totalPrice) || body.totalPrice <= 0)) {
     return NextResponse.json({ error: "totalPrice doit être un entier positif (centimes)." }, { status: 400 });
+  }
+  // Correctif (finding F-3) : même contrôle que "startOdometer"/"endOdometer"/"deposit" sur
+  // POST /api/locations (src/app/api/locations/route.ts) — startFuelLevel reste validé par
+  // createLocation lui-même (validateFuelLevel, InvalidFuelLevelError), pas ici.
+  if (body.startOdometer !== undefined && (!Number.isInteger(body.startOdometer) || body.startOdometer < 0)) {
+    return NextResponse.json({ error: "startOdometer doit être un entier positif ou nul." }, { status: 400 });
   }
 
   const clientInput = body.client ?? {};
@@ -398,6 +419,9 @@ export async function POST(request: Request, { params }: RouteParams) {
           notes: body.notes ?? reservation.notes ?? undefined,
           deposit: body.deposit,
           pricePerDay: body.pricePerDay,
+          // Correctif (finding F-3) : voir le commentaire de ConvertBody.startOdometer plus haut.
+          startOdometer: body.startOdometer,
+          startFuelLevel: body.startFuelLevel,
         },
         tx
       );
@@ -523,6 +547,11 @@ export async function POST(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: error.message }, { status: 404 });
     }
     if (error instanceof MissingPriceError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    // Correctif (finding F-3) : startFuelLevel validé par createLocation (validateFuelLevel),
+    // même statut/forme de réponse que sur POST /api/locations.
+    if (error instanceof InvalidFuelLevelError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     // Sprint 29 (DOMAINRULES.md section 44, point 16) : la conversion réutilise createLocation

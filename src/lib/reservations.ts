@@ -582,13 +582,33 @@ function excelSerialToDate(serial: number): Date {
  * (souvent comme MM/DD/YYYY ou pas du tout). */
 const FRENCH_DATE_RE = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/;
 
+/** Borne basse de plausibilité, même valeur que la borne déjà appliquée à `Vehicle.year`
+ * (`POST`/`PATCH /api/vehicles*`, `src/app/api/vehicles/route.ts`) — réutilisée ici pour rester
+ * cohérent avec la seule autre borne de date/année existante dans le projet, plutôt que
+ * d'inventer une valeur arbitraire propre à l'import.
+ *
+ * Correctif (validation manuelle 2026-08-25, finding F-2) : une cellule date ayant perdu son
+ * formatage Excel (copier-coller, cellule vidée puis retapée en numérique...) arrive alors comme
+ * un simple nombre — `0` en particulier, le cas le plus fréquent, se convertit fidèlement via
+ * `excelSerialToDate` en 1899-12-30 ("jour 0" de l'époque Excel, voir le commentaire ci-dessus)
+ * — une date syntaxiquement valide mais jamais légitime pour une réservation réelle, silencieusement
+ * acceptée jusqu'ici. Une valeur numérique négative produit le même problème (dates encore
+ * antérieures). 1900 reste extrêmement permissif pour toute réservation historique réelle
+ * qu'un broker voudrait importer (aucune borne haute ajoutée, hors périmètre de ce correctif) —
+ * seule la zone manifestement corrompue (avant 1900) est rejetée. */
+const MIN_PLAUSIBLE_YEAR = 1900;
+
+function isPlausibleDate(date: Date): boolean {
+  return !Number.isNaN(date.getTime()) && date.getUTCFullYear() >= MIN_PLAUSIBLE_YEAR;
+}
+
 function cellToDate(value: unknown): Date | undefined {
   if (value instanceof Date) {
-    return value;
+    return isPlausibleDate(value) ? value : undefined;
   }
   if (typeof value === "number" && Number.isFinite(value)) {
     const date = excelSerialToDate(value);
-    return Number.isNaN(date.getTime()) ? undefined : date;
+    return isPlausibleDate(date) ? date : undefined;
   }
   const str = cellToString(value);
   if (!str) {
@@ -598,10 +618,10 @@ function cellToDate(value: unknown): Date | undefined {
   if (frenchMatch) {
     const [, day, month, year] = frenchMatch;
     const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
-    return Number.isNaN(date.getTime()) ? undefined : date;
+    return isPlausibleDate(date) ? date : undefined;
   }
   const date = new Date(str);
-  return Number.isNaN(date.getTime()) ? undefined : date;
+  return isPlausibleDate(date) ? date : undefined;
 }
 
 /** Extrait "HH:mm" d'une cellule heure — gère les trois formes qu'exceljs peut renvoyer pour

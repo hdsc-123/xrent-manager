@@ -50,7 +50,7 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
-  { href: "/dashboard/tenants", label: "Tenants", icon: Building2 },
+  { href: "/dashboard/tenants", label: "Tenants", icon: Building2, adminOnly: true },
   { href: "/dashboard/agencies", label: "Agences", icon: Store, permission: "agencies.view" },
   { href: "/dashboard/vehicles", label: "Véhicules", icon: Car, permission: "vehicles.view" },
   { href: "/dashboard/locations", label: "Locations", icon: CalendarRange, permission: "locations.view" },

@@ -977,6 +977,187 @@ describe("POST /api/reservations/import", () => {
       expect(persisted?.endDate.toISOString().slice(0, 10)).toBe("2030-07-22");
     });
 
+    it("sérial Excel valide 46400 est accepté et converti correctement (2027-01-13)", async () => {
+      const voucherNumber = `V-SERIAL46400-${runId}`;
+      const rows = [
+        importRow({
+          voucherNumber,
+          clientFirstName: "Serial",
+          clientLastName: "Valide",
+          startDate: 46400,
+          endDate: 46405,
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.errors).toHaveLength(0);
+      expect(body.imported).toBe(1);
+
+      const persisted = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber } });
+      expect(persisted?.startDate.toISOString().slice(0, 10)).toBe("2027-01-13");
+      expect(persisted?.endDate.toISOString().slice(0, 10)).toBe("2027-01-18");
+    });
+
+    // Correctif (validation manuelle 2026-08-25, finding F-2) : une cellule date ayant perdu son
+    // formatage Excel (copier-coller, valeur vidée puis retapée en numérique...) arrivait comme
+    // un simple nombre, converti fidèlement par excelSerialToDate en une date syntaxiquement
+    // valide mais jamais légitime (0 → 1899-12-30, le "jour 0" de l'époque Excel — voir le
+    // commentaire de cellToDate/isPlausibleDate, src/lib/reservations.ts) — silencieusement
+    // acceptée et persistée comme réservation réelle jusqu'ici, aucune erreur de ligne reportée.
+    describe("date Excel numérique implausible (finding F-2)", () => {
+      it("cellule date à 0 (bug 1899-12-30) : rejetée avec une erreur de ligne explicite, mode commit", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-ZERODATE-${runId}`,
+            clientFirstName: "Zero",
+            clientLastName: "Date",
+            startDate: 0,
+            endDate: 46405,
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toContain("Colonne invalide: Date de départ");
+        expect(body.errors[0].error).not.toContain("manquante");
+
+        // Aucune ligne invalide persistée (pas de réservation avec une date de 1899, ni
+        // aucune trace de cette ligne) — vérification directe en base, pas seulement la
+        // réponse HTTP.
+        const persisted = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, clientFirstName: "Zero", clientLastName: "Date" },
+        });
+        expect(persisted).toBeNull();
+      });
+
+      it("cellule date à 0 : même rejet en mode aperçu (preview), sans écriture en base", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-ZERODATE-PREVIEW-${runId}`,
+            clientFirstName: "ZeroPreview",
+            clientLastName: "Date",
+            startDate: 0,
+            endDate: 46405,
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "preview");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toContain("Colonne invalide: Date de départ");
+
+        const persisted = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, clientFirstName: "ZeroPreview", clientLastName: "Date" },
+        });
+        expect(persisted).toBeNull();
+      });
+
+      it("valeur numérique négative : rejetée (date antérieure à 1900)", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-NEGDATE-${runId}`,
+            clientFirstName: "Negative",
+            clientLastName: "Date",
+            startDate: -100,
+            endDate: 46405,
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toContain("Colonne invalide: Date de départ");
+
+        const persisted = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, clientFirstName: "Negative", clientLastName: "Date" },
+        });
+        expect(persisted).toBeNull();
+      });
+
+      it("cellule endDate à 0 : la colonne fautive (Date de retour) est bien identifiée dans l'erreur", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-ZERODATE-END-${runId}`,
+            clientFirstName: "ZeroEnd",
+            clientLastName: "Date",
+            startDate: 46400,
+            endDate: 0,
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toContain("Colonne invalide: Date de retour");
+      });
+
+      it("date texte implausible (avant 1900) : rejetée avec le même message que les autres dates invalides", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-OLDTEXT-${runId}`,
+            clientFirstName: "Ancien",
+            clientLastName: "Texte",
+            startDate: "01/01/1850",
+            endDate: "2030-07-30",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toContain("Colonne invalide: Date de départ");
+      });
+
+      it("un fichier mêlant une ligne valide et une ligne à date 0 : la ligne valide est importée, seule l'invalide est rejetée", async () => {
+        const validVoucher = `V-MIXED-VALID-${runId}`;
+        const rows = [
+          importRow({
+            voucherNumber: validVoucher,
+            clientFirstName: "Valide",
+            clientLastName: "Ligne",
+            startDate: 46400,
+            endDate: 46405,
+          }),
+          importRow({
+            voucherNumber: `V-MIXED-INVALID-${runId}`,
+            clientFirstName: "Invalide",
+            clientLastName: "Ligne",
+            startDate: 0,
+            endDate: 46405,
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(1);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].row).toBe(3); // ligne 1 = en-têtes, ligne 2 = valide, ligne 3 = invalide
+
+        const persistedValid = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, voucherNumber: validVoucher },
+        });
+        expect(persistedValid).not.toBeNull();
+        const persistedInvalid = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, clientFirstName: "Invalide", clientLastName: "Ligne" },
+        });
+        expect(persistedInvalid).toBeNull();
+      });
+    });
+
     it("accepte une date au format DD/MM/YYYY en texte brut", async () => {
       const voucherNumber = `V-FR-DATE-${runId}`;
       const rows = [
@@ -1748,6 +1929,203 @@ describe("POST /api/reservations/[id]/convert", () => {
         ),
       });
       expect(response.status).toBe(400);
+    });
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // Correctif (validation manuelle 2026-08-25, finding F-3) : kilométrage/carburant de départ à
+  // la conversion — jusqu'ici jamais collectés par ce parcours, laissant Location.startOdometer
+  // toujours null et désactivant silencieusement le contrôle du kilométrage au retour
+  // (assertValidOdometer, src/lib/location-return.ts). Voir le commentaire de ConvertBody.
+  // startOdometer (src/app/api/reservations/[id]/convert/route.ts).
+  // -------------------------------------------------------------------------------------------
+  describe("kilométrage/carburant de départ à la conversion (finding F-3)", () => {
+    it("startOdometer/startFuelLevel valides sont persistés sur le contrat créé", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "OdometreValide",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2036-02-01",
+        endDate: "2036-02-03",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation, { startOdometer: 12000, startFuelLevel: 80 })),
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.location.startOdometer).toBe(12000);
+      expect(body.location.startFuelLevel).toBe(80);
+    });
+
+    it("startOdometer/startFuelLevel restent optionnels (comportement identique à la création directe, DOMAINRULES.md section 40 point 2) : la conversion réussit sans eux", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "OdometreAbsent",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2036-02-05",
+        endDate: "2036-02-07",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation)),
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.location.startOdometer).toBeNull();
+    });
+
+    it("refuse (400) un startOdometer négatif", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "OdometreNegatif",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2036-02-10",
+        endDate: "2036-02-12",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation, { startOdometer: -50 })),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("refuse (400) un startOdometer décimal (pas un entier)", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "OdometreDecimal",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2036-02-14",
+        endDate: "2036-02-16",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation, { startOdometer: 12000.5 })),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("refuse (400) un startFuelLevel hors de la plage 0-100", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "CarburantInvalide",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2036-02-18",
+        endDate: "2036-02-20",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation, { startFuelLevel: 150 })),
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toContain("carburant");
+    });
+
+    it("bout en bout : un contrat converti avec startOdometer refuse ensuite un retour à kilométrage inférieur ou égal, accepte un kilométrage strictement supérieur", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "RetourE2E",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2036-03-01",
+        endDate: "2036-03-03",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const convertResponse = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation, { startOdometer: 30000, startFuelLevel: 70 })),
+      });
+      expect(convertResponse.status).toBe(201);
+      const { location } = await convertResponse.json();
+      expect(location.startOdometer).toBe(30000);
+
+      await apiFetch(`/api/locations/${location.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ status: "CONFIRMED" }),
+      });
+      await apiFetch(`/api/locations/${location.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ status: "ACTIVE" }),
+      });
+
+      const equalReturn = await apiFetch(`/api/locations/${location.id}/return`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ endOdometer: 30000, endFuelLevel: 60, damages: [] }),
+      });
+      expect(equalReturn.status).toBe(400);
+
+      const lowerReturn = await apiFetch(`/api/locations/${location.id}/return`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ endOdometer: 29999, endFuelLevel: 60, damages: [] }),
+      });
+      expect(lowerReturn.status).toBe(400);
+
+      const higherReturn = await apiFetch(`/api/locations/${location.id}/return`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ endOdometer: 30150, endFuelLevel: 60, damages: [] }),
+      });
+      expect(higherReturn.status).toBe(200);
+      const returned = await higherReturn.json();
+      expect(returned.location.status).toBe("COMPLETED");
+      expect(returned.location.endOdometer).toBe(30150);
+    });
+
+    it("limite historique documentée : un contrat converti AVANT ce correctif (startOdometer null) n'a toujours aucun contrôle de retour — comportement inchangé, pas falsifié rétroactivement", async () => {
+      // Reproduit fidèlement l'état d'un contrat converti par l'ancien code (sans startOdometer
+      // dans le corps de requête) — voir le test "restent optionnels" ci-dessus, qui prouve que
+      // ce cas produit bien startOdometer: null aujourd'hui encore lorsqu'il n'est pas fourni.
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "HistoriqueSansOdometre",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2036-03-05",
+        endDate: "2036-03-07",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const convertResponse = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation)),
+      });
+      const { location } = await convertResponse.json();
+      expect(location.startOdometer).toBeNull();
+
+      await apiFetch(`/api/locations/${location.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ status: "CONFIRMED" }),
+      });
+      await apiFetch(`/api/locations/${location.id}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ status: "ACTIVE" }),
+      });
+
+      // Sans startOdometer connu, assertValidOdometer (src/lib/location-return.ts) ne peut pas
+      // comparer — un retour à n'importe quel kilométrage reste accepté, limite historique
+      // documentée (TESTREPORT.md), jamais résolue rétroactivement par falsification de données.
+      const anyReturn = await apiFetch(`/api/locations/${location.id}/return`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ endOdometer: 1, endFuelLevel: 50, damages: [] }),
+      });
+      expect(anyReturn.status).toBe(200);
     });
   });
 });

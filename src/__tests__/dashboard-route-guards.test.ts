@@ -724,6 +724,97 @@ describe("Tenants — /dashboard/tenants/[id]", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
+// Tenants — /dashboard/tenants (liste, ADMIN uniquement) — correctif validation manuelle
+// 2026-08-25 (finding F-1) : cette page n'avait jusqu'ici aucune garde de rôle, contrairement à
+// ses pages sœurs strictement réservées ADMIN (/dashboard/users, /dashboard/invitations,
+// /dashboard/permission-groups, /dashboard/permissions, /dashboard/audit). Même patron que
+// /dashboard/users/invitations/permission-groups : redirect() appelé dans le Server Component
+// de la page elle-même. Distinct de la describe "Tenants — /dashboard/tenants/[id]" ci-dessus
+// (page de détail, dynamique, couverte par le garde centralisé de route-guards.ts/proxy.ts, qui
+// s'exécute avant tout rendu et peut donc renvoyer un vrai 3xx top-level).
+//
+// Particularité vérifiée empiriquement (reproduite à l'identique sur /dashboard/users,
+// /dashboard/invitations et /dashboard/permission-groups, AVANT toute modification de ce
+// sprint — donc un comportement préexistant de l'architecture, pas une régression introduite
+// ici) : `dashboard/loading.tsx` fait démarrer le streaming de la réponse avec un statut 200
+// avant que le Server Component de la page (et son redirect()) n'ait fini de s'évaluer — une
+// fois le flux démarré, le code HTTP top-level ne peut plus changer (voir le commentaire de
+// src/proxy.ts et de src/lib/route-guards.ts). `redirect()` s'exécute néanmoins bien
+// côté serveur : il est encodé dans la charge RSC (marqueur `NEXT_REDIRECT;replace;/dashboard;
+// 307;`) que le routeur client exécute immédiatement, et Next.js ajoute en plus un
+// `<meta http-equiv="refresh">` de secours pour un client sans JavaScript — dans les deux cas,
+// AUCUN contenu protégé n'est jamais renvoyé. Un `fetch()`/curl brut (sans exécution JS, comme
+// ce test) observe donc un 200 — vérifié fidèlement testable : absence de toute donnée protégée
+// dans le corps ET présence du marqueur de redirection réellement déclenché côté serveur.
+//
+// Le `tenantId`/nom du tenant ne peuvent PAS servir de marqueur d'absence de fuite ici : ils
+// apparaissent légitimement sur CHAQUE page du dashboard (session client-side du MEMBER lui-même
+// — son propre tenantId — et en-tête affichant le nom de l'organisation), qu'il ait accès à
+// /dashboard/tenants ou non. Seul le `slug` du tenant est spécifique au contenu de
+// `TenantsTable` (colonne dédiée, voir TenantsTable.tsx) et ne doit donc jamais apparaître si la
+// page est correctement refusée.
+// ---------------------------------------------------------------------------------------------
+
+describe("Tenants — /dashboard/tenants (liste, ADMIN-only)", () => {
+  it("ADMIN autorisé → 200, contenu du tenant (slug) affiché", async () => {
+    const label = "tnlistadmin";
+    const tenant = await setupTenant(label);
+    const slug = `guard-${label}-${runId}`;
+    const response = await fetchPage("/dashboard/tenants", tenant.admin.sessionCookie);
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain(slug);
+  });
+
+  it("MEMBER avec des permissions (mais non-ADMIN) → redirect() serveur déclenché, slug du tenant jamais rendu", async () => {
+    const label = "tnlistmember";
+    const tenant = await setupTenant(label);
+    const slug = `guard-${label}-${runId}`;
+    const member = await createScopedMember(tenant, label, ["clients.view", "vehicles.view"], [tenant.agencyId]);
+    const response = await fetchPage("/dashboard/tenants", member.sessionCookie);
+    const body = await response.text();
+    expect(body).not.toContain(slug);
+    expect(body).toMatch(/NEXT_REDIRECT[^"]*\/dashboard/);
+  });
+
+  it("MEMBER sans aucune permission → redirect() serveur déclenché, slug du tenant jamais rendu", async () => {
+    const label = "tnlistnoperm";
+    const tenant = await setupTenant(label);
+    const slug = `guard-${label}-${runId}`;
+    const member = await createScopedMember(tenant, label, [], [tenant.agencyId]);
+    const response = await fetchPage("/dashboard/tenants", member.sessionCookie);
+    const body = await response.text();
+    expect(body).not.toContain(slug);
+    expect(body).toMatch(/NEXT_REDIRECT[^"]*\/dashboard/);
+  });
+
+  it("accès direct à l'URL sans passer par la navigation — même refus (garde serveur, pas seulement l'entrée de menu masquée)", async () => {
+    const label = "tnlistdirect";
+    const tenant = await setupTenant(label);
+    const slug = `guard-${label}-${runId}`;
+    const member = await createScopedMember(tenant, label, ["clients.view"], [tenant.agencyId]);
+    // Aucun Referer/cookie de navigation particulier : simule une saisie d'URL directe.
+    const response = await apiFetch("/dashboard/tenants", {
+      headers: { Cookie: member.sessionCookie },
+      redirect: "manual",
+    });
+    const body = await response.text();
+    expect(body).not.toContain(slug);
+    expect(body).toMatch(/NEXT_REDIRECT[^"]*\/dashboard/);
+  });
+
+  it("isolation tenant intacte pour un ADMIN : ne voit jamais le tenant d'un autre ADMIN sur cette liste", async () => {
+    const tenantA = await setupTenant("tnlistisoA");
+    const tenantB = await setupTenant("tnlistisoB");
+    const response = await fetchPage("/dashboard/tenants", tenantA.admin.sessionCookie);
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain(tenantA.admin.tenantId);
+    expect(body).not.toContain(tenantB.admin.tenantId);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
 // Utilisateurs — /dashboard/users/[id] (block) et /permissions (redirect) — ADMIN uniquement
 // ---------------------------------------------------------------------------------------------
 
