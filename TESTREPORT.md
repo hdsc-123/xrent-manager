@@ -1899,6 +1899,36 @@ Recherche exhaustive menée avant correction pour identifier ces quatre cas (et 
 
 **Aucun test désactivé, aucun `.only`/`.skip`, aucun retry ni délai artificiel, aucune assertion supprimée.**
 
+## Second passage de validation manuelle — correction définitive F-2/F-3 (2026-08-25)
+
+**Périmètre** : un contrôle de qualité ultérieur au correctif ci-dessus (findings F-1/F-2/F-3) a jugé les corrections F-2 et F-3 insuffisantes en l'état — voir DOMAINRULES.md section 68 pour le détail complet des deux règles révisées. Ce rapport documente uniquement ce second passage ; F-1 n'était pas concerné (non rouvert).
+
+**F-2 — corrigé et vérifié (mécanisme révisé)** : `cellToDate()` (`src/lib/reservations.ts`) rejette désormais un sérial Excel numérique directement sur sa valeur brute (`isRejectedExcelSerial` : `0`, négatif, ou non fini) — **avant** tout appel à `excelSerialToDate`, donc sans jamais dépendre d'une borne d'année (ni 1900 ni 1990) pour ce cas précis, contrairement au premier passage qui rejetait après coup sur `Vehicle.year`-style `isPlausibleDate(excelSerialToDate(value))`. La borne `MIN_PLAUSIBLE_YEAR = 1900` subsiste uniquement comme filet de sécurité pour les cellules `Date`/texte déjà converties hors de notre contrôle (exceljs, `new Date(str)`) — jamais le mécanisme de rejet de `0`. Aperçu et commit passent par le même code (`parseReservationImportRow` → `cellToDate`), donc la même décision ; aucune ligne invalide n'atteint Prisma.
+
+**F-3 — corrigé et vérifié (règle révisée, divergence assumée)** : `startOdometer` est désormais **obligatoire** (pas seulement validé s'il est fourni) sur `POST /api/reservations/[id]/convert` — son absence, ou une valeur non entière/négative, est refusée en `400` avant toute écriture. Ceci diverge désormais délibérément de `POST /api/locations` (création directe), qui reste inchangée (`startOdometer` toujours optionnel là-bas) — décision explicite du propriétaire du projet, qui révise la parité stricte retenue au premier passage. `ConvertReservationForm.tsx` exige désormais le champ côté client (préremplissage automatique conservé, correction manuelle possible/nécessaire si le véhicule n'a aucun historique exploitable). `startFuelLevel` reste optionnel sur les deux parcours, inchangé.
+
+**Fichiers modifiés** : `src/lib/reservations.ts` ; `src/app/api/reservations/[id]/convert/route.ts` ; `src/app/dashboard/reservations/[id]/convert/ConvertReservationForm.tsx` ; `src/__tests__/reservations.test.ts` ; `DOMAINRULES.md` ; `INCIDENTS.md` ; ce document.
+
+**Tests modifiés/ajoutés (`src/__tests__/reservations.test.ts`)** :
+- Les 3 helpers locaux `convertBody()` (describes « POST /api/reservations/[id]/convert », « Sprint 26A », « Sprint 26C, Finding C ») fournissent désormais `startOdometer: 10000` par défaut (44 sites d'appel), pour ne pas casser les tests qui ne portent pas sur ce champ maintenant qu'il est obligatoire — un site d'appel construit manuellement (hors helper, describe Sprint 23) corrigé de la même façon.
+- « restent optionnels... la conversion réussit sans eux » **remplacé** par « refuse (400) une conversion sans startOdometer » (vérifie aussi qu'aucune Location/Reservation.convertedLocationId n'est créée en cas de refus).
+- **Nouveau** : « refuse (400) une conversion sans startOdometer pour un véhicule neuf sans kilométrage exploitable connu » — crée un véhicule sans historique, confirme que `GET .../last-known-state` renvoie bien `odometer: null`, puis que la conversion sans valeur manuelle est refusée.
+- « limite historique documentée » **réécrit** : `POST .../convert` refusant désormais toute conversion sans `startOdometer`, il est devenu impossible de reproduire un contrat historique (`startOdometer: null`) en passant par la route — le test appelle directement `createLocation()` (`src/lib/locations.ts`, qui n'a jamais imposé cette règle, seule la route le fait) pour reconstituer fidèlement l'état laissé par l'ancien code, sans falsifier de données réelles.
+- Tests F-2 (describe « date Excel numérique implausible (finding F-2) ») : inchangés dans leur formulation, revérifiés verts contre la nouvelle implémentation de `cellToDate()` (comportement observable identique, mécanisme interne différent).
+
+**Résultats** :
+- Fichier ciblé `src/__tests__/reservations.test.ts` seul : **104/104, 2 exécutions consécutives, 0 échec.**
+- `node scripts/test-grouped.mjs` (commande de référence) : **2 exécutions consécutives, `1270/1270` aux deux, 0 timeout, 0 redémarrage watchdog, 0 processus résiduel.**
+- `npx vitest run`/`npm run test` (commande officielle `package.json`) : **3 exécutions — 1270/1270, puis 22 échecs de signature réseau pure (`ECONNREFUSED`/`SocketError`, fichiers sans rapport avec F-2/F-3), puis de nouveau 1270/1270.** Voir INCIDENTS.md, complément du 2026-08-25 à INC-3, pour l'analyse complète : aucun des 22 échecs n'est un échec d'assertion métier, tous répartis sur des fichiers non touchés par cette tâche — non reproductible de façon stable, statut INC-3 révisé de « clôturé » à « très majoritairement stable, non garanti à 100 % pour l'usage direct ». **La suite officielle n'est donc pas présentée comme 100 % verte à coup sûr sur `npx vitest run`** ; le runner recommandé (`node scripts/test-grouped.mjs`) l'est, de façon reproductible.
+- `npx tsc --noEmit` : vert. `npm run lint` (ESLint) : vert. `npx prisma validate` : vert. `npm run build` : vert.
+- **Vérification API réelle** (serveur `next dev` réel, port 3000, base `xrent_dev`, tenant/agence/véhicule jetables préfixés `ManualCheck`/`MC-`, script Node jetable supprimé après usage, aucune dépendance ajoutée) — 12/12 vérifications vertes : import Excel avec `Date de départ = 0` rejeté en commit (erreur « Colonne invalide: Date de départ », `imported: 0`) et en preview ; date sérial valide (`46400`) acceptée ; aucune réservation créée pour les lignes à `0` (vérifié par recherche après coup) ; conversion sans `startOdometer` refusée (400, message citant `startOdometer`) ; conversion avec `startOdometer` valide acceptée et persistée ; retour à kilométrage égal/inférieur refusés (400) ; retour à kilométrage supérieur accepté (200, `COMPLETED`).
+
+**Limite historique** : inchangée (voir DOMAINRULES.md section 68) — les contrats convertis avant ce correctif, y compris pendant la courte fenêtre où seul le premier passage était en vigueur, conservent `startOdometer: null`, non corrigé rétroactivement.
+
+**Données métier modifiées** : aucune. Un tenant/agence/véhicule/quelques réservations et un contrat jetables (préfixe `ManualCheck`/`MC-`) ont été créés dans `xrent_dev` par le script de vérification manuelle de cette tâche — laissés en place (même principe que les données `QA-` déjà présentes), clairement identifiables pour suppression ultérieure si souhaité. Aucune donnée QA existante n'a été touchée ni supprimée.
+
+**Aucun commit créé, aucun push effectué pendant cette tâche** (instruction explicite du propriétaire du projet — commit/push dans un prompt séparé après revue de ce rapport).
+
 ## 4. Format attendu des futurs rapports
 
 Chaque exécution future de la suite de tests devra être consignée dans ce document (ou dans un rapport daté associé) selon le format suivant :

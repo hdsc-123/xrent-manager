@@ -80,14 +80,22 @@ interface ConvertBody {
    * du contrat — jusqu'ici jamais collectés par ce parcours (contrairement à POST /api/locations,
    * la création directe), laissant `Location.startOdometer` toujours `null` pour tout contrat
    * issu d'une conversion, ce qui désactivait silencieusement le contrôle du kilométrage de
-   * retour (`assertValidOdometer`, src/lib/location-return.ts). Optionnels ici comme sur le
-   * parcours direct (DOMAINRULES.md section 40, point 2 : décision délibérée — un contrat capture
-   * un état réel constaté au comptoir, jamais verrouillé), mêmes règles de validation
-   * (`startOdometer` : entier positif ou nul ; `startFuelLevel` : entier 0-100, voir
-   * InvalidFuelLevelError). Le formulaire (`ConvertReservationForm.tsx`) les préremplit
-   * automatiquement depuis le dernier état connu du véhicule (`GET /api/vehicles/[id]/
-   * last-known-state`, même source que le formulaire de création directe), de sorte qu'en usage
-   * normal via l'interface le contrôle de retour reste effectif. */
+   * retour (`assertValidOdometer`, src/lib/location-return.ts).
+   *
+   * Re-correctif (validation manuelle 2026-08-25, second passage finding F-3) : rendu
+   * OBLIGATOIRE spécifiquement sur ce parcours — décision explicite du propriétaire du projet
+   * qui révise la parité voulue avec la création directe (DOMAINRULES.md section 40 point 2,
+   * toujours optionnel là-bas) : aucun nouveau contrat issu d'une conversion ne doit pouvoir
+   * exister avec un kilométrage de départ absent, pour que le contrôle de retour
+   * (`assertValidOdometer`) reste systématiquement effectif sur tout contrat converti à partir de
+   * ce correctif. Le formulaire (`ConvertReservationForm.tsx`) le préremplit automatiquement
+   * depuis le dernier état connu du véhicule (`GET /api/vehicles/[id]/last-known-state`) et exige
+   * désormais une valeur avant soumission ; si le véhicule n'a aucun kilométrage exploitable
+   * connu, l'utilisateur autorisé doit le saisir manuellement — la conversion est refusée (400)
+   * tant qu'aucune valeur valide n'est fournie. Les contrats convertis avant ce correctif
+   * conservent `startOdometer: null` en base, non corrigés rétroactivement (voir DOMAINRULES.md
+   * section 68, "limite historique assumée"). `startFuelLevel` reste optionnel (règle de domaine
+   * inchangée), seulement validé s'il est fourni. */
   startOdometer?: number;
   startFuelLevel?: number;
   /** Sprint 19 : montant total explicite (centimes), prioritaire sur pricePerDay × jours —
@@ -210,11 +218,17 @@ export async function POST(request: Request, { params }: RouteParams) {
   if (body.totalPrice !== undefined && (!Number.isInteger(body.totalPrice) || body.totalPrice <= 0)) {
     return NextResponse.json({ error: "totalPrice doit être un entier positif (centimes)." }, { status: 400 });
   }
-  // Correctif (finding F-3) : même contrôle que "startOdometer"/"endOdometer"/"deposit" sur
-  // POST /api/locations (src/app/api/locations/route.ts) — startFuelLevel reste validé par
-  // createLocation lui-même (validateFuelLevel, InvalidFuelLevelError), pas ici.
-  if (body.startOdometer !== undefined && (!Number.isInteger(body.startOdometer) || body.startOdometer < 0)) {
-    return NextResponse.json({ error: "startOdometer doit être un entier positif ou nul." }, { status: 400 });
+  // Re-correctif (finding F-3, second passage) : startOdometer est désormais OBLIGATOIRE sur ce
+  // parcours (voir le commentaire de ConvertBody.startOdometer plus haut) — même contrôle de
+  // type/plage que "endOdometer"/"deposit" sur POST /api/locations
+  // (src/app/api/locations/route.ts), mais l'absence de valeur est ici explicitement refusée
+  // plutôt que silencieusement acceptée comme `undefined`. startFuelLevel reste optionnel,
+  // validé par createLocation lui-même (validateFuelLevel, InvalidFuelLevelError), pas ici.
+  if (body.startOdometer === undefined || !Number.isInteger(body.startOdometer) || body.startOdometer < 0) {
+    return NextResponse.json(
+      { error: "startOdometer est requis et doit être un entier positif ou nul pour convertir une réservation." },
+      { status: 400 }
+    );
   }
 
   const clientInput = body.client ?? {};

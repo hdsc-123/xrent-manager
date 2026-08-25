@@ -239,6 +239,8 @@ describe("Sprint 23 — statut NO_SHOW et réinitialisation à zéro réservée 
         startDate: "2030-06-01T10:00:00.000Z",
         endDate: "2030-06-03T10:00:00.000Z",
         useExistingClientId: clientId,
+        // Correctif F-3 (second passage, DOMAINRULES.md section 68) : startOdometer requis.
+        startOdometer: 10000,
         payment: { deferred: true },
       }),
     });
@@ -1304,6 +1306,12 @@ describe("POST /api/reservations/[id]/convert", () => {
       vehicleId: vehicleAId,
       startDate: reservation.startDate,
       endDate: reservation.endDate,
+      // Correctif F-3 (second passage, DOMAINRULES.md section 68) : startOdometer est
+      // désormais obligatoire côté serveur — valeur par défaut réaliste ici pour ne pas
+      // polluer les tests qui ne portent pas spécifiquement sur ce champ (voir le describe
+      // dédié "kilométrage/carburant de départ à la conversion (finding F-3)" plus bas, qui
+      // l'écrase explicitement via overrides pour couvrir les cas manquant/invalide).
+      startOdometer: 10000,
       client: {
         firstName: reservation.clientFirstName,
         lastName: reservation.clientLastName,
@@ -1960,7 +1968,12 @@ describe("POST /api/reservations/[id]/convert", () => {
       expect(body.location.startFuelLevel).toBe(80);
     });
 
-    it("startOdometer/startFuelLevel restent optionnels (comportement identique à la création directe, DOMAINRULES.md section 40 point 2) : la conversion réussit sans eux", async () => {
+    // Re-correctif (second passage, DOMAINRULES.md section 68) : startOdometer est désormais
+    // OBLIGATOIRE à la conversion — divergence assumée avec la création directe (POST
+    // /api/locations, toujours optionnel là-bas). Ce test remplace l'ancien test "restent
+    // optionnels" (comportement révisé, voir git history) : une conversion sans startOdometer
+    // doit désormais être refusée, jamais créer de contrat avec startOdometer: null.
+    it("refuse (400) une conversion sans startOdometer — aucun nouveau contrat converti ne doit pouvoir exister sans kilométrage de départ valide", async () => {
       const createResponse = await createReservation(adminA, {
         clientFirstName: "OdometreAbsent",
         clientLastName: `Convert-${runId}`,
@@ -1972,11 +1985,72 @@ describe("POST /api/reservations/[id]/convert", () => {
       const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
-        body: JSON.stringify(convertBody(reservation)),
+        body: JSON.stringify(convertBody(reservation, { startOdometer: undefined })),
       });
-      expect(response.status).toBe(201);
+      expect(response.status).toBe(400);
       const body = await response.json();
-      expect(body.location.startOdometer).toBeNull();
+      expect(body.error).toContain("startOdometer");
+
+      // La réservation n'a pas été convertie (rollback complet, aucune écriture partielle) et
+      // aucune Location n'a été créée pour ce client.
+      const persistedReservation = await prisma.reservation.findUnique({ where: { id: reservation.id } });
+      expect(persistedReservation?.status).toBe("PENDING");
+      expect(persistedReservation?.convertedLocationId).toBeNull();
+      const orphanLocation = await prisma.location.findFirst({
+        where: { tenantId: adminA.tenantId, client: { firstName: "OdometreAbsent", lastName: `Convert-${runId}` } },
+      });
+      expect(orphanLocation).toBeNull();
+    });
+
+    // Sur-mesure véhicule sans historique exploitable : le préremplissage automatique
+    // (GET /api/vehicles/[id]/last-known-state) peut lui-même renvoyer odometer: null pour un
+    // véhicule neuf sans Location/VehicleTransfer/VehicleTrip antérieur et sans
+    // currentOdometer connu — le serveur doit refuser la conversion dans ce cas comme dans
+    // n'importe quel autre cas d'omission (même contrôle, indépendant de la cause de
+    // l'absence de valeur).
+    it("refuse (400) une conversion sans startOdometer pour un véhicule neuf sans kilométrage exploitable connu", async () => {
+      const freshVehicleResponse = await apiFetch("/api/vehicles", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({
+          agencyId: agencyA1Id,
+          name: "Vehicule Neuf F3",
+          licensePlate: `RES-F3-${runId}`,
+          make: "Renault",
+          model: "Clio",
+          year: 2026,
+          category: "Citadine",
+          pricePerDay: 5000,
+          chassisNumber: `VF1F3${Math.floor(Math.random() * 1_000_000)}`,
+          color: "Blanc",
+          doors: 5,
+          seats: 5,
+          horsepower: 6,
+          powerKW: 75,
+          engineSize: 1.5,
+        }),
+      });
+      const freshVehicleId = (await freshVehicleResponse.json()).vehicle.id;
+
+      const lastKnownState = await apiFetch(`/api/vehicles/${freshVehicleId}/last-known-state`, {
+        headers: { Cookie: adminA.sessionCookie },
+      });
+      expect((await lastKnownState.json()).odometer).toBeNull();
+
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "VehiculeNeuf",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2036-02-08",
+        endDate: "2036-02-09",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation, { vehicleId: freshVehicleId, startOdometer: undefined })),
+      });
+      expect(response.status).toBe(400);
     });
 
     it("refuse (400) un startOdometer négatif", async () => {
@@ -2087,24 +2161,33 @@ describe("POST /api/reservations/[id]/convert", () => {
     });
 
     it("limite historique documentée : un contrat converti AVANT ce correctif (startOdometer null) n'a toujours aucun contrôle de retour — comportement inchangé, pas falsifié rétroactivement", async () => {
-      // Reproduit fidèlement l'état d'un contrat converti par l'ancien code (sans startOdometer
-      // dans le corps de requête) — voir le test "restent optionnels" ci-dessus, qui prouve que
-      // ce cas produit bien startOdometer: null aujourd'hui encore lorsqu'il n'est pas fourni.
-      const createResponse = await createReservation(adminA, {
-        clientFirstName: "HistoriqueSansOdometre",
-        clientLastName: `Convert-${runId}`,
-        startDate: "2036-03-05",
-        endDate: "2036-03-07",
+      // POST /api/reservations/[id]/convert refuse désormais toute conversion sans
+      // startOdometer (voir test ci-dessus) : il est donc impossible de reproduire un contrat
+      // historique en passant par la route elle-même. On simule fidèlement l'état laissé par
+      // l'ancien code en appelant directement `createLocation` (src/lib/locations.ts) sans
+      // startOdometer — cette fonction, elle, n'a jamais imposé sa présence (seule la route
+      // l'exige désormais) : c'est exactement le chemin qu'empruntait une conversion avant ce
+      // correctif. Aucune donnée réelle n'est falsifiée : ce test construit son propre
+      // contrat de test pour représenter l'état historique, il ne modifie aucun contrat
+      // existant.
+      const historicalClient = await createClient({
+        tenantId: adminA.tenantId,
+        name: `Historique SansOdometre ${runId}`,
+        firstName: "HistoriqueSansOdometre",
+        lastName: `Convert-${runId}`,
+        licenseExpiryDate: new Date("2099-12-31"),
+        birthDate: new Date("1990-01-01"),
       });
-      const reservation = (await createResponse.json()).reservation;
-
-      const convertResponse = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
-        method: "POST",
-        headers: { Cookie: adminA.sessionCookie },
-        body: JSON.stringify(convertBody(reservation)),
+      const location = await createLocation({
+        tenantId: adminA.tenantId,
+        agencyId: agencyA1Id,
+        vehicleId: vehicleAId,
+        clientId: historicalClient.id,
+        startDate: new Date("2036-03-05"),
+        endDate: new Date("2036-03-07"),
       });
-      const { location } = await convertResponse.json();
       expect(location.startOdometer).toBeNull();
+      await createInvoice({ tenantId: adminA.tenantId, locationId: location.id });
 
       await apiFetch(`/api/locations/${location.id}`, {
         method: "PATCH",
@@ -2144,6 +2227,12 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
       vehicleId: vehicleAId,
       startDate: reservation.startDate,
       endDate: reservation.endDate,
+      // Correctif F-3 (second passage, DOMAINRULES.md section 68) : startOdometer est
+      // désormais obligatoire côté serveur — valeur par défaut réaliste ici pour ne pas
+      // polluer les tests qui ne portent pas spécifiquement sur ce champ (voir le describe
+      // dédié "kilométrage/carburant de départ à la conversion (finding F-3)" plus bas, qui
+      // l'écrase explicitement via overrides pour couvrir les cas manquant/invalide).
+      startOdometer: 10000,
       client: {
         firstName: reservation.clientFirstName,
         lastName: reservation.clientLastName,
@@ -2631,6 +2720,12 @@ describe("Sprint 26C, Finding C — verrou Vehicle en conversion, sous concurren
       vehicleId: vehicleAId,
       startDate: reservation.startDate,
       endDate: reservation.endDate,
+      // Correctif F-3 (second passage, DOMAINRULES.md section 68) : startOdometer est
+      // désormais obligatoire côté serveur — valeur par défaut réaliste ici pour ne pas
+      // polluer les tests qui ne portent pas spécifiquement sur ce champ (voir le describe
+      // dédié "kilométrage/carburant de départ à la conversion (finding F-3)" plus bas, qui
+      // l'écrase explicitement via overrides pour couvrir les cas manquant/invalide).
+      startOdometer: 10000,
       client: {
         firstName: reservation.clientFirstName,
         lastName: reservation.clientLastName,

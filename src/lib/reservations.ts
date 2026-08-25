@@ -585,30 +585,40 @@ const FRENCH_DATE_RE = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/;
 /** Borne basse de plausibilité, même valeur que la borne déjà appliquée à `Vehicle.year`
  * (`POST`/`PATCH /api/vehicles*`, `src/app/api/vehicles/route.ts`) — réutilisée ici pour rester
  * cohérent avec la seule autre borne de date/année existante dans le projet, plutôt que
- * d'inventer une valeur arbitraire propre à l'import.
- *
- * Correctif (validation manuelle 2026-08-25, finding F-2) : une cellule date ayant perdu son
- * formatage Excel (copier-coller, cellule vidée puis retapée en numérique...) arrive alors comme
- * un simple nombre — `0` en particulier, le cas le plus fréquent, se convertit fidèlement via
- * `excelSerialToDate` en 1899-12-30 ("jour 0" de l'époque Excel, voir le commentaire ci-dessus)
- * — une date syntaxiquement valide mais jamais légitime pour une réservation réelle, silencieusement
- * acceptée jusqu'ici. Une valeur numérique négative produit le même problème (dates encore
- * antérieures). 1900 reste extrêmement permissif pour toute réservation historique réelle
- * qu'un broker voudrait importer (aucune borne haute ajoutée, hors périmètre de ce correctif) —
- * seule la zone manifestement corrompue (avant 1900) est rejetée. */
+ * d'inventer une valeur arbitraire propre à l'import. Ne sert que de filet de sécurité pour les
+ * chemins où une conversion en `Date` a déjà eu lieu hors de notre contrôle (cellule `Date`
+ * renvoyée telle quelle par exceljs, ou texte parsé par `new Date(str)`) : ce n'est PAS le
+ * mécanisme de rejet du sérial numérique `0`/négatif — voir `cellToDate` ci-dessous (correctif
+ * F-2 du 2026-08-25), qui rejette ces valeurs directement sur le nombre brut, avant toute
+ * conversion en date, précisément pour ne pas dépendre d'une borne d'année accidentelle. */
 const MIN_PLAUSIBLE_YEAR = 1900;
 
 function isPlausibleDate(date: Date): boolean {
   return !Number.isNaN(date.getTime()) && date.getUTCFullYear() >= MIN_PLAUSIBLE_YEAR;
 }
 
+/** Correctif (validation manuelle 2026-08-25, finding F-2) : une cellule date ayant perdu son
+ * formatage Excel (copier-coller, cellule vidée puis retapée en numérique...) arrive alors comme
+ * un simple nombre — `0` en particulier, le cas le plus fréquent, se convertirait fidèlement via
+ * `excelSerialToDate` en 1899-12-30 ("jour 0" de l'époque Excel, voir le commentaire de
+ * `excelSerialToDate` plus haut), une date syntaxiquement valide mais jamais légitime pour une
+ * réservation réelle. Rejeté ici directement sur la valeur Excel brute — `0`, toute valeur
+ * négative, ou non finie (`NaN`/`Infinity`) — *avant* tout appel à `excelSerialToDate` : la
+ * cellule n'est jamais transformée en `Date` pour être ensuite filtrée après coup sur son année
+ * (fragile, dépendant d'une borne accidentelle qui pourrait changer ailleurs). */
+function isRejectedExcelSerial(value: number): boolean {
+  return !Number.isFinite(value) || value <= 0;
+}
+
 function cellToDate(value: unknown): Date | undefined {
   if (value instanceof Date) {
     return isPlausibleDate(value) ? value : undefined;
   }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const date = excelSerialToDate(value);
-    return isPlausibleDate(date) ? date : undefined;
+  if (typeof value === "number") {
+    if (isRejectedExcelSerial(value)) {
+      return undefined;
+    }
+    return excelSerialToDate(value);
   }
   const str = cellToString(value);
   if (!str) {

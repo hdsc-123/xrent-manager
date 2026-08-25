@@ -114,12 +114,15 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
   const [deposit, setDeposit] = useState("");
   const [notes, setNotes] = useState(reservation.notes ?? "");
 
-  // Kilométrage/carburant de départ (correctif finding F-3, validation manuelle 2026-08-25) :
-  // jusqu'ici absents de ce formulaire, contrairement à /dashboard/locations/new — un contrat
-  // issu d'une conversion n'avait donc jamais de Location.startOdometer connu, désactivant
-  // silencieusement le contrôle du kilométrage au retour. Optionnels et préremplis depuis le
-  // dernier état connu du véhicule (même source que la création directe, DOMAINRULES.md
-  // section 40 point 2), modifiables ensuite librement (jamais verrouillés).
+  // Kilométrage/carburant de départ (correctif finding F-3, validation manuelle 2026-08-25,
+  // startOdometer rendu obligatoire au second passage) : jusqu'ici absents de ce formulaire,
+  // contrairement à /dashboard/locations/new — un contrat issu d'une conversion n'avait donc
+  // jamais de Location.startOdometer connu, désactivant silencieusement le contrôle du
+  // kilométrage au retour. Préremplis depuis le dernier état connu du véhicule (même source que
+  // la création directe, DOMAINRULES.md section 40 point 2) ; startOdometer est désormais
+  // obligatoire ici spécifiquement (l'utilisateur doit le corriger manuellement si le véhicule
+  // n'a aucun état connu), startFuelLevel reste optionnel. Modifiables ensuite librement une fois
+  // le contrat créé (jamais verrouillés, DOMAINRULES.md section 41 point 4).
   const [startOdometer, setStartOdometer] = useState("");
   const [startFuelLevel, setStartFuelLevel] = useState("");
 
@@ -657,15 +660,18 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
 
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="startOdometer">
+                <Label htmlFor="startOdometer" required>
                   Kilométrage départ{" "}
                   <span className="text-muted-foreground">
-                    — optionnel, prérempli depuis le dernier état connu du véhicule
+                    — prérempli depuis le dernier état connu du véhicule, à corriger si nécessaire
                   </span>
                 </Label>
                 <Input
                   id="startOdometer"
                   type="number"
+                  min={0}
+                  step={1}
+                  required
                   value={startOdometer}
                   onChange={(e) => setStartOdometer(e.target.value)}
                 />
