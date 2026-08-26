@@ -267,7 +267,7 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 | 2026-08-21 | Régression ciblée élargie (16 fichiers, +invoice-status-alerts) | ✅ Validé | **343/343** tests passés |
 | 2026-08-21 | `npx prisma validate`/`npx tsc --noEmit`/`npm run lint`/`npm run build`/`git diff --check` (vérification finale) | ✅ Validé | Tous verts |
 
-**Premier test métier disponible depuis le Sprint 5** (véhicules, locations) — jusqu'ici, aucun module métier n'existait dans le code (voir [HANDOFF.md](./HANDOFF.md) et [PROJECT_MAP.md](./PROJECT_MAP.md)). La couche d'accès aux données technique (`src/lib/db.ts`), l'authentification, le CRUD tenants/agences et désormais véhicules/locations disposent de tests d'isolation multi-tenant et multi-agence.
+**Premier test métier disponible depuis le Sprint 5** (véhicules, locations) — jusqu'ici, aucun module métier n'existait dans le code (voir [HANDOFF.md](../../HANDOFF.md) et [PROJECT_MAP.md](../../PROJECT_MAP.md)). La couche d'accès aux données technique (`src/lib/db.ts`), l'authentification, le CRUD tenants/agences et désormais véhicules/locations disposent de tests d'isolation multi-tenant et multi-agence.
 
 ## 2. Tests disponibles et non encore disponibles
 
@@ -278,10 +278,10 @@ Ce document fait le point sur les tests réellement exécutés à ce jour et dé
 
 ## 3. Stratégie future de tests
 
-Le framework de test unitaire/intégration est désormais **tranché : Vitest** (Sprint 2). L'outil e2e et l'outil de test de charge restent **À DÉCIDER**. Les principes suivants sont actés (dont certains confirmés lors de la validation du Sprint 1, voir [HANDOFF.md](./HANDOFF.md)) :
+Le framework de test unitaire/intégration est désormais **tranché : Vitest** (Sprint 2). L'outil e2e et l'outil de test de charge restent **À DÉCIDER**. Les principes suivants sont actés (dont certains confirmés lors de la validation du Sprint 1, voir [HANDOFF.md](../../HANDOFF.md)) :
 
-- **Décision validée (Sprint 1)** : chaque module métier devra être accompagné de tests dès sa création (voir [CLAUDE.md](./CLAUDE.md)), pas ajoutés a posteriori.
-- **Décision validée (Sprint 1)** : priorité aux tests d'isolation multi-tenant, le modèle d'isolation par `tenant_id` partagé étant désormais retenu (voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 8 et [SECURITY.md](./SECURITY.md) section 1).
+- **Décision validée (Sprint 1)** : chaque module métier devra être accompagné de tests dès sa création (voir [CLAUDE.md](../../CLAUDE.md)), pas ajoutés a posteriori.
+- **Décision validée (Sprint 1)** : priorité aux tests d'isolation multi-tenant, le modèle d'isolation par `tenant_id` partagé étant désormais retenu (voir [ARCHITECTURE.md](../../ARCHITECTURE.md) section 8 et [SECURITY.md](../../SECURITY.md) section 1).
 - Les règles de sécurité critiques (isolation tenant/agence, autorisation, montants financiers) devront être couvertes par des tests avant toute mise en production.
 
 ### Tests unitaires
@@ -294,13 +294,13 @@ Cibleront les interactions entre la logique serveur et la future couche d'accès
 Cibleront les parcours utilisateurs complets (ex. création d'une réservation jusqu'à la signature d'un contrat), notamment en mobile-first. Aucun test end-to-end n'existe à ce jour.
 
 ### Tests métier
-Vérifient le respect des règles définies dans [DOMAINRULES.md](./DOMAINRULES.md) au fur et à mesure qu'elles sont tranchées et implémentées — en particulier les règles de représentation des montants (section 14) et des dates (section 15). Premier module couvert au Sprint 5 (véhicules, locations) — voir « Tests métier véhicules et locations (Sprint 5) » ci-dessous.
+Vérifient le respect des règles définies dans [DOMAINRULES.md](../../DOMAINRULES.md) au fur et à mesure qu'elles sont tranchées et implémentées — en particulier les règles de représentation des montants (section 14) et des dates (section 15). Premier module couvert au Sprint 5 (véhicules, locations) — voir « Tests métier véhicules et locations (Sprint 5) » ci-dessous.
 
 ### Tests de permissions
 Vérifieront qu'un utilisateur ne peut jamais accéder à une action ou une ressource hors de son rôle. Aucun test de permission n'existe à ce jour.
 
 ### Tests multi-tenant
-Priorité de test la plus élevée du projet (décision Sprint 1) : le modèle d'isolation retenu (`tenant_id` partagé, voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 8) rend l'omission d'un filtre tenant le risque de sécurité le plus critique (voir [SECURITY.md](./SECURITY.md) section 1). Ces tests vérifient explicitement qu'aucune donnée d'un tenant n'est accessible depuis un autre tenant, y compris par accès direct par identifiant (IDOR, voir [SECURITY.md](./SECURITY.md) section 7).
+Priorité de test la plus élevée du projet (décision Sprint 1) : le modèle d'isolation retenu (`tenant_id` partagé, voir [ARCHITECTURE.md](../../ARCHITECTURE.md) section 8) rend l'omission d'un filtre tenant le risque de sécurité le plus critique (voir [SECURITY.md](../../SECURITY.md) section 1). Ces tests vérifient explicitement qu'aucune donnée d'un tenant n'est accessible depuis un autre tenant, y compris par accès direct par identifiant (IDOR, voir [SECURITY.md](../../SECURITY.md) section 7).
 
 **Premier test multi-tenant en place (Sprint 2)** : `src/__tests__/db.test.ts` crée deux tenants de test, une agence et un utilisateur pour chacun, puis vérifie que `getAgencyById(tenantA, agencyIdDeB)` et `getUserById(tenantA, userIdDeB)` retournent systématiquement `null` — jamais la ressource de l'autre tenant. Les données créées sont supprimées en fin de suite (`afterAll`). Ce test s'exécute contre `xrent_test`, base de test dédiée distincte de `xrent_dev` (voir section 2).
 
@@ -1205,10 +1205,10 @@ Vérifieront le comportement du système en cas d'accès concurrent à une même
 Vérifieront le comportement du système sous charge réaliste avant mise en production. Aucun test de charge n'existe à ce jour, et aucun environnement de staging n'est encore disponible pour les exécuter.
 
 ### Tests de sécurité
-S'appuieront sur les principes de l'OWASP WSTG définis dans [SECURITY.md](./SECURITY.md) section 22. Aucun test de sécurité n'existe à ce jour.
+S'appuieront sur les principes de l'OWASP WSTG définis dans [SECURITY.md](../../SECURITY.md) section 22. Aucun test de sécurité n'existe à ce jour.
 
 ### Tests de régression
-Chaque correction de bug ou d'incident (voir [INCIDENTS.md](./INCIDENTS.md)) devra être accompagnée d'un test de non-régression avant clôture de l'incident. Aucun test de régression n'existe à ce jour, faute d'incident enregistré.
+Chaque correction de bug ou d'incident (voir [INCIDENTS.md](../../INCIDENTS.md)) devra être accompagnée d'un test de non-régression avant clôture de l'incident. Aucun test de régression n'existe à ce jour, faute d'incident enregistré.
 
 ## Tests Sprint 33 (facturation séparée des dégâts — DOMAINRULES.md section 48)
 
