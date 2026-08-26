@@ -1745,6 +1745,92 @@ describe("POST /api/reservations/[id]/convert", () => {
     });
   });
 
+  describe("Campagne QA 2026-08-26 (partie 1) — cohérence chronologique des dates de permis à la conversion", () => {
+    it("refuse (400) la conversion si la date d'expiration du permis est antérieure à sa date d'obtention — transaction entièrement annulée", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "PermisIncoherent",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-05-10",
+        endDate: "2034-05-13",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const body = convertBody(reservation);
+      body.client.licenseIssueDate = "2025-01-01";
+      body.client.licenseExpiryDate = "2020-01-01";
+
+      const clientCountBefore = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+      const responseBody = await response.json();
+      expect(responseBody.error).toMatch(/postérieure à sa date d'obtention/);
+
+      const reservationAfter = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+      expect(reservationAfter.status).toBe("PENDING");
+      expect(reservationAfter.convertedLocationId).toBeNull();
+
+      const clientCountAfter = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+      expect(clientCountAfter).toBe(clientCountBefore);
+    });
+
+    // Trouvé en revue stricte (2026-08-26) : sans validation de format explicite, une date non
+    // parseable produisait une erreur 500 non contrôlée au lieu d'un refus propre (même défaut
+    // que POST/PATCH /api/clients, voir clients.test.ts).
+    it("refuse (400, jamais 500) une conversion avec une date de permis non parseable", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "PermisDateInvalide",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-05-15",
+        endDate: "2034-05-18",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const body = convertBody(reservation);
+      body.client.licenseIssueDate = "not-a-date";
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+      const responseBody = await response.json();
+      expect(responseBody.error).toMatch(/licenseIssueDate doit être une date ISO valide/);
+    });
+
+    // Trouvé en revue stricte (2026-08-26) : une chaîne composée uniquement d'espaces est
+    // truthy en JavaScript — un simple contrôle `!champ` laissait passer un lastName incohérent.
+    it("refuse (400) une conversion avec un lastName composé uniquement d'espaces — transaction annulée", async () => {
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "EspacesSeuls",
+        clientLastName: `Convert-${runId}`,
+        startDate: "2034-05-20",
+        endDate: "2034-05-23",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const body = convertBody(reservation);
+      body.client.lastName = "   ";
+
+      const clientCountBefore = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+
+      const clientCountAfter = await prisma.client.count({ where: { tenantId: adminA.tenantId } });
+      expect(clientCountAfter).toBe(clientCountBefore);
+    });
+  });
+
   describe("Sprint 30 — âge minimum du conducteur à la date de départ, à la conversion (point 7, DOMAINRULES.md section 45)", () => {
     // Plage 2034-06/07 isolée (aucune autre réservation/location de ce fichier n'utilise cette
     // plage, vérifié) — élimine tout risque de conflit de disponibilité avec un test existant.

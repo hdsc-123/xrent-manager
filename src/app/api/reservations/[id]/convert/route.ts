@@ -4,7 +4,15 @@ import { prisma } from "@/lib/prisma";
 import { getSessionUser, canAccessAgency, canAccessReservationAgencies, canEditReservationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getVehicleById } from "@/lib/vehicles";
-import { getClientById, createClient, updateClient, findDuplicateClient, type ClientDuplicateMatch } from "@/lib/clients";
+import {
+  getClientById,
+  createClient,
+  updateClient,
+  findDuplicateClient,
+  assertValidLicenseDates,
+  InvalidLicenseDatesError,
+  type ClientDuplicateMatch,
+} from "@/lib/clients";
 import {
   getReservationById,
   claimReservationConversion,
@@ -232,7 +240,11 @@ export async function POST(request: Request, { params }: RouteParams) {
   }
 
   const clientInput = body.client ?? {};
-  if (!body.useExistingClientId && (!clientInput.firstName || !clientInput.lastName)) {
+  // .trim() sur chaque champ texte (campagne QA 2026-08-26, partie 1, trouvé en revue) : une
+  // chaîne composée uniquement d'espaces est truthy en JavaScript et passerait sinon un simple
+  // contrôle `!champ`, permettant de générer un contrat avec une identité client incohérente
+  // (ex. firstName réel mais lastName = "   ") en appelant l'API directement, hors interface.
+  if (!body.useExistingClientId && (!clientInput.firstName?.trim() || !clientInput.lastName?.trim())) {
     return NextResponse.json({ error: "client.firstName et client.lastName sont requis." }, { status: 400 });
   }
   // Sprint 19 (DOMAINRULES.md section 37) : obligatoires pour générer un contrat — ces champs
@@ -240,11 +252,11 @@ export async function POST(request: Request, { params }: RouteParams) {
   // modèle Reservation. Un useExistingClientId retombe sur l'identité déjà connue du client.
   if (!body.useExistingClientId) {
     const missingRequiredField =
-      !clientInput.address ||
-      !clientInput.city ||
-      !clientInput.country ||
-      !clientInput.idNumber ||
-      !clientInput.licenseNumber ||
+      !clientInput.address?.trim() ||
+      !clientInput.city?.trim() ||
+      !clientInput.country?.trim() ||
+      !clientInput.idNumber?.trim() ||
+      !clientInput.licenseNumber?.trim() ||
       !clientInput.licenseIssueDate ||
       !clientInput.licenseExpiryDate ||
       !clientInput.birthDate;
@@ -261,7 +273,29 @@ export async function POST(request: Request, { params }: RouteParams) {
   if (clientInput.idType && !ID_TYPES.includes(clientInput.idType)) {
     return NextResponse.json({ error: "client.idType invalide." }, { status: 400 });
   }
-  if (body.secondDriver && (!body.secondDriver.firstName || !body.secondDriver.lastName)) {
+  if (!body.useExistingClientId) {
+    // Validation de format uniquement (date ISO parseable) — voir POST /api/clients pour la
+    // justification complète (trouvé en revue, campagne QA 2026-08-26, partie 1). La présence
+    // des deux dates est déjà garantie par missingRequiredField ci-dessus.
+    if (Number.isNaN(new Date(clientInput.licenseIssueDate!).getTime())) {
+      return NextResponse.json({ error: "client.licenseIssueDate doit être une date ISO valide." }, { status: 400 });
+    }
+    if (Number.isNaN(new Date(clientInput.licenseExpiryDate!).getTime())) {
+      return NextResponse.json({ error: "client.licenseExpiryDate doit être une date ISO valide." }, { status: 400 });
+    }
+    try {
+      assertValidLicenseDates(
+        clientInput.licenseIssueDate ? new Date(clientInput.licenseIssueDate) : undefined,
+        clientInput.licenseExpiryDate ? new Date(clientInput.licenseExpiryDate) : undefined
+      );
+    } catch (error) {
+      if (error instanceof InvalidLicenseDatesError) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+      throw error;
+    }
+  }
+  if (body.secondDriver && (!body.secondDriver.firstName?.trim() || !body.secondDriver.lastName?.trim())) {
     return NextResponse.json(
       { error: "secondDriver.firstName et secondDriver.lastName sont requis si secondDriver est fourni." },
       { status: 400 }

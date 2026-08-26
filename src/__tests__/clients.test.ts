@@ -176,6 +176,82 @@ describe("POST /api/clients", () => {
     const response = await createClient(adminA, { name: "Client Date Future", birthDate: "2099-01-01" });
     expect(response.status).toBe(400);
   });
+
+  // Campagne de validation QA (2026-08-26, partie 1) : aucun contrôle n'existait empêchant une
+  // date d'expiration de permis antérieure ou égale à sa date d'obtention — bug corrigé par
+  // assertValidLicenseDates (src/lib/clients.ts).
+  it("refuse (400) une date d'expiration de permis antérieure à sa date d'obtention", async () => {
+    const response = await createClient(adminA, {
+      name: "Client Permis Incohérent",
+      licenseIssueDate: "2025-01-01",
+      licenseExpiryDate: "2020-01-01",
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/postérieure à sa date d'obtention/);
+  });
+
+  it("refuse (400) une date d'expiration de permis égale à sa date d'obtention (validité nulle)", async () => {
+    const response = await createClient(adminA, {
+      name: "Client Permis Duree Nulle",
+      licenseIssueDate: "2025-01-01",
+      licenseExpiryDate: "2025-01-01",
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("accepte une date d'expiration de permis strictement postérieure à sa date d'obtention", async () => {
+    const response = await createClient(adminA, {
+      name: "Client Permis Coherent",
+      licenseIssueDate: "2020-01-15",
+      licenseExpiryDate: "2030-01-15",
+    });
+    expect(response.status).toBe(201);
+  });
+
+  it("accepte la création sans qu'aucune des deux dates de permis ne soit fournie", async () => {
+    const response = await createClient(adminA, { name: "Client Sans Permis" });
+    expect(response.status).toBe(201);
+  });
+
+  // Trouvé en revue stricte de la partie 1 (2026-08-26) : sans validation de format explicite,
+  // une date non parseable produit un objet Date invalide (NaN), qu'assertValidLicenseDates ne
+  // détecte pas (une comparaison impliquant NaN est toujours fausse) — l'écriture Prisma échouait
+  // alors avec une erreur 500 non contrôlée au lieu d'un refus propre.
+  it("refuse (400, jamais 500) une licenseIssueDate non parseable", async () => {
+    const response = await createClient(adminA, {
+      name: "Client Date Permis Invalide",
+      licenseIssueDate: "not-a-date",
+      licenseExpiryDate: "2030-01-01",
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/licenseIssueDate doit être une date ISO valide/);
+  });
+
+  it("refuse (400, jamais 500) une licenseExpiryDate non parseable", async () => {
+    const response = await createClient(adminA, {
+      name: "Client Date Permis Invalide 2",
+      licenseIssueDate: "2020-01-01",
+      licenseExpiryDate: "not-a-date",
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/licenseExpiryDate doit être une date ISO valide/);
+  });
+
+  // Trouvé en revue stricte de la partie 1 (2026-08-26) : une chaîne composée uniquement
+  // d'espaces est truthy en JavaScript — un simple contrôle `!champ` (déjà en place pour name
+  // via sa dérivation, mais absent pour firstName/lastName pris isolément) laissait passer un
+  // lastName incohérent tant qu'un firstName réel était fourni.
+  it("refuse (400) un firstName/lastName composé uniquement d'espaces malgré un prénom réel", async () => {
+    const response = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ firstName: "Ahmed", lastName: "   " }),
+    });
+    expect(response.status).toBe(400);
+  });
 });
 
 describe("GET /api/clients", () => {
@@ -273,6 +349,84 @@ describe("PATCH /api/clients/[id]", () => {
     const body = await response.json();
     expect(body.client.id).toBe(created.id);
     expect(body.client.createdAt).toBe(created.createdAt);
+  });
+
+  // Campagne de validation QA (2026-08-26, partie 1) : même bug que POST, avec un piège
+  // supplémentaire propre à une édition partielle — modifier un seul des deux champs de date
+  // doit se résoudre contre la valeur déjà en base, pas seulement contre le corps de la requête.
+  it("refuse (400) une modification qui rendrait la date d'expiration antérieure à la date d'obtention déjà enregistrée", async () => {
+    const createResponse = await createClient(adminA, {
+      name: `Permis Coherent Puis Incoherent ${runId}`,
+      licenseIssueDate: "2020-01-01",
+      licenseExpiryDate: "2030-01-01",
+    });
+    const clientId = (await createResponse.json()).client.id;
+
+    // Ne modifie que licenseExpiryDate — doit être comparée à licenseIssueDate déjà en base.
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ licenseExpiryDate: "2019-01-01" }),
+    });
+    expect(response.status).toBe(400);
+
+    const persisted = await prisma.client.findUniqueOrThrow({ where: { id: clientId } });
+    expect(persisted.licenseExpiryDate?.toISOString().slice(0, 10)).toBe("2030-01-01");
+  });
+
+  it("accepte une modification de licenseIssueDate qui reste cohérente avec licenseExpiryDate déjà enregistrée", async () => {
+    const createResponse = await createClient(adminA, {
+      name: `Permis Modif Coherente ${runId}`,
+      licenseIssueDate: "2020-01-01",
+      licenseExpiryDate: "2030-01-01",
+    });
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ licenseIssueDate: "2021-01-01" }),
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it("refuse (400, jamais 500) une modification avec une date de permis non parseable", async () => {
+    const createResponse = await createClient(adminA, { name: `Permis Modif Invalide ${runId}` });
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ licenseIssueDate: "not-a-date" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse (400) une modification de lastName composée uniquement d'espaces", async () => {
+    const createResponse = await createClient(adminA, { name: `Nom Modif Invalide ${runId}`, firstName: "Rachid", lastName: `Zeroual-${runId}` });
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ lastName: "   " }),
+    });
+    expect(response.status).toBe(400);
+
+    const persisted = await prisma.client.findUniqueOrThrow({ where: { id: clientId } });
+    expect(persisted.lastName).toBe(`Zeroual-${runId}`);
+  });
+
+  it("accepte l'effacement explicite (null) de firstName/lastName", async () => {
+    const createResponse = await createClient(adminA, { name: `Nom Effacable ${runId}`, firstName: "Meryem", lastName: `Chaoui-${runId}` });
+    const clientId = (await createResponse.json()).client.id;
+
+    const response = await apiFetch(`/api/clients/${clientId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ firstName: null }),
+    });
+    expect(response.status).toBe(200);
   });
 
   it("permet de modifier le nom, l'email et le téléphone", async () => {

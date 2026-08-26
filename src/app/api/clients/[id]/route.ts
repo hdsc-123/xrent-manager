@@ -2,7 +2,14 @@ import { NextResponse } from "next/server";
 import type { Prisma, IdType } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
-import { getClientById, updateClient, deleteClient, ClientHasLocationsError } from "@/lib/clients";
+import {
+  getClientById,
+  updateClient,
+  deleteClient,
+  ClientHasLocationsError,
+  assertValidLicenseDates,
+  InvalidLicenseDatesError,
+} from "@/lib/clients";
 import { logAction } from "@/lib/audit";
 
 const ID_TYPES: IdType[] = ["CIN", "PASSEPORT", "CARTE_SEJOUR"];
@@ -79,8 +86,63 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "name ne peut pas être vide." }, { status: 400 });
   }
 
+  // Trouvé en revue stricte (campagne QA 2026-08-26, partie 1) — voir POST /api/clients pour la
+  // justification complète. `null` reste accepté (efface le champ), seule une chaîne non-null
+  // composée uniquement d'espaces est refusée.
+  if (body.firstName !== undefined && body.firstName !== null && !body.firstName.trim()) {
+    return NextResponse.json(
+      { error: "firstName ne peut pas être vide ou composé uniquement d'espaces." },
+      { status: 400 }
+    );
+  }
+  if (body.lastName !== undefined && body.lastName !== null && !body.lastName.trim()) {
+    return NextResponse.json(
+      { error: "lastName ne peut pas être vide ou composé uniquement d'espaces." },
+      { status: 400 }
+    );
+  }
+
   if (body.idType && !ID_TYPES.includes(body.idType)) {
     return NextResponse.json({ error: "idType invalide." }, { status: 400 });
+  }
+
+  // Validation de format uniquement (date ISO parseable) — même principe que birthDate
+  // ci-dessous ; voir POST /api/clients pour la justification complète (trouvé en revue,
+  // campagne QA 2026-08-26, partie 1).
+  if (body.licenseIssueDate !== undefined && body.licenseIssueDate !== null) {
+    const parsedLicenseIssueDate = new Date(body.licenseIssueDate);
+    if (Number.isNaN(parsedLicenseIssueDate.getTime())) {
+      return NextResponse.json({ error: "licenseIssueDate doit être une date ISO valide." }, { status: 400 });
+    }
+  }
+  if (body.licenseExpiryDate !== undefined && body.licenseExpiryDate !== null) {
+    const parsedLicenseExpiryDate = new Date(body.licenseExpiryDate);
+    if (Number.isNaN(parsedLicenseExpiryDate.getTime())) {
+      return NextResponse.json({ error: "licenseExpiryDate doit être une date ISO valide." }, { status: 400 });
+    }
+  }
+
+  // Résout contre la valeur déjà en base quand un seul des deux champs change (édition
+  // partielle) — jamais valider uniquement les champs présents dans le corps de la requête.
+  const resolvedLicenseIssueDate =
+    body.licenseIssueDate !== undefined
+      ? body.licenseIssueDate === null
+        ? null
+        : new Date(body.licenseIssueDate)
+      : client.licenseIssueDate;
+  const resolvedLicenseExpiryDate =
+    body.licenseExpiryDate !== undefined
+      ? body.licenseExpiryDate === null
+        ? null
+        : new Date(body.licenseExpiryDate)
+      : client.licenseExpiryDate;
+  try {
+    assertValidLicenseDates(resolvedLicenseIssueDate, resolvedLicenseExpiryDate);
+  } catch (error) {
+    if (error instanceof InvalidLicenseDatesError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    throw error;
   }
 
   // Sprint 30 (DOMAINRULES.md section 45) : validation de format uniquement, jamais un contrôle

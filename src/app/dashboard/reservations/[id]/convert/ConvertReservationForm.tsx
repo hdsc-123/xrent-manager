@@ -396,7 +396,7 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
       setError("Sélectionnez un véhicule.");
       return;
     }
-    if (!firstName || !lastName) {
+    if (!firstName.trim() || !lastName.trim()) {
       setError("Le prénom et le nom du client sont requis.");
       return;
     }
@@ -405,11 +405,11 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
     // informations, voir CLAUDE.md/DOMAINRULES.md), mais un contrat ne doit jamais être généré
     // sans identité complète du client.
     if (
-      !address ||
-      !city ||
-      !country ||
-      !idNumber ||
-      !licenseNumber ||
+      !address.trim() ||
+      !city.trim() ||
+      !country.trim() ||
+      !idNumber.trim() ||
+      !licenseNumber.trim() ||
       !licenseIssueDate ||
       !licenseExpiryDate ||
       !birthDate
@@ -419,11 +419,15 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
       );
       return;
     }
+    if (new Date(licenseExpiryDate) <= new Date(licenseIssueDate)) {
+      setError("La date d'expiration du permis doit être postérieure à sa date d'obtention.");
+      return;
+    }
     if (!startDateTime || !endDateTime || endDateTime <= startDateTime) {
       setError("Dates/heures de départ et de retour invalides.");
       return;
     }
-    if (hasSecondDriver && (!secondDriverFirstName || !secondDriverLastName)) {
+    if (hasSecondDriver && (!secondDriverFirstName.trim() || !secondDriverLastName.trim())) {
       setError("Le prénom et le nom du second conducteur sont requis.");
       return;
     }

@@ -2,7 +2,15 @@ import { NextResponse } from "next/server";
 import type { IdType } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
-import { getClients, createClient, getClientById, updateClient, findDuplicateClient } from "@/lib/clients";
+import {
+  getClients,
+  createClient,
+  getClientById,
+  updateClient,
+  findDuplicateClient,
+  assertValidLicenseDates,
+  InvalidLicenseDatesError,
+} from "@/lib/clients";
 import { logAction } from "@/lib/audit";
 
 const ID_TYPES: IdType[] = ["CIN", "PASSEPORT", "CARTE_SEJOUR"];
@@ -74,6 +82,24 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Corps de requête JSON invalide." }, { status: 400 });
   }
 
+  // Trouvé en revue stricte (campagne QA 2026-08-26, partie 1) : une chaîne composée
+  // uniquement d'espaces est truthy en JavaScript — sans ce contrôle individuel, un firstName
+  // réel combiné à un lastName uniquement composé d'espaces (ou l'inverse) passait le contrôle
+  // ci-dessous sur `name` (dérivé, non vide une fois l'espace superflu retiré par .trim()) tout
+  // en persistant un `lastName` incohérent tel quel en base.
+  if (body.firstName !== undefined && !body.firstName.trim()) {
+    return NextResponse.json(
+      { error: "firstName ne peut pas être vide ou composé uniquement d'espaces." },
+      { status: 400 }
+    );
+  }
+  if (body.lastName !== undefined && !body.lastName.trim()) {
+    return NextResponse.json(
+      { error: "lastName ne peut pas être vide ou composé uniquement d'espaces." },
+      { status: 400 }
+    );
+  }
+
   // `name` reste le libellé d'affichage utilisé par tout le code/tests existants
   // (voir prisma/schema.prisma) ; dérivé de firstName/lastName si non fourni
   // explicitement, pour le nouveau formulaire dashboard (Sprint 12A).
@@ -85,6 +111,36 @@ export async function POST(request: Request) {
 
   if (body.idType && !ID_TYPES.includes(body.idType)) {
     return NextResponse.json({ error: "idType invalide." }, { status: 400 });
+  }
+
+  // Validation de format uniquement (date ISO parseable) — même principe que birthDate
+  // ci-dessous. Sans ce contrôle, une valeur non parseable (ex. "not-a-date") produit un objet
+  // Date invalide (NaN) : assertValidLicenseDates ne le détecte pas (une comparaison impliquant
+  // NaN est toujours fausse, donc silencieusement acceptée) et l'écriture Prisma échoue plus
+  // loin avec une erreur 500 non contrôlée (trouvé en revue, campagne QA 2026-08-26, partie 1).
+  if (body.licenseIssueDate !== undefined) {
+    const parsedLicenseIssueDate = new Date(body.licenseIssueDate);
+    if (Number.isNaN(parsedLicenseIssueDate.getTime())) {
+      return NextResponse.json({ error: "licenseIssueDate doit être une date ISO valide." }, { status: 400 });
+    }
+  }
+  if (body.licenseExpiryDate !== undefined) {
+    const parsedLicenseExpiryDate = new Date(body.licenseExpiryDate);
+    if (Number.isNaN(parsedLicenseExpiryDate.getTime())) {
+      return NextResponse.json({ error: "licenseExpiryDate doit être une date ISO valide." }, { status: 400 });
+    }
+  }
+
+  try {
+    assertValidLicenseDates(
+      body.licenseIssueDate ? new Date(body.licenseIssueDate) : undefined,
+      body.licenseExpiryDate ? new Date(body.licenseExpiryDate) : undefined
+    );
+  } catch (error) {
+    if (error instanceof InvalidLicenseDatesError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    throw error;
   }
 
   // Sprint 30 (DOMAINRULES.md section 45) : validation de format uniquement (date parseable,

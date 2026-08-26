@@ -87,8 +87,36 @@ export function NewClientForm() {
     event.preventDefault();
     setError(null);
 
-    if (!firstName || !lastName) {
+    if (!firstName.trim() || !lastName.trim()) {
       setError("Le prénom et le nom sont requis.");
+      return;
+    }
+    if (!phone.trim()) {
+      setError("Le téléphone est requis.");
+      return;
+    }
+    if (!address.trim()) {
+      setError("L'adresse est requise.");
+      return;
+    }
+    if (!city.trim()) {
+      setError("La ville est requise.");
+      return;
+    }
+    if (!licenseNumber.trim()) {
+      setError("Le numéro de permis est requis.");
+      return;
+    }
+    if (!licenseIssueDate) {
+      setError("La date d'obtention du permis est requise.");
+      return;
+    }
+    if (!licenseExpiryDate) {
+      setError("La date d'expiration du permis est requise.");
+      return;
+    }
+    if (new Date(licenseExpiryDate) <= new Date(licenseIssueDate)) {
+      setError("La date d'expiration du permis doit être postérieure à sa date d'obtention.");
       return;
     }
 

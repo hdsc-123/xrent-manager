@@ -15,6 +15,25 @@ export class ClientHasLocationsError extends Error {
   }
 }
 
+/** Campagne de validation QA (2026-08-26, partie 1) : aucun contrôle n'existait nulle part
+ * (client comme serveur) empêchant une date d'expiration de permis antérieure ou égale à sa
+ * date d'obtention. Un permis ne peut pas être valide 0 jour ni expirer avant d'être délivré. */
+export class InvalidLicenseDatesError extends Error {
+  constructor() {
+    super("La date d'expiration du permis doit être postérieure à sa date d'obtention.");
+    this.name = "InvalidLicenseDatesError";
+  }
+}
+
+export function assertValidLicenseDates(
+  licenseIssueDate: Date | null | undefined,
+  licenseExpiryDate: Date | null | undefined
+): void {
+  if (licenseIssueDate && licenseExpiryDate && licenseExpiryDate.getTime() <= licenseIssueDate.getTime()) {
+    throw new InvalidLicenseDatesError();
+  }
+}
+
 export async function getClients(tenantId: string, search?: string): Promise<Client[]> {
   return prisma.client.findMany({
     where: {
