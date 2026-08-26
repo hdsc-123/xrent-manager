@@ -10,7 +10,7 @@ Fournir une plateforme permettant à des sociétés de location de véhicules de
 
 ## Statut actuel
 
-Le projet dispose de l'authentification multi-tenant, de l'autorisation serveur (tenant/agence/rôle), et de nombreux modules métier (véhicules, locations, clients, facturation, paiements, rapports, maintenance, alertes, gestion des utilisateurs/invitations, journal d'audit exhaustif, avoirs) — voir [HANDOFF.md](./HANDOFF.md) pour l'état détaillé sprint par sprint. Aucun environnement de staging/production n'existe à ce jour ; le cadrage de l'architecture de production cible (hébergeur Render ou Railway à départager, budget, sauvegardes, rate limiting) est validé mais **non implémenté** — voir [ARCHITECTURE.md](./ARCHITECTURE.md) et [SECURITY.md](./SECURITY.md) pour le détail, et [HANDOFF.md](./HANDOFF.md) section 8/9 pour les points encore **À DÉCIDER** avant un déploiement réel.
+Le projet dispose de l'authentification multi-tenant, de l'autorisation serveur (tenant/agence/rôle), et de nombreux modules métier (véhicules, locations, clients, facturation, paiements, rapports, maintenance, alertes, gestion des utilisateurs/invitations, journal d'audit exhaustif, avoirs) — voir [HANDOFF.md](./HANDOFF.md) pour l'état courant et [PROJECT_MAP.md](./PROJECT_MAP.md) pour le détail sprint par sprint. Aucun environnement de staging/production n'existe à ce jour ; le cadrage de l'architecture de production cible (hébergeur Render ou Railway à départager, budget, sauvegardes, rate limiting) est validé mais **non implémenté** — voir [ARCHITECTURE.md](./ARCHITECTURE.md) et [SECURITY.md](./SECURITY.md) pour le détail, et [docs/decisions/open-items-tracker.md](docs/decisions/open-items-tracker.md) pour les points encore **À DÉCIDER** avant un déploiement réel.
 
 ## Stack technique
 
@@ -81,7 +81,7 @@ npm run dev     # Serveur de développement Next.js
 npm run build   # Build de production (Turbopack) — validé ✅
 npm run start   # Démarre le serveur en mode production (build requis au préalable)
 npm run lint    # Lint ESLint — validé ✅
-npm run test    # Suite de tests Vitest (1244 tests, contre xrent_test) — validé ✅
+npm run test    # Suite de tests Vitest (contre xrent_test) — validé ✅, voir TESTREPORT.md section 1 pour le nombre exact et à jour
 ```
 
 `npm run test` démarre automatiquement un vrai serveur `next dev` de test (voir `vitest.global-setup.ts`) sur un port dédié, exécute la suite contre `xrent_test`, puis l'arrête — aucune donnée résiduelle n'est laissée après l'exécution (chaque suite nettoie les données qu'elle crée). Voir [TESTREPORT.md](./TESTREPORT.md) pour le détail de la couverture.
@@ -89,7 +89,7 @@ npm run test    # Suite de tests Vitest (1244 tests, contre xrent_test) — vali
 Pour une exécution complète et fiable de la suite (recyclage préventif du serveur de test entre groupes de fichiers, résout INC-3 — voir [INCIDENTS.md](./INCIDENTS.md)), utiliser plutôt :
 
 ```bash
-node scripts/test-grouped.mjs                       # recommandé — 1244/1244, ~310s
+node scripts/test-grouped.mjs                       # recommandé — voir TESTREPORT.md section 1 pour le résultat et la durée les plus récents
 node scripts/test-grouped.mjs --no-file-parallelism  # variante strictement séquentielle, plus lente
 ```
 
@@ -118,6 +118,6 @@ node scripts/test-grouped.mjs --no-file-parallelism  # variante strictement séq
 
 Implémentés (voir [HANDOFF.md](./HANDOFF.md) et [PROJECT_MAP.md](./PROJECT_MAP.md) pour le détail par sprint) : tenants, agences, utilisateurs/rôles/invitations, véhicules, locations (réservation + contrat fusionnés), clients, facturation (avec export PDF), paiements manuels, rapports (revenu, utilisation véhicule, export CSV), maintenance véhicules, alertes (in-app uniquement), journal d'audit exhaustif sur le CRUD métier.
 
-Non implémentés à ce jour : cautions, incidents de location, notifications par email, tout environnement de staging/production réel. Voir [HANDOFF.md](./HANDOFF.md) section 3 pour la liste complète et section 8 pour les points encore **À DÉCIDER**.
+Non implémentés à ce jour : cautions, incidents de location, notifications par email, tout environnement de staging/production réel. Voir [HANDOFF.md](./HANDOFF.md) section 1 pour un résumé et [docs/decisions/open-items-tracker.md](docs/decisions/open-items-tracker.md) pour la liste complète des points encore **À DÉCIDER**.
 
 La page d'accueil actuelle (`src/app/page.tsx`) reste la page de démonstration par défaut générée par `create-next-app`, sans lien avec le domaine métier de XRent Manager — le point d'entrée applicatif réel est `/login`/`/register` puis `/dashboard/*`.

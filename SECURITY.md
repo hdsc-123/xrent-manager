@@ -164,14 +164,14 @@ Checklist de conformité MVP, vérifiée section par section de ce document :
 | 6 | Mots de passe jamais exposés en clair ni dans les réponses API | ✅ Vérifié (section 10) |
 | 7 | Aucune donnée de carte bancaire stockée | ✅ Respecté (aucune fonctionnalité de paiement en ligne n'existe, section 9) |
 | 8 | Audit exhaustif sur le CRUD métier | ✅ Implémenté ce sprint (section 13) |
-| 9 | Garde « dernier ADMIN » (self et tiers) | ✅ Confirmé (HANDOFF.md section 6) |
+| 9 | Garde « dernier ADMIN » (self et tiers) | ✅ Confirmé ([docs/decisions/technical-decisions-log-archive.md](docs/decisions/technical-decisions-log-archive.md)) |
 | 10 | Rate limiting / protection brute force sur l'authentification | ❌ **Non implémenté — spécification validée (cadrage 2026-08-24), voir section 33** — à traiter avant mise en production (section 3) |
 | 11 | MFA | ❌ **Non implémenté**, **À DÉCIDER** (section 3) |
 | 12 | Headers de sécurité (CSP, HSTS, etc.) | ❌ **Non implémenté**, **À DÉCIDER** (section 19) |
-| 13 | Environnement de production / stratégie de sauvegarde | ❌ **Non défini**, **À DÉCIDER** (section 16, HANDOFF.md section 8) |
+| 13 | Environnement de production / stratégie de sauvegarde | ❌ **Non défini**, **À DÉCIDER** (section 16, [docs/decisions/open-items-tracker.md](docs/decisions/open-items-tracker.md)) |
 | 14 | Revue OWASP WSTG formelle | ❌ **Non réalisée**, **À DÉCIDER** (section 22) |
 
-Les points 10 à 14 restent des prérequis explicites avant tout déploiement en production réelle (voir HANDOFF.md section 4) — le MVP est fonctionnellement complet et sans faille connue, mais n'est pas encore *déployé* en production au sens de ce document.
+Les points 10 à 14 restent des prérequis explicites avant tout déploiement en production réelle (voir [docs/decisions/open-items-tracker.md](docs/decisions/open-items-tracker.md)) — le MVP est fonctionnellement complet et sans faille connue, mais n'est pas encore *déployé* en production au sens de ce document.
 
 ## 24. Audit de suivi (Sprint 11)
 
@@ -225,7 +225,7 @@ Sprint de tests de bout en bout (aucun nouveau module métier, voir DOMAINRULES.
 
 Les deux autres bugs corrigés ce sprint (paiement mixte non atomique sur la fiche facture, prix d'option non effacé) sont des bugs de correction métier, pas des failles de sécurité — voir DOMAINRULES.md section 35 pour le détail complet, y compris le gap de concurrence identifié sur les transferts/déplacements de véhicule et documenté plutôt que corrigé ce sprint (hors périmètre proportionné, pattern préexistant ailleurs dans le projet).
 
-Aucune nouvelle faille d'isolation tenant/agence ni IDOR trouvée par ailleurs — les 4 revues en parallèle de ce sprint (voir HANDOFF.md section 1) confirment une nouvelle fois la solidité du modèle (section 1) après les audits Sprint 10/11/15/16.
+Aucune nouvelle faille d'isolation tenant/agence ni IDOR trouvée par ailleurs — les 4 revues en parallèle de ce sprint (voir [docs/history/handoff-sprint-log-archive.md](docs/history/handoff-sprint-log-archive.md), « Sprint 17 ») confirment une nouvelle fois la solidité du modèle (section 1 du présent document) après les audits Sprint 10/11/15/16.
 
 ## 27. Pilote réel et validation terrain (Sprint 18)
 
@@ -239,7 +239,7 @@ Sprint de validation d'usage réel (aucun nouveau module métier ; ce n'est pas 
 
 Les autres bugs corrigés ce sprint (caisse non alimentée, facture à 0 jamais `PAID`, kilométrage retour perdu, bouton Annuler non gated, `reservations.import` manquant, champs obligatoires non appliqués, CSV sans BOM, mobile rogné, groupe ADMIN sans avertissement, formulaire tenant, année véhicule) sont des bugs de correction métier/UX, pas des failles de sécurité au sens strict — voir DOMAINRULES.md section 36 pour le détail complet.
 
-Aucune nouvelle faille d'isolation tenant/agence ni IDOR trouvée — les 4 revues en parallèle de ce sprint (voir HANDOFF.md section 1) confirment une nouvelle fois la solidité du modèle (section 1) après les audits Sprint 10/11/15/16.
+Aucune nouvelle faille d'isolation tenant/agence ni IDOR trouvée — les 4 revues en parallèle de ce sprint (voir [docs/history/handoff-sprint-log-archive.md](docs/history/handoff-sprint-log-archive.md), « Sprint 18 ») confirment une nouvelle fois la solidité du modèle (section 1 du présent document) après les audits Sprint 10/11/15/16.
 
 ## 28. Corrections de préproduction (Sprint 19)
 
@@ -453,3 +453,9 @@ Aucune nouvelle faille d'isolation tenant/agence ni IDOR trouvée au-delà de ce
 **Précision, pas une régression de sécurité** : la section 39 ci-dessus décrit `/dashboard/users` comme utilisant `redirect("/dashboard")` pour un non-ADMIN, « même patron que la majorité des pages sœurs ». Ce n'est plus le cas depuis ce sprint : `src/app/dashboard/users/page.tsx` affiche désormais directement le message explicite « Cette section est réservée aux administrateurs du tenant. » (même composant `Card`/`CardHeader`/`CardTitle`/`CardDescription` que `/dashboard/permissions` et `/dashboard/audit`), pour harmoniser son comportement UX avec ces deux pages plutôt qu'avec `/dashboard/invitations`/`/dashboard/permission-groups`/`/dashboard/tenants` (qui conservent, eux, `redirect()`, inchangés).
 
 **La garde serveur réelle n'a strictement pas changé** : `if (user.role !== "ADMIN")` reste la première vérification de la fonction, toujours évaluée avant toute lecture Prisma — aucune donnée utilisateur du tenant (`prisma.user.findMany(...)`, ligne suivante) n'est jamais chargée pour un non-ADMIN, dans les deux versions du composant de refus. Seul le contenu **retourné** en cas de refus change (un message statique au lieu d'un appel à `redirect()`) ; `GET /api/users` (route API, ADMIN uniquement) n'est pas concerné par ce sprint et reste inchangé. Voir TESTREPORT.md « Sprint de stabilisation technique » pour le détail des tests de non-régression (ADMIN/MEMBER avec permissions/MEMBER sans permission/accès direct par URL/isolation tenant).
+
+## 41. Correction d'une sous-couverture de visibilité (pas une fuite) sur les listes/exports de locations — BUG-004 (2026-08-26)
+
+**Nature du défaut, à ne pas confondre avec une fuite de données** : les listes de locations (`GET /api/locations`, `/dashboard/locations`) et l'export CSV des contrats ne filtraient que sur `Location.agencyId` (agence de rattachement), jamais sur `dropoffAgencyId` (agence de retour) — un utilisateur rattaché uniquement à l'agence de retour d'un contrat ne le voyait donc **pas** dans ces listes, alors que la fiche détail (`GET /api/locations/[id]`, `canAccessLocationAgency`) le lui montrait correctement depuis le Sprint 19. Sens du défaut : accès légitime refusé à tort (sous-couverture), jamais l'inverse — aucune donnée d'un tenant ou d'une agence non accessible n'a jamais été exposée par cet écart.
+
+**Correction** : `locationAgencyScopeWhere` (`src/lib/locations.ts`, détail ARCHITECTURE.md section 25) — même règle que `canAccessLocationAgency`, désormais appliquée uniformément à toutes les listes/exports connus de `Location`. `tenantId` reste systématiquement appliqué en amont dans chaque requête (isolation tenant inchangée) ; aucun accès général élargi introduit — un utilisateur sans rattachement `UserAgency` à l'agence de départ ni de retour ne voit toujours rien, vérifié explicitement par test (`src/__tests__/locations.test.ts`, describe « BUG-004 », scénario tenant réel RAK/CASA/contrat n°00002). Détail complet, y compris les 6 tests dédiés : INCIDENTS.md INC-6.

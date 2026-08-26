@@ -73,7 +73,7 @@ Aucune commande de seed n'existe à ce jour — voir règle 7 du présent docume
 
 ## 8. Interdiction de coder sans validation
 
-**Aucun code métier ne doit être écrit sans validation explicite préalable du propriétaire du projet.** Cela inclut : schéma de base de données, authentification, pages ou routes métier, logique de réservation/contrat/paiement, migrations. Cette règle reste pleinement en vigueur malgré l'avancement du projet (voir section 1) : chaque sprint listé dans [HANDOFF.md](./HANDOFF.md) a fait l'objet d'un brief explicite du propriétaire du projet avant implémentation (ou, pour les rares décisions prises en cours d'implémentation, d'une documentation a posteriori marquée « à confirmer » — voir HANDOFF.md section 8).
+**Aucun code métier ne doit être écrit sans validation explicite préalable du propriétaire du projet.** Cela inclut : schéma de base de données, authentification, pages ou routes métier, logique de réservation/contrat/paiement, migrations. Cette règle reste pleinement en vigueur malgré l'avancement du projet (voir section 1) : chaque sprint listé dans [HANDOFF.md](./HANDOFF.md) a fait l'objet d'un brief explicite du propriétaire du projet avant implémentation (ou, pour les rares décisions prises en cours d'implémentation, d'une documentation a posteriori marquée « à confirmer » — voir [docs/decisions/open-items-tracker.md](docs/decisions/open-items-tracker.md)).
 
 ## 9. Règles d'utilisation de /clear, /compact, /usage et /cost
 
