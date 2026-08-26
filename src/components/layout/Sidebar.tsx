@@ -122,7 +122,7 @@ export function Sidebar({ isOpen, onClose, permissions, role }: SidebarProps) {
             onClick={onClose}
             aria-current={active ? "page" : undefined}
             className={cn(
-              "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors max-md:min-h-12 max-md:py-3",
+              "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors max-lg:min-h-12 max-lg:py-3",
               active
                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
                 : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
@@ -141,16 +141,18 @@ export function Sidebar({ isOpen, onClose, permissions, role }: SidebarProps) {
       {/* Mobile overlay */}
       {isOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          className="fixed inset-0 z-40 bg-black/40 lg:hidden"
           onClick={onClose}
           aria-hidden="true"
         />
       )}
 
-      {/* Mobile drawer */}
+      {/* Drawer (mobile + tablette portrait, < lg) — voir HANDOFF.md/DOMAINRULES.md : le seuil
+          était auparavant `md` (768px), ce qui affichait la sidebar complète dès 768px de large
+          (tablette portrait) et réduisait fortement la largeur utile du contenu principal. */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-sidebar-border bg-sidebar transition-transform md:hidden",
+          "fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-sidebar-border bg-sidebar transition-transform lg:hidden",
           isOpen ? "translate-x-0" : "-translate-x-full"
         )}
         aria-hidden={!isOpen}
@@ -160,7 +162,7 @@ export function Sidebar({ isOpen, onClose, permissions, role }: SidebarProps) {
           <Button
             variant="ghost"
             size="icon"
-            className="max-md:size-12"
+            className="max-lg:size-12"
             onClick={onClose}
             aria-label="Fermer le menu"
           >
@@ -170,8 +172,8 @@ export function Sidebar({ isOpen, onClose, permissions, role }: SidebarProps) {
         {nav}
       </aside>
 
-      {/* Desktop sidebar */}
-      <aside className="hidden w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
+      {/* Desktop sidebar (>= lg, 1024px) */}
+      <aside className="hidden w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar lg:flex">
         <div className="flex h-14 items-center border-b border-sidebar-border px-4">
           <span className="font-heading text-sm font-semibold">XRent Manager</span>
         </div>

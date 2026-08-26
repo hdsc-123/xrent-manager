@@ -1,6 +1,7 @@
 import type { User } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { BCRYPT_COST } from "@/lib/bcrypt-cost";
 
 /**
  * Gestion des utilisateurs d'un tenant (Sprint 9) : changement de rôle, suppression,
@@ -125,7 +126,7 @@ export async function resetUserPassword(
     return null;
   }
 
-  const passwordHash = await bcrypt.hash(password, 12);
+  const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
   return prisma.user.update({ where: { id: targetUserId }, data: { passwordHash } });
 }
 
@@ -188,7 +189,7 @@ export async function updateUserProfile(
     if (!currentIsValid) {
       throw new InvalidCurrentPasswordError();
     }
-    updateData.passwordHash = await bcrypt.hash(data.newPassword, 12);
+    updateData.passwordHash = await bcrypt.hash(data.newPassword, BCRYPT_COST);
   }
 
   return prisma.user.update({ where: { id: userId }, data: updateData });

@@ -1929,6 +1929,193 @@ Recherche exhaustive menée avant correction pour identifier ces quatre cas (et 
 
 **Aucun commit créé, aucun push effectué pendant cette tâche** (instruction explicite du propriétaire du projet — commit/push dans un prompt séparé après revue de ce rapport).
 
+## Tests Sprint de stabilisation technique (2026-08-25/26) — instabilité réseau `npx vitest run`, UX `/dashboard/users`, responsive tablette 768px
+
+**Périmètre** : trois objectifs indépendants, tous dans le périmètre infrastructure de test / UX / responsive, aucune règle métier modifiée.
+
+### 1. Instabilité réseau de `npx vitest run` (INC-3, INCIDENTS.md)
+
+**Cause racine recherchée activement** (pas présumée « instabilité externe ») : reproduction initiale (avant tout correctif) — **22 échecs/1270**, signature réseau pure (`fetch failed`/`SocketError: other side closed`), **aucun redémarrage watchdog** cette fois, infirmant l'hypothèse (non confirmée) du complément précédent selon laquelle la fenêtre de redémarrage watchdog expliquait à elle seule ces échecs.
+
+**Deux causes contributives réelles identifiées et corrigées** (voir INCIDENTS.md pour le détail complet de la démarche) :
+1. Réutilisation par le client `fetch` (undici) d'une connexion TCP keep-alive que le serveur de test avait déjà fermée sous charge — confirmé par isolation directe hors suite (script minimal, comptage de connexions TCP). **Corrigé** : `src/__tests__/helpers/http.ts` envoie désormais `Connection: close` sur chaque requête de test, fermant explicitement la connexion à chaque fois. Aucune dépendance ajoutée.
+2. Base de test `xrent_test` gonflée à **4384 tenants orphelins** (accumulés depuis 3 jours par des exécutions interrompues) — la route `POST /api/tasks/scheduled-alerts` (testée par `scheduled-alerts-cron.test.ts`, incluse dans toute suite complète) énumère tous les tenants sans filtre à chaque appel, mesuré à **3-9 secondes** avec cette base contre **4-33 millisecondes** une fois nettoyée. **Corrigé, avec confirmation explicite du propriétaire du projet** : `xrent_test` vidée par `TRUNCATE TABLE "Tenant" RESTART IDENTITY CASCADE` — base strictement disposable, distincte de `xrent_dev`/QA (vérifié via `.env`/`.env.test`), aucune donnée réelle affectée.
+
+**Résultats mesurés (5 exécutions consécutives obligatoires, `npx vitest run`, après les deux correctifs)** :
+
+| Exécution | Résultat | Détail des échecs |
+|---|---|---|
+| 1 | 1275/1280 (5 échecs) | Watchdog déclenché (« injoignable depuis 45s ») ; tous les échecs = `Test timed out`/`SocketError`, 0 échec d'assertion |
+| 2 | 1275/1280 (5 échecs) | Watchdog déclenché ; tous les échecs = `Test timed out`/`ECONNRESET`, 0 échec d'assertion |
+| 3 | **1280/1280** | — |
+| 4 | **1280/1280** | — |
+| 5 | **1280/1280** | — |
+
+**Aucun échec d'assertion métier sur l'ensemble des 5 exécutions** — uniquement des artefacts réseau purs (`Test timed out in 20000ms`, `ECONNRESET`, `SocketError: other side closed`), confirmant que la cause de fond reste le blocage total intermittent, déjà documenté de longue date, du serveur `next dev` unique partagé sous charge soutenue (INC-3) — **réduit par les deux correctifs ci-dessus (3/5 exécutions propres, contre un historique de 0/13 exécutions complètes sans aucun échec sur les sessions d'investigation dédiées précédentes), mais non éliminé**.
+
+**`node scripts/test-grouped.mjs` (commande de référence, serveur neuf par groupe)** : **3 exécutions consécutives sur l'ensemble de la tâche (2 avant nettoyage de `xrent_test`, 1 après), 1280/1280 à chaque fois, 0 timeout, 0 redémarrage watchdog, 0 processus résiduel** — confirmé insensible à la taille de la base de test (jamais affecté avant comme après nettoyage), reconfirmé comme la commande fiable pour toute validation de suite complète.
+
+**Tests ciblés `/dashboard/users` + responsive (2 exécutions consécutives requises, groupées)** : `ui.test.tsx` + `dashboard-route-guards.test.ts` + `responsive-layout.test.ts` + `test-grouped-integrity.test.ts` — **114/114 aux deux exécutions**, 0 échec.
+
+**Aucun test désactivé, aucun `.skip`/`.only`, aucun retry ni délai artificiel, aucune assertion modifiée pour obtenir du vert, aucun fichier retiré de la commande officielle.**
+
+### 2. Harmonisation UX `/dashboard/users` (ADMIN uniquement)
+
+**Constat confirmé** : `/dashboard/users` redirigeait silencieusement (`redirect("/dashboard")`) un non-ADMIN, contrairement à `/dashboard/permissions` et `/dashboard/audit`, qui affichent un message explicite (« Cette section est réservée aux administrateurs du tenant. »). Les pages `/dashboard/invitations`, `/dashboard/permission-groups` et `/dashboard/tenants` utilisent, elles, également `redirect()` — deux patrons coexistent réellement dans le code, pas un seul. Conformément au périmètre du brief (harmoniser `/dashboard/users` avec `/dashboard/permissions`/`/dashboard/audit`), seul `/dashboard/users` est modifié — les trois autres pages `redirect()` restent inchangées (hors périmètre, aucune règle métier ni patron cassé).
+
+**Corrigé** : `src/app/dashboard/users/page.tsx` retourne désormais le même composant `Card`/`CardHeader`/`CardTitle`/`CardDescription` que `/dashboard/permissions`/`/dashboard/audit` — réutilisation stricte du patron déjà existant, aucun nouveau composant créé. **La garde serveur réelle est strictement inchangée** : `if (user.role !== "ADMIN")` reste la toute première vérification, aucune donnée (`prisma.user.findMany`) n'est jamais chargée avant elle.
+
+**Tests (nouveaux et corrigés)** :
+- `src/__tests__/ui.test.tsx` — test existant réécrit : vérifie désormais le message explicite plutôt que la balise `meta refresh` de redirection ; conserve la vérification qu'aucune donnée d'un AUTRE utilisateur (« UI Admin ») n'apparaît (le propre nom du demandeur, légitimement affiché dans l'en-tête, n'est pas une fuite).
+- `src/__tests__/dashboard-route-guards.test.ts` — nouveau describe « Utilisateurs — /dashboard/users (liste, ADMIN-only) » (5 tests) : ADMIN autorisé (contenu affiché) ; MEMBER avec permissions (message explicite, aucune donnée d'utilisateur) ; MEMBER sans permission (idem) ; accès direct par URL (idem, garde serveur pas seulement lien de menu masqué) ; isolation tenant (jamais les utilisateurs d'un autre tenant).
+- Sidebar (`adminOnly: true` déjà en place depuis le Sprint initial) et `GET /api/users` (déjà ADMIN uniquement) — revérifiés inchangés, non modifiés.
+
+**Résultats** : `ui.test.tsx` + `dashboard-route-guards.test.ts` — **107/107** (voir tableau ci-dessus pour les 2 exécutions combinées avec les tests responsive, 114/114).
+
+### 3. Responsive tablette portrait 768px
+
+**Cause racine** : le seuil Tailwind `md` (768px, `min-width` inclusif) pilotait la bascule desktop/mobile de `Sidebar.tsx`/`Header.tsx`/`BottomNav.tsx`/`DashboardLayout.tsx` — à exactement 768px de large (tablette portrait), la sidebar complète (256px fixes) s'affichait déjà comme sur desktop, réduisant fortement la largeur utile du contenu principal.
+
+**Corrigé** : seuil relevé de `md` (768px) à `lg` (1024px), seule valeur changée (classes Tailwind existantes, aucune nouvelle valeur de breakpoint, aucun nouveau composant) :
+- `Sidebar.tsx` : aside desktop `md:flex` → `lg:flex` ; overlay + tiroir mobile `md:hidden` → `lg:hidden` ; tailles de cible tactile `max-md:` → `max-lg:` (bouton fermer, liens de nav).
+- `Header.tsx` : bouton hamburger `md:hidden`/`max-md:size-12` → `lg:hidden`/`max-lg:size-12` ; bouton alertes `max-md:size-12` → `max-lg:size-12`.
+- `BottomNav.tsx` : `md:hidden` → `lg:hidden` (navigation rapide mobile désormais aussi visible en tablette portrait, cohérent avec le tiroir).
+- `DashboardLayout.tsx` : `md:pb-6` → `lg:pb-6` (marge basse réservée à la BottomNav tant qu'elle reste visible).
+
+**Table « Pilotage financier par agence » (caisse)** : déjà correctement enveloppée dans un conteneur `overflow-x-auto` (comme le composant `Table` partagé, `src/components/ui/table.tsx`, utilisé par tous les tableaux du produit) — vérifié qu'aucun changement n'était nécessaire ; le correctif de seuil ci-dessus réduit d'ailleurs le besoin de défilement en libérant de la largeur utile.
+
+**Vérification avec un vrai navigateur** (Chromium/Playwright 1.62.1, installé temporairement hors du projet dans un répertoire de travail isolé, binaires déjà en cache local — aucune dépendance ajoutée à `package.json`, même convention que tous les sprints précédents, voir HANDOFF.md) contre un serveur `next dev` réel (port dédié 3900, base `xrent_test`, tenant/agence jetables purgés après coup) :
+
+| Viewport | Sidebar complète | Hamburger | BottomNav | Débordement global | Table caisse |
+|---|---|---|---|---|---|
+| 1440×900 (desktop) | visible | absent | absente | aucun (scrollWidth = innerWidth) | scroll local non nécessaire |
+| 1024×768 (tablette paysage) | visible | absent | absente | aucun | scroll local non nécessaire |
+| 768×1024 (tablette portrait — correctif) | **absente** | **visible** | **visible** | aucun | scroll local non nécessaire (largeur suffisante) |
+| 390×844 (mobile) | absente | visible | visible | aucun | **scroll local actif** (scrollWidth 527 > clientWidth 322 du conteneur, page globale toujours 390 = 390) |
+
+**Clavier** : hamburger atteignable par focus direct, `Enter` ouvre le tiroir (lien « Utilisateurs » devient visible), `Enter` sur le bouton « Fermer le menu » referme — vérifié aux deux paliers <1024px (768×1024 et 390×844). **Tactile** (contexte navigateur `hasTouch: true`/`isMobile: true`, `page.tap()`) : tap sur le hamburger ouvre le tiroir, tap sur l'overlay le referme — vérifié aux deux mêmes paliers. **Aucune erreur console** sur les 8 combinaisons viewport × page testées (`/dashboard`, `/dashboard/cash-register`).
+
+**Test automatisé de non-régression** (nouveau, `src/__tests__/responsive-layout.test.ts`, ajouté à `scripts/test-grouped.mjs`) : dans le paradigme déjà en vigueur pour ce projet (HTML rendu serveur, sans jsdom/navigateur — voir l'en-tête de `ui.test.tsx`), vérifie que le HTML contient bien les classes `lg:flex`/`lg:hidden` et plus jamais `md:flex`/`md:hidden` sur ces quatre composants, plus la présence du conteneur `overflow-x-auto` de la table caisse — garde-fou contre une réintroduction accidentelle de l'ancien seuil, complémentaire (pas un remplacement) à la vérification navigateur réelle ci-dessus.
+
+**Résultats** : `responsive-layout.test.ts` — 5/5 (voir tableau combiné 114/114 ci-dessus). Aucune régression desktop (1440px)/mobile (390px) — les deux paliers déjà corrects restent inchangés dans leur comportement observable.
+
+### Validations globales (tsc/lint/prisma/build)
+
+`npx tsc --noEmit` : vert (0 erreur). `npm run lint` (ESLint) : vert (0 erreur/avertissement). `npx prisma validate` : schéma valide. `npm run build` : succès, toutes les routes compilées (aucun changement de route). `git diff --check` : propre (aucun conflit whitespace).
+
+### Fichiers modifiés
+
+`src/__tests__/helpers/http.ts` ; `scripts/test-grouped.mjs` (ajout de `responsive-layout` à `GROUPS`) ; `src/app/dashboard/users/page.tsx` ; `src/__tests__/ui.test.tsx` ; `src/__tests__/dashboard-route-guards.test.ts` ; `src/components/layout/{Sidebar,Header,BottomNav,DashboardLayout}.tsx` ; `src/__tests__/responsive-layout.test.ts` (nouveau) ; `SECURITY.md` (précision section 40) ; `HANDOFF.md` ; `INCIDENTS.md` ; ce document.
+
+**Données** : base de test `xrent_test` vidée (`TRUNCATE ... CASCADE`, confirmation explicite du propriétaire du projet, base disposable distincte de `xrent_dev`) ; tenant/agence jetables créés pour la vérification navigateur (préfixe `QA-Responsive-Verify`) purgés après coup, modèle par modèle dans l'ordre des clés étrangères. Aucune donnée `xrent_dev`/QA touchée ni supprimée.
+
+**Aucun commit créé, aucun push effectué pendant cette tâche** (instruction explicite du propriétaire du projet).
+
+## Poursuite d'investigation (2026-08-26) — cause racine bcrypt démontrée par profilage CPU réel, quatrième cause identifiée non corrigée
+
+**Périmètre** : le sprint ci-dessus n'a pas été accepté comme terminé — `npx vitest run` échouait encore 2 exécutions sur 5 après les correctifs `Connection: close`/nettoyage de `xrent_test`. Brief explicite de poursuivre l'investigation avec logs/tests de diagnostic temporaires (supprimés avant ce rapport), cible : 10 exécutions consécutives à 0 échec.
+
+**Méthode et outils de diagnostic** (aucun ajouté au projet, tout supprimé avant ce rapport) :
+- Script bash externe de surveillance (200ms) du process `next-server` réel — santé HTTP, CPU/RSS/FDs, `pg_stat_activity` — déclenchant `sample`/`lsof`/`netstat` au premier échec de santé détecté.
+- `node --cpu-prof` (profileur CPU natif de V8, jamais utilisé dans les investigations précédentes de cet incident) pour obtenir de vrais noms de fonctions JavaScript, `sample` (macOS) ne résolvant pas le code JIT de V8.
+
+**Résultats du diagnostic** :
+1. 23 micro-blocages du serveur capturés en direct sur 3 exécutions (~200ms à ~1s chacun, un toutes les 20-90s) — bien plus fréquents que les échecs visibles, la plupart absorbés silencieusement.
+2. Profilage CPU V8 réel du processus serveur : **62,5 % du temps CPU total** passé dans `_encipher` (chiffrement Blowfish de `bcryptjs`, implémentation pure JavaScript, coût 12 codé en dur sur 4 sites d'appel + le helper de fixtures de test). Cause exacte, démontrée et non supposée.
+
+**Correctif appliqué, avec validation explicite du propriétaire du projet** (modification de code d'authentification) :
+- Nouveau fichier `src/lib/bcrypt-cost.ts` (sans dépendance — voir ci-dessous pourquoi), exportant `BCRYPT_COST` : lit `process.env.BCRYPT_COST`, valide un entier 4-31, retombe silencieusement sur 12 sinon.
+- **Bug découvert et corrigé pendant l'implémentation** : une première version centralisait `BCRYPT_COST` directement dans `src/lib/auth.ts` — casse la résolution de module de `invitations.test.ts`/`users.test.ts` (`next-auth` importe `next/server`, indisponible hors du runtime Next.js réel, dès que `invitations.ts`/`users.ts` importent quoi que ce soit de `auth.ts`). Corrigé en isolant la constante dans un fichier dédié sans aucune dépendance ; `auth.ts` la ré-exporte pour rester la référence « centrale » côté application.
+- 4 sites d'appel mis à jour (`src/app/api/auth/register/route.ts`, `src/lib/invitations.ts`, `src/lib/users.ts` ×2) + `src/__tests__/helpers/fixtures.ts` (hachait aussi en dur au coût 12) — tous utilisent désormais la même constante centralisée, aucune valeur dupliquée.
+- `.env.test` (non versionné) : `BCRYPT_COST="4"` ajouté, avec commentaire explicite. `.env`/`.env.local` non modifiés — résolution vérifiée explicitement : absent → 12 (production inchangée), `"4"` → 4, valeur invalide (`"abc"`) → 12 (repli sûr).
+
+**Résultats mesurés, honnêtes** :
+- Suite complète **~5× plus rapide** : `npx vitest run` de ~280-330s à ~50-130s ; `node scripts/test-grouped.mjs` de ~330s à ~91s.
+- **10 exécutions consécutives de `npx vitest run`** : **7 parfaites (1280/1280)**, **3 en échec (13, 13, puis 15 échecs)**. `grep -c AssertionError` sur les 10 journaux complets : **0** — confirmé, zéro échec d'assertion métier sur l'ensemble. Tous les échecs de signature réseau pure identique à avant (`ECONNREFUSED` simultané `::1`/`127.0.0.1`, `Test timed out in 20000ms`), aucun redémarrage watchdog déclenché sur ces 3 échecs, aucun processus/port résiduel après chaque exécution (vérifié systématiquement).
+- `node scripts/test-grouped.mjs` : **2 exécutions consécutives, 1280/1280 aux deux**, 0 échec/timeout/watchdog/résiduel.
+- Tests ciblés `/dashboard/users` + responsive (`ui.test.tsx` + `dashboard-route-guards.test.ts` + `responsive-layout.test.ts` + `test-grouped-integrity.test.ts`) : **114/114, 2 exécutions consécutives, ~14s chacune** (contre ~90s avant le correctif bcrypt).
+- `npx tsc --noEmit` / `npm run lint` / `npx prisma validate` / `npm run build` : tous verts, revérifiés après le correctif bcrypt.
+
+**Objectif chiffré du brief (10/10, 0 échec) NON atteint** — amélioration substantielle et mesurée (0 % de la commande garantie historiquement → 70 % cette tâche, suite 5× plus rapide), **non présentée comme une résolution totale**, conformément à l'instruction explicite.
+
+**Quatrième cause identifiée, non corrigée (hors code applicatif)** : second profilage CPU (`--cpu-prof`) sur une exécution en échec malgré le correctif bcrypt — agrégation de plus de 500 fichiers `.cpuprofile` (Turbopack instancie un processus de travail Node par tâche de compilation à la demande) montre le temps CPU non-idle dominé par la machinerie interne de chargement/compilation de modules Node (`wrapSafe`, `compileForInternalLoader`, `readFileSync`, `sourceMapFromFile` — plus de 100s cumulées sur une seule exécution), pas par du code applicatif. Comportement interne de l'outillage Next.js/Turbopack en mode développement, pas du code de ce projet — non corrigé. Voir INCIDENTS.md pour l'analyse complète et les deux pistes de correction ultérieure identifiées (architecture à serveurs multiples/plus courts pour `npx vitest run`, ou réduction du nombre de workers Turbopack si un réglage existe — aucune des deux entreprise ce sprint).
+
+**Confirmation explicite** : aucun test masqué, supprimé, `.skip`/`.only`, retry indéfini, ou assertion modifiée pour obtenir du vert — vérifié par relecture complète des 10 journaux et par `git diff` des fichiers de test (uniquement des ajouts). Tous les scripts/logs de diagnostic temporaires (surveillance bash, profils `.cpuprofile`) supprimés avant ce rapport. `xrent_dev`/données QA non touchées.
+
+**Fichiers modifiés (en plus de la liste ci-dessus)** : `src/lib/bcrypt-cost.ts` (nouveau) ; `src/lib/auth.ts` ; `src/lib/invitations.ts` ; `src/lib/users.ts` ; `src/app/api/auth/register/route.ts` ; `src/__tests__/helpers/fixtures.ts` ; `.env.test` (non versionné — toute nouvelle machine devra y ajouter `BCRYPT_COST="4"` manuellement) ; `INCIDENTS.md` ; `HANDOFF.md` ; ce document.
+
+**Aucun commit créé, aucun push effectué.**
+
+## Poursuite d'investigation (2026-08-26, suite) — cause dominante trouvée par lecture du code source Next.js, deux bugs de test réels corrigés, 9/10 atteint
+
+**Périmètre** : le complément précédent (7/10) n'a pas été accepté — brief explicite de poursuivre l'investigation du serveur `next dev`/Turbopack partagé et des processus éphémères, avec un objectif inchangé de 10/10 sans échec.
+
+**Ground truth des processus, par surveillance directe (`ps` en continu, remplace la déduction imprécise par comptage de fichiers `.cpuprofile` du complément précédent)** : ~185-227 processus distincts par exécution complète ; 164-185 partagent tous le **même parent** (le processus `next-server`) et sont des instances `next/dist/compiled/jest-worker/processChild.js` ; ~42-44 sont les forks Vitest natifs (un par fichier de test, comportement attendu, non anormal).
+
+**Cause dominante, trouvée par lecture directe du code source Next.js installé** : `getStaticPathsWorker()` (`node_modules/next/dist/server/dev/next-dev-server.js`) crée un worker `jest-worker` neuf et le détruit explicitement à **chaque rendu** d'une page à segment dynamique (`[id]`) — commentaire du code source lui-même : « we don't re-use workers ». Notre application a ≥15 motifs de route de ce type, exercés massivement par la suite avec des identifiants toujours différents.
+
+**Piste testée et infirmée par mesure directe** : préchauffage séquentiel de toutes les pages (`warmUpAllRoutes()`, temporairement ajouté à `vitest.global-setup.ts`) avant le début des tests — mesuré à 176 processus contre 164-185 sans, **dans la marge de variance déjà observée entre deux exécutions identiques sans changement de code** (164 vs 185). Confirme que le worker se recrée par identifiant unique, pas seulement à la première compilation d'un motif de route. **Retiré** (`git checkout -- vitest.global-setup.ts`), aucun bénéfice démontré.
+
+**Deuxième pool désactivé, sans risque** : `experimental.devValidationWorker` (validation dev des « Cache Components », gated par un flag officiel `process.env.TURBOPACK && experimental.devValidationWorker !== false`). Recherche exhaustive (`grep -rln '"use cache"' src/`) confirmant l'absence totale de cette fonctionnalité dans le projet — désactivation sans aucun risque de masquer un comportement réel. **Corrigé** : `next.config.ts`, `experimental.devValidationWorker: false`. Ne s'exécute jamais en production (fichier exclusif à `next dev`) — build de production revérifié inchangé.
+
+**Deux bugs de test réels et distincts trouvés et corrigés (de vraies `AssertionError`/erreurs de contrainte, jamais des erreurs réseau)** :
+- `src/__tests__/invoices.test.ts` — test « isolation DamageInvoice » : `prisma.damageInvoice.count()` sans filtre (comptage global sur toute la base de test partagée), racy sous `maxWorkers: 4`. Reproduit une fois (`expected 12 to be 13`). **Corrigé** : comptage scopé à `tenantId: adminA.tenantId`, même patron que la vérification sœur du même fichier.
+- `src/__tests__/data-reset.test.ts` — hook `afterAll` : nettoyait `AuditLog` en tout premier plutôt qu'en dernier, laissant une large fenêtre pendant laquelle le CRON global des alertes (`maybeRunScheduledAlertChecks`, déclenché par tout `/dashboard` à travers toute la suite) peut recréer une entrée `AuditLog` pour un tenant de ce fichier, bloquant `Tenant.deleteMany()` (`AuditLog_tenantId_fkey`). Reproduit une fois. **Corrigé** : `AuditLog` nettoyé en dernier, immédiatement avant `Tenant`, même patron que tous les autres fichiers du projet.
+
+**Résultat final, 10 exécutions consécutives de `npx vitest run` avec l'intégralité des correctifs** :
+
+| Exécution | Résultat |
+|---|---|
+| 1-8 | **1280/1280** chacune |
+| 9 | 1276/1280 (4 échecs, tous `Test timed out` 20000/60000ms, 0 assertion, 0 `ECONNREFUSED`/`ECONNRESET`/`SocketError`, 0 watchdog ; durée 351s contre ~42s pour les autres) |
+| 10 | **1280/1280** |
+
+**9/10 parfaites — objectif chiffré strict (10/10) non atteint, non déclaré résolu.** Amélioration réelle par rapport au complément précédent (7/10 → 9/10) et changement de signature des échecs restants (uniquement des timeouts purs cette fois, plus aucun refus/reset de connexion sur ce lot).
+
+`node scripts/test-grouped.mjs` : **2 exécutions consécutives, 1280/1280 aux deux, ~86s** (contre ~330s en tout début de sprint). Tests ciblés `/dashboard/users` + responsive : **114/114, 2 exécutions, ~14s chacune**. `npx tsc --noEmit` / `npm run lint` / `npx prisma validate` / `npm run build` : tous verts.
+
+**Meilleure piste pour une correction ultérieure complète, non entreprise** : architecture Vitest « projects »/workspace (un projet par groupe de fichiers, chacun avec son propre port/`globalSetup`, une seule invocation `npx vitest run`) — reproduirait pour la commande officielle le principe de recyclage déjà prouvé de `scripts/test-grouped.mjs`. Non tentée cette tâche : risque réel de régression sur l'infrastructure de test (comportement de concurrence Vitest 4 entre projets non vérifié, risque de casser l'exécution ciblée d'un seul fichier) pour un bénéfice non garanti sans session dédiée — déjà documentée comme non retenue pour raisons de coût similaires au Sprint 24-3.
+
+**Confirmation explicite** : aucun test masqué/supprimé/`.skip`/`.only`, aucune assertion modifiée pour obtenir du vert, aucun mock introduit à la place d'un vrai test — les deux bugs de test ci-dessus ont été **corrigés à la cause réelle** (scoping tenant, ordre de nettoyage), jamais contournés. Tous les scripts/logs de diagnostic temporaires (surveillance `ps` externe) supprimés avant ce rapport. `xrent_dev`/données QA non touchées ; `xrent_test` tronquée à plusieurs reprises au cours de cette tâche (même action déjà approuvée explicitement, base disposable).
+
+**Fichiers modifiés (en plus de la liste précédente)** : `next.config.ts` (nouveau réglage `experimental.devValidationWorker: false`) ; `src/__tests__/invoices.test.ts` ; `src/__tests__/data-reset.test.ts` ; `INCIDENTS.md` ; `HANDOFF.md` ; ce document. `vitest.global-setup.ts` : modifié puis explicitement annulé (`git checkout --`), aucune trace résiduelle.
+
+**Aucun commit créé, aucun push effectué.**
+
+## Résolution finale d'INC-3 (2026-08-26, session dédiée à l'architecture Vitest) — 10/10 atteint
+
+**Périmètre** : le complément précédent (9/10) n'a pas été accepté comme clôture. Brief explicite d'étudier une architecture Vitest native (projects/groupes de tests) permettant de conserver `npx vitest run` comme unique commande officielle, avec étude de faisabilité avant toute modification.
+
+**Architecture envisagée en premier, testée et écartée par la preuve** : un serveur `next dev` persistant par « project »/worker Vitest, réutilisé entre les fichiers qui lui sont assignés (reproduisant nativement `scripts/test-grouped.mjs`). Une sonde dédiée (`setupFiles` + compteur `globalThis` + journal `process.pid`/`VITEST_POOL_ID`, 8 fichiers factices, `maxWorkers: 2`) démontre que Vitest (`isolate: true`, défaut jamais modifié) démarre un **processus OS neuf pour chaque fichier de test**, jamais réutilisé — 8 fichiers → 8 PID distincts, compteur toujours à 1. Un serveur mémoïsé en `globalThis` ne peut donc pas survivre d'un fichier à l'autre : architecture irréalisable telle que conçue, écartée avant toute implémentation dans le code réel.
+
+**Diagnostic affiné** : ce fait invalide l'hypothèse que le nombre *total* de workers `jest-worker` Next.js (`getStaticPathsWorker()`, non réutilisé par conception, cf. complément précédent) soit la cause directe — ce total est incompressible, fonction du nombre de rendus de pages dynamiques, pas du nombre de fichiers/workers Vitest. La cause réelle est le **pic de créations concurrentes** de ces workers sous le parallélisme par défaut (`maxWorkers: 4`, jusqu'à 4 fichiers actifs simultanément contre le même serveur partagé).
+
+**Correctif, une ligne de configuration officiellement supportée par Vitest** : `fileParallelism: false` dans `vitest.config.mts`. Sérialise l'exécution des fichiers de test — jamais deux fichiers actifs en même temps contre le serveur partagé, éliminant tout pic de charge concurrente sans dépendre d'un réglage Next.js/Turbopack (aucun n'existe).
+
+**Alternative jugée plus risquée, écartée sans implémentation** : un reporter Vitest personnalisé redémarrant le serveur tous les N fichiers pour conserver du parallélisme. Écartée : aucune garantie native qu'un tel redémarrage n'intervienne pas pendant qu'un autre fichier a une requête en vol sous parallélisme — risque de recréer le symptôme à éliminer, cette fois auto-infligé.
+
+**Résultat final, `npx vitest run` (commande officielle inchangée, aucun flag, aucun wrapper)** :
+
+| Exécution | Résultat |
+|---|---|
+| 1-10 | **1280/1280** chacune |
+
+**10/10 exécutions consécutives parfaites** — 0 échec, 0 timeout, 0 `ECONNREFUSED`, 0 `ECONNRESET`, 0 `SocketError`, 0 redémarrage watchdog, 0 assertion métier en échec, 0 processus/port résiduel. Durée stable (87,6 à 90,9s). **Objectif chiffré strict du brief atteint.**
+
+**Coût** : suite ~2× plus lente qu'en parallélisme par défaut (~88s contre ~45s), mais ~3-4× plus rapide que l'état de départ du sprint (~280-330s) — compromis jugé pleinement justifié (fiabilité totale exigée explicitement, pas la vitesse).
+
+**`node scripts/test-grouped.mjs` reconfirmé fiable** : 2 exécutions, 1280/1280 aux deux, 0 échec/timeout/watchdog/résiduel — plus lent (148,6s contre ~86-91s avant ce réglage, chaque groupe hérite de la même sérialisation) mais toujours fiable. Les deux commandes sont désormais également fiables (10/10 et 2/2) — la recommandation de préférer `test-grouped.mjs` n'est plus une nécessité de fiabilité.
+
+**Tests ciblés `/dashboard/users` + responsive** : 114/114, 2 exécutions, ~16s chacune. `npx tsc --noEmit` / `npm run lint` / `npx prisma validate` / `npm run build` : tous verts.
+
+**Confirmation explicite** : aucun test masqué/supprimé/`.skip`/`.only`, aucune assertion modifiée, aucun mock introduit à la place d'un test réel, aucune règle métier modifiée, **aucun des correctifs déjà validés retiré** (`/dashboard/users`, responsive 768px, `Connection: close`, nettoyage `xrent_test`, coût bcrypt, `devValidationWorker`, les deux bugs de test) — seule une ligne de configuration Vitest ajoutée, vérifiée par `git diff` complet. Tous les scripts/fichiers de diagnostic temporaires (sonde, fichiers de test factices) supprimés avant ce rapport.
+
+**Fichiers modifiés (en plus de la liste précédente)** : `vitest.config.mts` (`fileParallelism: false`, commenté en détail) ; `INCIDENTS.md` ; `HANDOFF.md` ; ce document.
+
+**INC-3 déclaré résolu pour `npx vitest run`, y compris en usage direct — pour la première fois depuis son origine.**
+
+**Aucun commit créé, aucun push effectué.**
+
 ## 4. Format attendu des futurs rapports
 
 Chaque exécution future de la suite de tests devra être consignée dans ce document (ou dans un rapport daté associé) selon le format suivant :

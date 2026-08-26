@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { validatePassword } from "@/lib/password-policy";
 import { ensureDefaultGroups } from "@/lib/permissions";
+import { BCRYPT_COST } from "@/lib/bcrypt-cost";
 
 interface RegisterBody {
   tenantName?: string;
@@ -61,7 +62,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: passwordErrors[0], errors: passwordErrors }, { status: 400 });
   }
 
-  const passwordHash = await bcrypt.hash(password, 12);
+  const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
 
   try {
     const { tenant, user } = await prisma.$transaction(async (tx) => {

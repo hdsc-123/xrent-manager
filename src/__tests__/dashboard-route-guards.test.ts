@@ -894,6 +894,93 @@ describe("Utilisateurs — /dashboard/users/[id] et /permissions (ADMIN-only)", 
 });
 
 // ---------------------------------------------------------------------------------------------
+// Utilisateurs — /dashboard/users (liste, ADMIN-only) — correctif UX (sprint stabilisation) :
+// cette page redirigeait silencieusement vers /dashboard pour un non-ADMIN (redirect()), seule
+// page de ce type à ne pas afficher le message explicite déjà utilisé par /dashboard/permissions
+// et /dashboard/audit. Désormais alignée sur ce même patron (Card + message, aucune donnée
+// chargée sous la garde) — la garde serveur réelle (role === "ADMIN") reste inchangée.
+// ---------------------------------------------------------------------------------------------
+
+describe("Utilisateurs — /dashboard/users (liste, ADMIN-only)", () => {
+  it("ADMIN autorisé → 200, contenu de l'annuaire affiché", async () => {
+    const tenant = await setupTenant("uslistadmin");
+    await createAndLoginMember({
+      tenantId: tenant.admin.tenantId,
+      name: `Cible-${runId}`,
+      email: `uslistadmin-target-${runId}@test.local`,
+      password,
+    });
+    const response = await fetchPage("/dashboard/users", tenant.admin.sessionCookie);
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain(`Cible-${runId}`);
+    expect(body).not.toContain("réservée aux administrateurs");
+  });
+
+  it("MEMBER avec des permissions (mais non-ADMIN) → message explicite « réservée aux administrateurs », aucune donnée d'utilisateur rendue", async () => {
+    const tenant = await setupTenant("uslistmember");
+    await createAndLoginMember({
+      tenantId: tenant.admin.tenantId,
+      name: `Cible-${runId}`,
+      email: `uslistmember-target-${runId}@test.local`,
+      password,
+    });
+    const member = await createScopedMember(tenant, "uslistmember", ["clients.view", "vehicles.view"], [
+      tenant.agencyId,
+    ]);
+    const response = await fetchPage("/dashboard/users", member.sessionCookie);
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("réservée aux administrateurs");
+    expect(body).not.toContain(`Cible-${runId}`);
+  });
+
+  it("MEMBER sans aucune permission → message explicite « réservée aux administrateurs », aucune donnée d'utilisateur rendue", async () => {
+    const tenant = await setupTenant("uslistnoperm");
+    await createAndLoginMember({
+      tenantId: tenant.admin.tenantId,
+      name: `Cible-${runId}`,
+      email: `uslistnoperm-target-${runId}@test.local`,
+      password,
+    });
+    const member = await createScopedMember(tenant, "uslistnoperm", [], [tenant.agencyId]);
+    const response = await fetchPage("/dashboard/users", member.sessionCookie);
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("réservée aux administrateurs");
+    expect(body).not.toContain(`Cible-${runId}`);
+  });
+
+  it("accès direct à l'URL sans passer par la navigation — même refus (garde serveur, pas seulement l'entrée de menu masquée)", async () => {
+    const tenant = await setupTenant("uslistdirect");
+    const member = await createScopedMember(tenant, "uslistdirect", ["clients.view"], [tenant.agencyId]);
+    // Aucun Referer/cookie de navigation particulier : simule une saisie d'URL directe.
+    const response = await apiFetch("/dashboard/users", {
+      headers: { Cookie: member.sessionCookie },
+      redirect: "manual",
+    });
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("réservée aux administrateurs");
+  });
+
+  it("isolation tenant intacte pour un ADMIN : ne voit jamais les utilisateurs d'un autre tenant sur cette liste", async () => {
+    const tenantA = await setupTenant("uslistisoA");
+    const tenantB = await setupTenant("uslistisoB");
+    await createAndLoginMember({
+      tenantId: tenantB.admin.tenantId,
+      name: `Cible-Autre-Tenant-${runId}`,
+      email: `uslistisoB-target-${runId}@test.local`,
+      password,
+    });
+    const response = await fetchPage("/dashboard/users", tenantA.admin.sessionCookie);
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).not.toContain(`Cible-Autre-Tenant-${runId}`);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
 // Pages de création restantes (maintenances, vehicle-transfers, vehicle-trips)
 // ---------------------------------------------------------------------------------------------
 

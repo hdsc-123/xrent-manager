@@ -2,6 +2,7 @@ import type { Invitation } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { BCRYPT_COST } from "@/lib/bcrypt-cost";
 
 /**
  * Invitation d'un nouvel utilisateur dans un tenant existant (Sprint 9). Pas d'envoi
@@ -99,7 +100,7 @@ export async function acceptInvitation(id: string, data: AcceptInvitationInput) 
     throw new UserAlreadyExistsError();
   }
 
-  const passwordHash = await bcrypt.hash(data.password, 12);
+  const passwordHash = await bcrypt.hash(data.password, BCRYPT_COST);
 
   let user;
   try {

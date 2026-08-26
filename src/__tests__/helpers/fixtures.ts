@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { BCRYPT_COST } from "@/lib/bcrypt-cost";
 import { apiFetch, extractSessionCookie } from "./http";
 
 export interface AuthenticatedTestUser {
@@ -48,7 +49,7 @@ export async function createAndLoginMember(params: {
   email: string;
   password: string;
 }): Promise<AuthenticatedTestUser> {
-  const passwordHash = await bcrypt.hash(params.password, 12);
+  const passwordHash = await bcrypt.hash(params.password, BCRYPT_COST);
   const user = await prisma.user.create({
     data: {
       tenantId: params.tenantId,

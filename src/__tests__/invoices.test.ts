@@ -2982,11 +2982,22 @@ describe("POST /api/invoices/[id]/refund — remboursement d'un avoir (Sprint 13
     });
 
     it("isolation DamageInvoice : le remboursement d'un avoir ne touche jamais DamageInvoice/DamageInvoiceLine", async () => {
-      const damageInvoiceCountBefore = await prisma.damageInvoice.count();
+      // Comptage scopé au tenant du test (même patron que les vérifications sœurs de ce
+      // describe, ex. cashCountBefore/After ci-dessus) — un comptage global, non filtré, sur
+      // une table partagée par toute la suite en parallélisme (`maxWorkers: 4`), est
+      // intrinsèquement sujet aux faux positifs dès qu'un autre fichier de test crée ou
+      // supprime une DamageInvoice pendant la fenêtre entre les deux comptages (bug de test
+      // trouvé et corrigé le 2026-08-26, jamais un vrai défaut applicatif : reproduit une fois
+      // par entrelacement fortuit avec un autre fichier, jamais par le code testé lui-même).
+      const damageInvoiceCountBefore = await prisma.damageInvoice.count({
+        where: { tenantId: adminA.tenantId },
+      });
       const { creditNote } = await createPartiallyPaidSourceWithCreditNote();
       const response = await refund(adminA, creditNote.id, { amount: 1000, reason: "Isolation DamageInvoice" });
       expect(response.status).toBe(201);
-      const damageInvoiceCountAfter = await prisma.damageInvoice.count();
+      const damageInvoiceCountAfter = await prisma.damageInvoice.count({
+        where: { tenantId: adminA.tenantId },
+      });
       expect(damageInvoiceCountAfter).toBe(damageInvoiceCountBefore);
     });
   });

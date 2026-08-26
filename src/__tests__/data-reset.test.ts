@@ -15,7 +15,6 @@ const password = "Correct-Horse-Battery-Staple9!";
 const createdTenantIds: string[] = [];
 
 afterAll(async () => {
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.invitation.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -34,6 +33,17 @@ afterAll(async () => {
   await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  // auditLog juste avant tenant (jamais avant, contrairement à l'ordre précédent de ce fichier)
+  // — bug de test trouvé et corrigé le 2026-08-26 : le CRON global des alertes planifiées
+  // (maybeRunScheduledAlertChecks, déclenché par tout chargement de /dashboard à travers TOUTE
+  // la suite en parallélisme) peut créer une nouvelle entrée AuditLog ("alert_check.scheduled_
+  // run") pour un tenant de ce fichier à tout moment tant qu'il n'est pas supprimé — un nettoyage
+  // fait en tout début d'afterAll (comme précédemment ici) laisse une large fenêtre (les ~17
+  // suppressions séquentielles ci-dessus) pendant laquelle une telle entrée peut réapparaître et
+  // bloquer `tenant.deleteMany()` (contrainte `AuditLog_tenantId_fkey`). Même patron que tous les
+  // autres fichiers de ce projet (ex. tenants.test.ts, ui.test.tsx) : auditLog nettoyé en tout
+  // dernier, immédiatement avant tenant, pour réduire cette fenêtre au minimum.
+  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
   await prisma.$disconnect();
 });

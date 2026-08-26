@@ -44,7 +44,7 @@ export function DashboardLayout({
           onMenuClick={() => setIsSidebarOpen(true)}
           pendingAlertCount={pendingAlertCount}
         />
-        <main className="flex-1 overflow-x-hidden p-4 pb-20 sm:p-6 md:pb-6">{children}</main>
+        <main className="flex-1 overflow-x-hidden p-4 pb-20 sm:p-6 lg:pb-6">{children}</main>
       </div>
       <BottomNav />
     </div>

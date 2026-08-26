@@ -103,17 +103,20 @@ describe("Page /dashboard/users (lecture seule)", () => {
     expect(html).toContain("UI Member");
   });
 
-  it("redirige un MEMBER vers /dashboard (pas d'accès à l'annuaire)", async () => {
-    // redirect() dans un Server Component de cette version de Next.js (contexte de
-    // streaming, cf. node_modules/next/dist/docs/.../functions/redirect.md) renvoie
-    // un 200 avec une balise meta refresh plutôt qu'un 307 HTTP brut — contrairement
-    // à proxy.ts (middleware), qui s'exécute avant tout rendu et renvoie un vrai 307.
+  it("refuse un MEMBER avec le message explicite « réservée aux administrateurs » (pas d'accès à l'annuaire)", async () => {
+    // Correctif UX (sprint stabilisation) : cette page redirigeait auparavant
+    // silencieusement vers /dashboard (redirect()) — désormais alignée sur le même
+    // patron que /dashboard/permissions, /dashboard/audit et /dashboard/administration
+    // (message explicite rendu directement, vraie garde serveur, aucune donnée chargée).
     const response = await apiFetch("/dashboard/users", {
       headers: { Cookie: member.sessionCookie },
     });
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain('url=/dashboard"');
+    expect(html).toContain("réservée aux administrateurs");
+    // "UI Member" (le nom du demandeur lui-même) apparaît légitimement dans l'en-tête de la
+    // page (menu utilisateur) quelle que soit la page — seule l'absence de "UI Admin" (donnée
+    // d'un AUTRE utilisateur, jamais la sienne) prouve l'absence de fuite de l'annuaire.
     expect(html).not.toContain("UI Admin");
   });
 });

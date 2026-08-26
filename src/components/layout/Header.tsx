@@ -54,7 +54,7 @@ export function Header({ tenantName, user, onMenuClick, pendingAlertCount = 0 }:
       <Button
         variant="ghost"
         size="icon"
-        className="max-md:size-12 md:hidden"
+        className="max-lg:size-12 lg:hidden"
         onClick={onMenuClick}
         aria-label="Ouvrir le menu"
       >
@@ -68,7 +68,7 @@ export function Header({ tenantName, user, onMenuClick, pendingAlertCount = 0 }:
       <Button
         variant="ghost"
         size="icon"
-        className="relative max-md:size-12"
+        className="relative max-lg:size-12"
         render={<Link href="/dashboard/alerts" />}
         aria-label={`Alertes${pendingAlertCount > 0 ? ` (${pendingAlertCount} en attente)` : ""}`}
       >

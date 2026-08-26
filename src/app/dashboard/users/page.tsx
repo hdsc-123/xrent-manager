@@ -1,17 +1,27 @@
-import { redirect } from "next/navigation";
 import Link from "next/link";
 import { UserPlus } from "lucide-react";
 import { getSessionUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
-import { Button, Icon } from "@/components/ui";
+import { Button, Card, CardDescription, CardHeader, CardTitle, Icon } from "@/components/ui";
 import { UsersTable, type UserRow } from "./UsersTable";
 
 export default async function UsersPage() {
   const user = await getSessionUser();
   if (!user) return null;
 
+  // Correctif UX (sprint stabilisation) : cette page redirigeait silencieusement vers
+  // /dashboard pour un non-ADMIN, contrairement au patron déjà utilisé par
+  // /dashboard/permissions et /dashboard/audit (message explicite). La garde serveur réelle
+  // (aucune donnée chargée en dessous) est inchangée — seul le rendu du refus change.
   if (user.role !== "ADMIN") {
-    redirect("/dashboard");
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Utilisateurs</CardTitle>
+          <CardDescription>Cette section est réservée aux administrateurs du tenant.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
   }
 
   const users = await prisma.user.findMany({
