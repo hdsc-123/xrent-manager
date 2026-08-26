@@ -1,6 +1,6 @@
 # Runbook — Reprise de la campagne de validation QA
 
-Procédure de reprise de la campagne de validation manuelle du tenant QA fictif. Dernière mise à jour : 2026-08-26 (session BUG-001/004/005). Voir [HANDOFF.md](../../HANDOFF.md) pour l'état global du projet.
+Procédure de reprise de la campagne de validation manuelle du tenant QA fictif. Dernière mise à jour : 2026-08-26 (session partie 1 — clients/conducteurs/permis/âge, BUG-006/BUG-007). Voir [HANDOFF.md](../../HANDOFF.md) pour l'état global du projet.
 
 ## 1. Avant de commencer
 
@@ -16,13 +16,16 @@ Procédure de reprise de la campagne de validation manuelle du tenant QA fictif.
 - **Identifiants** : stockés uniquement dans `.env.qa.local` à la racine du dépôt (fichier local, exclu du suivi Git par le motif `.env*` de `.gitignore` — vérifié par `git check-ignore -v .env.qa.local`). Ce fichier contient les adresses email des comptes de campagne et un mot de passe partagé, réinitialisé le 2026-08-26 sur autorisation explicite du propriétaire du projet pour 4 comptes (`qa.superadmin`, `qa.agent.rak`, `qa.agent.casa`, `qa.auditeur`). **Ne jamais copier ces valeurs dans un document suivi par Git.**
 - Si `.env.qa.local` est absent ou que les identifiants ne fonctionnent plus : réinitialiser le mot de passe des comptes nécessaires directement en base (`xrent_dev` uniquement), **uniquement sur autorisation explicite du propriétaire du projet**, et consigner la nouvelle valeur dans `.env.qa.local` (jamais ailleurs).
 
-## 3. Données fictives de campagne (état au 2026-08-26)
+## 3. Données fictives de campagne (état au 2026-08-26, fin de la partie 1)
 
 - Agences : RAK (id `cmta2z7xo006am4n9nvq8xx94`), CASA (id `cmta2zslq006em4n9hxg43g8p`).
 - 7 véhicules : Dacia Logan QA-CatA-RAK (RAK, disponible), Renault Clio QA-CatB-RAK (RAK, disponible — véhicule du contrat n°00002), Toyota Corolla QA-CatC-CASA (CASA, disponible), Hyundai Accent QA-DejaLoue-RAK (RAK, loué), Peugeot 208 QA-Maintenance-RAK (RAK, en maintenance), Dacia Duster QA-Transfert-RAK (RAK, disponible, prévu pour transfert), Renault Kangoo QA-Deplacement-CASA (CASA, disponible, prévu pour déplacement).
-- 7 clients : Ahmed Fictif-Majeur, Karim Fictif-PermisExpireBientot, Nadia Fictif-PermisExpire, Omar Fictif-SecondCondValide (apparaît deux fois dans le sélecteur — doublon non élucidé, à vérifier), Sara Fictif-SecondCondNonConforme, Yasmine Fictif-Moins21.
-- Contrat n°00002 (id `cmta4o81l00f5m4n9dy16fif1`) : RAK départ, CASA retour. **État actuel : `COMPLETED`** (kilométrage retour 28450, carburant Plein) — passé de `ACTIVE` à `COMPLETED` pendant la vérification en direct de BUG-004/BUG-005 le 2026-08-26 (conséquence d'une donnée de test, pas une correction de code). Ce parcours de retour RAK→CASA a déjà été mené à son terme ; ne pas le rejouer tel quel.
-- Détail complet : [docs/test-reports/2026-08-26-bug-001-004-005.md](../test-reports/2026-08-26-bug-001-004-005.md).
+- 7 clients d'origine : Ahmed Fictif-Majeur, Karim Fictif-PermisExpireBientot, Nadia Fictif-PermisExpire, Omar Fictif-SecondCondValide (apparaît toujours deux fois dans le sélecteur — doublon non élucidé, hors périmètre exclusif de la partie 1, à vérifier lors d'une partie future ou sur demande), Sara Fictif-SecondCondNonConforme, Yasmine Fictif-Moins21.
+- **Nouveau (partie 1, 2026-08-26)** : client « Sofia Fictif-Part1 » créé et conservé (démonstration CRUD complète). Réservation `QA-PART1-RES-001` convertie en contrat **n°00005** sur Ahmed Fictif-Majeur (RAK, 28/08/2026 → 31/08/2026, payé comptant) — conservé comme démonstration du flux réservation → contrat avec détection de doublon client.
+- Contrat n°00002 (id `cmta4o81l00f5m4n9dy16fif1`) : RAK départ, CASA retour, **`COMPLETED`** (kilométrage retour 28450, carburant Plein) — ne pas rejouer tel quel.
+- Contrats n°00003/00004 : créés transitoirement pendant la partie 1 pour vérifier les bornes exactes d'âge (21 ans jour pour jour) et de permis, **supprimés après vérification** — la numérotation de contrat RAK reprend donc à 00006 pour la prochaine location créée.
+- Client résiduel `firstName: "Ahmed", lastName: "   "` (id `cmtafh9rq001fm4t2rymdf33p`), créé involontairement pendant la revue stricte du 2026-08-26 en confirmant empiriquement un gap de validation (voir INCIDENTS.md INC-9, complément) : signalé, dépendances vérifiées (aucune location/réservation/paiement, tenant QA confirmé, pas une fixture), puis **supprimé** via `DELETE /api/clients/[id]`.
+- Détail complet partie 1 : [docs/test-reports/2026-08-26-campagne-partie1-clients.md](../test-reports/2026-08-26-campagne-partie1-clients.md). Détail complet BUG-001/004/005 : [docs/test-reports/2026-08-26-bug-001-004-005.md](../test-reports/2026-08-26-bug-001-004-005.md).
 
 ## 4. Règles de sécurité pour la reprise
 
@@ -34,15 +37,16 @@ Procédure de reprise de la campagne de validation manuelle du tenant QA fictif.
 
 ## 5. Scénarios déjà validés (ne pas refaire)
 
-- BUG-001, BUG-004, BUG-005 : corrigés et vérifiés (tests automatisés + vérification manuelle) — voir [INCIDENTS.md](../../INCIDENTS.md) INC-6/INC-7/INC-8.
+- BUG-001, BUG-004, BUG-005, BUG-006, BUG-007 : corrigés et vérifiés (tests automatisés + vérification manuelle) — voir [INCIDENTS.md](../../INCIDENTS.md) INC-6/INC-7/INC-8/INC-9/INC-10.
 - Isolation agence RAK/CASA (sélecteurs véhicule scopés, visibilité contrat n°00002 par l'agence de retour).
 - Retour de véhicule RAK→CASA (kilométrage, carburant, transition de statut) sur le contrat n°00002.
+- **Partie 1 (2026-08-26, complète)** : point 1 (clients fictifs — CRUD, champs obligatoires, coordonnées, pièce d'identité), point 13 (âge minimum du conducteur, borne exacte 21 ans testée), point 14 (dates d'obtention/expiration du permis), point 15 (permis expirant avant le retour), ainsi que persistance, audit, permissions (clients non agence-scopés, conforme DOMAINRULES.md section 9), isolation tenant, usage en réservation/conversion, refus serveur (âge/permis) et responsive du module clients. Détail complet : [docs/test-reports/2026-08-26-campagne-partie1-clients.md](../test-reports/2026-08-26-campagne-partie1-clients.md).
+- Non re-testé mais déjà couvert par la suite automatisée (pas nécessaire de refaire manuellement) : refus 403 d'un compte sans permission `clients.*` (mot de passe non disponible pour `qa.sanspermission@fictif.test`, voir rapport partie 1 section 5).
 
-## 6. Scénarios restants à exécuter (53/56)
+## 6. Scénarios restants à exécuter (52/56)
 
-Non exécutés, non validés, toujours dans le périmètre du projet. À exécuter dans l'ordre suivant (repris du brief de campagne original), en utilisant le terminal pour les vérifications déterministes (calculs, validations, permissions serveur, isolation) et Playwright pour tout ce qui nécessite un navigateur réel (navigation, formulaires, PDF, responsive) :
+Non exécutés, non validés, toujours dans le périmètre du projet (le doublon apparent "Omar Fictif-SecondCondValide", non élucidé, reste également ouvert — hors périmètre exclusif de la partie 1). À exécuter dans l'ordre suivant (repris du brief de campagne original), en utilisant le terminal pour les vérifications déterministes (calculs, validations, permissions serveur, isolation) et Playwright pour tout ce qui nécessite un navigateur réel (navigation, formulaires, PDF, responsive) :
 
-1. Créer/vérifier les clients fictifs restants (dont le doublon apparent "Omar Fictif-SecondCondValide").
 2. Réservation RAK → RAK.
 3. Réservation RAK → CASA.
 4. Options GPS.
@@ -54,9 +58,6 @@ Non exécutés, non validés, toujours dans le périmètre du projet. À exécut
 10. Double réservation.
 11. Conversion en contrat.
 12. Numéro automatique du contrat.
-13. Âge minimum du conducteur.
-14. Date d'obtention et d'expiration du permis.
-15. Permis expirant avant le retour.
 16. Surclassement demandé par le client.
 17. Surclassement imposé par indisponibilité.
 18. Supplément de surclassement.

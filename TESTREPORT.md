@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1293/1293** (2026-08-26).
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1308/1308** (2026-08-26).
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -313,6 +313,7 @@ Détail complet de chaque entrée ci-dessous (fichiers de test, nombre exact, pa
 | Sprint 13E (tâches complémentaires) | INC-4, prolongations, export CSV, facture RENTAL unique, SUPPLEMENT/EXTENSION/CREDIT_NOTE, remboursements, PDF avoirs |
 | Sprint technique 1-5 | Prolongations (chaîne + soldes), correction soft 404, retrait `extendReturnDate`, audit désynchronisation test-grouped, faille mass assignment |
 | 2026-08-25/26 | Findings validation manuelle (F-1/F-2/F-3), stabilisation `npx vitest run` (INC-3 résolu 10/10), UX `/dashboard/users`, responsive 768px |
+| 2026-08-26 | Campagne de validation QA, partie 1 (clients/conducteurs/permis/âge) — BUG-006/BUG-007 |
 
 ### Rapports récents (détail complet ci-dessous, pas archivés)
 
@@ -354,6 +355,29 @@ Sur autorisation explicite du propriétaire du projet, mots de passe réinitiali
 **Changement de donnée de test (pas une correction fonctionnelle indépendante)** : le contrat n°00002 (noté dans l'application « Parcours 2 RAK to CASA (test prioritaire) ») est passé de `ACTIVE` à `COMPLETED` pendant cette vérification en direct — conséquence de l'exécution normale du parcours de retour (déjà corrigé) sur une donnée de test fictive (`xrent_dev`), pas une donnée corrompue accidentellement, et pas elle-même une correction de code distincte de BUG-004/BUG-005. Voir [docs/test-reports/2026-08-26-bug-001-004-005.md](docs/test-reports/2026-08-26-bug-001-004-005.md) pour le détail complet, y compris les véhicules/clients de campagne reconstitués avec certitude à cette occasion, et le statut exact de la campagne (53 des 56 scénarios restent non exécutés/non validés, toujours dans le périmètre du projet, reportés faute de temps disponible dans cette session — la campagne globale reste ouverte).
 
 **Aucun commit créé, aucun push effectué.**
+
+## Tests session — campagne de validation QA, partie 1 : clients, conducteurs et validations permis/âge (2026-08-26)
+
+**Contexte** : reprise de la campagne de validation manuelle (voir [docs/runbooks/campagne-validation-qa.md](docs/runbooks/campagne-validation-qa.md)), partie 1/N — périmètre exclusif clients/conducteurs/validations permis/âge (31 points du brief). Rapport complet : [docs/test-reports/2026-08-26-campagne-partie1-clients.md](docs/test-reports/2026-08-26-campagne-partie1-clients.md).
+
+**Deux bugs trouvés et corrigés, chacun avec un complément trouvé lors d'une revue stricte du diff avant tout commit** — voir [INCIDENTS.md](./INCIDENTS.md) INC-9 (BUG-006, champs obligatoires du formulaire client jamais réellement exigés + chaînes composées uniquement d'espaces non détectées) et INC-10 (BUG-007, aucune validation de cohérence chronologique entre date d'obtention et date d'expiration du permis + dates non parseables provoquant une erreur 500 non contrôlée).
+
+**Scénarios validés en direct sur le tenant de campagne réel** (`QA FICTIF - XRent Validation`, `qa.superadmin@fictif.test` sauf mention contraire) : création/consultation/modification d'un client fictif (Sofia Fictif-Part1) avec vérification des champs obligatoires et des messages d'erreur (avant et après correctif BUG-006) ; persistance après rechargement ; audit (`client.created`/`client.updated`) ; isolation tenant (404 direct + absence de liste sur un client d'un autre tenant réel de `xrent_dev`) ; absence d'isolation par agence pour les clients confirmée conforme à DOMAINRULES.md section 9 (`qa.agent.rak@fictif.test`, restreint à l'agence RAK, voit et lit les 8 clients du tenant sans restriction) ; âge minimum du conducteur — refus exact à 20 ans 364 jours, acceptation exacte à 21 ans jour pour jour, comparaison calendaire UTC (`Yasmine Fictif-Moins21`, trois tentatives de contrat avec `startDate` déplacée d'un jour) ; permis expirant avant la date de retour — refus (`Karim Fictif-PermisExpireBientot`) et acceptation quand le retour reste dans la validité ; permis déjà expiré — refus (`Nadia Fictif-PermisExpire`) ; toutes les validations confirmées strictement serveur (appels HTTP directs via `curl`, sans navigateur, donc sans JavaScript client) ; aucune écriture partielle en base après chacun des refus (vérifié par requête SQL directe) ; client utilisé de bout en bout dans une réservation puis une conversion en contrat réelle (Ahmed Fictif-Majeur, voucher `QA-PART1-RES-001`, contrat `00005`), y compris le flux de détection de doublon (« Client similaire détecté » → réutilisation du client existant, ses données de permis réelles utilisées pour le contrat plutôt que les valeurs placeholder saisies) ; PDF de contrat valide ; responsive desktop (1280×900)/tablette (834×1112)/mobile (390×844) du module clients, sans régression visuelle (un artefact de capture d'écran plein-page sur le bandeau de navigation mobile fixe a été investigué et écarté comme non reproductible en usage réel scrollé).
+
+**Vérifications post-correction** :
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| Unitaires/Intégration (`node scripts/test-grouped.mjs`) | 1308 | 1308 | 0 | 0 |
+| `src/__tests__/clients.test.ts` + `reservations.test.ts` isolés | 155 | 155 | 0 | 0 |
+| Vérification serveur directe (`curl`, âge/permis, sans navigateur) | 5 tentatives de contrat (refus×3, acceptation×2) | 5/5 comportement attendu | 0 | 0 |
+| End-to-end (Playwright, manuel, module clients + réservation→contrat) | 1 parcours complet, 3 viewports | 3 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+15 nouveaux tests automatisés ajoutés au total (11 dans `clients.test.ts`, 4 dans `reservations.test.ts` — voir INC-9/INC-10 pour le détail, dont 8 ajoutés lors de la revue stricte du diff avant tout commit, portant sur des gaps trouvés par cette revue : dates de permis non parseables (500 non contrôlé) et chaînes composées uniquement d'espaces). Chaque test a été confirmé comme échouant réellement sans son correctif (`git stash` temporaire des fichiers de production concernés, suite relancée, puis restauration). Aucune règle métier ni permission modifiée en dehors du périmètre strict des deux bugs — le correctif BUG-007 ajoute une règle absente (pas une révision d'une règle existante). Données fictives créées dans `xrent_dev` : client « Sofia Fictif-Part1 » (conservé, CRUD complet démontré), réservation/contrat `QA-PART1-RES-001`/`00005` sur Ahmed Fictif-Majeur (conservé, démontre le flux complet). Client de test « Test Validation » et deux contrats `PENDING` de vérification de bornes d'âge/permis créés puis intégralement supprimés après vérification. Un client résiduel (`firstName: "Ahmed", lastName: "   "`, id `cmtafh9rq001fm4t2rymdf33p`, créé en confirmant empiriquement le gap « espaces uniquement ») a été signalé puis, après vérification explicite de l'absence de toute dépendance (aucune location, réservation ou paiement lié) et confirmation qu'il ne s'agissait pas d'une fixture volontaire, **supprimé via `DELETE /api/clients/[id]` (jamais par modification directe en base)** — voir [docs/test-reports/2026-08-26-campagne-partie1-clients.md](docs/test-reports/2026-08-26-campagne-partie1-clients.md) section 7. **Aucun commit créé, aucun push effectué.**
 
 ## 4. Format attendu des futurs rapports
 
