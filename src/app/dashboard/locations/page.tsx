@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import type { LocationStatus } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { locationAgencyScopeWhere } from "@/lib/locations";
 import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { Button, Card, CardDescription, CardHeader, CardTitle, Icon } from "@/components/ui";
@@ -68,7 +69,9 @@ export default async function LocationsPage({ searchParams }: PageProps) {
     prisma.location.findMany({
       where: {
         tenantId: user.tenantId,
-        ...(accessibleAgencyIds ? { agencyId: { in: accessibleAgencyIds } } : {}),
+        // BUG-004 (INCIDENTS.md) : inclure les locations dont seule l'agence de retour
+        // (dropoffAgencyId) est accessible, pas seulement agencyId.
+        ...locationAgencyScopeWhere(accessibleAgencyIds),
         ...(params.status ? { status: params.status as LocationStatus } : {}),
         ...(params.vehicleId ? { vehicleId: params.vehicleId } : {}),
         ...(params.clientId ? { clientId: params.clientId } : {}),

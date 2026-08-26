@@ -249,6 +249,7 @@ export default async function LocationDetailPage({ params }: PageProps) {
         id={location.id}
         status={location.status}
         notes={location.notes}
+        startOdometer={location.startOdometer}
         endOdometer={location.endOdometer}
         endFuelLevel={location.endFuelLevel}
         startDate={location.startDate.toISOString().slice(0, 10)}

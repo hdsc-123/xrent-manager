@@ -90,24 +90,36 @@ export function PermissionGroupsPanel({
             <Icon icon={Plus} className="size-4" />
             Créer un groupe
           </DialogTrigger>
-          <DialogContent className="sm:max-w-2xl">
+          {/* BUG-001 (INCIDENTS.md) : sur un viewport de hauteur normale, la grille de
+              permissions (une carte par catégorie, voir PermissionCheckboxGrid.tsx) dépasse
+              largement la hauteur de la modale de base (aucun max-h/overflow par défaut sur
+              DialogContent, voir src/components/ui/dialog.tsx) — le haut et le bas de la liste
+              deviennent inaccessibles, y compris le bouton "Créer". Correctif scopé à cette
+              modale (pas dialog.tsx, qui reste sans hauteur par défaut pour les dialogues plus
+              courts) : DialogContent limité à max-h-[85vh] avec défilement interne uniquement
+              sur la zone de formulaire (Nom + grille de permissions) ; DialogHeader et
+              DialogFooter restent hors de la zone défilante, donc toujours visibles/accessibles,
+              tout comme le bouton de fermeture (X, positionné en absolute dans DialogContent). */}
+          <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>Créer un groupe de permissions</DialogTitle>
               <DialogDescription>Sélectionnez les permissions accordées à ce groupe.</DialogDescription>
             </DialogHeader>
-            <form onSubmit={handleCreate} className="flex flex-col gap-4">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="name" required>Nom</Label>
-                <Input id="name" required value={name} onChange={(e) => setName(e.target.value)} />
+            <form onSubmit={handleCreate} className="flex min-h-0 flex-1 flex-col gap-4">
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="name" required>Nom</Label>
+                  <Input id="name" required value={name} onChange={(e) => setName(e.target.value)} />
+                </div>
+
+                <PermissionCheckboxGrid permissions={permissions} selected={selected} onChange={setSelected} />
+
+                {error && (
+                  <p role="alert" className="text-sm text-destructive">
+                    {error}
+                  </p>
+                )}
               </div>
-
-              <PermissionCheckboxGrid permissions={permissions} selected={selected} onChange={setSelected} />
-
-              {error && (
-                <p role="alert" className="text-sm text-destructive">
-                  {error}
-                </p>
-              )}
 
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>

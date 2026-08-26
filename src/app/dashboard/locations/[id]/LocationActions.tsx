@@ -44,6 +44,10 @@ interface LocationActionsProps {
   id: string;
   status: LocationStatus;
   notes: string | null;
+  /** BUG-005 (INCIDENTS.md) — sert de borne minimale/message pour endOdometer ci-dessous ;
+   * `null` si jamais renseigné (aucune borne applicable, voir assertValidReturnOdometer,
+   * src/lib/locations.ts). */
+  startOdometer: number | null;
   endOdometer: number | null;
   /** Sprint 23 — carburant retour actuel (0-100), null si jamais renseigné. */
   endFuelLevel: number | null;
@@ -91,6 +95,7 @@ export function LocationActions({
   id,
   status,
   notes: initialNotes,
+  startOdometer,
   endOdometer: initialEndOdometer,
   endFuelLevel: initialEndFuelLevel,
   startDate: initialStartDate,
@@ -113,6 +118,12 @@ export function LocationActions({
   const [endFuelLevel, setEndFuelLevel] = useState(
     initialEndFuelLevel !== null ? String(initialEndFuelLevel) : ""
   );
+  // BUG-005 (INCIDENTS.md) — même règle que le serveur (assertValidReturnOdometer,
+  // src/lib/locations.ts) : affichage immédiat, la validation qui compte reste côté serveur.
+  const odometerError =
+    startOdometer !== null && endOdometer !== "" && Number(endOdometer) <= startOdometer
+      ? `Le kilométrage de retour doit être strictement supérieur au kilométrage de départ (${startOdometer} km).`
+      : null;
   const [isChangingStatus, setIsChangingStatus] = useState(false);
   const [isSavingNotes, setIsSavingNotes] = useState(false);
   const [showSecondDriverForm, setShowSecondDriverForm] = useState(false);
@@ -243,7 +254,17 @@ export function LocationActions({
         <CardContent className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">Kilométrage retour</span>
-            <Input type="number" value={endOdometer} onChange={(e) => setEndOdometer(e.target.value)} />
+            <Input
+              type="number"
+              min={startOdometer !== null ? startOdometer + 1 : 0}
+              value={endOdometer}
+              onChange={(e) => setEndOdometer(e.target.value)}
+            />
+            {odometerError && (
+              <p role="alert" className="text-sm text-destructive">
+                {odometerError}
+              </p>
+            )}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="endFuelLevelReturn">Carburant retour</Label>
@@ -370,9 +391,15 @@ export function LocationActions({
           <span className="text-xs font-medium text-muted-foreground">Kilométrage retour</span>
           <Input
             type="number"
+            min={startOdometer !== null ? startOdometer + 1 : 0}
             value={endOdometer}
             onChange={(e) => setEndOdometer(e.target.value)}
           />
+          {odometerError && (
+            <p role="alert" className="text-sm text-destructive">
+              {odometerError}
+            </p>
+          )}
         </div>
 
         <div className="flex flex-col gap-1.5">

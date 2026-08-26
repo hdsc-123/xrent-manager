@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Bell, CalendarClock, CalendarRange, Car, FileWarning, Store, Wrench } from "lucide-react";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
+import { locationAgencyScopeWhere } from "@/lib/locations";
 import { getTenantById } from "@/lib/db";
 import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
@@ -37,10 +38,9 @@ export default async function DashboardPage() {
   // contrats dont l'agence de RETOUR (dropoffAgencyId, distincte de l'agence de rattachement
   // pour une conversion de réservation avec ville de retour différente) est accessible — pas
   // seulement agencyId, contrairement aux autres comptages ci-dessous (Maintenance/Invoice,
-  // qui n'ont pas cette notion). Scope dédié, ne remplace pas agencyScope.
-  const locationReturnsAgencyScope = accessibleAgencyIds
-    ? { OR: [{ agencyId: { in: accessibleAgencyIds } }, { dropoffAgencyId: { in: accessibleAgencyIds } }] }
-    : {};
+  // qui n'ont pas cette notion). Scope dédié (locationAgencyScopeWhere, src/lib/authz.ts — même
+  // règle centralisée que BUG-004, INCIDENTS.md), ne remplace pas agencyScope.
+  const locationReturnsAgencyScope = locationAgencyScopeWhere(accessibleAgencyIds);
   const now = new Date();
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);

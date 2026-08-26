@@ -2,6 +2,7 @@ import type { VehicleStatus, LocationStatus, InvoiceStatus } from "@prisma/clien
 import { prisma } from "@/lib/prisma";
 import { can } from "@/lib/permissions";
 import { canAccessAgency, getAccessibleAgencyIds, type SessionUser } from "@/lib/authz";
+import { locationAgencyScopeWhere } from "@/lib/locations";
 import { formatAmountForCsv, formatDateForCsv, formatPercentFromBasisPoints } from "@/lib/csv";
 import { MAX_EXPORT_ROWS, VEHICLE_COLUMNS, CLIENT_COLUMNS, LOCATION_COLUMNS, INVOICE_COLUMNS } from "@/lib/export-constants";
 
@@ -265,13 +266,12 @@ async function runClientsExport(user: SessionUser, searchParams: URLSearchParams
 const LOCATION_STATUSES: LocationStatus[] = ["PENDING", "CONFIRMED", "ACTIVE", "COMPLETED", "CANCELLED"];
 
 /**
- * Locations (= "contrats") — src/app/api/locations/route.ts. Portée agence identique à
- * `vehicles` (colonne `agencyId` directe). **Fidélité délibérée** : la route GET liste existante
- * ne restreint la visibilité que par `Location.agencyId` (agence de départ), jamais par
- * `dropoffAgencyId` (agence de retour) — contrairement à `canAccessLocationAgency` (src/lib/
- * authz.ts), utilisée uniquement par les routes de détail/action sur UNE location. Reproduire ce
- * comportement plus large ici serait inventer une visibilité que la liste n'a jamais eue ; ce
- * export reste donc scopé exactement comme `GET /api/locations`.
+ * Locations (= "contrats"). Portée agence : agence de rattachement (agencyId) OU agence de
+ * retour (dropoffAgencyId), via locationAgencyScopeWhere (src/lib/locations.ts) — même règle
+ * centralisée que GET /api/locations (src/app/api/locations/route.ts) et
+ * canAccessLocationAgency. Avant correction (BUG-004, voir INCIDENTS.md), cet export ne
+ * filtrait que sur `agencyId`, reproduisant délibérément une portée trop étroite qui masquait
+ * les contrats dont seule l'agence de retour était accessible à l'exportateur.
  */
 async function runLocationsExport(user: SessionUser, searchParams: URLSearchParams): Promise<ExportOutcome> {
   const agencyIdParam = searchParams.get("agencyId") ?? undefined;
@@ -291,7 +291,7 @@ async function runLocationsExport(user: SessionUser, searchParams: URLSearchPara
   const locations = await prisma.location.findMany({
     where: {
       tenantId: user.tenantId,
-      ...(agencyIds !== null ? { agencyId: { in: agencyIds } } : {}),
+      ...locationAgencyScopeWhere(agencyIds),
       ...(vehicleIdParam ? { vehicleId: vehicleIdParam } : {}),
       ...(clientIdParam ? { clientId: clientIdParam } : {}),
       ...(statusParam ? { status: statusParam as LocationStatus } : {}),

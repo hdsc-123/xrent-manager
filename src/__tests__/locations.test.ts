@@ -1279,6 +1279,182 @@ describe("GET /api/locations", () => {
   });
 });
 
+/**
+ * BUG-004 (INCIDENTS.md) — un contrat créé à l'agence de départ (agencyId) avec une agence de
+ * retour (dropoffAgencyId) distincte doit rester visible à l'agence de retour, dans la liste
+ * (GET /api/locations) comme sur la fiche (GET /api/locations/[id]), sans donner à cette agence
+ * un accès général à toutes les locations, sans casser l'isolation tenant, et sans changer les
+ * actions déjà réservées à l'agence de départ. Reproduit le scénario réel RAK → CASA (contrat
+ * n°00002) avec un tenant/deux agences dédiés à ce test.
+ */
+describe("BUG-004 — visibilité d'une location par l'agence de RETOUR (dropoffAgencyId)", () => {
+  let pickupAgencyId: string;
+  let dropoffAgencyId: string;
+  let pickupOnlyMember: AuthenticatedTestUser;
+  let dropoffOnlyMember: AuthenticatedTestUser;
+  let unrelatedMember: AuthenticatedTestUser;
+  let crossLocationId: string;
+
+  beforeAll(async () => {
+    const pickupAgencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `RAK-${runId}`, slug: `rak-${runId}` }),
+    });
+    pickupAgencyId = (await pickupAgencyResponse.json()).agency.id;
+
+    const dropoffAgencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `CASA-${runId}`, slug: `casa-${runId}` }),
+    });
+    dropoffAgencyId = (await dropoffAgencyResponse.json()).agency.id;
+
+    // Préfixe de numérotation dédié (DOMAINRULES.md section 29) : sans lui, cette nouvelle
+    // agence redémarrerait la séquence de numéros de contrat à 1 et entrerait en collision avec
+    // agencyA1Id (même tenant, déjà utilisée par de nombreux autres tests de ce fichier) sur la
+    // contrainte d'unicité (tenantId, contractNumber).
+    await apiFetch(`/api/agencies/${pickupAgencyId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ contractNumberPrefix: `RAK4${runId}` }),
+    });
+    await apiFetch(`/api/agencies/${dropoffAgencyId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ contractNumberPrefix: `CASA4${runId}` }),
+    });
+
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: pickupAgencyId,
+        name: "Clio RAK",
+        licensePlate: `BUG4-${runId}`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 5000,
+        chassisNumber: `VF1BUG4${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
+      }),
+    });
+    const bug4VehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const createResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ vehicleId: bug4VehicleId, clientId: clientAId, ...nextTestDateRange() }),
+    });
+    crossLocationId = (await createResponse.json()).location.id;
+
+    // dropoffAgencyId n'est renseignable que par la conversion réservation → contrat
+    // (DOMAINRULES.md section 37) ; ce test exerce la règle de visibilité elle-même (déjà
+    // couverte ailleurs pour la conversion), donc l'état est posé directement en base, comme
+    // d'autres tests de ce fichier (ex. contractNumber, ligne ~1593) et de data-reset.test.ts.
+    await prisma.location.update({
+      where: { id: crossLocationId },
+      data: { dropoffAgencyId },
+    });
+
+    pickupOnlyMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Agent RAK",
+      email: `agent-rak-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: pickupOnlyMember.userId, agencyId: pickupAgencyId } });
+
+    dropoffOnlyMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Agent CASA",
+      email: `agent-casa-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: dropoffOnlyMember.userId, agencyId: dropoffAgencyId } });
+
+    unrelatedMember = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Agent sans agence",
+      email: `agent-sans-agence-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+  });
+
+  it("l'agent de l'agence de départ (RAK) voit le contrat dans la liste et sur la fiche", async () => {
+    const listResponse = await apiFetch("/api/locations", { headers: { Cookie: pickupOnlyMember.sessionCookie } });
+    const listBody = await listResponse.json();
+    expect((listBody.locations as { id: string }[]).map((l) => l.id)).toContain(crossLocationId);
+
+    const detailResponse = await apiFetch(`/api/locations/${crossLocationId}`, {
+      headers: { Cookie: pickupOnlyMember.sessionCookie },
+    });
+    expect(detailResponse.status).toBe(200);
+  });
+
+  it("l'agent de l'agence de RETOUR (CASA) voit désormais le contrat dans la liste et sur la fiche", async () => {
+    const listResponse = await apiFetch("/api/locations", { headers: { Cookie: dropoffOnlyMember.sessionCookie } });
+    const listBody = await listResponse.json();
+    expect((listBody.locations as { id: string }[]).map((l) => l.id)).toContain(crossLocationId);
+
+    const detailResponse = await apiFetch(`/api/locations/${crossLocationId}`, {
+      headers: { Cookie: dropoffOnlyMember.sessionCookie },
+    });
+    expect(detailResponse.status).toBe(200);
+  });
+
+  it("l'agent CASA (retour uniquement) peut enregistrer la réception (endOdometer) mais reste limité à cette action", async () => {
+    const allowedResponse = await apiFetch(`/api/locations/${crossLocationId}`, {
+      method: "PATCH",
+      headers: { Cookie: dropoffOnlyMember.sessionCookie },
+      body: JSON.stringify({ endOdometer: 50 }),
+    });
+    expect(allowedResponse.status).toBe(200);
+
+    const forbiddenResponse = await apiFetch(`/api/locations/${crossLocationId}`, {
+      method: "PATCH",
+      headers: { Cookie: dropoffOnlyMember.sessionCookie },
+      body: JSON.stringify({ notes: "Tentative de modification hors périmètre retour" }),
+    });
+    expect(forbiddenResponse.status).toBe(403);
+  });
+
+  it("un agent sans rattachement à RAK ni CASA ne voit pas le contrat (pas d'accès général élargi)", async () => {
+    const listResponse = await apiFetch("/api/locations", { headers: { Cookie: unrelatedMember.sessionCookie } });
+    const listBody = await listResponse.json();
+    expect((listBody.locations as { id: string }[]).map((l) => l.id)).not.toContain(crossLocationId);
+
+    const detailResponse = await apiFetch(`/api/locations/${crossLocationId}`, {
+      headers: { Cookie: unrelatedMember.sessionCookie },
+    });
+    expect(detailResponse.status).toBe(404);
+  });
+
+  it("un tenant différent ne voit jamais le contrat, ni par la liste ni par accès direct (isolation)", async () => {
+    const listResponse = await apiFetch("/api/locations", { headers: { Cookie: adminB.sessionCookie } });
+    const listBody = await listResponse.json();
+    expect((listBody.locations as { id: string }[]).map((l) => l.id)).not.toContain(crossLocationId);
+
+    const detailResponse = await apiFetch(`/api/locations/${crossLocationId}`, {
+      headers: { Cookie: adminB.sessionCookie },
+    });
+    expect(detailResponse.status).toBe(404);
+  });
+
+  it("un ADMIN du même tenant voit toujours le contrat (accès transverse inchangé)", async () => {
+    const listResponse = await apiFetch("/api/locations", { headers: { Cookie: adminA.sessionCookie } });
+    const listBody = await listResponse.json();
+    expect((listBody.locations as { id: string }[]).map((l) => l.id)).toContain(crossLocationId);
+  });
+});
+
 describe("PATCH /api/locations/[id]", () => {
   it("retourne 404 pour une location d'un autre tenant", async () => {
     const otherLocationResponse = await apiFetch("/api/locations", {
@@ -1390,6 +1566,136 @@ describe("PATCH /api/locations/[id]", () => {
     const body = await response.json();
     expect(body.location.startOdometer).toBe(50000);
     expect(body.location.endOdometer).toBe(50180);
+  });
+
+  // BUG-005 (INCIDENTS.md) : PATCH /api/locations/[id] est le seul chemin disponible pour
+  // l'agence de RETOUR (canManageReturnOnly, voir authz.ts) — contrairement à
+  // POST /api/locations/[id]/return (déjà validé, voir location-return.test.ts), il acceptait
+  // endOdometer sans jamais le comparer à startOdometer.
+  describe("BUG-005 — kilométrage retour doit être strictement supérieur au départ", () => {
+    // Véhicule dédié (plutôt que vehicleAId, déjà réservé sur de nombreuses plages explicites
+    // ailleurs dans ce fichier) : évite toute collision de disponibilité (409) avec
+    // nextTestDateRange(), dont le compteur global peut retomber sur une date déjà prise par un
+    // autre test de ce fichier utilisant des dates explicites plutôt que le compteur.
+    let bug5VehicleId: string;
+
+    beforeAll(async () => {
+      const vehicleResponse = await apiFetch("/api/vehicles", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({
+          agencyId: agencyA1Id,
+          name: "Clio BUG-005",
+          licensePlate: `BUG5-${runId}`,
+          make: "Renault",
+          model: "Clio",
+          year: 2022,
+          category: "Citadine",
+          pricePerDay: 5000,
+          chassisNumber: `VF1BUG5${Math.floor(Math.random() * 1_000_000)}`,
+          color: "Blanc",
+          doors: 5,
+          seats: 5,
+          horsepower: 6,
+          powerKW: 75,
+          engineSize: 1.5,
+        }),
+      });
+      bug5VehicleId = (await vehicleResponse.json()).vehicle.id;
+    });
+
+    async function createLocationWithStartOdometer(startOdometer: number) {
+      const createResponse = await createLocation(adminA, {
+        ...nextTestDateRange(),
+        vehicleId: bug5VehicleId,
+        startOdometer,
+      });
+      const json = await createResponse.json();
+      return json.location.id as string;
+    }
+
+    it("refuse un kilométrage retour inférieur au départ", async () => {
+      const locationId = await createLocationWithStartOdometer(30000);
+      const response = await apiFetch(`/api/locations/${locationId}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ endOdometer: 29999 }),
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toBe(
+        "Le kilométrage de retour doit être un entier strictement supérieur au kilométrage de départ."
+      );
+    });
+
+    it("refuse un kilométrage retour égal au départ", async () => {
+      const locationId = await createLocationWithStartOdometer(30000);
+      const response = await apiFetch(`/api/locations/${locationId}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ endOdometer: 30000 }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("refuse une valeur négative", async () => {
+      const locationId = await createLocationWithStartOdometer(30000);
+      const response = await apiFetch(`/api/locations/${locationId}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ endOdometer: -10 }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("refuse une valeur non numérique", async () => {
+      const locationId = await createLocationWithStartOdometer(30000);
+      const response = await apiFetch(`/api/locations/${locationId}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ endOdometer: "abc" }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it("n'exige rien si endOdometer n'est pas fourni (champ non modifié)", async () => {
+      const locationId = await createLocationWithStartOdometer(30000);
+      const response = await apiFetch(`/api/locations/${locationId}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ notes: "Sans rapport avec le kilométrage" }),
+      });
+      expect(response.status).toBe(200);
+    });
+
+    it("accepte une valeur strictement supérieure au départ, et l'état persiste correctement en base", async () => {
+      const locationId = await createLocationWithStartOdometer(30000);
+      const response = await apiFetch(`/api/locations/${locationId}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ endOdometer: 30001 }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.location.endOdometer).toBe(30001);
+
+      const persisted = await prisma.location.findUnique({ where: { id: locationId } });
+      expect(persisted?.endOdometer).toBe(30001);
+    });
+
+    it("un rejet ne modifie aucun champ (pas de mise à jour partielle) : endOdometer reste inchangé en base", async () => {
+      const locationId = await createLocationWithStartOdometer(30000);
+      const rejected = await apiFetch(`/api/locations/${locationId}`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ notes: "Tentative avec kilométrage invalide", endOdometer: 100 }),
+      });
+      expect(rejected.status).toBe(400);
+
+      const persisted = await prisma.location.findUnique({ where: { id: locationId } });
+      expect(persisted?.endOdometer).toBeNull();
+      expect(persisted?.notes).not.toBe("Tentative avec kilométrage invalide");
+    });
   });
 });
 

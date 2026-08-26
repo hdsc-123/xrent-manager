@@ -21,6 +21,7 @@ import {
   LocationCancellationRequiresAdminError,
   LocationStatusConflictError,
   InvalidFuelLevelError,
+  InvalidReturnOdometerError,
   SecondDriverNotFoundError,
   MissingDriverBirthDateError,
   InvalidDriverBirthDateError,
@@ -270,6 +271,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     if (error instanceof InvalidFuelLevelError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof InvalidReturnOdometerError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof VehicleNotAvailableError) {

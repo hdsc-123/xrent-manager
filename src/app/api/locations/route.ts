@@ -53,24 +53,25 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Accès refusé à cette agence." }, { status: 403 });
   }
 
+  // BUG-004 (INCIDENTS.md) : la portée doit inclure les locations dont seule l'agence de
+  // RETOUR (dropoffAgencyId) est accessible à l'appelant, pas seulement agencyId — voir
+  // locationAgencyScopeWhere (src/lib/locations.ts), appliquée dans getLocations ci-dessous.
+  // Ignorée si `agencyId` est fourni explicitement (déjà validé ci-dessus).
+  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
+
   const filters: LocationFilters = {
     vehicleId,
     clientId,
     agencyId,
+    accessibleAgencyIds,
     status: statusParam as LocationStatus | undefined,
     from: fromParam ? new Date(fromParam) : undefined,
     to: toParam ? new Date(toParam) : undefined,
   };
 
-  const accessibleAgencyIds = await getAccessibleAgencyIds(user);
   const locations = await getLocations(user.tenantId, filters);
 
-  const visibleLocations =
-    accessibleAgencyIds === null || agencyId
-      ? locations
-      : locations.filter((location) => accessibleAgencyIds.includes(location.agencyId));
-
-  return NextResponse.json({ locations: visibleLocations });
+  return NextResponse.json({ locations });
 }
 
 interface CreateLocationBody {

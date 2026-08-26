@@ -145,3 +145,11 @@ export async function canAccessLocationAgency(
   }
   return location.dropoffAgencyId !== null && canAccessAgency(user, location.dropoffAgencyId);
 }
+
+// La règle de portée agence pour les LISTES de locations (locationAgencyScopeWhere, même
+// principe que canAccessLocationAgency ci-dessus) est centralisée dans src/lib/locations.ts,
+// pas ici : c'est un simple fragment Prisma pur (aucune dépendance à la session/l'auth), et la
+// placer ici forcerait tout module qui importe @/lib/locations à charger transitivement
+// next-auth (via @/lib/auth) — ce qui casse la résolution ESM de next-auth/lib/env.js hors du
+// runtime Next.js (ex. tests unitaires qui importent @/lib/locations directement, sans passer
+// par le serveur next dev). Voir locationAgencyScopeWhere dans src/lib/locations.ts.

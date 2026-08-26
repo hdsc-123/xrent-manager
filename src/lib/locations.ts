@@ -4,6 +4,31 @@ import { checkAvailability, lockVehicleForUpdate, findConflictingMaintenances } 
 import { getClientById } from "@/lib/clients";
 import { createCorrectionCashEntry, CorrectionReasonRequiredError } from "@/lib/cash-register";
 
+/**
+ * Fragment Prisma centralisé pour restreindre une requête `Location` (liste ou export) aux
+ * agences accessibles à l'appelant — agence de rattachement (agencyId) OU agence de retour
+ * (dropoffAgencyId), même règle que canAccessLocationAgency (src/lib/authz.ts), qui ne
+ * s'appliquait jusqu'ici qu'aux routes de détail/action sur UNE location. Avant cette
+ * centralisation, plusieurs listes (GET /api/locations, dashboard/locations, export CSV) ne
+ * filtraient que sur agencyId et masquaient à tort les contrats dont seule l'agence de retour
+ * était accessible à l'utilisateur (BUG-004, voir INCIDENTS.md) — toute nouvelle liste/export
+ * doit utiliser cette fonction plutôt que reconstruire le filtre. Définie ici (et non dans
+ * src/lib/authz.ts, malgré la parenté avec canAccessLocationAgency) volontairement : fragment
+ * Prisma pur, sans dépendance à la session/l'auth — la placer dans authz.ts forcerait tout
+ * module qui importe @/lib/locations à charger next-auth transitivement (voir le commentaire
+ * dans authz.ts).
+ * `accessibleAgencyIds` : `null` = aucune restriction (ADMIN) ; tableau = restriction stricte
+ * (tableau vide = aucun accès, ne doit jamais être confondu avec `null`).
+ */
+export function locationAgencyScopeWhere(accessibleAgencyIds: string[] | null): Prisma.LocationWhereInput {
+  if (accessibleAgencyIds === null) {
+    return {};
+  }
+  return {
+    OR: [{ agencyId: { in: accessibleAgencyIds } }, { dropoffAgencyId: { in: accessibleAgencyIds } }],
+  };
+}
+
 export { CorrectionReasonRequiredError };
 
 export class InvalidDateRangeError extends Error {
@@ -424,6 +449,39 @@ function validateFuelLevel(value: number | null | undefined): void {
 }
 
 /**
+ * BUG-005 (INCIDENTS.md) : le flux dédié de retour (POST /api/locations/[id]/return, voir
+ * assertValidOdometer dans src/lib/location-return.ts) rejetait déjà un kilométrage de retour
+ * inférieur ou égal au départ, mais updateLocation() ci-dessous — utilisé par le PATCH
+ * générique, seul chemin disponible pour l'agence de RETOUR sans accès à l'agence de départ
+ * (voir canAccessLocationAgency, src/lib/authz.ts) — acceptait endOdometer sans aucune
+ * comparaison. Même règle, dupliquée ici plutôt qu'importée de location-return.ts : ce module
+ * dépend transitivement de src/lib/locations.ts (via src/lib/invoices.ts), l'importer créerait
+ * un cycle — même raisonnement que InvalidFuelLevelError/validateFuelLevel ci-dessus. */
+export class InvalidReturnOdometerError extends Error {
+  constructor() {
+    super("Le kilométrage de retour doit être un entier strictement supérieur au kilométrage de départ.");
+    this.name = "InvalidReturnOdometerError";
+  }
+}
+
+function assertValidReturnOdometer(endOdometer: number, startOdometer: number | null): void {
+  if (!Number.isInteger(endOdometer)) {
+    throw new InvalidReturnOdometerError();
+  }
+  if (startOdometer !== null) {
+    if (endOdometer <= startOdometer) {
+      throw new InvalidReturnOdometerError();
+    }
+    return;
+  }
+  // Aucun kilométrage de départ connu (optionnel à la création, DOMAINRULES.md section 5) :
+  // rien à comparer — un entier positif ou nul reste néanmoins exigé.
+  if (endOdometer < 0) {
+    throw new InvalidReturnOdometerError();
+  }
+}
+
+/**
  * Machine à états explicite (ARCHITECTURE.md section 12) : aucune transition non listée
  * n'est autorisée. COMPLETED et CANCELLED sont des états terminaux.
  */
@@ -483,7 +541,15 @@ export async function generateContractNumber(
 export interface LocationFilters {
   vehicleId?: string;
   clientId?: string;
+  /** Filtre explicite sur une agence précise (ex. paramètre `agencyId` de l'URL) — l'appelant
+   * a déjà validé l'accès à cette agence (canAccessAgency) avant de la passer ici. Prioritaire
+   * sur `accessibleAgencyIds` : un filtre explicite est plus spécifique qu'une portée générale. */
   agencyId?: string;
+  /** Restreint aux locations visibles par l'appelant — agence de départ OU de retour, voir
+   * locationAgencyScopeWhere ci-dessous. `null` = ADMIN, aucune restriction ;
+   * `undefined` = non fourni, ignoré (voir `agencyId` ci-dessus si un filtre explicite est
+   * fourni à la place). Ignoré si `agencyId` est fourni. */
+  accessibleAgencyIds?: string[] | null;
   status?: LocationStatus;
   from?: Date;
   to?: Date;
@@ -495,7 +561,11 @@ export async function getLocations(tenantId: string, filters: LocationFilters = 
       tenantId,
       ...(filters.vehicleId ? { vehicleId: filters.vehicleId } : {}),
       ...(filters.clientId ? { clientId: filters.clientId } : {}),
-      ...(filters.agencyId ? { agencyId: filters.agencyId } : {}),
+      ...(filters.agencyId
+        ? { agencyId: filters.agencyId }
+        : filters.accessibleAgencyIds !== undefined
+          ? locationAgencyScopeWhere(filters.accessibleAgencyIds)
+          : {}),
       ...(filters.status ? { status: filters.status } : {}),
       ...(filters.from ? { endDate: { gte: filters.from } } : {}),
       ...(filters.to ? { startDate: { lte: filters.to } } : {}),
@@ -553,9 +623,7 @@ export async function getContractsOverview(
     where: {
       tenantId,
       ...(filters.status ? { status: filters.status } : {}),
-      ...(filters.agencyIds
-        ? { OR: [{ agencyId: { in: filters.agencyIds } }, { dropoffAgencyId: { in: filters.agencyIds } }] }
-        : {}),
+      ...(filters.agencyIds !== undefined ? locationAgencyScopeWhere(filters.agencyIds) : {}),
     },
     include: {
       vehicle: { select: { make: true, licensePlate: true } },
@@ -956,6 +1024,14 @@ export async function updateLocation(
 
   validateFuelLevel(data.startFuelLevel);
   validateFuelLevel(data.endFuelLevel);
+
+  // BUG-005 (INCIDENTS.md) : comparé au kilométrage de départ résultant (celui fourni dans ce
+  // même appel s'il change, sinon celui déjà enregistré) — même principe que nextStart/nextEnd
+  // plus bas pour les dates. `null` explicite (retrait du champ) n'est jamais comparé.
+  if (data.endOdometer !== undefined && data.endOdometer !== null) {
+    const nextStartOdometer = data.startOdometer !== undefined ? data.startOdometer : existing.startOdometer;
+    assertValidReturnOdometer(data.endOdometer, nextStartOdometer);
+  }
 
   // Sprint 23 (DOMAINRULES.md section 39) : un contrat déjà validé (sorti de PENDING) ne peut
   // plus jamais être annulé via cette transition simple — ni par un titulaire ordinaire de
