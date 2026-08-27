@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1308/1308** (2026-08-26).
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1334/1334** (2026-08-27).
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -314,8 +314,74 @@ Détail complet de chaque entrée ci-dessous (fichiers de test, nombre exact, pa
 | Sprint technique 1-5 | Prolongations (chaîne + soldes), correction soft 404, retrait `extendReturnDate`, audit désynchronisation test-grouped, faille mass assignment |
 | 2026-08-25/26 | Findings validation manuelle (F-1/F-2/F-3), stabilisation `npx vitest run` (INC-3 résolu 10/10), UX `/dashboard/users`, responsive 768px |
 | 2026-08-26 | Campagne de validation QA, partie 1 (clients/conducteurs/permis/âge) — BUG-006/BUG-007 |
+| 2026-08-27 | Campagne de validation QA, partie 2 (création/consultation/validation des réservations) — BUG-008 |
+| 2026-08-27 | Passe de correction post-partie 2 — INC-12 (véhicule INACTIVE), permission agencies.view (groupe AGENT) |
+| 2026-08-27 | Passe de correction obligatoire — doublon Omar (INC-13), surclassement `LocationUpgrade` complet, INC-14/INC-15 |
 
 ### Rapports récents (détail complet ci-dessous, pas archivés)
+
+## Tests session — passe de correction obligatoire : doublon Omar, surclassement, INC-14/INC-15 (2026-08-27)
+
+**Contexte** : passe de correction obligatoire demandée explicitement par le propriétaire du projet avant de poursuivre le développement — fermeture des deux points ouverts par la session précédente (doublon client « Omar Fictif-SecondCondValide », surclassement non vérifié côté serveur), recherche de bugs dans le même périmètre, tests de non-régression, documentation. Détail complet : [docs/test-reports/2026-08-27-passe-correction-surclassement-omar.md](docs/test-reports/2026-08-27-passe-correction-surclassement-omar.md).
+
+**INC-13 (doublon Omar)** : cause racine élucidée (second conducteur d'une conversion créé sans détection de doublon) ; doublon supprimé via `DELETE /api/clients/[id]` (aucune relation, journalisé) ; correctif anti-réapparition (réutilisation automatique sur correspondance exacte uniquement) dans `POST /api/reservations/[id]/convert`.
+
+**Surclassement (`LocationUpgrade`)** : nouveau modèle Prisma (migration `20260827114151_add_location_upgrade_surclassement`, appliquée à `xrent_dev`/`xrent_test`), module `src/lib/location-upgrades.ts` (règles CUSTOMER_REQUEST/UNAVAILABILITY/COMMERCIAL_GESTURE), intégration complète dans la transaction de conversion (`src/app/api/reservations/[id]/convert/route.ts`), nouvelle permission `locations.upgrade.commercial_gesture`, audit `location.upgraded`, formulaire de conversion (`ConvertReservationForm.tsx`) entièrement reconstruit. Voir DOMAINRULES.md section 70.
+
+**INC-14 (`deleteClient`/second conducteur)** et **INC-15 (audit client manquant à la conversion)** : trouvés et corrigés dans le même périmètre (Partie I du brief).
+
+**Tests ajoutés** : ~20 au total dans `src/__tests__/reservations.test.ts` (3 doublon second conducteur, ~15 surclassement, 1 audit `client.created`) et `src/__tests__/clients.test.ts` (1, `deleteClient`/second conducteur). Chaque nouveau test de `reservations.test.ts` a nécessité plusieurs itérations d'isolation (véhicules/catégories/dates dédiés, `forceCreateClient` sur les collisions de correspondance floue accidentelles entre clients de test partageant un même `runId`) avant d'obtenir une stabilité confirmée sur 3-4 exécutions consécutives de la suite complète du fichier — voir le rapport détaillé pour le détail de chaque cause.
+
+**Vérifications** :
+
+| Type de test | Nombre exécuté | Réussis | Échoués |
+|---|---|---|---|
+| `reservations.test.ts` isolé (4 exécutions consécutives) | 130 × 4 | 130 × 4 | 0 |
+| Unitaires/Intégration (`node scripts/test-grouped.mjs`) | 1334 | 1334 | 0 |
+| `npx tsc --noEmit` | — | ✅ Validé | — |
+| `npm run lint` | — | ✅ Validé | — |
+| `npm run build` | — | ✅ Validé | — |
+| Manuel navigateur réel (Playwright/Chromium), tenant de vérification dédié (`xrent_dev`) | 1 parcours complet (conversion CUSTOMER_REQUEST) | ✅ Validé | — |
+
+Vérification manuelle en navigateur réel : tenant/agence/2 véhicules (catégories distinctes)/réservation créés via l'API dev, conversion effectuée depuis `ConvertReservationForm.tsx` avec un surclassement CUSTOMER_REQUEST déclaré (50 MAD/jour × 3 jours) — `Location.totalPrice` (39000 = 24000 base + 15000 supplément), `Invoice` (39000, `PAID`) et `AuditLog` (`location.upgraded`, tous les champs métier attendus) confirmés cohérents avec le calcul serveur, jamais avec une valeur saisie côté client. **Aucun commit créé, aucun push effectué.**
+
+## Tests session de correction post-partie 2 (2026-08-27)
+
+**Contexte** : passe de correction et de clôture des problèmes restants identifiés après la partie 2 (réservations), avant de commencer la partie 3 (conversion en contrat) — brief explicite du propriétaire du projet portant sur le modèle métier (`Reservation` ne réserve pas de véhicule), le parcours de conversion, le surclassement, la disponibilité/double attribution, et la clôture de BUG-008.
+
+**INC-12 (véhicule `INACTIVE` non bloqué pour `Location`)** : `INACTIVE` ajouté à `VEHICLE_STATUSES_BLOCKING_LOCATION` (`src/lib/locations.ts`), propagé automatiquement à `createLocation`/`updateLocation`/la conversion de réservation. 3 `it.each` existants étendus (`locations.test.ts` ×2, `reservations.test.ts` ×1), aucun nouveau test créé.
+
+**Permission `agencies.view`** : ajoutée au groupe personnalisé « AGENT » du tenant QA (33 → 34 permissions), via `PATCH /api/permission-groups/[id]`, sur autorisation explicite du propriétaire du projet — voir DOMAINRULES.md section 69 et le rapport détaillé pour la vérification complète (audit, absence de permission d'administration ajoutée, effet immédiat sans reconnexion, isolation inchangée).
+
+**BUG-008** : reconfirmé corrigé (aucune régression, code relu intégralement) — aucune modification supplémentaire nécessaire.
+
+**Vérifications** :
+
+| Type de test | Nombre exécuté | Réussis | Échoués |
+|---|---|---|---|
+| Unitaires/Intégration (`node scripts/test-grouped.mjs`) | 1314 | 1314 | 0 |
+| `npx tsc --noEmit` | — | ✅ Validé | — |
+| `npm run lint` | — | ✅ Validé | — |
+| `npm run build` | — | ✅ Validé | — |
+| Manuel navigateur réel (Playwright/Chromium), agents RAK et CASA | lecture seule + 1 correction de permission | ✅ Validé | — |
+
+## Tests session de campagne QA, partie 2 — réservations (2026-08-27)
+
+**Contexte** : suite de la campagne de validation manuelle du tenant QA fictif — périmètre « création, consultation et validation des réservations » (`Reservation`, en amont d'un contrat). Détail complet : [docs/test-reports/2026-08-27-campagne-partie2-reservations.md](docs/test-reports/2026-08-27-campagne-partie2-reservations.md).
+
+**BUG-008 (chaîne composée uniquement d'espaces acceptée sur `Reservation`)** : même défaut qu'INC-9 (BUG-006) sur `Client`, jamais corrigé sur `Reservation` — `.trim()` ajouté aux contrôles `POST /api/reservations` et aux deux formulaires dashboard ; nouveau bloc de validation ajouté à `PATCH /api/reservations/[id]` (absent jusqu'ici, permettait d'effacer silencieusement le client/voucher d'une réservation existante). Voir INCIDENTS.md INC-11. 2 nouveaux tests dédiés (`src/__tests__/reservations.test.ts`).
+
+**Constat distinct, non un bug** : le formulaire de réservation (`/dashboard/reservations/new`) ne propose aucune sélection de véhicule réel, aucune vérification de disponibilité, aucun blocage de double réservation — conforme à DOMAINRULES.md section 21 (« Elle ne réserve aucun véhicule »), ce n'est pas une régression. Ces vérifications ont été exécutées avec succès sur `Location` (`/dashboard/locations/new`), qui est le modèle réservant réellement un véhicule.
+
+**Vérifications post-correction** :
+
+| Type de test | Nombre exécuté | Réussis | Échoués |
+|---|---|---|---|
+| Unitaires/Intégration (`node scripts/test-grouped.mjs`) | 1311 | 1311 | 0 |
+| `npx tsc --noEmit` | — | ✅ Validé | — |
+| `npm run lint` | — | ✅ Validé | — |
+| `npm run build` | — | ✅ Validé | — |
+| Manuel navigateur réel (Playwright/Chromium) | 42 scénarios du brief | voir rapport détaillé | — |
 
 ## Tests session de reprise de campagne — BUG-001/004/005 corrigés et vérifiés (2026-08-26)
 

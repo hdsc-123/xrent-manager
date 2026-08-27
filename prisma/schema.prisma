@@ -42,6 +42,7 @@ model Tenant {
   vehicleTrips      VehicleTrip[]
   damages           Damage[]
   damageInvoices    DamageInvoice[]
+  locationUpgrades  LocationUpgrade[]
 }
 
 model Agency {
@@ -121,6 +122,7 @@ model User {
   vehicleTrips                VehicleTrip[]
   // Sprint 26D (Finding D1) : agent à l'origine d'une correction/compensation de caisse.
   cashEntriesPerformed        CashEntry[]       @relation("CashEntryPerformedBy")
+  locationUpgradesValidated   LocationUpgrade[]
   // Sprint 32 : agent ayant déclaré un dégât (Damage.createdByUserId).
   damagesCreated              Damage[]          @relation("DamageCreatedBy")
 
@@ -277,13 +279,14 @@ model Vehicle {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant       Tenant            @relation(fields: [tenantId], references: [id])
-  agency       Agency            @relation(fields: [agencyId], references: [id])
-  locations    Location[]
-  maintenances Maintenance[]
-  transfers    VehicleTransfer[]
-  trips        VehicleTrip[]
-  damages      Damage[]
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  agency           Agency            @relation(fields: [agencyId], references: [id])
+  locations        Location[]
+  maintenances     Maintenance[]
+  transfers        VehicleTransfer[]
+  trips            VehicleTrip[]
+  damages          Damage[]
+  locationUpgrades LocationUpgrade[]
 
   @@unique([tenantId, licensePlate])
   @@index([tenantId])
@@ -310,58 +313,58 @@ enum ContractKind {
 }
 
 model Location {
-  id              String         @id @default(cuid())
-  tenantId        String
-  agencyId        String
+  id               String         @id @default(cuid())
+  tenantId         String
+  agencyId         String
   // Agence de retour (Sprint 19, DOMAINRULES section 37) : nullable, renseignée uniquement
   // quand une conversion de réservation a une dropoffAgency distincte de l'agence du véhicule
   // choisi (sinon null = "même agence que agencyId", pas de duplication). Permet au widget
   // "Retours" du dashboard et à la gestion de réception du véhicule d'être visibles à l'agence
   // d'arrivée réelle, pas seulement à l'agence de départ/rattachement du véhicule.
-  dropoffAgencyId String?
-  vehicleId       String
-  clientId        String
+  dropoffAgencyId  String?
+  vehicleId        String
+  clientId         String
   // Second conducteur (Sprint 19, DOMAINRULES section 37) : réutilise entièrement le modèle
   // Client existant (même flux de détection de doublon que le client principal) plutôt qu'un
   // modèle dédié — un second conducteur est une identité, pas un concept métier différent.
   // Nullable : la plupart des contrats n'en ont pas.
-  secondDriverId  String?
-  startDate       DateTime
-  endDate         DateTime
-  startOdometer   Int?
-  endOdometer     Int?
+  secondDriverId   String?
+  startDate        DateTime
+  endDate          DateTime
+  startOdometer    Int?
+  endOdometer      Int?
   // Sprint 23 (DOMAINRULES.md section 39) : jauge de carburant départ/retour du contrat,
   // même convention que VehicleTransfer/VehicleTrip (pourcentage entier 0-100, jamais un
   // float — DOMAINRULES.md section 14) — absente jusqu'ici sur Location. Alimente aussi
   // getVehicleLastKnownState (src/lib/vehicles.ts), qui sélectionnait déjà endOdometer sur
   // Location mais renvoyait toujours fuelLevel: null faute de ce champ.
-  startFuelLevel  Int?
-  endFuelLevel    Int?
-  status          LocationStatus @default(PENDING)
-  pricePerDay     Int
-  totalPrice      Int
-  deposit         Int?
-  currency        String         @default("MAD")
-  notes           String?
+  startFuelLevel   Int?
+  endFuelLevel     Int?
+  status           LocationStatus @default(PENDING)
+  pricePerDay      Int
+  totalPrice       Int
+  deposit          Int?
+  currency         String         @default("MAD")
+  notes            String?
   // Numéro de contrat séquentiel (Sprint 14B), ex. "RAK-00122" — voir generateContractNumber,
   // src/lib/locations.ts. Nullable : les Location déjà créées avant ce sprint n'en ont pas
   // (jamais backfillées rétroactivement, même principe que Vehicle.pricePerDay Sprint 14A) ;
   // toute nouvelle Location en reçoit un systématiquement, quel que soit son statut initial.
-  contractNumber  String?
+  contractNumber   String?
   // Sprint 32 : date/heure réelles du retour, distinctes de endDate (prévu). Préremplies par
   // le serveur à l'ouverture du formulaire de retour (jamais l'heure du navigateur seule) ;
   // modifiables uniquement par un titulaire de locations.return_time.edit — voir POST
   // .../return (non codé à cette étape, DOMAINRULES.md section 32).
-  actualReturnAt  DateTime?
+  actualReturnAt   DateTime?
   // Sprint technique 1 (DOMAINRULES.md section 60) : INITIAL par défaut — toute Location déjà
   // existante au moment de la migration *est* déjà conceptuellement un contrat initial, backfill
   // sans ambiguïté (même raisonnement que Invoice.type au Sprint 13E tâche 3).
-  contractKind ContractKind @default(INITIAL)
+  contractKind     ContractKind   @default(INITIAL)
   // Contrat directement précédent dans la chaîne — @unique : un contrat ne peut avoir qu'un seul
   // enfant direct (chaîne strictement linéaire, aucun embranchement, DOMAINRULES.md section 60
   // règle 3). Null pour un contrat INITIAL. Jamais modifié après création (le contrat parent
   // n'est jamais réécrit par la création d'une prolongation).
-  parentLocationId String? @unique
+  parentLocationId String?        @unique
   // Contrat initial de la chaîne. Auto-référencé sur son propre id pour un contrat INITIAL
   // (décision explicite du propriétaire du projet — distinct du patron Invoice.rootInvoiceId,
   // qui reste null sur la facture racine elle-même) : permet une seule requête d'égalité
@@ -370,8 +373,8 @@ model Location {
   // création (id non connu avant l'insertion) — voir contrainte CHECK en migration pour la
   // fenêtre transitoire où il est encore `NULL` juste après l'INSERT.
   rootLocationId   String?
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
 
   tenant         Tenant          @relation(fields: [tenantId], references: [id])
   agency         Agency          @relation("LocationAgency", fields: [agencyId], references: [id])
@@ -388,10 +391,12 @@ model Location {
   // pour un accès direct à la racine et à tous les contrats de la chaîne sans traversée
   // récursive. onDelete: Restrict (comme Payment.invoice, Sprint 33) — un contrat ayant un
   // enfant ou un descendant ne doit jamais pouvoir être supprimé silencieusement sous eux.
-  parentLocation Location?  @relation("LocationExtensionChain", fields: [parentLocationId], references: [id], onDelete: Restrict)
-  childLocation  Location?  @relation("LocationExtensionChain")
-  root           Location?  @relation("LocationExtensionRoot", fields: [rootLocationId], references: [id], onDelete: Restrict)
-  descendants    Location[] @relation("LocationExtensionRoot")
+  parentLocation Location?       @relation("LocationExtensionChain", fields: [parentLocationId], references: [id], onDelete: Restrict)
+  childLocation  Location?       @relation("LocationExtensionChain")
+  root           Location?       @relation("LocationExtensionRoot", fields: [rootLocationId], references: [id], onDelete: Restrict)
+  descendants    Location[]      @relation("LocationExtensionRoot")
+
+  upgrade LocationUpgrade?
 
   @@unique([tenantId, contractNumber])
   @@index([tenantId])
@@ -404,6 +409,74 @@ model Location {
   @@index([rootLocationId])
   @@index([status])
   @@index([startDate, endDate])
+}
+
+// Campagne QA (2026-08-27, passe de correction obligatoire avant le sprint suivant) : le
+// surclassement (catégorie de véhicule réellement affectée à la conversion, différente de la
+// catégorie demandée par la réservation) existait jusqu'ici uniquement comme une convention
+// d'interface (ConvertReservationForm.tsx, Sprint 22) — aucun enregistrement structuré, aucun
+// contrôle serveur. Modèle dédié plutôt qu'une extension de Location : un surclassement est un
+// événement (qui a décidé quoi, pourquoi, avec quel accord) distinct des champs de contrat déjà
+// existants (pricePerDay/totalPrice/notes, réutilisés tels quels pour le montant final — voir
+// DOMAINRULES.md section 70) — l'historique de la décision elle-même n'a nulle part où vivre
+// sans ce modèle. Relation 1-1 avec Location (@unique sur locationId) : au plus un
+// enregistrement de surclassement par contrat, créé une seule fois à la conversion, jamais
+// modifié ensuite (immuable, même principe que Invoice.subtotal, snapshot au moment de l'action).
+enum LocationUpgradeType {
+  /**
+   * Surclassement demandé par le client — supplément payant par défaut, accord client requis.
+   */
+  CUSTOMER_REQUEST
+  /**
+   * Catégorie réservée indisponible — gratuit par défaut, justification opérationnelle requise.
+   */
+  UNAVAILABILITY
+  /**
+   * Geste commercial autorisé — supplément nul ou réduit, permission dédiée requise.
+   */
+  COMMERCIAL_GESTURE
+}
+
+model LocationUpgrade {
+  id            String  @id @default(cuid())
+  tenantId      String
+  locationId    String  @unique
+  reservationId String?
+  vehicleId     String
+
+  type LocationUpgradeType
+
+  // Snapshots immuables au moment de la conversion (même principe que Location.pricePerDay
+  // vis-à-vis de Vehicle.pricePerDay, DOMAINRULES.md section 14) — jamais recalculés après
+  // coup, y compris si Reservation.vehicleCategory ou Vehicle.category changent ensuite.
+  reservedCategory String
+  assignedCategory String
+
+  // Montants entiers en centimes (DOMAINRULES.md section 14 — jamais de float), toujours
+  // recalculés côté serveur à partir de dailySupplement/daysCount, jamais acceptés tels quels
+  // depuis le client (voir createLocationUpgrade, src/lib/location-upgrades.ts).
+  dailySupplement Int
+  daysCount       Int
+  totalSupplement Int
+  currency        String @default("MAD")
+
+  // Accord/justification — exactement un des deux est pertinent selon `type` (voir la
+  // validation serveur), jamais les deux à la fois.
+  customerConsent   Boolean @default(false)
+  operationalReason String?
+
+  validatedByUserId String
+  createdAt         DateTime @default(now())
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id])
+  location    Location     @relation(fields: [locationId], references: [id])
+  reservation Reservation? @relation(fields: [reservationId], references: [id])
+  vehicle     Vehicle      @relation(fields: [vehicleId], references: [id])
+  validatedBy User         @relation(fields: [validatedByUserId], references: [id])
+
+  @@index([tenantId])
+  @@index([reservationId])
+  @@index([vehicleId])
 }
 
 // Sprint 13E tâche 3 (règles métier de facturation, décision validée du propriétaire du projet) :
@@ -1098,9 +1171,10 @@ model Reservation {
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
 
-  tenant           Tenant  @relation(fields: [tenantId], references: [id])
-  pickupAgencyRef  Agency? @relation("ReservationPickupAgency", fields: [pickupAgencyId], references: [id])
-  dropoffAgencyRef Agency? @relation("ReservationDropoffAgency", fields: [dropoffAgencyId], references: [id])
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  pickupAgencyRef  Agency?           @relation("ReservationPickupAgency", fields: [pickupAgencyId], references: [id])
+  dropoffAgencyRef Agency?           @relation("ReservationDropoffAgency", fields: [dropoffAgencyId], references: [id])
+  upgrades         LocationUpgrade[]
 
   @@index([tenantId])
   @@index([status])

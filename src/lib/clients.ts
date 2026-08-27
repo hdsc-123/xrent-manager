@@ -137,6 +137,18 @@ export async function deleteClient(tenantId: string, clientId: string): Promise<
     throw new ClientHasLocationsError();
   }
 
+  // Correctif (campagne QA, 2026-08-27, résolution du doublon Omar Fictif-SecondCondValide) :
+  // ce garde-fou ne vérifiait jusqu'ici que Location.clientId, jamais Location.secondDriverId
+  // — un client uniquement second conducteur sur un contrat existant pouvait donc être
+  // supprimé directement. La contrainte de clé étrangère (`ON DELETE SET NULL`, migration
+  // Sprint 19) l'aurait laissé faire silencieusement, effaçant l'identité du second conducteur
+  // du contrat sans refus ni avertissement — contraire au principe "aucune réservation ou
+  // contrat ne doit perdre sa relation".
+  const secondDriverCount = await prisma.location.count({ where: { secondDriverId: clientId } });
+  if (secondDriverCount > 0) {
+    throw new ClientHasLocationsError();
+  }
+
   await prisma.client.delete({ where: { id: clientId } });
   return true;
 }

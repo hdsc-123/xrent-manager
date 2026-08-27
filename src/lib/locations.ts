@@ -239,7 +239,20 @@ export class VehicleUnavailableForLocationError extends Error {
   }
 }
 
-const VEHICLE_STATUSES_BLOCKING_LOCATION: VehicleStatus[] = ["MAINTENANCE", "TRANSFERRING", "ON_TRIP"];
+// INACTIVE ajouté (campagne QA, 2026-08-27, partie 2 — vérification du parcours de conversion) :
+// un véhicule INACTIVE (immobilisé de façon permanente, `PATCH /api/vehicles/[id]`, section 5)
+// n'était jusqu'ici bloqué que pour les transferts/déplacements (src/lib/vehicle-transfers.ts,
+// vehicle-trips.ts, garde `status !== "AVAILABLE"`) — jamais pour une Location, créée
+// directement ou via la conversion d'une réservation (POST /api/reservations/[id]/convert
+// réutilise createLocation/assertVehicleStatusAllowsLocation telle quelle). Contrairement à
+// RENTED (délibérément absent de cette liste — un véhicule loué reste réservable pour une
+// période future non chevauchante, vérifié par checkAvailability), INACTIVE n'est jamais borné
+// dans le temps : aucune date future ne le rend de nouveau disponible tant qu'un ADMIN ne
+// change pas manuellement son statut. Le sélecteur de véhicule (`?status=AVAILABLE`, formulaires
+// de création directe et de conversion) l'excluait déjà côté UI, mais l'UI n'est jamais une
+// garantie de sécurité (SECURITY.md section 6) — un appel direct à l'API avec l'id d'un véhicule
+// INACTIVE était accepté sans aucun contrôle serveur avant ce correctif.
+const VEHICLE_STATUSES_BLOCKING_LOCATION: VehicleStatus[] = ["MAINTENANCE", "TRANSFERRING", "ON_TRIP", "INACTIVE"];
 
 /**
  * Appliqué immédiatement après lockVehicleForUpdate — création (toujours) et modification
@@ -497,10 +510,16 @@ export function canTransition(from: LocationStatus, to: LocationStatus): boolean
   return ALLOWED_TRANSITIONS[from].includes(to);
 }
 
-/** Nombre de jours arrondi au jour supérieur, minimum 1 jour. */
+/** Nombre de jours arrondi au jour supérieur, minimum 1 jour — extrait de calculateTotalPrice
+ * (campagne QA, 2026-08-27) pour être réutilisé tel quel par le calcul du supplément de
+ * surclassement (src/lib/location-upgrades.ts), qui doit appliquer exactement la même règle de
+ * durée facturée que le prix de base, sans dupliquer la formule. */
+export function calculateDaysCount(start: Date, end: Date): number {
+  return Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)));
+}
+
 export function calculateTotalPrice(pricePerDay: number, start: Date, end: Date): number {
-  const days = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)));
-  return pricePerDay * days;
+  return pricePerDay * calculateDaysCount(start, end);
 }
 
 function isUniqueConstraintError(error: unknown): boolean {
@@ -1289,7 +1308,13 @@ export async function deleteLocation(tenantId: string, locationId: string): Prom
   // erreur Prisma brute non gérée (violation de contrainte) dès qu'un dégât, même non payé,
   // était attaché à une location PENDING/CANCELLED par ailleurs supprimable.
   const hasDamages = (await prisma.damage.count({ where: { locationId } })) > 0;
-  if (hasNonDeletableInvoice || hasDamages) {
+  // Campagne QA (2026-08-27, passe de correction obligatoire) : un surclassement est un
+  // enregistrement d'audit immuable (accord/justification, montant validé, utilisateur
+  // validateur) — même principe que Damage ci-dessus, jamais supprimé silencieusement avec son
+  // contrat. Un contrat surclassé qu'on souhaite réellement annuler doit être annulé
+  // (CANCELLED), pas supprimé.
+  const hasUpgrade = (await prisma.locationUpgrade.count({ where: { locationId } })) > 0;
+  if (hasNonDeletableInvoice || hasDamages || hasUpgrade) {
     throw new LocationHasInvoiceError();
   }
 

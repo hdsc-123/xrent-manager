@@ -108,7 +108,7 @@ export async function POST(request: Request) {
   }
 
   const { clientFirstName, clientLastName, startDate, endDate } = body;
-  if (!clientFirstName || !clientLastName || !startDate || !endDate) {
+  if (!clientFirstName?.trim() || !clientLastName?.trim() || !startDate || !endDate) {
     return NextResponse.json(
       { error: "clientFirstName, clientLastName, startDate et endDate sont requis." },
       { status: 400 }
@@ -117,7 +117,9 @@ export async function POST(request: Request) {
 
   // voucherNumber est saisi manuellement pour une réservation BROKER, mais généré
   // automatiquement (Dir-0001, Dir-0002...) pour une réservation DIRECT (Sprint 13C).
-  let voucherNumber = body.voucherNumber;
+  // Une chaîne composée uniquement d'espaces est traitée comme absente (même principe que
+  // clientFirstName/clientLastName ci-dessus, voir INCIDENTS.md BUG-006 pour Client).
+  let voucherNumber = body.voucherNumber?.trim() ? body.voucherNumber : undefined;
   if (!voucherNumber) {
     if (body.source === "DIRECT") {
       voucherNumber = await generateDirectVoucherNumber(user.tenantId);

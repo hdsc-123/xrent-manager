@@ -284,6 +284,10 @@ afterAll(async () => {
   await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
+  // Campagne QA (2026-08-27) : LocationUpgrade a une contrainte de clé étrangère réelle vers
+  // Location (ON DELETE RESTRICT, comme Payment/Invoice) — doit être supprimée avant, sinon la
+  // suppression de Location ci-dessous échoue.
+  await prisma.locationUpgrade.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
@@ -315,6 +319,27 @@ describe("POST /api/reservations", () => {
   it("refuse endDate antérieure à startDate", async () => {
     const response = await createReservation(adminA, { startDate: "2030-06-05", endDate: "2030-06-01" });
     expect(response.status).toBe(400);
+  });
+
+  it("refuse clientFirstName/clientLastName composés uniquement d'espaces (campagne QA partie 2, BUG-008)", async () => {
+    // Même défaut qu'INC-9 (BUG-006) sur Client : une chaîne "   " est truthy en JavaScript,
+    // donc jamais interceptée par un simple `!champ` — vérifié empiriquement avant correctif
+    // (POST acceptait 201 avec clientFirstName/clientLastName = "   " persistés tels quels).
+    const responseFirstName = await createReservation(adminA, { clientFirstName: "   " });
+    expect(responseFirstName.status).toBe(400);
+
+    const responseLastName = await createReservation(adminA, { clientLastName: "   " });
+    expect(responseLastName.status).toBe(400);
+  });
+
+  it("refuse un voucherNumber composé uniquement d'espaces pour une source BROKER, régénère pour DIRECT", async () => {
+    const brokerResponse = await createReservation(adminA, { source: "BROKER", voucherNumber: "   " });
+    expect(brokerResponse.status).toBe(400);
+
+    const directResponse = await createReservation(adminA, { source: "DIRECT", voucherNumber: "   " });
+    expect(directResponse.status).toBe(201);
+    const body = await directResponse.json();
+    expect(body.reservation.voucherNumber).toMatch(/^Dir-\d{4}$/);
   });
 
   it("crée la réservation avec le statut PENDING et la devise MAD par défaut", async () => {
@@ -542,6 +567,41 @@ describe("PATCH /api/reservations/[id]", () => {
     });
     expect(response.status).toBe(200);
     expect((await response.json()).reservation.status).toBe("CONFIRMED");
+  });
+
+  it("refuse d'effacer clientFirstName/clientLastName/voucherNumber avec une chaîne composée uniquement d'espaces (campagne QA partie 2, BUG-008)", async () => {
+    // Contrairement à POST (défauts requis dès la création), PATCH n'appliquait jusqu'ici
+    // aucune validation de présence sur ces champs — un agent pouvait silencieusement vider
+    // le client/voucher d'une réservation existante via l'édition. Voir INCIDENTS.md.
+    const createResponse = await createReservation(adminA);
+    const id = (await createResponse.json()).reservation.id;
+
+    const firstNameResponse = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ clientFirstName: "   " }),
+    });
+    expect(firstNameResponse.status).toBe(400);
+
+    const lastNameResponse = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ clientLastName: "   " }),
+    });
+    expect(lastNameResponse.status).toBe(400);
+
+    const voucherResponse = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ voucherNumber: "   " }),
+    });
+    expect(voucherResponse.status).toBe(400);
+
+    // Aucune écriture partielle : le client/voucher d'origine doit rester intact après refus.
+    const getResponse = await apiFetch(`/api/reservations/${id}`, { headers: { Cookie: adminA.sessionCookie } });
+    const fetched = (await getResponse.json()).reservation;
+    expect(fetched.clientFirstName).toBe("Jean");
+    expect(fetched.clientLastName).toBe("Testeur");
   });
 
   it("refuse CONFIRMED → PENDING (transition non autorisée)", async () => {
@@ -1288,46 +1348,49 @@ describe("POST /api/reservations/import", () => {
   });
 });
 
-describe("POST /api/reservations/[id]/convert", () => {
-  /** Corps minimal valide (véhicule + dates + identité client) — Sprint 13D, nouveau
-   * contrat de POST /api/reservations/[id]/convert (formulaire de conversion pré-rempli,
-   * voir DOMAINRULES.md section 26). */
-  let convertBodyCounter = 0;
+/** Corps minimal valide (véhicule + dates + identité client) — Sprint 13D, nouveau contrat de
+ * POST /api/reservations/[id]/convert (formulaire de conversion pré-rempli, voir DOMAINRULES.md
+ * section 26). Portée module (campagne QA, 2026-08-27) — déplacé hors de son describe d'origine
+ * pour être réutilisé tel quel par le describe dédié au surclassement (même tenant/véhicule de
+ * test, aucune raison de dupliquer ce helper). */
+let convertBodyCounter = 0;
 
-  function convertBody(
-    reservation: { startDate: string; endDate: string; clientFirstName: string; clientLastName: string; clientPhone?: string | null },
-    overrides: Record<string, unknown> = {}
-  ) {
-    // Compteur local (Sprint 19) : idNumber/licenseNumber doivent être uniques par appel — sinon
-    // findDuplicateClient (détection de doublon) rejette (409) tout appel après le premier au
-    // sein de ce même tenant de test.
-    convertBodyCounter += 1;
-    return {
-      vehicleId: vehicleAId,
-      startDate: reservation.startDate,
-      endDate: reservation.endDate,
-      // Correctif F-3 (second passage, DOMAINRULES.md section 68) : startOdometer est
-      // désormais obligatoire côté serveur — valeur par défaut réaliste ici pour ne pas
-      // polluer les tests qui ne portent pas spécifiquement sur ce champ (voir le describe
-      // dédié "kilométrage/carburant de départ à la conversion (finding F-3)" plus bas, qui
-      // l'écrase explicitement via overrides pour couvrir les cas manquant/invalide).
-      startOdometer: 10000,
-      client: {
-        firstName: reservation.clientFirstName,
-        lastName: reservation.clientLastName,
-        phone: reservation.clientPhone ?? undefined,
-        // Sprint 19 (DOMAINRULES.md section 37) : désormais requis pour générer un contrat.
-        address: "12 rue des Fleurs",
-        city: "Casablanca",
-        country: "Maroc",
-        idNumber: `AB-${runId}-${convertBodyCounter}`,
-        licenseNumber: `P-${runId}-${convertBodyCounter}`,
-        licenseIssueDate: "2020-01-01",
-        licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01",
-      },
-      ...overrides,
-    };
-  }
+function convertBody(
+  reservation: { startDate: string; endDate: string; clientFirstName: string; clientLastName: string; clientPhone?: string | null },
+  overrides: Record<string, unknown> = {}
+) {
+  // Compteur local (Sprint 19) : idNumber/licenseNumber doivent être uniques par appel — sinon
+  // findDuplicateClient (détection de doublon) rejette (409) tout appel après le premier au
+  // sein de ce même tenant de test.
+  convertBodyCounter += 1;
+  return {
+    vehicleId: vehicleAId,
+    startDate: reservation.startDate,
+    endDate: reservation.endDate,
+    // Correctif F-3 (second passage, DOMAINRULES.md section 68) : startOdometer est
+    // désormais obligatoire côté serveur — valeur par défaut réaliste ici pour ne pas
+    // polluer les tests qui ne portent pas spécifiquement sur ce champ (voir le describe
+    // dédié "kilométrage/carburant de départ à la conversion (finding F-3)" plus bas, qui
+    // l'écrase explicitement via overrides pour couvrir les cas manquant/invalide).
+    startOdometer: 10000,
+    client: {
+      firstName: reservation.clientFirstName,
+      lastName: reservation.clientLastName,
+      phone: reservation.clientPhone ?? undefined,
+      // Sprint 19 (DOMAINRULES.md section 37) : désormais requis pour générer un contrat.
+      address: "12 rue des Fleurs",
+      city: "Casablanca",
+      country: "Maroc",
+      idNumber: `AB-${runId}-${convertBodyCounter}`,
+      licenseNumber: `P-${runId}-${convertBodyCounter}`,
+      licenseIssueDate: "2020-01-01",
+      licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01",
+    },
+    ...overrides,
+  };
+}
+
+describe("POST /api/reservations/[id]/convert", () => {
 
   it("refuse sans vehicleId", async () => {
     const createResponse = await createReservation(adminA);
@@ -1446,6 +1509,213 @@ describe("POST /api/reservations/[id]/convert", () => {
     const secondDriverClient = await prisma.client.findUnique({ where: { id: body.location.secondDriverId } });
     expect(secondDriverClient?.firstName).toBe("Second");
     expect(secondDriverClient?.lastName).toBe("Conducteur");
+  });
+
+  it("réutilise un second conducteur déjà existant sur correspondance exacte (idNumber) au lieu de créer un doublon (campagne QA, résolution du doublon Omar)", async () => {
+    const existingResponse = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        firstName: "Existant",
+        lastName: `SecondConducteur-${runId}`,
+        idNumber: `SD-EXACT-${runId}`,
+        birthDate: "1990-01-01",
+      }),
+    });
+    const existingClient = (await existingResponse.json()).client;
+
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "AvecSecondExistant",
+      clientLastName: `Client-${runId}`,
+      startDate: "2030-10-25",
+      endDate: "2030-10-27",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          // Nom volontairement différent : la correspondance porte sur idNumber (identifiant
+          // fort), pas sur le nom — reproduit exactement le scénario du doublon Omar (identité
+          // ressaisie légèrement différemment mais même pièce d'identité).
+          secondDriver: { firstName: "Existant", lastName: "Retapé", idNumber: `SD-EXACT-${runId}`, birthDate: "1990-01-01" },
+        })
+      ),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.location.secondDriverId).toBe(existingClient.id);
+
+    const clientCount = await prisma.client.count({ where: { idNumber: `SD-EXACT-${runId}` } });
+    expect(clientCount).toBe(1);
+  });
+
+  it("journalise client.created pour un client réellement créé par la conversion (principal et second conducteur), jamais pour un client réutilisé (campagne QA, correctif audit INC-13)", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "AuditPrincipal",
+      clientLastName: `Client-${runId}`,
+      startDate: "2030-11-10",
+      endDate: "2030-11-12",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          // forceCreateClient : ce test porte sur la journalisation d'audit, pas sur la
+          // détection de doublon — évite une collision floue accidentelle avec l'un des
+          // nombreux autres clients "... Client-<runId>" créés ailleurs dans ce fichier lors
+          // d'une exécution complète de la suite (même correctif que les autres tests touchés
+          // par cette classe de collision, voir plus haut dans ce fichier).
+          forceCreateClient: true,
+          secondDriver: {
+            firstName: "AuditSecond",
+            lastName: `Conducteur-${runId}`,
+            idNumber: `SD-AUDIT-${runId}`,
+            birthDate: "1988-01-01",
+          },
+        })
+      ),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+
+    const primaryLog = await prisma.auditLog.findFirst({
+      where: { action: "client.created", resourceId: body.location.clientId },
+    });
+    expect(primaryLog).not.toBeNull();
+    const secondDriverLog = await prisma.auditLog.findFirst({
+      where: { action: "client.created", resourceId: body.location.secondDriverId },
+    });
+    expect(secondDriverLog).not.toBeNull();
+
+    // Réutilisation (correspondance exacte du second conducteur, même idNumber) : aucune
+    // nouvelle écriture Client, donc aucun nouveau client.created — seulement le premier compte.
+    const reuseReservation = (
+      await (
+        await createReservation(adminA, {
+          clientFirstName: "AuditPrincipal2",
+          clientLastName: `Client-${runId}`,
+          startDate: "2030-11-13",
+          endDate: "2030-11-14",
+        })
+      ).json()
+    ).reservation;
+    await apiFetch(`/api/reservations/${reuseReservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reuseReservation, {
+          // forceCreateClient : "AuditPrincipal"/"AuditPrincipal2" (même lastName) déclenchent
+          // sinon une correspondance floue sur le client PRINCIPAL — sans rapport avec ce que
+          // ce test vérifie (l'absence de nouveau client.created pour le SECOND conducteur
+          // réutilisé), même correctif que les autres tests de répétition de ce fichier.
+          forceCreateClient: true,
+          secondDriver: {
+            firstName: "AuditSecond",
+            lastName: "Retapé",
+            idNumber: `SD-AUDIT-${runId}`,
+            birthDate: "1988-01-01",
+          },
+        })
+      ),
+    });
+    const secondDriverLogCount = await prisma.auditLog.count({
+      where: { action: "client.created", resourceId: body.location.secondDriverId },
+    });
+    expect(secondDriverLogCount).toBe(1);
+  });
+
+  it("ne fusionne jamais automatiquement sur une correspondance floue (nom seul) — crée un nouveau second conducteur", async () => {
+    await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        firstName: "Jean",
+        lastName: `Dupont-Fuzzy-${runId}`,
+        birthDate: "1985-01-01",
+      }),
+    });
+
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "AvecSecondFuzzy",
+      clientLastName: `Client-${runId}`,
+      startDate: "2030-10-28",
+      endDate: "2030-10-30",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          // Nom très proche (distance de Levenshtein < 3) mais aucun identifiant fort commun —
+          // correspondance floue uniquement, jamais fusionnée automatiquement.
+          secondDriver: { firstName: "Jean", lastName: `Dupont-Fuzzi-${runId}`, birthDate: "1985-01-01" },
+        })
+      ),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+
+    const clientCount = await prisma.client.count({ where: { lastName: { in: [`Dupont-Fuzzy-${runId}`, `Dupont-Fuzzi-${runId}`] } } });
+    expect(clientCount).toBe(2);
+    expect(body.location.secondDriverId).not.toBeNull();
+  });
+
+  it("n'introduit jamais de doublon même en répétant la même conversion avec le même second conducteur (test de non-réapparition)", async () => {
+    const first = await createReservation(adminA, {
+      clientFirstName: "Repetition1",
+      clientLastName: `Client-${runId}`,
+      startDate: "2030-11-01",
+      endDate: "2030-11-03",
+    });
+    const reservation1 = (await first.json()).reservation;
+    const response1 = await apiFetch(`/api/reservations/${reservation1.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation1, {
+          secondDriver: { firstName: "Repete", lastName: `Second-${runId}`, idNumber: `SD-REPEAT-${runId}`, birthDate: "1988-01-01" },
+        })
+      ),
+    });
+    expect(response1.status).toBe(201);
+    const secondDriverId1 = (await response1.json()).location.secondDriverId;
+
+    const second = await createReservation(adminA, {
+      clientFirstName: "Repetition2",
+      clientLastName: `Client-${runId}`,
+      startDate: "2030-11-05",
+      endDate: "2030-11-07",
+    });
+    const reservation2 = (await second.json()).reservation;
+    const response2 = await apiFetch(`/api/reservations/${reservation2.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation2, {
+          // forceCreateClient : "Repetition1"/"Repetition2" (même lastName) déclenchent sinon
+          // une correspondance floue sur le CLIENT PRINCIPAL (distance de Levenshtein < 3,
+          // section 9) — sans rapport avec ce test, qui porte uniquement sur le second
+          // conducteur. Les deux clients principaux sont volontairement des personnes
+          // distinctes ici.
+          forceCreateClient: true,
+          secondDriver: { firstName: "Repete", lastName: `Second-${runId}`, idNumber: `SD-REPEAT-${runId}`, birthDate: "1988-01-01" },
+        })
+      ),
+    });
+    expect(response2.status).toBe(201);
+    const secondDriverId2 = (await response2.json()).location.secondDriverId;
+
+    expect(secondDriverId2).toBe(secondDriverId1);
+    const clientCount = await prisma.client.count({ where: { idNumber: `SD-REPEAT-${runId}` } });
+    expect(clientCount).toBe(1);
   });
 
   it("convertit avec paiement intégré (mode simple) et alimente la Caisse", async () => {
@@ -1583,8 +1853,8 @@ describe("POST /api/reservations/[id]/convert", () => {
    * cette route. Statuts « en mobilité » forcés directement en base (jamais assignables
    * manuellement via POST/PATCH /api/vehicles*, DOMAINRULES.md section 30), même convention que
    * locations.test.ts. */
-  describe("Sprint 28 (Finding E) — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP bloque la conversion", () => {
-    async function createVehicleWithStatus(status: "MAINTENANCE" | "TRANSFERRING" | "ON_TRIP" | "AVAILABLE") {
+  describe("Sprint 28 (Finding E) + campagne QA 2026-08-27 partie 2 — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP/INACTIVE bloque la conversion", () => {
+    async function createVehicleWithStatus(status: "MAINTENANCE" | "TRANSFERRING" | "ON_TRIP" | "INACTIVE" | "AVAILABLE") {
       const response = await apiFetch("/api/vehicles", {
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
@@ -1613,7 +1883,7 @@ describe("POST /api/reservations/[id]/convert", () => {
       return vehicleId;
     }
 
-    it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP"] as const)(
+    it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP", "INACTIVE"] as const)(
       "refuse la conversion (409, VehicleUnavailableForLocationError) si le véhicule est %s — aucune Location ni conversion partielle",
       async (status) => {
         const vehicleId = await createVehicleWithStatus(status);
@@ -2296,6 +2566,474 @@ describe("POST /api/reservations/[id]/convert", () => {
       });
       expect(anyReturn.status).toBe(200);
     });
+  });
+});
+
+describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 2026-08-27, passe de correction obligatoire)", () => {
+  let suvVehicleId: string;
+  let citadineTwinVehicleId: string;
+  // Catégorie dédiée, unique à cette exécution (jamais partagée avec vehicleAId/"Citadine" ni
+  // aucune autre fixture du fichier) — nécessaire pour les tests UNAVAILABILITY, qui doivent
+  // contrôler exhaustivement "combien de véhicules de cette catégorie existent et leur statut"
+  // sans risquer l'interférence d'un véhicule "Citadine" créé par un describe sans rapport.
+  const scarceCategoryName = `UpgradeScarce-${runId}`;
+  let scarceVehicleId: string;
+
+  // Compteur de dates (campagne QA, 2026-08-27) : chaque appel renvoie une période de 3 jours
+  // non chevauchante avec la précédente — nécessaire car plusieurs tests de ce describe
+  // réutilisent le même véhicule (suvVehicleId) ; sans cela, le contrôle de double réservation
+  // (déjà couvert ailleurs, voir locations.test.ts) refuserait à tort des scénarios sans rapport
+  // avec la disponibilité. Année 2036, jamais utilisée ailleurs dans ce fichier.
+  let dateOffset = 0;
+  function nextDateRange() {
+    dateOffset += 10;
+    const start = new Date(Date.UTC(2036, 0, 1 + dateOffset));
+    const end = new Date(Date.UTC(2036, 0, 4 + dateOffset));
+    return { startDate: start.toISOString().slice(0, 10), endDate: end.toISOString().slice(0, 10) };
+  }
+
+  beforeAll(async () => {
+    async function createTestVehicle(name: string, category: string, plateSuffix: string) {
+      const response = await apiFetch("/api/vehicles", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({
+          agencyId: agencyA1Id,
+          name,
+          licensePlate: `UPG-${plateSuffix}-${runId}`,
+          make: "Dacia",
+          model: "Duster",
+          year: 2023,
+          category,
+          pricePerDay: 8000,
+          chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+          color: "Gris",
+          doors: 5,
+          seats: 5,
+          horsepower: 8,
+          powerKW: 90,
+          engineSize: 1.5,
+        }),
+      });
+      return (await response.json()).vehicle.id;
+    }
+
+    suvVehicleId = await createTestVehicle("SUV Surclassement", "SUV", "SUV");
+    // Véhicule "Citadine" dédié et distinct de vehicleAId (partagé par tout le reste du
+    // fichier, avec ses propres dates réservées ailleurs) — évite toute collision de
+    // double réservation avec des tests sans rapport.
+    citadineTwinVehicleId = await createTestVehicle("Citadine Jumelle", "Citadine", "TWIN");
+    scarceVehicleId = await createTestVehicle("Véhicule Catégorie Rare", scarceCategoryName, "SCARCE");
+  });
+
+  async function createReservationWithCategory(category: string, overrides: Record<string, unknown> = {}) {
+    const { startDate, endDate } = nextDateRange();
+    const response = await createReservation(adminA, {
+      clientFirstName: "Surclassement",
+      clientLastName: `Client-${runId}-${Math.floor(Math.random() * 1_000_000)}`,
+      startDate,
+      endDate,
+      ...overrides,
+    });
+    const reservation = (await response.json()).reservation;
+    // vehicleCategory n'est pas accepté par createReservation() ci-dessus (helper partagé) —
+    // renseigné directement via PATCH pour ce describe, sans dépendre d'un champ supplémentaire
+    // ajouté au helper commun.
+    await apiFetch(`/api/reservations/${reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ vehicleCategory: category }),
+    });
+    return { ...reservation, startDate, endDate, vehicleCategory: category };
+  }
+
+  it("1. catégorie identique : aucun surclassement enregistré, prix inchangé", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBody(reservation, { vehicleId: citadineTwinVehicleId, pricePerDay: 5000 })),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.upgrade).toBeNull();
+    expect(body.location.totalPrice).toBe(5000 * 3);
+
+    const upgradeCount = await prisma.locationUpgrade.count({ where: { locationId: body.location.id } });
+    expect(upgradeCount).toBe(0);
+  });
+
+  it("2. CUSTOMER_REQUEST : supplément payant, accord client, montant recalculé côté serveur (le total client est ignoré)", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: suvVehicleId,
+          pricePerDay: 8000,
+          upgrade: {
+            type: "CUSTOMER_REQUEST",
+            dailySupplement: 1500,
+            customerConsent: true,
+            reason: "Client demande une catégorie supérieure pour le confort.",
+            // Champs falsifiés, ignorés par le type UpgradeInput (aucune propriété
+            // correspondante) — le serveur ne peut de toute façon pas les lire.
+            totalSupplement: 999999,
+            assignedCategory: "Berline",
+          },
+        })
+      ),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.upgrade).toBeTruthy();
+    expect(body.upgrade.type).toBe("CUSTOMER_REQUEST");
+    expect(body.upgrade.reservedCategory).toBe("Citadine");
+    expect(body.upgrade.assignedCategory).toBe("SUV"); // jamais "Berline" (falsifié, ignoré)
+    expect(body.upgrade.dailySupplement).toBe(1500);
+    expect(body.upgrade.daysCount).toBe(3);
+    expect(body.upgrade.totalSupplement).toBe(4500); // jamais 999999 (falsifié, ignoré)
+    expect(body.upgrade.customerConsent).toBe(true);
+    // Prix de base (8000 × 3 = 24000) + supplément (4500) = 28500, jamais un total falsifié.
+    expect(body.location.totalPrice).toBe(24000 + 4500);
+  });
+
+  it("3. UNAVAILABILITY : gratuit par défaut, justification obligatoire, aucun supplément même si demandé", async () => {
+    // Catégorie dédiée à un seul véhicule (scarceVehicleId), mis MAINTENANCE juste pour ce
+    // test puis restauré — aucune autre fixture du fichier ne partage cette catégorie unique,
+    // contrairement à "Citadine" (utilisée largement ailleurs).
+    await prisma.vehicle.update({ where: { id: scarceVehicleId }, data: { status: "MAINTENANCE" } });
+    try {
+      const reservation = await createReservationWithCategory(scarceCategoryName);
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(
+          convertBody(reservation, {
+            vehicleId: suvVehicleId,
+            pricePerDay: 8000,
+            upgrade: { type: "UNAVAILABILITY", reason: "Aucun véhicule de cette catégorie disponible sur la période." },
+          })
+        ),
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.upgrade.type).toBe("UNAVAILABILITY");
+      expect(body.upgrade.dailySupplement).toBe(0);
+      expect(body.upgrade.totalSupplement).toBe(0);
+      expect(body.location.totalPrice).toBe(8000 * 3);
+
+      // Un supplément explicitement demandé malgré UNAVAILABILITY est refusé (400), pas
+      // silencieusement mis à zéro.
+      const reservation2 = await createReservationWithCategory(scarceCategoryName);
+      const refused = await apiFetch(`/api/reservations/${reservation2.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(
+          convertBody(reservation2, {
+            vehicleId: suvVehicleId,
+            pricePerDay: 8000,
+            upgrade: { type: "UNAVAILABILITY", dailySupplement: 500, reason: "Test" },
+          })
+        ),
+      });
+      expect(refused.status).toBe(400);
+    } finally {
+      await prisma.vehicle.update({ where: { id: scarceVehicleId }, data: { status: "AVAILABLE" } });
+    }
+  });
+
+  it("refuse UNAVAILABILITY si la catégorie réservée est en réalité disponible (contrôle serveur, pas de confiance dans la déclaration cliente)", async () => {
+    // scarceVehicleId reste AVAILABLE ici — la déclaration UNAVAILABILITY est donc fausse.
+    const reservation = await createReservationWithCategory(scarceCategoryName);
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: suvVehicleId,
+          pricePerDay: 8000,
+          upgrade: { type: "UNAVAILABILITY", reason: "Prétendument indisponible." },
+        })
+      ),
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it("4. COMMERCIAL_GESTURE : autorisé avec la permission dédiée, audité", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie }, // adminA : ADMIN, bypass toute permission
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: suvVehicleId,
+          pricePerDay: 8000,
+          upgrade: { type: "COMMERCIAL_GESTURE", dailySupplement: 200, reason: "Geste commercial client fidèle." },
+        })
+      ),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.upgrade.type).toBe("COMMERCIAL_GESTURE");
+    expect(body.upgrade.totalSupplement).toBe(600);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { tenantId: adminA.tenantId, action: "location.upgraded", resourceId: body.location.id },
+    });
+    expect(audit).toBeTruthy();
+    const metadata = audit?.metadata as Record<string, unknown>;
+    expect(metadata.upgradeType).toBe("COMMERCIAL_GESTURE");
+    expect(metadata.reservedCategory).toBe("Citadine");
+    expect(metadata.assignedCategory).toBe("SUV");
+  });
+
+  it("19. refuse COMMERCIAL_GESTURE sans la permission locations.upgrade.commercial_gesture (non accordée par défaut)", async () => {
+    const groupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        name: `NoCommercialGesture-${runId}`,
+        permissions: ["reservations.view", "reservations.convert", "vehicles.view", "agencies.view"],
+      }),
+    });
+    const groupId = (await groupResponse.json()).group.id;
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "No Commercial Gesture",
+      email: `no-commercial-gesture-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: member.userId, agencyId: agencyA1Id } });
+    await apiFetch(`/api/users/${member.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: groupId }),
+    });
+
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: member.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: suvVehicleId,
+          pricePerDay: 8000,
+          upgrade: { type: "COMMERCIAL_GESTURE", dailySupplement: 0, reason: "Tentative sans permission." },
+        })
+      ),
+    });
+    expect(response.status).toBe(403);
+
+    const reservationAfter = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+    expect(reservationAfter.status).toBe("PENDING");
+    expect(reservationAfter.convertedLocationId).toBeNull();
+  });
+
+  it("5/6. refuse un changement de catégorie non déclaré (aucun objet upgrade fourni) — pas de hiérarchie de catégories dans le produit, voir src/lib/location-upgrades.ts", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBody(reservation, { vehicleId: suvVehicleId, pricePerDay: 8000 })),
+    });
+    expect(response.status).toBe(400);
+
+    // Scopé aux dates de cette réservation précise (suvVehicleId est réutilisé par d'autres
+    // tests de ce describe, avec leurs propres périodes non chevauchantes) — pas un décompte
+    // absolu du véhicule.
+    const locationCount = await prisma.location.count({
+      where: { vehicleId: suvVehicleId, tenantId: adminA.tenantId, startDate: new Date(reservation.startDate) },
+    });
+    expect(locationCount).toBe(0);
+
+    const reservationAfter = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+    expect(reservationAfter.status).toBe("PENDING");
+  });
+
+  it("refuse un objet upgrade fourni alors que les catégories concordent (rien à déclarer)", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: vehicleAId,
+          pricePerDay: 5000,
+          upgrade: { type: "CUSTOMER_REQUEST", dailySupplement: 100, customerConsent: true, reason: "Inutile" },
+        })
+      ),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("type de surclassement invalide refusé", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: suvVehicleId,
+          pricePerDay: 8000,
+          upgrade: { type: "FREE_UPGRADE_INVENTED", reason: "Type inconnu" },
+        })
+      ),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("12/14. motif absent refusé (les trois types)", async () => {
+    for (const type of ["CUSTOMER_REQUEST", "UNAVAILABILITY", "COMMERCIAL_GESTURE"]) {
+      const reservation = await createReservationWithCategory("Citadine");
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(
+          convertBody(reservation, {
+            vehicleId: suvVehicleId,
+            pricePerDay: 8000,
+            upgrade: { type, dailySupplement: type === "UNAVAILABILITY" ? 0 : 100, customerConsent: true },
+          })
+        ),
+      });
+      expect(response.status).toBe(400);
+    }
+  });
+
+  it("13. accord client absent refusé (CUSTOMER_REQUEST)", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: suvVehicleId,
+          pricePerDay: 8000,
+          upgrade: { type: "CUSTOMER_REQUEST", dailySupplement: 100, reason: "Sans accord" },
+        })
+      ),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("16. supplément négatif refusé (CUSTOMER_REQUEST et COMMERCIAL_GESTURE)", async () => {
+    for (const type of ["CUSTOMER_REQUEST", "COMMERCIAL_GESTURE"]) {
+      const reservation = await createReservationWithCategory("Citadine");
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(
+          convertBody(reservation, {
+            vehicleId: suvVehicleId,
+            pricePerDay: 8000,
+            // forceCreateClient (même correctif que les tests de répétition second conducteur
+            // plus haut) : ce test porte sur le rejet du supplément négatif, pas sur la
+            // détection de doublon — évite une collision floue accidentelle (Levenshtein < 3)
+            // avec l'un des nombreux autres clients "Surclassement Client-..." créés ailleurs
+            // dans ce fichier lors d'une exécution complète de la suite.
+            forceCreateClient: true,
+            upgrade: { type, dailySupplement: -100, customerConsent: true, reason: "Négatif" },
+          })
+        ),
+      });
+      expect(response.status).toBe(400);
+    }
+  });
+
+  it("CUSTOMER_REQUEST refuse un supplément nul ou absent (payant par défaut, distinct d'UNAVAILABILITY)", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: suvVehicleId,
+          pricePerDay: 8000,
+          upgrade: { type: "CUSTOMER_REQUEST", dailySupplement: 0, customerConsent: true, reason: "Gratuit demandé" },
+        })
+      ),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("22/23/24/25. audit, facture et paiement cohérents avec le total recalculé (supplément inclus)", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: suvVehicleId,
+          pricePerDay: 8000,
+          upgrade: {
+            type: "CUSTOMER_REQUEST",
+            dailySupplement: 1000,
+            customerConsent: true,
+            reason: "Confort",
+          },
+          payment: { method: "CASH", amount: 27000 }, // 24000 + 3000 (1000 × 3 jours)
+        })
+      ),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.location.totalPrice).toBe(27000);
+    expect(body.invoice.subtotal).toBe(27000);
+    expect(body.invoice.totalAmount).toBe(27000);
+    expect(body.invoice.status).toBe("PAID");
+    expect(body.payments).toHaveLength(1);
+    expect(body.payments[0].amount).toBe(27000);
+
+    // Catégorie réservée/attribuée conservées telles quelles (point 25).
+    const stored = await prisma.locationUpgrade.findUnique({ where: { locationId: body.location.id } });
+    expect(stored?.reservedCategory).toBe("Citadine");
+    expect(stored?.assignedCategory).toBe("SUV");
+    expect(stored?.validatedByUserId).toBe(adminA.userId);
+  });
+
+  it("8. véhicule INACTIVE refusé même avec un surclassement déclaré (la garde createLocation s'applique inchangée)", async () => {
+    const inactiveVehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: agencyA1Id,
+        name: "SUV Inactif",
+        licensePlate: `UPG-INACTIVE-${runId}`,
+        make: "Dacia",
+        model: "Duster",
+        year: 2023,
+        category: "SUV",
+        pricePerDay: 8000,
+        chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Gris",
+        doors: 5,
+        seats: 5,
+        horsepower: 8,
+        powerKW: 90,
+        engineSize: 1.5,
+      }),
+    });
+    const inactiveVehicleId = (await inactiveVehicleResponse.json()).vehicle.id;
+    await prisma.vehicle.update({ where: { id: inactiveVehicleId }, data: { status: "INACTIVE" } });
+
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: inactiveVehicleId,
+          pricePerDay: 8000,
+          upgrade: { type: "CUSTOMER_REQUEST", dailySupplement: 100, customerConsent: true, reason: "Test INACTIVE" },
+        })
+      ),
+    });
+    expect(response.status).toBe(409);
+
+    const upgradeCount = await prisma.locationUpgrade.count({ where: { vehicleId: inactiveVehicleId } });
+    expect(upgradeCount).toBe(0);
   });
 });
 

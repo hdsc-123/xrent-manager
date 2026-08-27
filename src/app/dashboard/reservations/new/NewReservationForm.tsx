@@ -98,7 +98,13 @@ export function NewReservationForm() {
     event.preventDefault();
     setError(null);
 
-    if ((source !== "DIRECT" && !voucherNumber) || !clientFirstName || !clientLastName || !startDate || !endDate) {
+    if (
+      (source !== "DIRECT" && !voucherNumber.trim()) ||
+      !clientFirstName.trim() ||
+      !clientLastName.trim() ||
+      !startDate ||
+      !endDate
+    ) {
       setError(
         source === "DIRECT"
           ? "Prénom, nom et dates de départ/retour sont requis."

@@ -107,7 +107,7 @@ export function EditReservationForm({
     event.preventDefault();
     setError(null);
 
-    if (!voucherNumber || !clientFirstName || !clientLastName || !startDate || !endDate) {
+    if (!voucherNumber.trim() || !clientFirstName.trim() || !clientLastName.trim() || !startDate || !endDate) {
       setError("Voucher, prénom, nom et dates de départ/retour sont requis.");
       return;
     }

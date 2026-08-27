@@ -94,6 +94,19 @@ export const PERMISSIONS: PermissionDefinition[] = [
     label: "Créer une prolongation (nouveau contrat lié)",
     category: "Locations",
   },
+  // Campagne QA (2026-08-27, passe de correction obligatoire) : un geste commercial
+  // (surclassement gratuit/réduit sans indisponibilité réelle ni demande client) est une
+  // décision financière discrétionnaire — action exceptionnelle, même politique que
+  // payments.override_refund_method (Sprint 26D) : non accordée à aucun groupe par défaut.
+  // Les deux autres types de surclassement (CUSTOMER_REQUEST/UNAVAILABILITY) ne demandent
+  // aucune permission dédiée : ils restent couverts par reservations.convert (déjà requis pour
+  // convertir une réservation), un geste commercial est la seule situation qui justifie un
+  // droit supplémentaire.
+  {
+    key: "locations.upgrade.commercial_gesture",
+    label: "Autoriser un geste commercial (surclassement gratuit ou réduit)",
+    category: "Locations",
+  },
 
   { key: "reservations.view", label: "Voir les réservations", category: "Réservations" },
   { key: "reservations.create", label: "Créer des réservations", category: "Réservations" },

@@ -129,6 +129,21 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Seule l'agence de départ peut modifier cette réservation." }, { status: 403 });
   }
 
+  // Une chaîne composée uniquement d'espaces est refusée comme si le champ était vide — même
+  // principe que POST /api/reservations et que POST/PATCH /api/clients (voir INCIDENTS.md
+  // BUG-006) ; jusqu'ici cette route n'appliquait aucune validation de présence sur ces champs,
+  // contrairement à la création, permettant d'effacer silencieusement un client/voucher via
+  // l'édition.
+  if (body.clientFirstName !== undefined && !body.clientFirstName.trim()) {
+    return NextResponse.json({ error: "clientFirstName ne peut pas être vide." }, { status: 400 });
+  }
+  if (body.clientLastName !== undefined && !body.clientLastName.trim()) {
+    return NextResponse.json({ error: "clientLastName ne peut pas être vide." }, { status: 400 });
+  }
+  if (body.voucherNumber !== undefined && !body.voucherNumber.trim()) {
+    return NextResponse.json({ error: "voucherNumber ne peut pas être vide." }, { status: 400 });
+  }
+
   for (const field of MONEY_FIELDS) {
     const value = body[field];
     if (value !== undefined && (!Number.isInteger(value) || value < 0)) {

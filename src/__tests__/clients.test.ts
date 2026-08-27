@@ -587,6 +587,78 @@ describe("DELETE /api/clients/[id]", () => {
     });
     expect(response.status).toBe(409);
   });
+
+  it("refuse la suppression d'un client uniquement second conducteur d'une location (campagne QA, résolution du doublon Omar)", async () => {
+    // Correctif : deleteClient() ne vérifiait jusqu'ici que Location.clientId, jamais
+    // Location.secondDriverId — la contrainte de clé étrangère (ON DELETE SET NULL) aurait
+    // laissé la suppression réussir silencieusement, effaçant l'identité du second conducteur
+    // du contrat. Voir INCIDENTS.md.
+    const mainClientResponse = await createClient(adminA, {
+      name: "Conducteur principal",
+      licenseExpiryDate: "2030-01-01",
+      birthDate: "1990-01-01",
+    });
+    const mainClientId = (await mainClientResponse.json()).client.id;
+
+    const secondDriverResponse = await createClient(adminA, {
+      name: "Second conducteur seul",
+      birthDate: "1990-01-01",
+    });
+    const secondDriverId = (await secondDriverResponse.json()).client.id;
+
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: agencyA1Id,
+        name: "Clio second conducteur",
+        licensePlate: `CL2-${Math.floor(Math.random() * 1_000_000)}-CL`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 4500,
+        chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
+      }),
+    });
+    const vehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const locationResponse = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        vehicleId,
+        clientId: mainClientId,
+        startDate: "2027-05-01",
+        endDate: "2027-05-03",
+      }),
+    });
+    const locationId = (await locationResponse.json()).location.id;
+
+    // secondDriverId n'est pas exposé par POST /api/locations (voir route.ts) — assigné via
+    // PATCH, même parcours que la correction du doublon Omar.
+    const patchResponse = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ secondDriverId }),
+    });
+    expect(patchResponse.status).toBe(200);
+
+    const response = await apiFetch(`/api/clients/${secondDriverId}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(409);
+
+    const stillExists = await prisma.client.findUnique({ where: { id: secondDriverId } });
+    expect(stillExists).not.toBeNull();
+  });
 });
 
 describe("POST /api/clients — détection de doublons (Sprint 12C)", () => {

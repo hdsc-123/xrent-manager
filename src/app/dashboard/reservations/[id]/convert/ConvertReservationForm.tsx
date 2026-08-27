@@ -86,9 +86,21 @@ function toDateInputValue(iso: string): string {
 interface ConvertReservationFormProps {
   reservation: ReservationSummary;
   agencies: Agency[];
+  /** Campagne QA (2026-08-27) — reflète locations.upgrade.commercial_gesture côté serveur (voir
+   * page.tsx) : n'affiche l'option COMMERCIAL_GESTURE que si l'utilisateur la possède réellement,
+   * sans jamais remplacer le contrôle serveur (POST /api/reservations/[id]/convert le revérifie). */
+  canCommercialGesture: boolean;
 }
 
-export function ConvertReservationForm({ reservation, agencies }: ConvertReservationFormProps) {
+const UPGRADE_TYPE_OPTIONS = [
+  { value: "CUSTOMER_REQUEST", label: "Demande du client (payant par défaut)" },
+  { value: "UNAVAILABILITY", label: "Indisponibilité de la catégorie réservée (gratuit)" },
+  { value: "COMMERCIAL_GESTURE", label: "Geste commercial (gratuit ou réduit)" },
+] as const;
+
+type UpgradeTypeValue = (typeof UPGRADE_TYPE_OPTIONS)[number]["value"] | "";
+
+export function ConvertReservationForm({ reservation, agencies, canCommercialGesture }: ConvertReservationFormProps) {
   const router = useRouter();
 
   // Client — pré-rempli depuis la réservation, vérifié/complété par l'utilisateur.
@@ -142,8 +154,14 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
   // par défaut (comportement antérieur), "allCategories" le désactive pour permettre de
   // choisir une catégorie supérieure.
   const [allCategories, setAllCategories] = useState(false);
-  const [upgradeSupplement, setUpgradeSupplement] = useState("");
-  const [upgradeFree, setUpgradeFree] = useState(false);
+  // Surclassement (campagne QA, 2026-08-27, passe de correction obligatoire) : ces champs ne
+  // sont plus qu'une DÉCLARATION envoyée au serveur (src/lib/location-upgrades.ts) — le serveur
+  // revalide tout (type, motif, accord/justification, supplément) et recalcule intégralement le
+  // montant, jamais accepté tel quel depuis ces champs (voir buildPayload plus bas).
+  const [upgradeType, setUpgradeType] = useState<UpgradeTypeValue>("");
+  const [upgradeReason, setUpgradeReason] = useState("");
+  const [upgradeCustomerConsent, setUpgradeCustomerConsent] = useState(false);
+  const [upgradeDailySupplement, setUpgradeDailySupplement] = useState("");
 
   // Prix total du contrat (Sprint 19) : reprend le vrai montant réservation + options plutôt
   // que de laisser le serveur recalculer silencieusement pricePerDay × jours (bug corrigé ce
@@ -273,27 +291,53 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
   const isUpgrade = Boolean(
     selectedVehicle && reservation.vehicleCategory && selectedVehicle.category !== reservation.vehicleCategory
   );
-  const upgradeSupplementCentimes = upgradeSupplement
-    ? Math.round(Number(upgradeSupplement.replace(",", ".")) * 100)
+  const upgradeDailySupplementCentimes = upgradeDailySupplement
+    ? Math.round(Number(upgradeDailySupplement.replace(",", ".")) * 100)
     : 0;
+  // Estimation indicative uniquement (même formule que le serveur, mais affichée avant
+  // soumission pour aider l'utilisateur) — le serveur recalcule et vérifie ce montant
+  // indépendamment ; ne jamais afficher ceci comme le montant final du contrat (Partie F).
+  const estimatedUpgradeSupplement =
+    isUpgrade && days > 0 && upgradeDailySupplementCentimes > 0 ? upgradeDailySupplementCentimes * days : 0;
+
+  // Remet à zéro la déclaration de surclassement si elle ne s'applique plus (véhicule remis à
+  // la catégorie réservée) — évite d'envoyer une déclaration obsolète au serveur.
+  const [upgradeResetKey, setUpgradeResetKey] = useState(isUpgrade);
+  if (isUpgrade !== upgradeResetKey && !isUpgrade) {
+    setUpgradeResetKey(isUpgrade);
+    setUpgradeType("");
+    setUpgradeReason("");
+    setUpgradeCustomerConsent(false);
+    setUpgradeDailySupplement("");
+  } else if (isUpgrade !== upgradeResetKey) {
+    setUpgradeResetKey(isUpgrade);
+  }
 
   function buildPayload(overrides?: { useExistingClientId?: string; forceCreateClient?: boolean }) {
     const depositMad = deposit ? Number(deposit.replace(",", ".")) : undefined;
 
+    // Correctif (campagne QA, 2026-08-27, passe de correction obligatoire) : le montant du
+    // surclassement n'est plus jamais plié dans totalPrice côté client — le serveur
+    // (resolveLocationUpgrade) recalcule et ajoute lui-même le supplément au total du contrat
+    // à partir de la déclaration `upgrade` ci-dessous, jamais depuis une valeur envoyée ici.
     const totalPriceCentimes = totalPriceOverride
       ? Math.round(Number(totalPriceOverride.replace(",", ".")) * 100)
       : undefined;
     const finalTotalPrice =
-      totalPriceCentimes !== undefined && Number.isFinite(totalPriceCentimes)
-        ? totalPriceCentimes + (isUpgrade && !upgradeFree ? upgradeSupplementCentimes : 0)
-        : undefined;
+      totalPriceCentimes !== undefined && Number.isFinite(totalPriceCentimes) ? totalPriceCentimes : undefined;
+    const finalNotes = notes || undefined;
 
-    const upgradeNote = isUpgrade
-      ? `Surclassement : ${reservation.vehicleCategory} → ${selectedVehicle?.category} (${
-          upgradeFree ? "gratuit" : `supplément ${upgradeSupplement || "0"} MAD`
-        }).`
-      : null;
-    const finalNotes = [notes || null, upgradeNote].filter(Boolean).join(" ") || undefined;
+    const upgrade =
+      isUpgrade && upgradeType
+        ? {
+            type: upgradeType,
+            reason: upgradeReason,
+            ...(upgradeType === "CUSTOMER_REQUEST"
+              ? { customerConsent: upgradeCustomerConsent, dailySupplement: upgradeDailySupplementCentimes }
+              : {}),
+            ...(upgradeType === "COMMERCIAL_GESTURE" ? { dailySupplement: upgradeDailySupplementCentimes } : {}),
+          }
+        : undefined;
 
     const secondDriver =
       hasSecondDriver && secondDriverFirstName && secondDriverLastName
@@ -352,6 +396,7 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
       },
       secondDriver,
       payment,
+      upgrade,
       ...overrides,
     };
   }
@@ -438,6 +483,33 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
     if (!pricePerDayCentimes) {
       setError("Le prix / jour doit être renseigné (un nombre positif).");
       return;
+    }
+    // Surclassement (campagne QA, 2026-08-27) : contrôle local non authoritative — juste pour
+    // éviter un aller-retour serveur évitable, le serveur revalide tout de façon indépendante
+    // (src/lib/location-upgrades.ts).
+    if (isUpgrade) {
+      if (!upgradeType) {
+        setError("Sélectionnez un type de surclassement pour ce changement de catégorie.");
+        return;
+      }
+      if (!upgradeReason.trim()) {
+        setError("Le motif du surclassement est requis.");
+        return;
+      }
+      if (upgradeType === "CUSTOMER_REQUEST") {
+        if (!upgradeCustomerConsent) {
+          setError("L'accord explicite du client est requis pour une demande client.");
+          return;
+        }
+        if (upgradeDailySupplementCentimes < 1) {
+          setError("Le supplément par jour doit être strictement positif pour une demande client.");
+          return;
+        }
+      }
+      if (upgradeType === "COMMERCIAL_GESTURE" && upgradeDailySupplementCentimes < 0) {
+        setError("Le supplément du geste commercial ne peut pas être négatif.");
+        return;
+      }
     }
     if (paymentMixed) {
       const amount1Centimes = paymentAmount1 ? Math.round(Number(paymentAmount1.replace(",", ".")) * 100) : 0;
@@ -639,25 +711,114 @@ export function ConvertReservationForm({ reservation, agencies }: ConvertReserva
             </div>
 
             {isUpgrade && (
-              <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
-                <p>
-                  Surclassement : {reservation.vehicleCategory} → {selectedVehicle?.category}.
+              <div className="flex flex-col gap-3 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+                <p className="font-medium">
+                  Surclassement : catégorie réservée <strong>{reservation.vehicleCategory}</strong> → véhicule
+                  proposé <strong>{selectedVehicle?.category}</strong>.
                 </p>
-                <label className="flex items-center gap-2">
-                  <Checkbox checked={upgradeFree} onCheckedChange={(checked) => setUpgradeFree(checked === true)} />
-                  Surclassement gratuit
-                </label>
-                {!upgradeFree && (
+                <p className="text-xs text-muted-foreground">
+                  Ce changement de catégorie doit être déclaré. Le serveur vérifie systématiquement cette
+                  déclaration (type, motif, accord/justification, supplément) et recalcule seul le montant
+                  définitif ajouté au contrat — les valeurs saisies ci-dessous ne sont qu&apos;indicatives.
+                </p>
+
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="upgradeType" required>Type de surclassement</Label>
+                  <select
+                    id="upgradeType"
+                    required
+                    value={upgradeType}
+                    onChange={(e) => setUpgradeType(e.target.value as UpgradeTypeValue)}
+                    className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                  >
+                    <option value="" disabled>
+                      Sélectionner…
+                    </option>
+                    {UPGRADE_TYPE_OPTIONS.filter(
+                      (option) => option.value !== "COMMERCIAL_GESTURE" || canCommercialGesture
+                    ).map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  {!canCommercialGesture && (
+                    <p className="text-xs text-muted-foreground">
+                      Le geste commercial nécessite une permission dédiée que vous ne possédez pas.
+                    </p>
+                  )}
+                </div>
+
+                {upgradeType && (
                   <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="upgradeSupplement">Supplément (MAD)</Label>
+                    <Label htmlFor="upgradeReason" required>
+                      {upgradeType === "UNAVAILABILITY" ? "Justification opérationnelle" : "Motif"}
+                    </Label>
                     <Input
-                      id="upgradeSupplement"
-                      inputMode="decimal"
-                      className="w-32"
-                      value={upgradeSupplement}
-                      onChange={(e) => setUpgradeSupplement(e.target.value)}
+                      id="upgradeReason"
+                      required
+                      value={upgradeReason}
+                      onChange={(e) => setUpgradeReason(e.target.value)}
                     />
                   </div>
+                )}
+
+                {upgradeType === "CUSTOMER_REQUEST" && (
+                  <>
+                    <label className="flex items-center gap-2">
+                      <Checkbox
+                        checked={upgradeCustomerConsent}
+                        onCheckedChange={(checked) => setUpgradeCustomerConsent(checked === true)}
+                      />
+                      <span>
+                        Le client a explicitement accepté le supplément <span className="text-destructive">*</span>
+                      </span>
+                    </label>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="upgradeDailySupplement" required>
+                        Supplément / jour (MAD)
+                      </Label>
+                      <Input
+                        id="upgradeDailySupplement"
+                        inputMode="decimal"
+                        required
+                        className="w-32"
+                        value={upgradeDailySupplement}
+                        onChange={(e) => setUpgradeDailySupplement(e.target.value)}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {upgradeType === "UNAVAILABILITY" && (
+                  <p className="text-xs text-muted-foreground">
+                    Surclassement gratuit par défaut (aucun supplément) : le serveur vérifie qu&apos;aucun véhicule
+                    de la catégorie réservée n&apos;est réellement disponible sur cette période avant d&apos;accepter
+                    ce motif.
+                  </p>
+                )}
+
+                {upgradeType === "COMMERCIAL_GESTURE" && (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="upgradeDailySupplement">
+                      Supplément / jour (MAD) <span className="text-muted-foreground">— optionnel, 0 = gratuit</span>
+                    </Label>
+                    <Input
+                      id="upgradeDailySupplement"
+                      inputMode="decimal"
+                      className="w-32"
+                      value={upgradeDailySupplement}
+                      onChange={(e) => setUpgradeDailySupplement(e.target.value)}
+                    />
+                  </div>
+                )}
+
+                {upgradeType && estimatedUpgradeSupplement > 0 && selectedVehicle && (
+                  <p className="text-xs text-muted-foreground">
+                    Estimation indicative : {days} jour(s) × {formatMoney(upgradeDailySupplementCentimes, selectedVehicle.currency)}{" "}
+                    = <span className="font-medium text-foreground">{formatMoney(estimatedUpgradeSupplement, selectedVehicle.currency)}</span>{" "}
+                    — montant définitif recalculé et vérifié par le serveur.
+                  </p>
                 )}
               </div>
             )}

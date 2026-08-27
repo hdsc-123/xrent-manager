@@ -2159,12 +2159,12 @@ describe("Sprint 24 — locations.confirm/activate/complete/cancel séparées de
   });
 });
 
-describe("Sprint 28 (Finding E) — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP bloque la création/modification d'une Location", () => {
+describe("Sprint 28 (Finding E) + campagne QA 2026-08-27 partie 2 — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP/INACTIVE bloque la création/modification d'une Location", () => {
   /** Statuts « en mobilité »/indisponibles posés automatiquement par vehicle-transfers.ts/
    * vehicle-trips.ts (jamais assignables manuellement via POST/PATCH /api/vehicles*,
    * DOMAINRULES.md section 30) — forcés directement en base pour isoler ce test du reste de
    * l'infrastructure de transfert/déplacement, non concernée par ce sprint. */
-  async function createVehicleWithStatus(status: "MAINTENANCE" | "TRANSFERRING" | "ON_TRIP") {
+  async function createVehicleWithStatus(status: "MAINTENANCE" | "TRANSFERRING" | "ON_TRIP" | "INACTIVE") {
     const response = await apiFetch("/api/vehicles", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
@@ -2191,7 +2191,7 @@ describe("Sprint 28 (Finding E) — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP b
     return vehicleId;
   }
 
-  it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP"] as const)(
+  it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP", "INACTIVE"] as const)(
     "refuse la création d'une Location (409) si le véhicule est %s",
     async (status) => {
       const vehicleId = await createVehicleWithStatus(status);
@@ -2210,7 +2210,7 @@ describe("Sprint 28 (Finding E) — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP b
     }
   );
 
-  it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP"] as const)(
+  it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP", "INACTIVE"] as const)(
     "refuse la modification des dates d'une Location existante (409) si le véhicule est %s, même pour un ADMIN, sans annuler la Location automatiquement",
     async (status) => {
       const vehicleResponse = await apiFetch("/api/vehicles", {

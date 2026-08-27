@@ -39,6 +39,14 @@ export default async function ConvertReservationPage({ params }: PageProps) {
     redirect(`/dashboard/reservations/${id}`);
   }
 
+  // Campagne QA (2026-08-27, passe de correction obligatoire) : le type COMMERCIAL_GESTURE
+  // nécessite une permission dédiée côté serveur (locations.upgrade.commercial_gesture, voir
+  // POST /api/reservations/[id]/convert) — l'option n'est proposée dans le formulaire que si
+  // l'utilisateur la possède réellement (l'interface reflète la règle serveur sans jamais la
+  // remplacer : même sans cette permission, un ADMIN ou une tentative directe sur l'API reste
+  // soumise au même contrôle serveur).
+  const canCommercialGesture = await can(user, "locations.upgrade.commercial_gesture");
+
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
   const allAgencies = await prisma.agency.findMany({
     where: { tenantId: user.tenantId },
@@ -86,6 +94,7 @@ export default async function ConvertReservationPage({ params }: PageProps) {
           optionsCurrency: reservation.optionsCurrency,
         }}
         agencies={agencies.map((agency) => ({ id: agency.id, name: agency.name }))}
+        canCommercialGesture={canCommercialGesture}
       />
     </div>
   );

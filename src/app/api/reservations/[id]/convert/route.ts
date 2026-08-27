@@ -40,6 +40,17 @@ import {
 import { createInvoice } from "@/lib/invoices";
 import { processLocationPayment, validatePaymentInput, type PaymentInput } from "@/lib/location-payment";
 import { logAction } from "@/lib/audit";
+import {
+  resolveLocationUpgrade,
+  InvalidUpgradeTypeError,
+  UpgradeNotNeededError,
+  UpgradeDeclarationRequiredError,
+  UpgradeReasonRequiredError,
+  UpgradeConsentRequiredError,
+  UpgradeSupplementInvalidError,
+  UpgradeCategoryStillAvailableError,
+  type UpgradeInput,
+} from "@/lib/location-upgrades";
 
 const ID_TYPES: IdType[] = ["CIN", "PASSEPORT", "CARTE_SEJOUR"];
 
@@ -117,6 +128,12 @@ interface ConvertBody {
    * nouveau Client (pas de détection de doublon, moindre enjeu qu'un client principal). */
   secondDriver?: ConvertSecondDriverInput;
   payment?: PaymentInput;
+  /** Campagne QA (2026-08-27, passe de correction obligatoire) — surclassement, requis dès
+   * que le véhicule choisi a une catégorie différente de `Reservation.vehicleCategory` (voir
+   * src/lib/location-upgrades.ts, resolveLocationUpgrade). `dailySupplement` n'est qu'indicatif
+   * pour CUSTOMER_REQUEST/COMMERCIAL_GESTURE : le serveur le valide puis recalcule
+   * intégralement le montant total, jamais accepté tel quel au-delà de ce contrôle. */
+  upgrade?: UpgradeInput;
 }
 
 /**
@@ -323,6 +340,14 @@ export async function POST(request: Request, { params }: RouteParams) {
   if (!(await canAccessAgency(user, vehicle.agencyId))) {
     return NextResponse.json({ error: "Accès refusé à cette agence." }, { status: 403 });
   }
+  // Contrôle rapide non transactionnel (fast-fail, même principe que le contrôle de statut de
+  // réservation plus haut) : un geste commercial est une décision financière discrétionnaire,
+  // permission dédiée requise (locations.upgrade.commercial_gesture, voir src/lib/permissions.ts)
+  // — les deux autres types de surclassement restent couverts par reservations.convert, déjà
+  // vérifié en tout début de route.
+  if (body.upgrade?.type === "COMMERCIAL_GESTURE" && !(await can(user, "locations.upgrade.commercial_gesture"))) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
+  }
 
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -336,6 +361,16 @@ export async function POST(request: Request, { params }: RouteParams) {
       // conversion, pas sur les champs bruts (possiblement incomplets) de la réservation
       // importée. Toujours dans la transaction : une création/mise à jour de client qui ne
       // serait pas suivie d'une Location réussie ne doit jamais rester orpheline.
+      // Correctif (campagne QA, 2026-08-27, passe de correction obligatoire) : `createClient`
+      // ne journalise jamais lui-même (voir src/lib/clients.ts) — POST /api/clients journalise
+      // "client.created" après coup, mais ce parcours de conversion ne l'a jamais fait, ni pour
+      // le client principal ni pour le second conducteur. C'est précisément ce qui a rendu
+      // l'origine du doublon "Omar Fictif-SecondCondValide" introuvable dans AuditLog lors de
+      // l'investigation (voir INCIDENTS.md INC-13) : un client créé par ce parcours n'y laissait
+      // aucune trace. `newlyCreatedClients` capture les clients réellement créés (jamais
+      // réutilisés) pour journalisation après le commit, étape 12.
+      const newlyCreatedClients: { id: string; name: string }[] = [];
+
       let clientId: string;
       if (body.useExistingClientId) {
         const existingClient = await getClientById(user.tenantId, body.useExistingClientId, tx);
@@ -422,28 +457,69 @@ export async function POST(request: Request, { params }: RouteParams) {
           tx
         );
         clientId = newClient.id;
+        newlyCreatedClients.push({ id: newClient.id, name: newClient.name });
       }
 
-      // Étape 6 — second conducteur : toujours un nouveau Client, pas de détection de doublon
-      // (moindre enjeu qu'un client principal — voir ConvertSecondDriverInput ci-dessus).
+      // Étape 6 — second conducteur : reste "moindre enjeu" qu'un client principal (aucun flux
+      // interactif de résolution de doublon comme à l'étape 5) — mais une correspondance
+      // certaine (email/téléphone/idNumber/licenseNumber, jamais une correspondance floue sur
+      // le nom) est désormais automatiquement réutilisée plutôt que de créer un doublon.
+      // Correctif (campagne QA, 2026-08-27) : c'est exactement l'absence de ce contrôle qui a
+      // produit un doublon réel de "Omar Fictif-SecondCondValide" pendant la campagne (le
+      // second conducteur saisi correspondait déjà, champ pour champ, à un client existant) —
+      // voir INCIDENTS.md. Une correspondance floue (nom seul) reste ignorée ici : trop
+      // ambiguë pour une fusion automatique sans confirmation, et le second conducteur n'a de
+      // toute façon pas de flux d'interface pour trancher un doublon probable.
       let secondDriverId: string | undefined;
       if (body.secondDriver?.firstName && body.secondDriver?.lastName) {
-        const secondDriverClient = await createClient(
+        const secondDriverDuplicate = await findDuplicateClient(
+          user.tenantId,
           {
-            tenantId: user.tenantId,
-            name: `${body.secondDriver.firstName} ${body.secondDriver.lastName}`.trim(),
-            firstName: body.secondDriver.firstName,
-            lastName: body.secondDriver.lastName,
             phone: body.secondDriver.phone,
             idNumber: body.secondDriver.idNumber,
             licenseNumber: body.secondDriver.licenseNumber,
-            birthDate: body.secondDriver.birthDate ? new Date(body.secondDriver.birthDate) : undefined,
-            notes: `Second conducteur (conversion de la réservation ${reservation.voucherNumber}).`,
           },
           tx
         );
-        secondDriverId = secondDriverClient.id;
+
+        if (secondDriverDuplicate?.matchType === "exact") {
+          secondDriverId = secondDriverDuplicate.client.id;
+        } else {
+          const secondDriverClient = await createClient(
+            {
+              tenantId: user.tenantId,
+              name: `${body.secondDriver.firstName} ${body.secondDriver.lastName}`.trim(),
+              firstName: body.secondDriver.firstName,
+              lastName: body.secondDriver.lastName,
+              phone: body.secondDriver.phone,
+              idNumber: body.secondDriver.idNumber,
+              licenseNumber: body.secondDriver.licenseNumber,
+              birthDate: body.secondDriver.birthDate ? new Date(body.secondDriver.birthDate) : undefined,
+              notes: `Second conducteur (conversion de la réservation ${reservation.voucherNumber}).`,
+            },
+            tx
+          );
+          secondDriverId = secondDriverClient.id;
+          newlyCreatedClients.push({ id: secondDriverClient.id, name: secondDriverClient.name });
+        }
       }
+
+      // Étape 6bis — surclassement (campagne QA, 2026-08-27) : résolu/validé avant la création
+      // du contrat (fast-fail à l'intérieur même de la transaction) — voir
+      // src/lib/location-upgrades.ts pour le détail complet des règles par type. `null` si le
+      // véhicule choisi correspond à la catégorie réservée (aucun surclassement).
+      const upgradeResolution = await resolveLocationUpgrade(
+        {
+          tenantId: user.tenantId,
+          vehicle,
+          reservedCategory: reservation.vehicleCategory ?? "",
+          startDate,
+          endDate,
+          validatedByUserId: user.id,
+          upgrade: body.upgrade,
+        },
+        tx
+      );
 
       // Étape 7 : l'agence du contrat est dérivée du véhicule choisi côté serveur, jamais
       // d'un champ agencyId fourni par le client — même règle que POST /api/locations
@@ -474,6 +550,31 @@ export async function POST(request: Request, { params }: RouteParams) {
         tx
       );
 
+      // Étape 7bis — surclassement (suite) : le supplément (recalculé côté serveur, jamais la
+      // valeur cliente) s'ajoute au prix de base du contrat déjà calculé par createLocation
+      // ci-dessus (pricePerDay/totalPrice de la Location = tarif du véhicule réellement choisi,
+      // le supplément de surclassement est un montant strictement additionnel). Toujours dans
+      // la même transaction que la création du contrat : createInvoice (étape 9) lira ensuite
+      // Location.totalPrice déjà à jour, jamais l'ancien montant.
+      let locationForInvoice = location;
+      let createdUpgrade: Awaited<ReturnType<typeof tx.locationUpgrade.create>> | null = null;
+      if (upgradeResolution.data) {
+        createdUpgrade = await tx.locationUpgrade.create({
+          data: {
+            ...upgradeResolution.data,
+            tenantId: user.tenantId,
+            locationId: location.id,
+            reservationId: reservation.id,
+            vehicleId: vehicle.id,
+            currency: location.currency,
+          },
+        });
+        locationForInvoice = await tx.location.update({
+          where: { id: location.id },
+          data: { totalPrice: location.totalPrice + upgradeResolution.data.totalSupplement },
+        });
+      }
+
       // Étape 8 : rattachement Reservation.convertedLocationId (la réservation est déjà
       // CONVERTED depuis l'étape 4, dans cette même transaction non commitée).
       const updatedReservation = await markReservationConverted(user.tenantId, reservation.id, location.id, tx);
@@ -503,13 +604,36 @@ export async function POST(request: Request, { params }: RouteParams) {
         payments = paymentResult.payments;
       }
 
-      return { reservation: updatedReservation, location, invoice: finalInvoice, payments };
+      return {
+        reservation: updatedReservation,
+        location: locationForInvoice,
+        invoice: finalInvoice,
+        payments,
+        upgrade: createdUpgrade,
+        newlyCreatedClients,
+      };
     });
 
     // Étape 12 : la transaction a commité avec succès — journalisation après coup uniquement
     // (jamais avant l'ouverture/pendant la transaction), pour ne jamais journaliser une
     // entité qui aurait été annulée par un rollback. payment.created reste journalisé à
     // l'intérieur de processLocationPayment (best-effort, non transactionnel, inchangé).
+    // Correctif (campagne QA, 2026-08-27, passe de correction obligatoire, INC-13) : journalise
+    // désormais tout client (principal et/ou second conducteur) réellement créé par cette
+    // conversion — même action/forme que POST /api/clients ("client.created"), jamais
+    // journalisée jusqu'ici sur ce parcours (voir le commentaire de newlyCreatedClients
+    // ci-dessus). Un client réutilisé (useExistingClientId ou correspondance exacte du second
+    // conducteur) n'est jamais journalisé ici : aucune écriture Client ne s'est produite.
+    for (const created of result.newlyCreatedClients) {
+      await logAction({
+        tenantId: user.tenantId,
+        userId: user.id,
+        action: "client.created",
+        resource: "Client",
+        resourceId: created.id,
+        metadata: { name: created.name, fromReservationId: reservation.id },
+      });
+    }
     await logAction({
       tenantId: user.tenantId,
       userId: user.id,
@@ -538,6 +662,33 @@ export async function POST(request: Request, { params }: RouteParams) {
       resourceId: result.invoice.id,
       metadata: { number: result.invoice.number, locationId: result.invoice.locationId, auto: true },
     });
+    // Campagne QA (2026-08-27, passe de correction obligatoire) : audit dédié du surclassement
+    // (Partie G) — utilisateur/tenant déjà portés par logAction, agence dérivée du contrat,
+    // date/heure = AuditLog.createdAt. Aucune donnée bancaire, uniquement les champs métier du
+    // surclassement lui-même.
+    if (result.upgrade) {
+      await logAction({
+        tenantId: user.tenantId,
+        userId: user.id,
+        action: "location.upgraded",
+        resource: "Location",
+        resourceId: result.location.id,
+        metadata: {
+          agencyId: result.location.agencyId,
+          reservationId: reservation.id,
+          vehicleId: result.location.vehicleId,
+          upgradeType: result.upgrade.type,
+          reservedCategory: result.upgrade.reservedCategory,
+          assignedCategory: result.upgrade.assignedCategory,
+          dailySupplement: result.upgrade.dailySupplement,
+          daysCount: result.upgrade.daysCount,
+          totalSupplement: result.upgrade.totalSupplement,
+          currency: result.upgrade.currency,
+          customerConsent: result.upgrade.customerConsent,
+          operationalReason: result.upgrade.operationalReason,
+        },
+      });
+    }
 
     return NextResponse.json(
       {
@@ -545,6 +696,7 @@ export async function POST(request: Request, { params }: RouteParams) {
         location: result.location,
         invoice: result.invoice,
         payments: result.payments,
+        upgrade: result.upgrade,
         paymentError: null,
       },
       { status: 201 }
@@ -596,6 +748,23 @@ export async function POST(request: Request, { params }: RouteParams) {
     }
     if (error instanceof MissingPriceError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    // Campagne QA (2026-08-27, passe de correction obligatoire) : surclassement, voir
+    // src/lib/location-upgrades.ts — toutes ces erreurs sont levées avant toute écriture
+    // dépendante (client/second conducteur déjà créés dans la même transaction, annulés par
+    // le rollback), même garantie que le reste des erreurs de ce bloc.
+    if (
+      error instanceof InvalidUpgradeTypeError ||
+      error instanceof UpgradeNotNeededError ||
+      error instanceof UpgradeDeclarationRequiredError ||
+      error instanceof UpgradeReasonRequiredError ||
+      error instanceof UpgradeConsentRequiredError ||
+      error instanceof UpgradeSupplementInvalidError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof UpgradeCategoryStillAvailableError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
     // Correctif (finding F-3) : startFuelLevel validé par createLocation (validateFuelLevel),
     // même statut/forme de réponse que sur POST /api/locations.
