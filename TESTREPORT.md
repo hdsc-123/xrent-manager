@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1367/1367** (2026-08-28).
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1369/1369** (2026-08-29).
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -318,8 +318,19 @@ Détail complet de chaque entrée ci-dessous (fichiers de test, nombre exact, pa
 | 2026-08-27 | Passe de correction post-partie 2 — INC-12 (véhicule INACTIVE), permission agencies.view (groupe AGENT) |
 | 2026-08-27 | Passe de correction obligatoire — doublon Omar (INC-13), surclassement `LocationUpgrade` complet, INC-14/INC-15 |
 | 2026-08-28 | Correctif d'affichage `/dashboard/users` — distinction rôle système / groupe de permissions (INC-20) |
+| 2026-08-29 | Correctif préexistant `getMaintenanceEffectiveEnd` — maintenance sans fin explicite ne bloquait plus après minuit (INC-21) |
 
 ### Rapports récents (détail complet ci-dessous, pas archivés)
+
+## Tests session — correctif préexistant `getMaintenanceEffectiveEnd`, maintenance sans fin explicite après minuit (2026-08-29)
+
+**Contexte** : découvert en relançant la suite complète avant le commit du correctif INC-20 (`/dashboard/users`) — 3 échecs reproductibles dans `vehicle-status.test.ts`, tous liés à une maintenance planifiée « il y a 1h » censée bloquer le véhicule (`MAINTENANCE`), mais dont le statut recalculé retombait à tort sur `AVAILABLE`. Diagnostic : sans rapport avec INC-20 (fichiers disjoints), défaut préexistant révélé par le passage de minuit pendant la session. Voir INCIDENTS.md INC-21 pour le détail complet.
+
+**Correctif** : `getMaintenanceEffectiveEnd` (`src/lib/vehicles.ts`) retombe désormais sur `scheduledDate + 24h` (durée fixe) au lieu de « fin du jour calendaire de `scheduledDate` », qui pouvait produire un blocage de quelques minutes seulement pour une maintenance planifiée juste avant minuit — ne respectait plus la garantie documentée (DOMAINRULES.md section 50, « bloque au moins toute sa journée prévue ») dans ce cas précis.
+
+**Tests ajoutés** : 2 tests unitaires purs dans `vehicle-status.test.ts` (dates fixes, indépendants de l'heure d'exécution) — fin effective = `scheduledDate + 24h` sans `scheduledEndDate` ; `scheduledEndDate` explicite toujours prioritaire et inchangé.
+
+**Tests exécutés** : `vehicle-status.test.ts` isolé (31/31, incluant les 3 tests précédemment en échec) ; fichiers liés utilisant la même fonction (`maintenance-location-coordination.test.ts`, `vehicles.test.ts`, `maintenances.test.ts`, `location-extension.test.ts`, 136/136, aucune régression) ; suite complète (`node scripts/test-grouped.mjs`) **1369/1369** ; `npx tsc --noEmit`/`npm run lint`/`npm run build` verts.
 
 ## Tests session — correctif d'affichage `/dashboard/users`, rôle système vs groupe de permissions (2026-08-28)
 

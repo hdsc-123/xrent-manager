@@ -293,19 +293,25 @@ export function periodsOverlap(aStart: Date, aEnd: Date, bStart: Date, bEnd: Dat
 
 /**
  * Sprint 34 étape 3 (DOMAINRULES.md section 50) : fin effective de la période bloquante d'une
- * maintenance — `scheduledEndDate` si renseignée, sinon fin de la journée de `scheduledDate`
- * (une maintenance créée sans fin explicite bloque au moins toute sa journée prévue, jamais un
- * instant zéro qui ne bloquerait jamais rien). Factorisée ici pour être réutilisée à l'identique
- * partout où une période de maintenance doit être comparée à une autre période (Location,
- * VehicleTransfer, VehicleTrip) — jamais recalculée différemment d'un appelant à l'autre.
+ * maintenance — `scheduledEndDate` si renseignée, sinon `scheduledDate` + 24h (une maintenance
+ * créée sans fin explicite bloque au moins toute sa journée prévue, jamais un instant zéro qui ne
+ * bloquerait jamais rien). Factorisée ici pour être réutilisée à l'identique partout où une
+ * période de maintenance doit être comparée à une autre période (Location, VehicleTransfer,
+ * VehicleTrip) — jamais recalculée différemment d'un appelant à l'autre.
+ *
+ * INC-21 (2026-08-29) : l'ancien calcul (« fin du jour calendaire de `scheduledDate` », via
+ * `setHours(23,59,59,999)`) ne garantissait pas réellement « au moins toute sa journée prévue »
+ * dès que `scheduledDate` tombait dans la dernière heure avant minuit — une maintenance planifiée
+ * à 23h26 se voyait alors une fin effective à 23h59 le même jour, soit ~33 minutes de blocage
+ * réel au lieu d'une journée, dès que l'heure courante franchissait minuit. Un décalage fixe de
+ * 24h à partir de `scheduledDate` respecte la garantie documentée quelle que soit l'heure de
+ * planification, sans dépendre d'aucun fuseau horaire local.
  */
 export function getMaintenanceEffectiveEnd(maintenance: Pick<Maintenance, "scheduledDate" | "scheduledEndDate">): Date {
   if (maintenance.scheduledEndDate) {
     return maintenance.scheduledEndDate;
   }
-  const endOfDay = new Date(maintenance.scheduledDate);
-  endOfDay.setHours(23, 59, 59, 999);
-  return endOfDay;
+  return new Date(maintenance.scheduledDate.getTime() + 24 * 60 * 60 * 1000);
 }
 
 /**

@@ -15,6 +15,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
+import { getMaintenanceEffectiveEnd } from "@/lib/vehicles";
 import { apiFetch } from "./helpers/http";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
 
@@ -762,5 +763,33 @@ describe("20-21. Désactivation/réactivation administrative — permissions, mo
       where: { tenantId: adminA.tenantId, action: "vehicle.reactivated", resourceId: vehicleId },
     });
     expect(reactivateAudit).toBeDefined();
+  });
+});
+
+describe("INC-21 — getMaintenanceEffectiveEnd sans scheduledEndDate ne dépend plus de l'heure d'exécution", () => {
+  it("retourne scheduledDate + 24h, jamais la fin du jour calendaire (défaut avant correction : une maintenance planifiée juste avant minuit ne bloquait plus dès que l'heure courante franchissait minuit)", () => {
+    // Date fixe, non relative à Date.now() — ce test doit rester déterministe quelle que soit
+    // l'heure/le jour d'exécution de la suite, contrairement aux scénarios d'intégration
+    // ci-dessus (scheduledDate: Date.now() - 1h) qui n'exercent ce cas que par coïncidence
+    // horaire.
+    const scheduledDate = new Date("2026-08-28T23:26:00.000Z"); // 34 min avant minuit UTC
+    const effectiveEnd = getMaintenanceEffectiveEnd({ scheduledDate, scheduledEndDate: null });
+
+    // Ancien calcul (bogué) : fin du jour calendaire de scheduledDate => 2026-08-28T23:59:59.999Z,
+    // soit ~33 minutes après scheduledDate — un instant déjà dans le passé dès que "maintenant"
+    // franchit minuit, alors que la maintenance n'a même pas encore une journée d'ancienneté.
+    const buggyEndOfDay = new Date("2026-08-28T23:59:59.999Z");
+    expect(effectiveEnd.getTime()).toBeGreaterThan(buggyEndOfDay.getTime());
+
+    // Nouveau calcul (correct) : exactement scheduledDate + 24h, qui couvre bien "toute sa
+    // journée prévue" (DOMAINRULES.md section 50) quelle que soit l'heure de planification.
+    expect(effectiveEnd.toISOString()).toBe("2026-08-29T23:26:00.000Z");
+  });
+
+  it("scheduledEndDate explicite reste prioritaire, inchangé par la correction", () => {
+    const scheduledDate = new Date("2026-08-28T08:00:00.000Z");
+    const scheduledEndDate = new Date("2026-08-28T10:00:00.000Z");
+    const effectiveEnd = getMaintenanceEffectiveEnd({ scheduledDate, scheduledEndDate });
+    expect(effectiveEnd.toISOString()).toBe("2026-08-28T10:00:00.000Z");
   });
 });
