@@ -80,7 +80,7 @@ export function NewVehicleTransferForm({ ownAgencies }: NewVehicleTransferFormPr
   // l'utilisateur, Sprint 24), pas la liste complète du tenant.
   useEffect(() => {
     if (!fromAgencyId) return;
-    apiGet<{ vehicles: Vehicle[] }>(`/api/vehicles?status=AVAILABLE&agencyId=${fromAgencyId}`)
+    apiGet<{ vehicles: Vehicle[] }>(`/api/vehicles?status=AVAILABLE&excludeDeactivated=true&agencyId=${fromAgencyId}`)
       .then((data) => setVehicles(data.vehicles))
       .catch(() => setVehicles([]));
   }, [fromAgencyId]);

@@ -18,21 +18,54 @@ const createdTenantIds: string[] = [];
 let adminA: AuthenticatedTestUser;
 let adminB: AuthenticatedTestUser;
 let agencyA1Id: string;
-let vehicleAId: string;
 let clientAId: string;
 let dateOffset = 0;
+let vehicleCounter = 0;
+
+/** Sprint "statut opérationnel automatique" (2026-08-28) : Vehicle.status reflète désormais
+ * réellement toute Location ACTIVE existante (même hors de sa période de dates) — un véhicule
+ * partagé entre plusieurs tests dont certains activent une Location sans jamais la clôturer
+ * (ex. les tests de rejet ci-dessous, qui laissent volontairement la Location ACTIVE) resterait
+ * donc RENTED pour tous les tests suivants. Chaque appel crée désormais son propre véhicule
+ * frais, pour isoler chaque test indépendamment du sort de la Location des autres. */
+async function createFreshVehicle() {
+  vehicleCounter += 1;
+  const vehicleResponse = await apiFetch("/api/vehicles", {
+    method: "POST",
+    headers: { Cookie: adminA.sessionCookie },
+    body: JSON.stringify({
+      agencyId: agencyA1Id,
+      name: "Clio",
+      licensePlate: `RET-RT-${vehicleCounter}-${runId}`,
+      make: "Renault",
+      model: "Clio",
+      year: 2022,
+      category: "Citadine",
+      pricePerDay: 5000,
+      chassisNumber: `VF1TEST${vehicleCounter}${Math.floor(Math.random() * 1_000_000)}`,
+      color: "Blanc",
+      doors: 5,
+      seats: 5,
+      horsepower: 6,
+      powerKW: 75,
+      engineSize: 1.5,
+    }),
+  });
+  return (await vehicleResponse.json()).vehicle.id as string;
+}
 
 async function createAndActivateLocation(overrides: Record<string, unknown> = {}) {
   dateOffset += 10;
   const base = new Date(Date.UTC(2028, 0, 1));
   const start = new Date(base.getTime() + dateOffset * 24 * 60 * 60 * 1000);
   const end = new Date(start.getTime() + 3 * 24 * 60 * 60 * 1000);
+  const vehicleId = await createFreshVehicle();
 
   const createResponse = await apiFetch("/api/locations", {
     method: "POST",
     headers: { Cookie: adminA.sessionCookie },
     body: JSON.stringify({
-      vehicleId: vehicleAId,
+      vehicleId,
       clientId: clientAId,
       startDate: start.toISOString(),
       endDate: end.toISOString(),
@@ -95,29 +128,6 @@ beforeAll(async () => {
     body: JSON.stringify({ name: "Agence A1", slug: `agence-a1-${runId}` }),
   });
   agencyA1Id = (await agencyResponse.json()).agency.id;
-
-  const vehicleResponse = await apiFetch("/api/vehicles", {
-    method: "POST",
-    headers: { Cookie: adminA.sessionCookie },
-    body: JSON.stringify({
-      agencyId: agencyA1Id,
-      name: "Clio",
-      licensePlate: `RET-RT-${runId}`,
-      make: "Renault",
-      model: "Clio",
-      year: 2022,
-      category: "Citadine",
-      pricePerDay: 5000,
-      chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
-      color: "Blanc",
-      doors: 5,
-      seats: 5,
-      horsepower: 6,
-      powerKW: 75,
-      engineSize: 1.5,
-    }),
-  });
-  vehicleAId = (await vehicleResponse.json()).vehicle.id;
 
   const clientResponse = await apiFetch("/api/clients", {
     method: "POST",

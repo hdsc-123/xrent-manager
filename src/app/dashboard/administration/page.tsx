@@ -256,9 +256,11 @@ async function AdministrationSection({
     year: vehicle.year,
     category: vehicle.category,
     status: vehicle.status,
+    deactivatedAt: vehicle.deactivatedAt ? vehicle.deactivatedAt.toISOString() : null,
+    deactivatedReason: vehicle.deactivatedReason,
     pricePerDay: vehicle.pricePerDay,
     currency: vehicle.currency,
     agencyName: agency?.name ?? "",
   }));
-  return <VehiclesTable vehicles={vehicleRows} canDelete={false} />;
+  return <VehiclesTable vehicles={vehicleRows} canDelete={false} canDeactivate={false} />;
 }

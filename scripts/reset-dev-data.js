@@ -55,8 +55,21 @@ function monthKey(date) {
 }
 
 // Ordre de suppression respectant les contraintes de clé étrangère (enfants avant parents).
+// Corrigé (sprint "statut opérationnel automatique", 2026-08-28) : cashEntry, damage,
+// damageInvoice, damageInvoiceLine et locationUpgrade (Sprints 32/33 et campagne QA
+// 2026-08-27) manquaient de cette liste ou étaient mal ordonnés, jamais mis à jour depuis
+// leur introduction — échec en présence de données réelles pour ces modèles (créditNoteId
+// sur cashEntry restreint vers Invoice ; damage/damageInvoice/locationUpgrade restreints
+// vers Location/Vehicle/Invoice). Aucune de ces tables n'est référencée en retour par une
+// autre table de cette liste (aucune FK ne pointe vers elles comme parent), donc les
+// positionner tôt est sans risque pour le reste de l'ordre.
 const WIPE_ORDER = [
+  "cashEntry",
+  "damageInvoiceLine",
   "payment",
+  "damage",
+  "damageInvoice",
+  "locationUpgrade",
   "invoice",
   "maintenance",
   "vehicleTransfer",
@@ -68,7 +81,6 @@ const WIPE_ORDER = [
   "alert",
   "invitation",
   "auditLog",
-  "cashEntry",
 ];
 
 const PRESERVED_MODELS = [
@@ -127,11 +139,13 @@ async function main() {
     await tx.cashRegister.updateMany({
       data: { currentBalance: 0, previousBalance: 0, currentMonth: monthKey(new Date()) },
     });
-    // Compteur de numérotation des contrats (Tenant.lastContractNumber) : remis à zéro pour
-    // rester cohérent avec la suppression de toutes les Location (voir DOMAINRULES.md
-    // section 29). contractNumberPrefix, lui, fait partie de la configuration et n'est pas
-    // touché.
-    await tx.tenant.updateMany({ data: { lastContractNumber: 0 } });
+    // Compteur de numérotation des contrats : déplacé de Tenant vers Agency au Sprint 15
+    // (voir DOMAINRULES.md section 29) — ce script référençait encore Tenant.lastContractNumber
+    // (champ qui n'existe plus), jamais mis à jour depuis ce déplacement, corrigé ici (sprint
+    // "statut opérationnel automatique", 2026-08-28). Remis à zéro pour rester cohérent avec la
+    // suppression de toutes les Location. contractNumberPrefix fait partie de la configuration
+    // et n'est pas touché.
+    await tx.agency.updateMany({ data: { lastContractNumber: 0 } });
   });
 
   const afterWipe = await countAll(WIPE_ORDER);

@@ -134,7 +134,10 @@ export default async function MaintenancesPage({ searchParams }: PageProps) {
       agencyName: vehicle.agency.name,
       status: vehicle.status,
       returnDate: activeLocation?.endDate.toISOString() ?? null,
-      available: vehicle.status === "AVAILABLE" && activeLocation === null,
+      deactivatedAt: vehicle.deactivatedAt ? vehicle.deactivatedAt.toISOString() : null,
+      // Sprint "statut opérationnel automatique" (2026-08-28) : un véhicule désactivé
+      // administrativement n'est jamais disponible, quel que soit son statut opérationnel calculé.
+      available: vehicle.status === "AVAILABLE" && activeLocation === null && !vehicle.deactivatedAt,
     };
   });
 

@@ -282,6 +282,9 @@ export default async function VehicleDetailPage({ params }: PageProps) {
           }
           initialNextOilChangeDate={vehicle.nextOilChangeDate ? vehicle.nextOilChangeDate.toISOString().slice(0, 10) : null}
           initialNextOilChangeKm={vehicle.nextOilChangeKm}
+          initialDeactivatedAt={vehicle.deactivatedAt ? vehicle.deactivatedAt.toISOString() : null}
+          initialDeactivatedReason={vehicle.deactivatedReason}
+          canDeactivate={user.role === "ADMIN"}
         />
       ) : (
         // Sprint 22 : la fiche complète reste visible en lecture seule (vehicles.view) —
@@ -313,6 +316,8 @@ export default async function VehicleDetailPage({ params }: PageProps) {
           }
           nextOilChangeDate={vehicle.nextOilChangeDate ? vehicle.nextOilChangeDate.toISOString().slice(0, 10) : null}
           nextOilChangeKm={vehicle.nextOilChangeKm}
+          deactivatedAt={vehicle.deactivatedAt ? vehicle.deactivatedAt.toISOString() : null}
+          deactivatedReason={vehicle.deactivatedReason}
         />
       )}
 

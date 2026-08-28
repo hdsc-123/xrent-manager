@@ -125,6 +125,8 @@ model User {
   locationUpgradesValidated   LocationUpgrade[]
   // Sprint 32 : agent ayant déclaré un dégât (Damage.createdByUserId).
   damagesCreated              Damage[]          @relation("DamageCreatedBy")
+  // Sprint "statut opérationnel automatique" (2026-08-28) : ADMIN ayant désactivé un véhicule.
+  vehiclesDeactivated         Vehicle[]         @relation("VehicleDeactivatedBy")
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -193,17 +195,19 @@ model Client {
   @@index([tenantId])
 }
 
-// TRANSFERRING/ON_TRIP (Sprint 14C) sont gérés automatiquement par src/lib/vehicle-transfers.ts/
-// vehicle-trips.ts (jamais sélectionnables manuellement dans les formulaires véhicule) : posés au
-// lancement d'un transfert/bon de déplacement, retirés (retour à AVAILABLE) à sa validation/
-// annulation — seule dérogation à la règle "Vehicle.status reste un champ manuel" (DOMAINRULES.md
-// section 5), nécessaire pour que les sélecteurs "?status=AVAILABLE" (locations/réservations)
-// excluent automatiquement un véhicule en mobilité, sans dupliquer cette logique partout.
+// Statut opérationnel entièrement calculé côté serveur (sprint "statut opérationnel automatique",
+// 2026-08-28, DOMAINRULES.md section 5 révisée) — plus jamais saisi ni modifié par le client.
+// Colonne conservée comme cache synchronisé (jamais la source de vérité) : recalculée et
+// réécrite par src/lib/vehicle-status.ts (getVehicleOperationalStatus/syncVehicleStatus) à
+// chaque transition Location/Maintenance/VehicleTransfer/VehicleTrip pertinente, dans la même
+// transaction Prisma que l'écriture métier. INACTIVE retiré de cet enum : l'ancienne
+// immobilisation permanente manuelle devient un état administratif séparé
+// (Vehicle.deactivatedAt/deactivatedReason/deactivatedById, voir plus bas), orthogonal au
+// statut opérationnel calculé.
 enum VehicleStatus {
   AVAILABLE
   RENTED
   MAINTENANCE
-  INACTIVE
   TRANSFERRING
   ON_TRIP
 }
@@ -248,6 +252,15 @@ model Vehicle {
   gps           Boolean           @default(false)
   imageUrl      String?
   status        VehicleStatus     @default(AVAILABLE)
+  // État administratif séparé (sprint "statut opérationnel automatique", 2026-08-28) — remplace
+  // l'ancien VehicleStatus.INACTIVE. Décision réservée ADMIN (contrôle de rôle strict, même
+  // principe que adminCancelInvoice/adminCancelValidatedLocation, DOMAINRULES.md section 43),
+  // motif obligatoire à la désactivation, jamais à la réactivation. Un véhicule désactivé bloque
+  // toute nouvelle Location/Maintenance/VehicleTransfer/VehicleTrip quel que soit son statut
+  // opérationnel calculé — voir src/lib/vehicle-status.ts.
+  deactivatedAt     DateTime?
+  deactivatedReason String?
+  deactivatedById   String?
   // Optionnel depuis le Sprint 14A : purement informatif, jamais la source de vérité de la
   // facturation (voir DOMAINRULES.md section 5/7) — le prix réel est saisi à la location/au
   // contrat (src/lib/locations.ts, createLocation).
@@ -281,6 +294,7 @@ model Vehicle {
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
   agency           Agency            @relation(fields: [agencyId], references: [id])
+  deactivatedBy    User?             @relation("VehicleDeactivatedBy", fields: [deactivatedById], references: [id])
   locations        Location[]
   maintenances     Maintenance[]
   transfers        VehicleTransfer[]
@@ -292,6 +306,7 @@ model Vehicle {
   @@index([tenantId])
   @@index([agencyId])
   @@index([status])
+  @@index([deactivatedAt])
 }
 
 enum LocationStatus {

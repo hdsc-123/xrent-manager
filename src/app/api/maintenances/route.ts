@@ -12,6 +12,7 @@ import {
   VehicleUnavailableForMaintenanceError,
 } from "@/lib/maintenances";
 import { getVehicleById } from "@/lib/vehicles";
+import { VehicleDeactivatedError } from "@/lib/vehicle-status";
 import { logAction } from "@/lib/audit";
 
 const MAINTENANCE_STATUSES: MaintenanceStatus[] = ["SCHEDULED", "IN_PROGRESS", "COMPLETED", "CANCELLED"];
@@ -165,6 +166,9 @@ export async function POST(request: Request) {
         { error: error.message, conflictingLocations: error.conflictingLocations },
         { status: 409 }
       );
+    }
+    if (error instanceof VehicleDeactivatedError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
 
     console.error("Erreur lors de la création de la maintenance :", error);

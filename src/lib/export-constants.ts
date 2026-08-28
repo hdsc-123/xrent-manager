@@ -22,6 +22,7 @@ export const VEHICLE_COLUMNS = [
   "transmission",
   "carburant",
   "statut",
+  "etatAdministratif",
   "prixParJour",
   "devise",
   "kilometrageActuel",

@@ -1,6 +1,7 @@
 import type { Damage, DamageInvoice, Location, Payment, PaymentMethod, Prisma, Vehicle } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { lockVehicleForUpdate } from "@/lib/vehicles";
+import { syncVehicleStatus } from "@/lib/vehicle-status";
 import { updateInvoice } from "@/lib/invoices";
 import {
   createPayment,
@@ -449,10 +450,11 @@ export async function returnLocation(input: ReturnLocationInput): Promise<Return
         ? await tx.damage.findMany({ where: { id: { in: damages.map((damage) => damage.id) } } })
         : [];
 
-    // Dernière étape, uniquement si tout ce qui précède a réussi (DOMAINRULES.md section 32) —
-    // aucune activation automatique équivalente n'existe à la création/l'activation du contrat
-    // ce sprint (hors périmètre, voir le rapport d'audit).
-    await tx.vehicle.update({ where: { id: vehicle.id }, data: { status: "AVAILABLE" } });
+    // Dernière étape, uniquement si tout ce qui précède a réussi (DOMAINRULES.md section 32).
+    // Sprint "statut opérationnel automatique" (2026-08-28) : recalcul plutôt qu'une réécriture
+    // aveugle à AVAILABLE — le véhicule retourné peut déjà avoir une autre opération bloquante
+    // active en parallèle (ex. une maintenance planifiée démarrant le jour même du retour).
+    await syncVehicleStatus(vehicle.id, tx);
     const updatedVehicle = await tx.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } });
 
     return {

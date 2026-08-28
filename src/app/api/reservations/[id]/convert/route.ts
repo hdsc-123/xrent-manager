@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getSessionUser, canAccessAgency, canAccessReservationAgencies, canEditReservationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getVehicleById } from "@/lib/vehicles";
+import { VehicleDeactivatedError } from "@/lib/vehicle-status";
 import {
   getClientById,
   createClient,
@@ -729,6 +730,9 @@ export async function POST(request: Request, { params }: RouteParams) {
     // Sprint 28 (Finding E) : la conversion réutilise createLocation (Finding A/C) — même
     // garde véhicule MAINTENANCE/TRANSFERRING/ON_TRIP, aucune exception pour cette route.
     if (error instanceof VehicleUnavailableForLocationError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof VehicleDeactivatedError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 1/2/7) : la conversion réutilise

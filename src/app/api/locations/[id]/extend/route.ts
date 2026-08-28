@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
+import { VehicleDeactivatedError } from "@/lib/vehicle-status";
 import {
   getLocationById,
   InvalidDateRangeError,
@@ -165,6 +166,9 @@ export async function POST(request: Request, { params }: RouteParams) {
       );
     }
     if (error instanceof VehicleUnavailableForLocationError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof VehicleDeactivatedError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     if (error instanceof VehicleMaintenanceConflictError) {

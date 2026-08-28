@@ -2159,12 +2159,14 @@ describe("Sprint 24 — locations.confirm/activate/complete/cancel séparées de
   });
 });
 
-describe("Sprint 28 (Finding E) + campagne QA 2026-08-27 partie 2 — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP/INACTIVE bloque la création/modification d'une Location", () => {
+describe("Sprint 28 (Finding E) + campagne QA 2026-08-27 partie 2 — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP bloque la création/modification d'une Location", () => {
   /** Statuts « en mobilité »/indisponibles posés automatiquement par vehicle-transfers.ts/
    * vehicle-trips.ts (jamais assignables manuellement via POST/PATCH /api/vehicles*,
    * DOMAINRULES.md section 30) — forcés directement en base pour isoler ce test du reste de
-   * l'infrastructure de transfert/déplacement, non concernée par ce sprint. */
-  async function createVehicleWithStatus(status: "MAINTENANCE" | "TRANSFERRING" | "ON_TRIP" | "INACTIVE") {
+   * l'infrastructure de transfert/déplacement, non concernée par ce sprint. INACTIVE retiré
+   * (sprint "statut opérationnel automatique", 2026-08-28) — remplacé par l'état administratif
+   * séparé Vehicle.deactivatedAt, couvert par un test dédié plus bas (createDeactivatedVehicle). */
+  async function createVehicleWithStatus(status: "MAINTENANCE" | "TRANSFERRING" | "ON_TRIP") {
     const response = await apiFetch("/api/vehicles", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
@@ -2191,7 +2193,7 @@ describe("Sprint 28 (Finding E) + campagne QA 2026-08-27 partie 2 — véhicule 
     return vehicleId;
   }
 
-  it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP", "INACTIVE"] as const)(
+  it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP"] as const)(
     "refuse la création d'une Location (409) si le véhicule est %s",
     async (status) => {
       const vehicleId = await createVehicleWithStatus(status);
@@ -2210,7 +2212,7 @@ describe("Sprint 28 (Finding E) + campagne QA 2026-08-27 partie 2 — véhicule 
     }
   );
 
-  it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP", "INACTIVE"] as const)(
+  it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP"] as const)(
     "refuse la modification des dates d'une Location existante (409) si le véhicule est %s, même pour un ADMIN, sans annuler la Location automatiquement",
     async (status) => {
       const vehicleResponse = await apiFetch("/api/vehicles", {
@@ -2266,6 +2268,33 @@ describe("Sprint 28 (Finding E) + campagne QA 2026-08-27 partie 2 — véhicule 
       expect(unchanged.startDate.toISOString()).toBe(new Date("2028-05-01").toISOString());
     }
   );
+
+  /** Sprint "statut opérationnel automatique" (2026-08-28) : un véhicule désactivé
+   * (Vehicle.deactivatedAt) bloque toute nouvelle Location, indépendamment de son statut
+   * opérationnel calculé — même sévérité que MAINTENANCE/TRANSFERRING/ON_TRIP ci-dessus, sans
+   * exception ADMIN. */
+  it("refuse la création d'une Location (409) si le véhicule est désactivé", async () => {
+    const vehicleId = await createVehicleWithStatus("MAINTENANCE").then(async (id) => {
+      await prisma.vehicle.update({ where: { id }, data: { status: "AVAILABLE" } });
+      return id;
+    });
+    await prisma.vehicle.update({
+      where: { id: vehicleId },
+      data: { deactivatedAt: new Date(), deactivatedReason: "Panne moteur grave", deactivatedById: adminA.userId },
+    });
+
+    const response = await createLocation(adminA, {
+      vehicleId,
+      startDate: "2028-04-01",
+      endDate: "2028-04-03",
+    });
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).toContain("désactivé");
+
+    const locationCount = await prisma.location.count({ where: { vehicleId } });
+    expect(locationCount).toBe(0);
+  });
 
   it("autorise la création d'une Location si le véhicule est AVAILABLE", async () => {
     const vehicleResponse = await apiFetch("/api/vehicles", {

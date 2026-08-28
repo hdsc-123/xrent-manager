@@ -5,7 +5,6 @@ const STATUS_LABELS: Record<string, string> = {
   AVAILABLE: "Disponible",
   RENTED: "Loué",
   MAINTENANCE: "Maintenance",
-  INACTIVE: "Inactif",
   TRANSFERRING: "En transfert",
   ON_TRIP: "En déplacement",
 };
@@ -30,6 +29,10 @@ function formatDate(value: string | null): string {
 interface VehicleReadOnlyDetailsProps {
   category: string;
   status: string;
+  /** État administratif (sprint "statut opérationnel automatique", 2026-08-28) — remplace
+   * l'ancien VehicleStatus.INACTIVE, orthogonal au statut opérationnel calculé ci-dessus. */
+  deactivatedAt: string | null;
+  deactivatedReason: string | null;
   pricePerDay: number | null;
   currency: string;
   licensePlate: string;
@@ -63,6 +66,8 @@ interface VehicleReadOnlyDetailsProps {
 export function VehicleReadOnlyDetails({
   category,
   status,
+  deactivatedAt,
+  deactivatedReason,
   pricePerDay,
   currency,
   licensePlate,
@@ -100,8 +105,11 @@ export function VehicleReadOnlyDetails({
         <span className="text-muted-foreground">Catégorie</span>
         <span>{category}</span>
 
-        <span className="text-muted-foreground">Statut</span>
+        <span className="text-muted-foreground">Statut opérationnel</span>
         <span>{STATUS_LABELS[status] ?? status}</span>
+
+        <span className="text-muted-foreground">État administratif</span>
+        <span>{deactivatedAt ? `Désactivé — ${deactivatedReason ?? "sans motif enregistré"}` : "Actif"}</span>
 
         <span className="text-muted-foreground">N° WW</span>
         <span>{ww ?? "—"}</span>

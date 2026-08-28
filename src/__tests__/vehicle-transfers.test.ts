@@ -246,13 +246,14 @@ describe("POST /api/vehicle-transfers", () => {
 describe("Sprint 31B — verrouillage du véhicule à la création (courses concurrentes)", () => {
   const CONCURRENCY_REPEATS = 5;
 
+  /** Sprint "statut opérationnel automatique" (2026-08-28) : PATCH /api/vehicles/[id] rejette
+   * désormais tout `status` fourni par le client (plus jamais assignable manuellement, même via
+   * l'API) — statut forcé directement en base pour isoler ces tests du reste de
+   * l'infrastructure Location/Maintenance/Transfert/Déplacement, même convention que
+   * locations.test.ts (createVehicleWithStatus). */
   async function setVehicleStatus(admin: AuthenticatedTestUser, vehicleId: string, status: string) {
-    const response = await apiFetch(`/api/vehicles/${vehicleId}`, {
-      method: "PATCH",
-      headers: { Cookie: admin.sessionCookie },
-      body: JSON.stringify({ status }),
-    });
-    expect(response.status).toBe(200);
+    void admin;
+    await prisma.vehicle.update({ where: { id: vehicleId }, data: { status: status as never } });
   }
 
   it("Scénario A : deux transferts concurrents sur le même véhicule — exactement un 201 et un 409, un seul transfert actif en base, un seul audit", async () => {
@@ -371,10 +372,13 @@ describe("Sprint 31B — verrouillage du véhicule à la création (courses conc
     expect(body.error).not.toContain("déjà été réservé par un autre utilisateur");
   });
 
-  it("Scénario D : refuse un transfert sur un véhicule INACTIVE (refus métier)", async () => {
+  it("Scénario D : refuse un transfert sur un véhicule désactivé (refus métier)", async () => {
     const vehicleResponse = await createVehicle(adminA, agencyA1Id);
     const vehicleId = (await vehicleResponse.json()).vehicle.id;
-    await setVehicleStatus(adminA, vehicleId, "INACTIVE");
+    await prisma.vehicle.update({
+      where: { id: vehicleId },
+      data: { deactivatedAt: new Date(), deactivatedReason: "Test", deactivatedById: adminA.userId },
+    });
 
     const response = await createTransfer(adminA, vehicleId, agencyA2Id, adminA.userId);
     expect(response.status).toBe(409);

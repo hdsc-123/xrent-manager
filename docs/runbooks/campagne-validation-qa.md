@@ -2,6 +2,8 @@
 
 Procédure de reprise de la campagne de validation manuelle du tenant QA fictif. Dernière mise à jour : 2026-08-28 (partie 6 — clôture ciblée : correctif UI 390px sur le formulaire de conversion, INC-17 ; fixture Hyundai reconfirmée ; points 34 et 41-47 désormais exécutés manuellement en navigateur réel, plus aucun point de ce runbook ne repose uniquement sur la couverture automatisée). Voir [HANDOFF.md](../../HANDOFF.md) pour l'état global du projet.
 
+**⚠️ Constat non résolu (sprint « statut opérationnel automatique », 2026-08-28)** : `xrent_dev` était intégralement vide (0 tenant/agence/utilisateur/véhicule) au démarrage de cette session — le tenant QA et les 7 véhicules décrits ci-dessous, y compris la fixture Hyundai, **n'existaient pas**. Cause probable : un reset de données exécuté après la dernière mise à jour de ce runbook, jamais documenté (cohérent avec le Sprint 14D en cours, CLAUDE.md). Avant de reprendre cette campagne, vérifier d'abord que le tenant QA existe réellement (`SELECT` en lecture seule ou connexion applicative) plutôt que de supposer les fixtures ci-dessous présentes.
+
 ## 1. Avant de commencer
 
 - Vérifier l'état Git (`git status --short`, `git log -1 --oneline`) avant toute action.

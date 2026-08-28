@@ -323,7 +323,24 @@ describe("PATCH /api/vehicles/[id]", () => {
     expect((await response.json()).vehicle.currency).toBe("MAD");
   });
 
-  it("permet de modifier le prix et le statut", async () => {
+  it("permet de modifier le prix", async () => {
+    const createResponse = await createVehicle(adminA, agencyA1Id);
+    const vehicleId = (await createResponse.json()).vehicle.id;
+
+    const response = await apiFetch(`/api/vehicles/${vehicleId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ pricePerDay: 6000 }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.vehicle.pricePerDay).toBe(6000);
+  });
+
+  // Sprint "statut opérationnel automatique" (2026-08-28) : le statut n'est plus jamais
+  // modifiable via cette route, même conjointement à un champ légitime (pricePerDay) — la
+  // requête entière est rejetée, aucun champ n'est appliqué.
+  it("rejette toute la requête si status est fourni, même conjointement à un champ légitime", async () => {
     const createResponse = await createVehicle(adminA, agencyA1Id);
     const vehicleId = (await createResponse.json()).vehicle.id;
 
@@ -332,10 +349,12 @@ describe("PATCH /api/vehicles/[id]", () => {
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify({ pricePerDay: 6000, status: "MAINTENANCE" }),
     });
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    expect(body.vehicle.pricePerDay).toBe(6000);
-    expect(body.vehicle.status).toBe("MAINTENANCE");
+    expect(response.status).toBe(400);
+
+    const after = await apiFetch(`/api/vehicles/${vehicleId}`, { headers: { Cookie: adminA.sessionCookie } });
+    const afterBody = await after.json();
+    expect(afterBody.vehicle.pricePerDay).not.toBe(6000);
+    expect(afterBody.vehicle.status).toBe("AVAILABLE");
   });
 
   it("Sprint 24-2 : permet de modifier un champ de la fiche technique désormais obligatoire, mais refuse de l'effacer", async () => {

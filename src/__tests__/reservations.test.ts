@@ -1853,8 +1853,8 @@ describe("POST /api/reservations/[id]/convert", () => {
    * cette route. Statuts « en mobilité » forcés directement en base (jamais assignables
    * manuellement via POST/PATCH /api/vehicles*, DOMAINRULES.md section 30), même convention que
    * locations.test.ts. */
-  describe("Sprint 28 (Finding E) + campagne QA 2026-08-27 partie 2 — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP/INACTIVE bloque la conversion", () => {
-    async function createVehicleWithStatus(status: "MAINTENANCE" | "TRANSFERRING" | "ON_TRIP" | "INACTIVE" | "AVAILABLE") {
+  describe("Sprint 28 (Finding E) + campagne QA 2026-08-27 partie 2 — véhicule MAINTENANCE/TRANSFERRING/ON_TRIP bloque la conversion", () => {
+    async function createVehicleWithStatus(status: "MAINTENANCE" | "TRANSFERRING" | "ON_TRIP" | "AVAILABLE") {
       const response = await apiFetch("/api/vehicles", {
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
@@ -1883,7 +1883,7 @@ describe("POST /api/reservations/[id]/convert", () => {
       return vehicleId;
     }
 
-    it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP", "INACTIVE"] as const)(
+    it.each(["MAINTENANCE", "TRANSFERRING", "ON_TRIP"] as const)(
       "refuse la conversion (409, VehicleUnavailableForLocationError) si le véhicule est %s — aucune Location ni conversion partielle",
       async (status) => {
         const vehicleId = await createVehicleWithStatus(status);
@@ -1915,6 +1915,39 @@ describe("POST /api/reservations/[id]/convert", () => {
         expect(reservationAfter.convertedLocationId).toBeNull();
       }
     );
+
+    /** Sprint "statut opérationnel automatique" (2026-08-28) : la conversion réutilise
+     * createLocation, hérite donc aussi du contrôle de désactivation administrative
+     * (assertVehicleStatusAllowsLocation), sans exception pour cette route. */
+    it("refuse la conversion (409) si le véhicule est désactivé — aucune Location ni conversion partielle", async () => {
+      const vehicleId = await createVehicleWithStatus("AVAILABLE");
+      await prisma.vehicle.update({
+        where: { id: vehicleId },
+        data: { deactivatedAt: new Date(), deactivatedReason: "Retrait de flotte", deactivatedById: adminA.userId },
+      });
+      const createResponse = await createReservation(adminA, {
+        clientFirstName: "DesactiveE",
+        clientLastName: `Client-${runId}`,
+        startDate: "2030-11-08",
+        endDate: "2030-11-09",
+      });
+      const reservation = (await createResponse.json()).reservation;
+
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(convertBody(reservation, { vehicleId })),
+      });
+      expect(response.status).toBe(409);
+      const body = await response.json();
+      expect(body.error).toContain("désactivé");
+
+      const locationCount = await prisma.location.count({ where: { vehicleId } });
+      expect(locationCount).toBe(0);
+      const reservationAfter = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+      expect(reservationAfter.status).toBe("PENDING");
+      expect(reservationAfter.convertedLocationId).toBeNull();
+    });
 
     it("autorise la conversion si le véhicule est AVAILABLE", async () => {
       const vehicleId = await createVehicleWithStatus("AVAILABLE");
@@ -2815,6 +2848,102 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
     }
   });
 
+  /** INC-19 (INCIDENTS.md) : `isCategoryReallyAvailable` (src/lib/location-upgrades.ts) ne
+   * vérifiait jusqu'ici que `Vehicle.status` (MAINTENANCE/TRANSFERRING/ON_TRIP), jamais
+   * `Vehicle.deactivatedAt` (état administratif séparé introduit par le sprint "statut
+   * opérationnel automatique", 2026-08-28) — un véhicule désactivé mais opérationnellement
+   * AVAILABLE aurait donc pu compter à tort comme "réellement disponible", refusant à tort
+   * (409) une déclaration UNAVAILABILITY par ailleurs exacte. Testé au niveau de la route réelle
+   * (POST /api/reservations/[id]/convert), le seul point d'entrée applicatif qui appelle
+   * resolveLocationUpgrade/isCategoryReallyAvailable (fonction privée, non exportée) — même
+   * convention que le test INC-16 ci-dessus, sur la même fonction. Désactivation/réactivation
+   * effectuées par les routes métier réelles (POST /api/vehicles/[id]/deactivate|reactivate),
+   * jamais par une écriture Prisma directe simulant l'état. */
+  it("INC-19 : un véhicule désactivé administrativement n'est jamais compté comme réellement disponible pour UNAVAILABILITY — la réactivation restaure la vérification normale", async () => {
+    const deactivateResponse = await apiFetch(`/api/vehicles/${scarceVehicleId}/deactivate`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reason: "INC-19 : test de non-régression, véhicule rare désactivé" }),
+    });
+    expect(deactivateResponse.status).toBe(200);
+
+    try {
+      // Phase A : seul véhicule de la catégorie dans l'agence A1, mais désactivé — ne doit
+      // jamais être retourné/compté par la logique d'upgrade comme "réellement disponible".
+      // Sans le correctif INC-19, ce véhicule restant status=AVAILABLE, cette déclaration
+      // UNAVAILABILITY aurait été refusée à tort (409, UpgradeCategoryStillAvailableError).
+      const reservationDeactivated = await createReservationWithCategory(scarceCategoryName);
+      const acceptedResponse = await apiFetch(`/api/reservations/${reservationDeactivated.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(
+          convertBody(reservationDeactivated, {
+            vehicleId: suvVehicleId,
+            pricePerDay: 8000,
+            upgrade: {
+              type: "UNAVAILABILITY",
+              reason: "Le seul véhicule de cette catégorie dans l'agence est désactivé.",
+            },
+          })
+        ),
+      });
+      expect(acceptedResponse.status).toBe(201);
+      const acceptedBody = await acceptedResponse.json();
+      expect(acceptedBody.upgrade.type).toBe("UNAVAILABILITY");
+      expect(acceptedBody.upgrade.totalSupplement).toBe(0);
+
+      // Contournement direct de l'interface : sélectionner explicitement le véhicule désactivé
+      // lui-même comme vehicleId du contrat (plutôt que le SUV) doit rester refusé, quel que
+      // soit le surclassement déclaré — garde indépendante (assertVehicleStatusAllowsLocation,
+      // src/lib/locations.ts), déjà vérifiée par ailleurs (voir le test "8." plus bas), revérifiée
+      // ici pour ce véhicule précis par cohérence du scénario.
+      const reservationBypass = await createReservationWithCategory(scarceCategoryName);
+      const bypassResponse = await apiFetch(`/api/reservations/${reservationBypass.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(
+          convertBody(reservationBypass, {
+            vehicleId: scarceVehicleId,
+            pricePerDay: 8000,
+          })
+        ),
+      });
+      expect(bypassResponse.status).toBe(409);
+
+      // Phase B : réactivation par la route métier réelle — le véhicule redevient réellement
+      // disponible, la vérification normale reprend (une déclaration UNAVAILABILITY désormais
+      // fausse doit être refusée, exactement comme avant toute désactivation).
+      const reactivateResponse = await apiFetch(`/api/vehicles/${scarceVehicleId}/reactivate`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+      });
+      expect(reactivateResponse.status).toBe(200);
+
+      const reservationReactivated = await createReservationWithCategory(scarceCategoryName);
+      const refusedResponse = await apiFetch(`/api/reservations/${reservationReactivated.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(
+          convertBody(reservationReactivated, {
+            vehicleId: suvVehicleId,
+            pricePerDay: 8000,
+            upgrade: { type: "UNAVAILABILITY", reason: "Prétendument indisponible après réactivation." },
+          })
+        ),
+      });
+      expect(refusedResponse.status).toBe(409);
+    } finally {
+      // Restaure l'état de fixture attendu par les autres tests de ce describe (réactivé si la
+      // Phase B n'a pas été atteinte à cause d'un échec d'assertion intermédiaire) — via la
+      // route métier réelle, jamais une écriture Prisma directe ; sans effet (409, ignoré) si
+      // déjà réactivé.
+      await apiFetch(`/api/vehicles/${scarceVehicleId}/reactivate`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+      });
+    }
+  });
+
   it("4. COMMERCIAL_GESTURE : autorisé avec la permission dédiée, audité", async () => {
     const reservation = await createReservationWithCategory("Citadine");
     const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
@@ -3047,14 +3176,14 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
     expect(stored?.validatedByUserId).toBe(adminA.userId);
   });
 
-  it("8. véhicule INACTIVE refusé même avec un surclassement déclaré (la garde createLocation s'applique inchangée)", async () => {
-    const inactiveVehicleResponse = await apiFetch("/api/vehicles", {
+  it("8. véhicule désactivé refusé même avec un surclassement déclaré (la garde createLocation s'applique inchangée)", async () => {
+    const deactivatedVehicleResponse = await apiFetch("/api/vehicles", {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify({
         agencyId: agencyA1Id,
-        name: "SUV Inactif",
-        licensePlate: `UPG-INACTIVE-${runId}`,
+        name: "SUV Désactivé",
+        licensePlate: `UPG-DEACTIVATED-${runId}`,
         make: "Dacia",
         model: "Duster",
         year: 2023,
@@ -3069,8 +3198,11 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
         engineSize: 1.5,
       }),
     });
-    const inactiveVehicleId = (await inactiveVehicleResponse.json()).vehicle.id;
-    await prisma.vehicle.update({ where: { id: inactiveVehicleId }, data: { status: "INACTIVE" } });
+    const deactivatedVehicleId = (await deactivatedVehicleResponse.json()).vehicle.id;
+    await prisma.vehicle.update({
+      where: { id: deactivatedVehicleId },
+      data: { deactivatedAt: new Date(), deactivatedReason: "Test désactivation", deactivatedById: adminA.userId },
+    });
 
     const reservation = await createReservationWithCategory("Citadine");
     const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
@@ -3078,15 +3210,15 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
         convertBody(reservation, {
-          vehicleId: inactiveVehicleId,
+          vehicleId: deactivatedVehicleId,
           pricePerDay: 8000,
-          upgrade: { type: "CUSTOMER_REQUEST", dailySupplement: 100, customerConsent: true, reason: "Test INACTIVE" },
+          upgrade: { type: "CUSTOMER_REQUEST", dailySupplement: 100, customerConsent: true, reason: "Test désactivation" },
         })
       ),
     });
     expect(response.status).toBe(409);
 
-    const upgradeCount = await prisma.locationUpgrade.count({ where: { vehicleId: inactiveVehicleId } });
+    const upgradeCount = await prisma.locationUpgrade.count({ where: { vehicleId: deactivatedVehicleId } });
     expect(upgradeCount).toBe(0);
   });
 });

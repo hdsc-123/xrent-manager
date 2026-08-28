@@ -28,8 +28,13 @@ const UPGRADE_TYPES: LocationUpgradeType[] = ["CUSTOMER_REQUEST", "UNAVAILABILIT
 
 /** Même liste que VEHICLE_STATUSES_BLOCKING_LOCATION (src/lib/locations.ts) — dupliquée
  * plutôt qu'importée pour éviter un couplage superflu entre ces deux modules (même principe
- * déjà appliqué à InvalidFuelLevelError/locationAgencyScopeWhere, DOMAINRULES.md section 25). */
-const VEHICLE_STATUSES_UNAVAILABLE = ["MAINTENANCE", "TRANSFERRING", "ON_TRIP", "INACTIVE"] as const;
+ * déjà appliqué à InvalidFuelLevelError/locationAgencyScopeWhere, DOMAINRULES.md section 25).
+ * INACTIVE retiré (sprint "statut opérationnel automatique", 2026-08-28) : n'est plus une
+ * valeur possible de VehicleStatus (remplacé par l'état administratif séparé
+ * Vehicle.deactivatedAt, vérifié indépendamment dans isCategoryReallyAvailable ci-dessous) —
+ * corrigé ici après avoir été omis de la première passe de ce sprint (cette copie dupliquée
+ * n'avait pas été repérée avant relecture). */
+const VEHICLE_STATUSES_UNAVAILABLE = ["MAINTENANCE", "TRANSFERRING", "ON_TRIP"] as const;
 
 export class InvalidUpgradeTypeError extends Error {
   constructor() {
@@ -224,8 +229,9 @@ export async function resolveLocationUpgrade(
 }
 
 /** Vérifie si au moins un véhicule de la catégorie réservée est réellement disponible (statut
- * hors {MAINTENANCE, TRANSFERRING, ON_TRIP, INACTIVE} et aucun conflit de dates), **dans
- * l'agence qui traite le contrat** — utilisée uniquement pour valider un motif UNAVAILABILITY.
+ * hors {MAINTENANCE, TRANSFERRING, ON_TRIP}, non désactivé administrativement, et aucun conflit
+ * de dates), **dans l'agence qui traite le contrat** — utilisée uniquement pour valider un motif
+ * UNAVAILABILITY.
  *
  * Bug trouvé (campagne QA, partie 3, 2026-08-28) : cette vérification portait jusqu'ici sur
  * l'ensemble du tenant, toutes agences confondues (`{ tenantId, category }`, sans `agencyId`) —
@@ -253,6 +259,12 @@ async function isCategoryReallyAvailable(
   const candidates = await tx.vehicle.findMany({ where: { tenantId, agencyId, category } });
   for (const candidate of candidates) {
     if (VEHICLE_STATUSES_UNAVAILABLE.includes(candidate.status as (typeof VEHICLE_STATUSES_UNAVAILABLE)[number])) {
+      continue;
+    }
+    // Sprint "statut opérationnel automatique" (2026-08-28) : un véhicule désactivé
+    // administrativement n'est jamais réellement disponible, quel que soit son statut
+    // opérationnel calculé (voir src/lib/vehicle-status.ts).
+    if (candidate.deactivatedAt) {
       continue;
     }
     const availability = await checkAvailability(tenantId, candidate.id, start, end, undefined, tx);

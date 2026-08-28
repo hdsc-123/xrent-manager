@@ -5,17 +5,7 @@ import { can } from "@/lib/permissions";
 import { getVehicles, createVehicle, type VehicleFilters } from "@/lib/vehicles";
 import { logAction } from "@/lib/audit";
 
-const VEHICLE_STATUSES: VehicleStatus[] = [
-  "AVAILABLE",
-  "RENTED",
-  "MAINTENANCE",
-  "INACTIVE",
-  "TRANSFERRING",
-  "ON_TRIP",
-];
-// TRANSFERRING/ON_TRIP sont gérés automatiquement par les modules Transfert/Bon de déplacement
-// (Sprint 14C) — jamais assignables manuellement à la création d'un véhicule.
-const MANUALLY_ASSIGNABLE_STATUSES: VehicleStatus[] = ["AVAILABLE", "RENTED", "MAINTENANCE", "INACTIVE"];
+const VEHICLE_STATUSES: VehicleStatus[] = ["AVAILABLE", "RENTED", "MAINTENANCE", "TRANSFERRING", "ON_TRIP"];
 const TRANSMISSION_TYPES: TransmissionType[] = ["MANUELLE", "AUTOMATIQUE"];
 const FUEL_TYPES: FuelType[] = ["ESSENCE", "DIESEL", "HYBRIDE", "ELECTRIQUE"];
 
@@ -43,6 +33,7 @@ export async function GET(request: Request) {
   const statusParam = searchParams.get("status") ?? undefined;
   const categoryParam = searchParams.get("category") ?? undefined;
   const searchParam = searchParams.get("search") ?? undefined;
+  const excludeDeactivatedParam = searchParams.get("excludeDeactivated") === "true";
 
   if (statusParam && !VEHICLE_STATUSES.includes(statusParam as VehicleStatus)) {
     return NextResponse.json({ error: "status invalide." }, { status: 400 });
@@ -59,6 +50,7 @@ export async function GET(request: Request) {
     status: statusParam as VehicleStatus | undefined,
     category: categoryParam,
     search: searchParam,
+    excludeDeactivated: excludeDeactivatedParam,
   };
 
   const vehicles = await getVehicles(user.tenantId, filters);
@@ -81,7 +73,11 @@ interface CreateVehicleBody {
   model?: string;
   year?: number;
   category?: string;
-  status?: VehicleStatus;
+  // `status` volontairement absent (sprint "statut opérationnel automatique", 2026-08-28) :
+  // toute valeur envoyée par le client est explicitement rejetée ci-dessous plutôt qu'ignorée
+  // silencieusement, pour signaler clairement à tout appelant API que ce champ n'est plus
+  // saisissable — le statut initial est toujours AVAILABLE (défaut du schéma).
+  status?: unknown;
   pricePerDay?: number;
   // Sprint technique 5 (audit de sécurité) : `currency` retiré de ce type — jamais exposé par le
   // formulaire dashboard, jamais validé côté serveur (aucune liste blanche, contrairement à
@@ -199,12 +195,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "year invalide." }, { status: 400 });
   }
 
-  if (body.status && !VEHICLE_STATUSES.includes(body.status)) {
-    return NextResponse.json({ error: "status invalide." }, { status: 400 });
-  }
-  if (body.status && !MANUALLY_ASSIGNABLE_STATUSES.includes(body.status)) {
+  if (body.status !== undefined) {
     return NextResponse.json(
-      { error: "TRANSFERRING/ON_TRIP sont gérés automatiquement par un transfert/bon de déplacement en cours, non assignables manuellement." },
+      { error: "Le statut opérationnel d'un véhicule est toujours calculé automatiquement par le serveur — il ne peut pas être choisi à la création." },
       { status: 400 }
     );
   }
@@ -268,7 +261,6 @@ export async function POST(request: Request) {
       model,
       year,
       category,
-      status: body.status,
       pricePerDay,
       ww: body.ww,
       chassisNumber: body.chassisNumber,

@@ -14,6 +14,7 @@ import {
   InvalidFuelLevelError,
 } from "@/lib/vehicle-transfers";
 import { getVehicleById } from "@/lib/vehicles";
+import { VehicleDeactivatedError } from "@/lib/vehicle-status";
 import { logAction } from "@/lib/audit";
 
 const TRANSFER_STATUSES: VehicleTransferStatus[] = ["IN_TRANSIT", "COMPLETED", "CANCELLED"];
@@ -171,6 +172,9 @@ export async function POST(request: Request) {
     }
     if (error instanceof InvalidFuelLevelError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof VehicleDeactivatedError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
 
     console.error("Erreur lors de la création du transfert :", error);

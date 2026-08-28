@@ -191,7 +191,19 @@ describe("POST /api/tasks/check-alerts — nouvelles vérifications Sprint 14C",
 describe("GET /dashboard/maintenances — état réel des véhicules", () => {
   it("affiche l'immatriculation, l'état et la disponibilité de chaque véhicule", async () => {
     const available = await createVehicle({ licensePlate: `AL-DISPO-${runId}` });
-    const maintenance = await createVehicle({ licensePlate: `AL-MAINT-${runId}`, status: "MAINTENANCE" });
+    const maintenance = await createVehicle({ licensePlate: `AL-MAINT-${runId}` });
+    // Sprint "statut opérationnel automatique" (2026-08-28) : Vehicle.status n'est plus jamais
+    // assignable manuellement (POST/PATCH /api/vehicles rejettent désormais `status`) — une
+    // maintenance active réelle est créée pour obtenir un véhicule MAINTENANCE.
+    await apiFetch("/api/maintenances", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: maintenance.id,
+        type: "REPAIR",
+        scheduledDate: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      }),
+    });
 
     const response = await apiFetch("/dashboard/maintenances", { headers: { Cookie: admin.sessionCookie } });
     expect(response.status).toBe(200);

@@ -14,8 +14,11 @@ export interface VehicleStatusRow {
   status: string;
   /** Date de retour de la location ACTIVE en cours, s'il y en a une. */
   returnDate: string | null;
-  /** Disponible = status AVAILABLE ET aucune location ACTIVE en cours (cohérence
-   * véhicule/location, section 5 du sprint 14C — voir DOMAINRULES.md). */
+  /** État administratif (sprint "statut opérationnel automatique", 2026-08-28) — remplace
+   * l'ancien VehicleStatus.INACTIVE, orthogonal au statut opérationnel calculé ci-dessus. */
+  deactivatedAt: string | null;
+  /** Disponible = status AVAILABLE ET aucune location ACTIVE en cours ET non désactivé
+   * (cohérence véhicule/location, section 5 du sprint 14C — voir DOMAINRULES.md). */
   available: boolean;
 }
 
@@ -28,7 +31,6 @@ const STATUS_LABELS: Record<string, string> = {
   AVAILABLE: "Disponible",
   RENTED: "Loué",
   MAINTENANCE: "Maintenance",
-  INACTIVE: "Inactif",
   TRANSFERRING: "En transfert",
   ON_TRIP: "En déplacement",
 };
@@ -37,7 +39,6 @@ const STATUS_VARIANTS: Record<string, "default" | "secondary" | "destructive" | 
   AVAILABLE: "default",
   RENTED: "secondary",
   MAINTENANCE: "outline",
-  INACTIVE: "destructive",
   TRANSFERRING: "outline",
   ON_TRIP: "outline",
 };
@@ -249,9 +250,12 @@ export function VehicleStatusOverviewTable({
                 </td>
                 <td className="p-2">{vehicle.agencyName}</td>
                 <td className="p-2">
-                  <Badge variant={STATUS_VARIANTS[vehicle.status] ?? "outline"}>
-                    {STATUS_LABELS[vehicle.status] ?? vehicle.status}
-                  </Badge>
+                  <div className="flex flex-wrap gap-1">
+                    <Badge variant={STATUS_VARIANTS[vehicle.status] ?? "outline"}>
+                      {STATUS_LABELS[vehicle.status] ?? vehicle.status}
+                    </Badge>
+                    {vehicle.deactivatedAt && <Badge variant="destructive">Désactivé</Badge>}
+                  </div>
                 </td>
                 <td className="p-2">
                   {vehicle.returnDate ? new Date(vehicle.returnDate).toLocaleDateString("fr-FR") : "—"}

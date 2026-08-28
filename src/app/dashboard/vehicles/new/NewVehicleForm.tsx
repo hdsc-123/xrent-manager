@@ -21,13 +21,6 @@ interface Agency {
   name: string;
 }
 
-const STATUS_OPTIONS = [
-  { value: "AVAILABLE", label: "Disponible" },
-  { value: "RENTED", label: "Loué" },
-  { value: "MAINTENANCE", label: "Maintenance" },
-  { value: "INACTIVE", label: "Inactif" },
-];
-
 const TRANSMISSION_OPTIONS = [
   { value: "MANUELLE", label: "Manuelle" },
   { value: "AUTOMATIQUE", label: "Automatique" },
@@ -67,7 +60,6 @@ export function NewVehicleForm() {
   // Location/VehicleTransfer/VehicleTrip n'a encore renseigné de valeur plus récente.
   const [currentOdometer, setCurrentOdometer] = useState("");
   const [currentFuelLevel, setCurrentFuelLevel] = useState("");
-  const [status, setStatus] = useState("AVAILABLE");
   const [pricePerDay, setPricePerDay] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [insuranceExpiryDate, setInsuranceExpiryDate] = useState("");
@@ -123,7 +115,6 @@ export function NewVehicleForm() {
         model,
         year: Number(year),
         category,
-        status,
         pricePerDay: pricePerDayCentimes,
         ww: ww || undefined,
         chassisNumber: chassisNumber || undefined,
@@ -391,35 +382,18 @@ export function NewVehicleForm() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="status">Statut</Label>
-                <select
-                  id="status"
-                  value={status}
-                  onChange={(e) => setStatus(e.target.value)}
-                  className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-                >
-                  {STATUS_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="pricePerDay">Prix / jour (MAD)</Label>
-                <Input
-                  id="pricePerDay"
-                  inputMode="decimal"
-                  placeholder="450.00"
-                  value={pricePerDay}
-                  onChange={(e) => setPricePerDay(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Indicatif — le prix réel se définit à la réservation ou au contrat.
-                </p>
-              </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="pricePerDay">Prix / jour (MAD)</Label>
+              <Input
+                id="pricePerDay"
+                inputMode="decimal"
+                placeholder="450.00"
+                value={pricePerDay}
+                onChange={(e) => setPricePerDay(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Indicatif — le prix réel se définit à la réservation ou au contrat.
+              </p>
             </div>
 
             <div className="flex flex-col gap-1.5">

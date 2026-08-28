@@ -1,6 +1,7 @@
 import type { VehicleTransfer, VehicleTransferStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getVehicleById, lockVehicleForUpdate, findConflictingMaintenances } from "@/lib/vehicles";
+import { assertVehicleNotDeactivated, syncVehicleStatus } from "@/lib/vehicle-status";
 
 export class VehicleTransferVehicleNotFoundError extends Error {
   constructor() {
@@ -211,6 +212,7 @@ export async function createVehicleTransfer(data: CreateVehicleTransferInput): P
     if (!lockedVehicle) {
       throw new VehicleTransferVehicleNotFoundError();
     }
+    assertVehicleNotDeactivated(lockedVehicle);
     if (lockedVehicle.status !== "AVAILABLE") {
       // Le véhicule était AVAILABLE à la lecture initiale (avant la transaction) mais ne l'est
       // plus une fois le verrou acquis : un autre appel concurrent a gagné la course entre-temps
@@ -255,7 +257,7 @@ export async function createVehicleTransfer(data: CreateVehicleTransferInput): P
       },
     });
 
-    await tx.vehicle.update({ where: { id: lockedVehicle.id }, data: { status: "TRANSFERRING" } });
+    await syncVehicleStatus(lockedVehicle.id, tx);
 
     // Sprint 22 : alerte immédiate à l'agence d'arrivée — jusqu'ici rien ne signalait à un
     // véhicule entrant, l'agence de destination ne le découvrait qu'en consultant la liste des
@@ -348,10 +350,11 @@ export async function validateVehicleTransfer(
 
     const transfer = await tx.vehicleTransfer.findUniqueOrThrow({ where: { id: existing.id } });
 
-    await tx.vehicle.update({
-      where: { id: existing.vehicleId },
-      data: { agencyId: existing.toAgencyId, status: "AVAILABLE" },
-    });
+    await tx.vehicle.update({ where: { id: existing.vehicleId }, data: { agencyId: existing.toAgencyId } });
+    // Sprint "statut opérationnel automatique" (2026-08-28) : recalcul plutôt qu'une réécriture
+    // aveugle à AVAILABLE — le véhicule reçu peut déjà avoir une autre opération bloquante
+    // active (rare mais possible, ex. une maintenance planifiée le jour même de la réception).
+    await syncVehicleStatus(existing.vehicleId, tx);
 
     return transfer;
   });
@@ -386,8 +389,8 @@ export async function cancelVehicleTransfer(
     const transfer = await tx.vehicleTransfer.findUniqueOrThrow({ where: { id: existing.id } });
 
     // Le véhicule reste à son agence de départ (jamais déplacé pour un transfert annulé) —
-    // simplement repassé AVAILABLE.
-    await tx.vehicle.update({ where: { id: existing.vehicleId }, data: { status: "AVAILABLE" } });
+    // statut recalculé plutôt qu'une réécriture aveugle à AVAILABLE.
+    await syncVehicleStatus(existing.vehicleId, tx);
 
     return transfer;
   });

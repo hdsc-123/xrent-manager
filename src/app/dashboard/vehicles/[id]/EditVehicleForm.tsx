@@ -3,25 +3,36 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { apiPatch, ApiError } from "@/lib/api";
+import { apiPatch, apiPost, ApiError } from "@/lib/api";
 import {
+  Badge,
   Button,
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   FuelLevelSelect,
   Input,
   Label,
 } from "@/components/ui";
 
-const STATUS_OPTIONS = [
-  { value: "AVAILABLE", label: "Disponible" },
-  { value: "RENTED", label: "Loué" },
-  { value: "MAINTENANCE", label: "Maintenance" },
-  { value: "INACTIVE", label: "Inactif" },
-];
+// Statut opérationnel entièrement calculé côté serveur (sprint "statut opérationnel
+// automatique", 2026-08-28) — affiché en lecture seule ici, jamais modifiable depuis ce
+// formulaire. Voir src/lib/vehicle-status.ts.
+const STATUS_LABELS: Record<string, string> = {
+  AVAILABLE: "Disponible",
+  RENTED: "Loué",
+  MAINTENANCE: "Maintenance",
+  TRANSFERRING: "En transfert",
+  ON_TRIP: "En déplacement",
+};
 
 const TRANSMISSION_OPTIONS = [
   { value: "MANUELLE", label: "Manuelle" },
@@ -64,6 +75,13 @@ interface EditVehicleFormProps {
   initialTechnicalInspectionExpiryDate: string | null;
   initialNextOilChangeDate: string | null;
   initialNextOilChangeKm: number | null;
+  /** État administratif (sprint "statut opérationnel automatique", 2026-08-28) — remplace
+   * l'ancien VehicleStatus.INACTIVE, orthogonal au statut opérationnel calculé ci-dessus. */
+  initialDeactivatedAt: string | null;
+  initialDeactivatedReason: string | null;
+  /** Désactivation/réactivation réservée ADMIN (contrôle de rôle strict côté route) — calculé
+   * côté serveur par la page appelante. */
+  canDeactivate: boolean;
 }
 
 export function EditVehicleForm({
@@ -93,11 +111,20 @@ export function EditVehicleForm({
   initialTechnicalInspectionExpiryDate,
   initialNextOilChangeDate,
   initialNextOilChangeKm,
+  initialDeactivatedAt,
+  initialDeactivatedReason,
+  canDeactivate,
 }: EditVehicleFormProps) {
   const router = useRouter();
+  const [deactivatedAt, setDeactivatedAt] = useState(initialDeactivatedAt);
+  const [deactivatedReason, setDeactivatedReason] = useState(initialDeactivatedReason);
+  const [showDeactivateDialog, setShowDeactivateDialog] = useState(false);
+  const [showReactivateDialog, setShowReactivateDialog] = useState(false);
+  const [deactivateReasonInput, setDeactivateReasonInput] = useState("");
+  const [isDeactivating, setIsDeactivating] = useState(false);
+  const [isReactivating, setIsReactivating] = useState(false);
   const [name, setName] = useState(initialName);
   const [category, setCategory] = useState(initialCategory);
-  const [status, setStatus] = useState(initialStatus);
   const [pricePerDay, setPricePerDay] = useState(
     initialPricePerDay !== null ? (initialPricePerDay / 100).toFixed(2) : ""
   );
@@ -169,7 +196,6 @@ export function EditVehicleForm({
       await apiPatch(`/api/vehicles/${id}`, {
         name,
         category,
-        status,
         pricePerDay: pricePerDayCentimes,
         ww: ww || null,
         chassisNumber: chassisNumber || null,
@@ -202,7 +228,43 @@ export function EditVehicleForm({
     }
   }
 
+  async function handleDeactivate() {
+    if (!deactivateReasonInput.trim()) return;
+    setIsDeactivating(true);
+    try {
+      const { vehicle } = await apiPost<{ vehicle: { deactivatedAt: string; deactivatedReason: string | null } }>(
+        `/api/vehicles/${id}/deactivate`,
+        { reason: deactivateReasonInput.trim() }
+      );
+      setDeactivatedAt(vehicle.deactivatedAt);
+      setDeactivatedReason(vehicle.deactivatedReason);
+      setShowDeactivateDialog(false);
+      setDeactivateReasonInput("");
+      toast.success("Véhicule désactivé.");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Erreur lors de la désactivation.");
+    } finally {
+      setIsDeactivating(false);
+    }
+  }
+
+  async function handleReactivate() {
+    setIsReactivating(true);
+    try {
+      await apiPost(`/api/vehicles/${id}/reactivate`, {});
+      setDeactivatedAt(null);
+      setDeactivatedReason(null);
+      setShowReactivateDialog(false);
+      toast.success("Véhicule réactivé.");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Erreur lors de la réactivation.");
+    } finally {
+      setIsReactivating(false);
+    }
+  }
+
   return (
+    <>
     <Card>
       <CardHeader>
         <CardTitle>Modifier le véhicule</CardTitle>
@@ -359,19 +421,13 @@ export function EditVehicleForm({
 
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="status">Statut</Label>
-              <select
-                id="status"
-                value={status}
-                onChange={(e) => setStatus(e.target.value)}
-                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-              >
-                {STATUS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+              <Label htmlFor="status">Statut opérationnel</Label>
+              <p id="status" className="flex h-9 items-center text-sm">
+                {STATUS_LABELS[initialStatus] ?? initialStatus}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Calculé automatiquement — jamais modifiable directement.
+              </p>
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="pricePerDay">Prix / jour (MAD)</Label>
@@ -385,6 +441,36 @@ export function EditVehicleForm({
                 Indicatif — le prix réel se définit à la réservation ou au contrat.
               </p>
             </div>
+          </div>
+
+          <div className="flex flex-col gap-2 rounded-md border border-border p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">État administratif</span>
+                <Badge variant={deactivatedAt ? "destructive" : "outline"}>
+                  {deactivatedAt ? "Désactivé" : "Actif"}
+                </Badge>
+              </div>
+              {canDeactivate &&
+                (deactivatedAt ? (
+                  <Button type="button" variant="outline" size="sm" onClick={() => setShowReactivateDialog(true)}>
+                    Réactiver
+                  </Button>
+                ) : (
+                  <Button type="button" variant="destructive" size="sm" onClick={() => setShowDeactivateDialog(true)}>
+                    Désactiver
+                  </Button>
+                ))}
+            </div>
+            {deactivatedAt && (
+              <p className="text-xs text-muted-foreground">
+                Motif : {deactivatedReason ?? "sans motif enregistré"}
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Décision administrative distincte du statut opérationnel — un véhicule désactivé
+              bloque toute nouvelle location, maintenance, transfert ou déplacement.
+            </p>
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -467,5 +553,61 @@ export function EditVehicleForm({
         </form>
       </CardContent>
     </Card>
+
+    <Dialog
+      open={showDeactivateDialog}
+      onOpenChange={(open) => {
+        setShowDeactivateDialog(open);
+        if (!open) setDeactivateReasonInput("");
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Désactiver le véhicule ?</DialogTitle>
+          <DialogDescription>
+            Il ne pourra plus recevoir de nouvelle location, maintenance, transfert ou
+            déplacement tant qu&apos;il n&apos;aura pas été réactivé. Un motif est obligatoire.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="deactivateReasonInput">Motif</Label>
+          <Input
+            id="deactivateReasonInput"
+            value={deactivateReasonInput}
+            onChange={(e) => setDeactivateReasonInput(e.target.value)}
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setShowDeactivateDialog(false)}>
+            Annuler
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={handleDeactivate}
+            disabled={isDeactivating || !deactivateReasonInput.trim()}
+          >
+            {isDeactivating ? "Désactivation..." : "Désactiver"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={showReactivateDialog} onOpenChange={setShowReactivateDialog}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Réactiver le véhicule ?</DialogTitle>
+          <DialogDescription>Il redeviendra utilisable pour de nouvelles opérations.</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setShowReactivateDialog(false)}>
+            Annuler
+          </Button>
+          <Button onClick={handleReactivate} disabled={isReactivating}>
+            {isReactivating ? "Réactivation..." : "Réactiver"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

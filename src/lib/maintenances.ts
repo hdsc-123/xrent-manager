@@ -1,6 +1,7 @@
 import type { Maintenance, MaintenanceStatus, MaintenanceType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { lockVehicleForUpdate, findConflictingLocations, getMaintenanceEffectiveEnd } from "@/lib/vehicles";
+import { assertVehicleNotDeactivated, syncVehicleStatus } from "@/lib/vehicle-status";
 
 export class MaintenanceVehicleNotFoundError extends Error {
   constructor() {
@@ -164,6 +165,7 @@ export async function createMaintenance(data: CreateMaintenanceInput): Promise<M
     if (!vehicle) {
       throw new MaintenanceVehicleNotFoundError();
     }
+    assertVehicleNotDeactivated(vehicle);
 
     const effectiveEnd = getMaintenanceEffectiveEnd({
       scheduledDate: data.scheduledDate,
@@ -180,7 +182,7 @@ export async function createMaintenance(data: CreateMaintenanceInput): Promise<M
       throw new VehicleUnavailableForMaintenanceError(conflictingLocations);
     }
 
-    return tx.maintenance.create({
+    const maintenance = await tx.maintenance.create({
       data: {
         tenantId: data.tenantId,
         agencyId: vehicle.agencyId,
@@ -193,6 +195,12 @@ export async function createMaintenance(data: CreateMaintenanceInput): Promise<M
         notes: data.notes,
       },
     });
+    // Sprint "statut opérationnel automatique" (2026-08-28) : une maintenance dont la période
+    // bloquante couvre déjà l'instant présent (scheduledDate <= maintenant) doit immédiatement
+    // faire passer le véhicule à MAINTENANCE — une maintenance planifiée pour une date future ne
+    // déclenche rien avant cette date (voir getVehicleOperationalStatus).
+    await syncVehicleStatus(vehicle.id, tx);
+    return maintenance;
   });
 }
 
@@ -255,7 +263,18 @@ export async function updateMaintenance(
   };
 
   if (!periodChanging) {
-    return prisma.maintenance.update({ where: { id: maintenanceId }, data: updateData });
+    // Sprint "statut opérationnel automatique" (2026-08-28) : même sans changement de période,
+    // un changement de `status` (ex. COMPLETED/CANCELLED, ou SCHEDULED → IN_PROGRESS) peut faire
+    // varier le statut opérationnel du véhicule — transactionnel pour recalculer sous le même
+    // verrou que l'écriture, jamais une réécriture aveugle à AVAILABLE (une autre opération
+    // bloquante peut être active en parallèle).
+    return prisma.$transaction(async (tx) => {
+      const maintenance = await tx.maintenance.update({ where: { id: maintenanceId }, data: updateData });
+      if (data.status && data.status !== existing.status) {
+        await syncVehicleStatus(existing.vehicleId, tx);
+      }
+      return maintenance;
+    });
   }
 
   // Sprint 34 étape 3 : re-vérification transactionnelle, même primitive de verrouillage que
@@ -282,7 +301,11 @@ export async function updateMaintenance(
       throw new VehicleUnavailableForMaintenanceError(conflictingLocations);
     }
 
-    return tx.maintenance.update({ where: { id: maintenanceId }, data: updateData });
+    const maintenance = await tx.maintenance.update({ where: { id: maintenanceId }, data: updateData });
+    // Sprint "statut opérationnel automatique" (2026-08-28) : un déplacement de période peut
+    // faire entrer ou sortir la maintenance de la fenêtre "active maintenant".
+    await syncVehicleStatus(vehicle.id, tx);
+    return maintenance;
   });
 }
 

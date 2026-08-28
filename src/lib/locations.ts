@@ -1,6 +1,7 @@
 import type { Client, Location, LocationStatus, Maintenance, PaymentMethod, Prisma, Vehicle, VehicleStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { checkAvailability, lockVehicleForUpdate, findConflictingMaintenances } from "@/lib/vehicles";
+import { assertVehicleNotDeactivated, syncVehicleStatus } from "@/lib/vehicle-status";
 import { getClientById } from "@/lib/clients";
 import { createCorrectionCashEntry, CorrectionReasonRequiredError } from "@/lib/cash-register";
 
@@ -239,20 +240,13 @@ export class VehicleUnavailableForLocationError extends Error {
   }
 }
 
-// INACTIVE ajouté (campagne QA, 2026-08-27, partie 2 — vérification du parcours de conversion) :
-// un véhicule INACTIVE (immobilisé de façon permanente, `PATCH /api/vehicles/[id]`, section 5)
-// n'était jusqu'ici bloqué que pour les transferts/déplacements (src/lib/vehicle-transfers.ts,
-// vehicle-trips.ts, garde `status !== "AVAILABLE"`) — jamais pour une Location, créée
-// directement ou via la conversion d'une réservation (POST /api/reservations/[id]/convert
-// réutilise createLocation/assertVehicleStatusAllowsLocation telle quelle). Contrairement à
-// RENTED (délibérément absent de cette liste — un véhicule loué reste réservable pour une
-// période future non chevauchante, vérifié par checkAvailability), INACTIVE n'est jamais borné
-// dans le temps : aucune date future ne le rend de nouveau disponible tant qu'un ADMIN ne
-// change pas manuellement son statut. Le sélecteur de véhicule (`?status=AVAILABLE`, formulaires
-// de création directe et de conversion) l'excluait déjà côté UI, mais l'UI n'est jamais une
-// garantie de sécurité (SECURITY.md section 6) — un appel direct à l'API avec l'id d'un véhicule
-// INACTIVE était accepté sans aucun contrôle serveur avant ce correctif.
-const VEHICLE_STATUSES_BLOCKING_LOCATION: VehicleStatus[] = ["MAINTENANCE", "TRANSFERRING", "ON_TRIP", "INACTIVE"];
+// INACTIVE retiré (sprint "statut opérationnel automatique", 2026-08-28) : l'ancienne
+// immobilisation permanente manuelle n'est plus une valeur de VehicleStatus (retirée de l'enum,
+// voir prisma/schema.prisma) — remplacée par l'état administratif séparé
+// Vehicle.deactivatedAt, vérifié indépendamment ci-dessous via assertVehicleNotDeactivated.
+// RENTED reste délibérément absent de cette liste — un véhicule loué reste réservable pour une
+// période future non chevauchante, vérifié par checkAvailability.
+const VEHICLE_STATUSES_BLOCKING_LOCATION: VehicleStatus[] = ["MAINTENANCE", "TRANSFERRING", "ON_TRIP"];
 
 /**
  * Appliqué immédiatement après lockVehicleForUpdate — création (toujours) et modification
@@ -260,11 +254,14 @@ const VEHICLE_STATUSES_BLOCKING_LOCATION: VehicleStatus[] = ["MAINTENANCE", "TRA
  * revérifié, voir updateLocation). Ne s'applique jamais rétroactivement à une Location déjà
  * créée dont le véhicule change de statut ensuite (aucune fonction ne parcourt les Location
  * existantes pour les annuler/suspendre) — comportement délibéré, DOMAINRULES.md section 30.
+ * Inclut désormais aussi le contrôle de désactivation administrative (sprint "statut
+ * opérationnel automatique", 2026-08-28) — même sévérité, sans exception ADMIN.
  */
 // Sprint technique 1 (DOMAINRULES.md section 60) : export ajouté pour être réutilisée telle
 // quelle par src/lib/location-chains.ts (changement de véhicule lors d'une prolongation) —
 // aucun changement de comportement pour les appelants existants de ce fichier.
 export function assertVehicleStatusAllowsLocation(vehicle: Vehicle): void {
+  assertVehicleNotDeactivated(vehicle);
   if (VEHICLE_STATUSES_BLOCKING_LOCATION.includes(vehicle.status)) {
     throw new VehicleUnavailableForLocationError(vehicle.status);
   }
@@ -890,7 +887,17 @@ async function createLocationLocked(data: CreateLocationInput, tx: Prisma.Transa
       // renseigné par un second appel dans la même transaction plutôt qu'à la création (même
       // principe que le SAVEPOINT ci-dessus : aucune écriture hors de cette transaction). Ne
       // change rien pour un appelant existant au-delà de ce champ supplémentaire.
-      return tx.location.update({ where: { id: location.id }, data: { rootLocationId: location.id } });
+      const finalLocation = await tx.location.update({
+        where: { id: location.id },
+        data: { rootLocationId: location.id },
+      });
+      // Sprint "statut opérationnel automatique" (2026-08-28) : une Location créée directement
+      // ACTIVE (rare — la plupart démarrent PENDING/CONFIRMED) doit immédiatement faire passer
+      // le véhicule à RENTED.
+      if (finalLocation.status === "ACTIVE") {
+        await syncVehicleStatus(vehicle.id, tx);
+      }
+      return finalLocation;
     } catch (error) {
       // Toute erreur qui n'est pas précisément une collision de numéro de contrat se propage
       // telle quelle, sans y toucher : la transaction principale (partagée ou non) sera
@@ -1271,6 +1278,14 @@ export async function updateLocation(
         await syncDraftInvoiceTotal(tx, locationId, totalPrice);
       }
 
+      // Sprint "statut opérationnel automatique" (2026-08-28) : toute transition de statut
+      // (CONFIRMED → ACTIVE, ACTIVE → COMPLETED/CANCELLED, PENDING → CANCELLED, etc.) peut faire
+      // varier le statut opérationnel du véhicule — jamais une réécriture aveugle à AVAILABLE,
+      // toujours un recalcul tenant compte d'une éventuelle autre opération déjà active.
+      if (statusChanging) {
+        await syncVehicleStatus(existing.vehicleId, tx);
+      }
+
       return updatedLocation;
     });
   }
@@ -1410,6 +1425,10 @@ export async function adminCancelValidatedLocation(
       throw new LocationStatusConflictError();
     }
     const location = await tx.location.findUniqueOrThrow({ where: { id: locationId } });
+    // Sprint "statut opérationnel automatique" (2026-08-28) : un contrat ACTIVE annulé par un
+    // ADMIN doit recalculer immédiatement le statut du véhicule (typiquement RENTED → AVAILABLE,
+    // ou vers une autre opération déjà active le cas échéant).
+    await syncVehicleStatus(existing.vehicleId, tx);
 
     // Ne force à VOID que les factures qui reflètent une vraie activité — même prédicat
     // que deleteLocation ci-dessus (hasNonDeletableInvoice) : ISSUED/PARTIALLY_PAID/PAID, ou

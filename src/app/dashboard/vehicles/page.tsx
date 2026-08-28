@@ -11,7 +11,6 @@ const STATUS_OPTIONS: { value: VehicleStatus; label: string }[] = [
   { value: "AVAILABLE", label: "Disponible" },
   { value: "RENTED", label: "Loué" },
   { value: "MAINTENANCE", label: "Maintenance" },
-  { value: "INACTIVE", label: "Inactif" },
   { value: "TRANSFERRING", label: "En transfert" },
   { value: "ON_TRIP", label: "En déplacement" },
 ];
@@ -74,6 +73,8 @@ export default async function VehiclesPage({ searchParams }: PageProps) {
     year: vehicle.year,
     category: vehicle.category,
     status: vehicle.status,
+    deactivatedAt: vehicle.deactivatedAt ? vehicle.deactivatedAt.toISOString() : null,
+    deactivatedReason: vehicle.deactivatedReason,
     pricePerDay: vehicle.pricePerDay,
     currency: vehicle.currency,
     agencyName: vehicle.agency.name,
@@ -82,6 +83,10 @@ export default async function VehiclesPage({ searchParams }: PageProps) {
   const canCreate =
     (await can(user, "vehicles.create")) && (accessibleAgencyIds === null || accessibleAgencyIds.length > 0);
   const canDelete = await can(user, "vehicles.delete");
+  // Désactivation/réactivation réservée ADMIN (contrôle de rôle strict côté route, sprint
+  // "statut opérationnel automatique", 2026-08-28) — même principe que les autres actions
+  // ADMIN-only du projet (DOMAINRULES.md section 43).
+  const canDeactivate = user.role === "ADMIN";
 
   return (
     <div className="flex flex-col gap-4">
@@ -166,7 +171,7 @@ export default async function VehiclesPage({ searchParams }: PageProps) {
         )}
       </form>
 
-      <VehiclesTable vehicles={rows} canDelete={canDelete} />
+      <VehiclesTable vehicles={rows} canDelete={canDelete} canDeactivate={canDeactivate} />
     </div>
   );
 }

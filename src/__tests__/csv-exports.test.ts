@@ -287,7 +287,6 @@ beforeAll(async () => {
 
   vehicleA1StandardId = await createVehicle(adminA, agencyA1Id, {
     name: "Clio Standard",
-    status: "AVAILABLE",
     category: "Citadine",
     pricePerDay: 123456, // 1234.56 — vérifie l'arithmétique entière exacte de formatAmountForCsv
     currentOdometer: 15000,
@@ -297,17 +296,19 @@ beforeAll(async () => {
 
   vehicleA1NullFieldsId = await createVehicle(adminA, agencyA1Id, {
     name: "Clio Sans Options",
-    status: "MAINTENANCE",
     category: "Citadine",
     pricePerDay: undefined,
   });
+  // Sprint "statut opérationnel automatique" (2026-08-28) : `status` n'est plus jamais accepté à
+  // la création (POST /api/vehicles) — forcé directement en base pour vérifier le formatage CSV
+  // de cette valeur précise, même convention que locations.test.ts (createVehicleWithStatus).
+  await prisma.vehicle.update({ where: { id: vehicleA1NullFieldsId }, data: { status: "MAINTENANCE" } });
 
   // Injection de formule CSV : un nom commençant par "=" doit ressortir préfixé d'une
   // apostrophe (sanitizeCsvCell, src/lib/csv.ts) une fois passé par la route réelle — pas
   // seulement testé unitairement (déjà couvert par csv-export-sanitization.test.ts).
   vehicleA1FormulaId = await createVehicle(adminA, agencyA1Id, {
     name: "=SUM(A1:A9)",
-    status: "AVAILABLE",
     category: "Berline",
   });
 
@@ -315,15 +316,14 @@ beforeAll(async () => {
   // l'échappement CSV réel (papaparse) et la préservation UTF-8 de bout en bout via la route.
   vehicleA1SpecialCharsId = await createVehicle(adminA, agencyA1Id, {
     name: 'Peugeot Étoilé, "Édition Spéciale"\nLigne 2',
-    status: "AVAILABLE",
     category: "Berline",
   });
 
   vehicleA2Id = await createVehicle(adminA, agencyA2Id, {
     name: "SUV Agence 2",
-    status: "RENTED",
     category: "SUV",
   });
+  await prisma.vehicle.update({ where: { id: vehicleA2Id }, data: { status: "RENTED" } });
 
   const agencyBResponse = await apiFetch("/api/agencies", {
     method: "POST",

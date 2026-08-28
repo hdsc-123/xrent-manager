@@ -1,6 +1,7 @@
 import type { VehicleTrip, VehicleTripStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getVehicleById, lockVehicleForUpdate, findConflictingMaintenances } from "@/lib/vehicles";
+import { assertVehicleNotDeactivated, syncVehicleStatus } from "@/lib/vehicle-status";
 
 export class VehicleTripVehicleNotFoundError extends Error {
   constructor() {
@@ -170,6 +171,7 @@ export async function createVehicleTrip(data: CreateVehicleTripInput): Promise<V
     if (!lockedVehicle) {
       throw new VehicleTripVehicleNotFoundError();
     }
+    assertVehicleNotDeactivated(lockedVehicle);
     if (lockedVehicle.status !== "AVAILABLE") {
       // Même distinction conflit/refus métier que createVehicleTransfer ci-dessus : le véhicule
       // était AVAILABLE avant l'ouverture de la transaction mais ne l'est plus une fois le
@@ -209,7 +211,7 @@ export async function createVehicleTrip(data: CreateVehicleTripInput): Promise<V
       },
     });
 
-    await tx.vehicle.update({ where: { id: lockedVehicle.id }, data: { status: "ON_TRIP" } });
+    await syncVehicleStatus(lockedVehicle.id, tx);
 
     return trip;
   });
@@ -284,7 +286,7 @@ export async function returnVehicleTrip(
 
     const trip = await tx.vehicleTrip.findUniqueOrThrow({ where: { id: existing.id } });
 
-    await tx.vehicle.update({ where: { id: existing.vehicleId }, data: { status: "AVAILABLE" } });
+    await syncVehicleStatus(existing.vehicleId, tx);
 
     return trip;
   });
@@ -312,7 +314,7 @@ export async function cancelVehicleTrip(tenantId: string, tripId: string): Promi
     }
 
     const trip = await tx.vehicleTrip.findUniqueOrThrow({ where: { id: existing.id } });
-    await tx.vehicle.update({ where: { id: existing.vehicleId }, data: { status: "AVAILABLE" } });
+    await syncVehicleStatus(existing.vehicleId, tx);
     return trip;
   });
 }

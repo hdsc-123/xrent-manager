@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { LocationStatus, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency, canAccessLocationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
+import { VehicleDeactivatedError } from "@/lib/vehicle-status";
 import {
   getLocationById,
   updateLocation,
@@ -285,6 +286,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     // Sprint 28 (Finding E) : véhicule MAINTENANCE/TRANSFERRING/ON_TRIP — s'applique à tout
     // appelant, y compris ADMIN via adminOverride (qui ne contourne que LocationLockedError).
     if (error instanceof VehicleUnavailableForLocationError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof VehicleDeactivatedError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     // Sprint 34 étape 3 (DOMAINRULES.md section 50, règle 1/2) : contrat encore PENDING modifié

@@ -123,14 +123,7 @@ function parseOptionalDateRange(
   return { from, to };
 }
 
-const VEHICLE_STATUSES: VehicleStatus[] = [
-  "AVAILABLE",
-  "RENTED",
-  "MAINTENANCE",
-  "INACTIVE",
-  "TRANSFERRING",
-  "ON_TRIP",
-];
+const VEHICLE_STATUSES: VehicleStatus[] = ["AVAILABLE", "RENTED", "MAINTENANCE", "TRANSFERRING", "ON_TRIP"];
 
 async function runVehiclesExport(user: SessionUser, searchParams: URLSearchParams): Promise<ExportOutcome> {
   const agencyIdParam = searchParams.get("agencyId") ?? undefined;
@@ -182,6 +175,7 @@ async function runVehiclesExport(user: SessionUser, searchParams: URLSearchParam
       transmission: cell(vehicle.transmission),
       carburant: cell(vehicle.fuel),
       statut: vehicle.status,
+      etatAdministratif: vehicle.deactivatedAt ? "DESACTIVE" : "ACTIF",
       prixParJour: amountCell(vehicle.pricePerDay),
       devise: vehicle.currency,
       kilometrageActuel: cell(vehicle.currentOdometer),

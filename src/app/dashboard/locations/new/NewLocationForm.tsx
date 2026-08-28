@@ -98,7 +98,7 @@ export function NewLocationForm() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    apiGet<{ vehicles: Vehicle[] }>("/api/vehicles?status=AVAILABLE")
+    apiGet<{ vehicles: Vehicle[] }>("/api/vehicles?status=AVAILABLE&excludeDeactivated=true")
       .then((data) => setVehicles(data.vehicles))
       .catch(() => setVehicles([]));
     apiGet<{ clients: Client[] }>("/api/clients")

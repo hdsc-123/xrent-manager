@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { VehicleStatus, TransmissionType, FuelType, Prisma } from "@prisma/client";
+import type { TransmissionType, FuelType, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import {
@@ -11,19 +11,6 @@ import {
 } from "@/lib/vehicles";
 import { logAction } from "@/lib/audit";
 
-const VEHICLE_STATUSES: VehicleStatus[] = [
-  "AVAILABLE",
-  "RENTED",
-  "MAINTENANCE",
-  "INACTIVE",
-  "TRANSFERRING",
-  "ON_TRIP",
-];
-// TRANSFERRING/ON_TRIP sont gérés automatiquement par les modules Transfert/Bon de déplacement
-// (src/lib/vehicle-transfers.ts, src/lib/vehicle-trips.ts, Sprint 14C) — jamais assignables
-// manuellement via PATCH, pour ne jamais désynchroniser Vehicle.status d'un transfert/
-// déplacement réellement en cours.
-const MANUALLY_ASSIGNABLE_STATUSES: VehicleStatus[] = ["AVAILABLE", "RENTED", "MAINTENANCE", "INACTIVE"];
 const TRANSMISSION_TYPES: TransmissionType[] = ["MANUELLE", "AUTOMATIQUE"];
 const FUEL_TYPES: FuelType[] = ["ESSENCE", "DIESEL", "HYBRIDE", "ELECTRIQUE"];
 
@@ -68,7 +55,11 @@ interface UpdateVehicleBody {
   model?: string;
   year?: number;
   category?: string;
-  status?: VehicleStatus;
+  // `status` volontairement absent (sprint "statut opérationnel automatique", 2026-08-28) :
+  // toute valeur envoyée par le client est explicitement rejetée ci-dessous — le statut
+  // opérationnel n'est plus jamais modifiable via PATCH, seule la désactivation administrative
+  // (POST .../deactivate|reactivate) agit sur la disponibilité globale du véhicule.
+  status?: unknown;
   pricePerDay?: number | null;
   // Sprint technique 5 : `currency` retiré de ce type — jamais exposé par le formulaire
   // dashboard, jamais validé côté serveur ; un client ne doit plus pouvoir le modifier via
@@ -148,12 +139,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "year invalide." }, { status: 400 });
   }
 
-  if (body.status && !VEHICLE_STATUSES.includes(body.status)) {
-    return NextResponse.json({ error: "status invalide." }, { status: 400 });
-  }
-  if (body.status && !MANUALLY_ASSIGNABLE_STATUSES.includes(body.status)) {
+  if (body.status !== undefined) {
     return NextResponse.json(
-      { error: "TRANSFERRING/ON_TRIP sont gérés automatiquement par un transfert/bon de déplacement en cours, non assignables manuellement." },
+      { error: "Le statut opérationnel d'un véhicule est toujours calculé automatiquement par le serveur — il ne peut pas être modifié directement." },
       { status: 400 }
     );
   }
@@ -275,7 +263,6 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     ...(body.model !== undefined ? { model: body.model } : {}),
     ...(body.year !== undefined ? { year: body.year } : {}),
     ...(body.category !== undefined ? { category: body.category } : {}),
-    ...(body.status !== undefined ? { status: body.status } : {}),
     ...(body.pricePerDay !== undefined ? { pricePerDay: body.pricePerDay } : {}),
     ...(body.ww !== undefined ? { ww: body.ww } : {}),
     ...(body.chassisNumber !== undefined ? { chassisNumber: body.chassisNumber } : {}),

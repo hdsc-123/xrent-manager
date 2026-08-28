@@ -19,7 +19,7 @@ const GROUPS = [
   ["locations", "location-extension", "location-chains", "location-chain-balance", "dashboard-route-guards", "data-reset", "invoices", "audit-deletion", "auth", "csv-export-sanitization", "csv-exports", "damages", "location-return"],
   ["vehicles", "agencies", "audit", "ui", "e2e-full", "invitations", "location-return-route", "credit-notes-ui", "damage-invoices-ui", "icon-hydration"],
   ["users", "maintenances", "clients", "vehicle-trips", "batch-pdf", "location-payment", "damages-route", "damage-invoices-route", "test-grouped-integrity"],
-  ["cash-register", "vehicle-transfers", "payments", "alerts", "e2e", "tenants", "return-damages-ui", "maintenance-location-coordination"],
+  ["cash-register", "vehicle-transfers", "payments", "alerts", "e2e", "tenants", "return-damages-ui", "maintenance-location-coordination", "vehicle-status"],
 ];
 
 const UI_TSX_FILES = new Set(["ui", "credit-notes-ui", "damage-invoices-ui", "icon-hydration"]);

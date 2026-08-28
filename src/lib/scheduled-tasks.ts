@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { createAlert } from "@/lib/alerts";
 import { formatMoney } from "@/lib/format";
 import { getVehicleLastKnownState } from "@/lib/vehicles";
+import { getVehicleOperationalStatus } from "@/lib/vehicle-status";
 
 /**
  * Nombre de jours par défaut pour anticiper une maintenance à venir (checkDueMaintenances).
@@ -346,38 +347,39 @@ export async function checkExpiredDocuments(tenantId: string): Promise<Alert[]> 
   return created;
 }
 
-/** Incohérence entre Vehicle.status (champ manuel, DOMAINRULES.md section 5) et la réalité des
- * locations : AVAILABLE avec une location ACTIVE en cours, ou RENTED sans aucune location
- * ACTIVE — signale une désynchronisation à corriger manuellement (aucune correction
- * automatique : voir la même prudence documentée pour deleteUser/Alert.userId). */
+/**
+ * Repurposé (sprint "statut opérationnel automatique", 2026-08-28) — jusqu'ici, Vehicle.status
+ * était un champ manuel (DOMAINRULES.md section 5, décision Sprint 5) et cette vérification
+ * détectait sa désynchronisation par rapport aux Location ACTIVE réelles (le seul cas manuel
+ * observable). Vehicle.status est désormais entièrement calculé et réécrit dans la même
+ * transaction que chaque opération pertinente (src/lib/vehicle-status.ts, syncVehicleStatus) :
+ * il ne devrait donc plus jamais diverger de la réalité par construction. Cette vérification
+ * reste néanmoins utile comme filet de sécurité — elle compare désormais la valeur *persistée*
+ * (colonne, simple cache synchronisé) à la valeur *recalculée à la volée* pour chaque véhicule
+ * du tenant : toute divergence signale un bug de resynchronisation (ex. un futur point d'entrée
+ * qui omettrait d'appeler syncVehicleStatus), jamais un choix éditorial. Un véhicule cohérent ne
+ * génère plus jamais cette alerte ; une alerte déjà résolue n'est jamais recréée tant que la
+ * cause n'a pas réapparu (hasUnresolvedAlert, même principe qu'avant ce sprint).
+ */
 export async function checkStockInconsistencies(tenantId: string): Promise<Alert[]> {
-  const vehicles = await prisma.vehicle.findMany({
-    where: { tenantId, status: { in: ["AVAILABLE", "RENTED"] } },
-    include: { locations: { where: { status: "ACTIVE" }, take: 1 } },
-  });
+  const vehicles = await prisma.vehicle.findMany({ where: { tenantId } });
 
   const created: Alert[] = [];
   for (const vehicle of vehicles) {
-    const hasActiveLocation = vehicle.locations.length > 0;
-    const inconsistent =
-      (vehicle.status === "AVAILABLE" && hasActiveLocation) || (vehicle.status === "RENTED" && !hasActiveLocation);
-    if (!inconsistent) {
+    const computedStatus = await getVehicleOperationalStatus(vehicle.id);
+    if (computedStatus === vehicle.status) {
       continue;
     }
     if (await hasUnresolvedAlert(tenantId, "VehicleStockInconsistency", vehicle.id)) {
       continue;
     }
 
-    const detail =
-      vehicle.status === "AVAILABLE"
-        ? "marqué Disponible alors qu'une location est ACTIVE"
-        : "marqué Loué alors qu'aucune location n'est ACTIVE";
     const alert = await createAlert({
       tenantId,
       agencyId: vehicle.agencyId,
       type: "STOCK_INCONSISTENCY",
       priority: "MEDIUM",
-      message: `Incohérence de stock : ${vehicle.name} (${vehicle.licensePlate}) ${detail}.`,
+      message: `Incohérence de stock : ${vehicle.name} (${vehicle.licensePlate}) statut enregistré ${vehicle.status}, statut réel calculé ${computedStatus}.`,
       entityType: "VehicleStockInconsistency",
       entityId: vehicle.id,
     });

@@ -523,6 +523,44 @@ Aucun test de non-régression ajouté (aucun bug de code trouvé). Données modi
 
 Aucun test Vitest automatisé dédié ajouté pour le correctif UI (défaut purement CSS/JSX, conforme à la convention déjà établie du projet — voir INC-17). La nouvelle alerte `STOCK_INCONSISTENCY` Hyundai recréée pendant cette session (16:12:03) a été **résolue applicativement le même jour à 16:41:51** (`PATCH /api/alerts/[id]/resolve`, 200 OK, `qa.superadmin`, même justification documentée qu'en partie 5 — fixture QA volontairement incohérente, aucune donnée métier modifiée) ; pourra se recréer lors d'un futur contrôle tant que la fixture existe, comportement déjà attendu et documenté. Données de test créées puis supprimées après vérification : réservation `QA-IMPORT-TEST-001`, client « QAInjTest =1+1 ». Aucune donnée QA préexistante supprimée. Aucun commit créé, aucun push effectué.
 
+## Tests session — sprint « statut opérationnel automatique » (2026-08-28)
+
+**Contexte** : brief explicite du propriétaire du projet — `Vehicle.status` ne devait plus jamais être saisi manuellement, mais entièrement calculé côté serveur à partir des opérations métier actives (contrat/location, maintenance, transfert, déplacement) ; l'ancien statut `INACTIVE` devait devenir un état administratif séparé (désactivation, réservée ADMIN). Détail métier complet : DOMAINRULES.md section 71.
+
+**Constat de départ, hors périmètre de ce sprint mais découvert en cours d'audit** : `xrent_dev` était intégralement vide (0 tenant/agence/utilisateur/véhicule) au démarrage de cette session, contredisant HANDOFF.md (tenant QA daté du jour même) — probable reset de données non documenté. La fixture Hyundai QA-DejaLoue-RAK n'existait donc pas ; aucune correction de donnée n'a été nécessaire ni possible pour elle. `xrent_dev` ne possède par ailleurs aucune table `_prisma_migrations` (schéma historiquement synchronisé via `prisma db push`, jamais `migrate dev`/`deploy`) — la migration de schéma de ce sprint a donc été appliquée via `db push --accept-data-loss` (confirmé sans perte : 0 ligne `Vehicle` utilisait `INACTIVE`), après confirmation explicite du propriétaire du projet et sauvegarde complète (`pg_dump`) préalable. Risque de baseline `_prisma_migrations` documenté comme point ouvert distinct (DOMAINRULES.md section 71).
+
+**Résultat** : modèle cible implémenté intégralement — `src/lib/vehicle-status.ts` (nouveau, source de vérité unique), statut recalculé et réécrit dans la même transaction que chaque transition `Location`/`Maintenance`/`VehicleTransfer`/`VehicleTrip` pertinente (activation, retour, annulation, clôture, démarrage, réception), jamais une réécriture aveugle à `AVAILABLE`. `INACTIVE` retiré de l'enum `VehicleStatus` (migration `20260828164038_add_vehicle_operational_status_auto`), remplacé par `Vehicle.deactivatedAt`/`deactivatedReason`/`deactivatedById` — désactivation/réactivation réservées ADMIN, motif obligatoire, auditées (`vehicle.deactivated`/`vehicle.reactivated`), routes dédiées `POST /api/vehicles/[id]/deactivate`/`reactivate`. Alerte `STOCK_INCONSISTENCY` (`checkStockInconsistencies`) repurposée en détecteur de dérive persisté/calculé (jamais l'ancienne heuristique manuelle). Script de resynchronisation `scripts/resync-vehicle-status.js` (nouveau, dry-run par défaut).
+
+**2 bugs latents pré-existants trouvés et corrigés en cours de route** (découverts en tentant d'exécuter le script de reset sur `xrent_test`, et en relisant `location-upgrades.ts`) : `scripts/reset-dev-data.js` (`WIPE_ORDER` incomplet/mal ordonné pour `cashEntry`/`damage`/`damageInvoice`/`damageInvoiceLine`/`locationUpgrade`, et référence obsolète à `Tenant.lastContractNumber` au lieu d'`Agency.lastContractNumber` depuis le Sprint 15) ; `src/lib/location-upgrades.ts` (`VEHICLE_STATUSES_UNAVAILABLE`, copie dupliquée de la liste de blocage, conservait `INACTIVE` et ne vérifiait jamais `deactivatedAt` — un véhicule désactivé mais opérationnellement `AVAILABLE` aurait pu compter à tort comme « réellement disponible » pour un contrôle de surclassement `UNAVAILABILITY`). Détail complet des deux : DOMAINRULES.md section 71.
+
+**Tests** : `src/__tests__/vehicle-status.test.ts` (nouveau, 29 tests, les 20 scénarios requis par le brief). `locations.test.ts`/`reservations.test.ts` étendus (rejet du statut bloquant testé aussi pour la désactivation, `INACTIVE` remplacé). `vehicles.test.ts`/`vehicle-transfers.test.ts`/`vehicle-trips.test.ts`/`vehicle-mobility-alerts.test.ts`/`location-return-route.test.ts`/`csv-exports.test.ts` corrigés — ces fichiers utilisaient `PATCH /api/vehicles/[id] { status }` pour préparer un état de test (méthode devenue invalide, remplacée par une opération métier réelle ou, quand une préparation technique isolée est indispensable, une écriture Prisma directe explicitement documentée comme telle, jamais une possibilité offerte à l'application). `test-grouped.mjs` (`GROUPS`) mis à jour avec le nouveau fichier de test.
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| Unitaires/Intégration (`node scripts/test-grouped.mjs`) | 1364 | 1364 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+Aucune donnée métier réelle modifiée ou supprimée (`xrent_dev` déjà vide) ; `xrent_test` réinitialisé via le script sanctionné avant application de la migration de schéma (données de test disposables, accumulées sur des sessions antérieures). Migration Prisma créée dans le dépôt (`prisma/migrations/20260828164038_add_vehicle_operational_status_auto/`) et appliquée à `xrent_dev`/`xrent_test` uniquement (jamais de production). Aucun commit créé, aucun push effectué.
+
+## Tests session — clôture d'INC-19, test de non-régression dédié (2026-08-28)
+
+**Contexte** : brief explicite du propriétaire du projet — traiter uniquement le point ouvert INC-19 (`isCategoryReallyAvailable`, `src/lib/location-upgrades.ts`, ignorait `Vehicle.deactivatedAt`), resté sans test de non-régression dédié à l'issue du sprint « statut opérationnel automatique ».
+
+**Résultat** : 1 test ajouté (`src/__tests__/reservations.test.ts`, describe surclassement) — vérifie, au niveau de la route réelle `POST /api/reservations/[id]/convert` (seul point d'entrée applicatif de la fonction privée `isCategoryReallyAvailable`), qu'un véhicule désactivé via la route métier réelle (`POST /api/vehicles/[id]/deactivate`) n'est jamais compté comme réellement disponible pour une déclaration UNAVAILABILITY (acceptée à tort avant correctif), qu'une tentative de le sélectionner directement comme véhicule du contrat reste refusée (contournement d'interface), et que la réactivation (`POST /api/vehicles/[id]/reactivate`) restaure la vérification normale. Aucune écriture Prisma directe utilisée pour simuler la désactivation — uniquement les routes métier réelles. **Vérifié positivement** : le test échoue (409 reçu au lieu du 201 attendu) lorsque le correctif est temporairement retiré puis restauré — confirme qu'il couvre réellement le bug plutôt que d'être trivialement vert.
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| Unitaires/Intégration (`node scripts/test-grouped.mjs`) | 1365 | 1365 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+Aucun autre fichier de code modifié. Aucune donnée modifiée. Aucun commit créé, aucun push effectué. INC-19 clôturé (INCIDENTS.md).
+
 ## 4. Format attendu des futurs rapports
 
 Chaque exécution future de la suite de tests devra être consignée dans ce document (ou dans un rapport daté associé) selon le format suivant :

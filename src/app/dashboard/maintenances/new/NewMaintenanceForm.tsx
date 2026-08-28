@@ -50,7 +50,7 @@ export function NewMaintenanceForm() {
   // qu'un changement d'API pour rester proportionné.
   useEffect(() => {
     Promise.all([
-      apiGet<{ vehicles: Vehicle[] }>("/api/vehicles?status=AVAILABLE"),
+      apiGet<{ vehicles: Vehicle[] }>("/api/vehicles?status=AVAILABLE&excludeDeactivated=true"),
       apiGet<{ vehicles: Vehicle[] }>("/api/vehicles?status=MAINTENANCE"),
     ])
       .then(([available, inMaintenance]) => {

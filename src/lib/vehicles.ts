@@ -6,8 +6,11 @@ const BLOCKING_LOCATION_STATUSES = ["PENDING", "CONFIRMED", "ACTIVE"] as const;
 
 /** Statuts d'une Maintenance qui occupent effectivement le véhicule sur sa période (Sprint 34
  * étape 3, DOMAINRULES.md section 50) — même principe que BLOCKING_LOCATION_STATUSES : seuls
- * les statuts non terminaux bloquent, COMPLETED/CANCELLED ne comptent jamais. */
-const BLOCKING_MAINTENANCE_STATUSES = ["SCHEDULED", "IN_PROGRESS"] as const;
+ * les statuts non terminaux bloquent, COMPLETED/CANCELLED ne comptent jamais. Exportée (sprint
+ * "statut opérationnel automatique", 2026-08-28) pour être réutilisée telle quelle par
+ * src/lib/vehicle-status.ts, qui doit appliquer exactement la même définition d'une
+ * "maintenance immobilisante active" que le contrôle de conflit ci-dessous. */
+export const BLOCKING_MAINTENANCE_STATUSES = ["SCHEDULED", "IN_PROGRESS"] as const;
 
 export class VehicleHasLocationsError extends Error {
   constructor() {
@@ -21,6 +24,12 @@ export interface VehicleFilters {
   status?: VehicleStatus;
   category?: string;
   search?: string;
+  /** Sprint "statut opérationnel automatique" (2026-08-28) — réservé aux sélecteurs
+   * opérationnels (choix d'un véhicule pour une nouvelle Location/Maintenance/VehicleTransfer/
+   * VehicleTrip) : un véhicule désactivé administrativement ne doit jamais y apparaître, même
+   * si son statut opérationnel calculé est AVAILABLE. La liste principale `/dashboard/vehicles`
+   * ne l'utilise jamais (un véhicule désactivé doit y rester visible, badge « Désactivé »). */
+  excludeDeactivated?: boolean;
 }
 
 export async function getVehicles(tenantId: string, filters: VehicleFilters = {}): Promise<Vehicle[]> {
@@ -30,6 +39,7 @@ export async function getVehicles(tenantId: string, filters: VehicleFilters = {}
       ...(filters.agencyId ? { agencyId: filters.agencyId } : {}),
       ...(filters.status ? { status: filters.status } : {}),
       ...(filters.category ? { category: filters.category } : {}),
+      ...(filters.excludeDeactivated ? { deactivatedAt: null } : {}),
       ...(filters.search
         ? {
             OR: [
@@ -58,7 +68,9 @@ export interface CreateVehicleInput {
   model: string;
   year: number;
   category: string;
-  status?: VehicleStatus;
+  // `status` retiré (sprint "statut opérationnel automatique", 2026-08-28) : plus jamais
+  // saisi, ni par le client ni par cette fonction — toute nouvelle Vehicle reçoit le défaut
+  // du schéma (AVAILABLE, cohérent avec l'absence de toute opération active à la création).
   /** Optionnel (Sprint 14A) — purement informatif, jamais la source de vérité de la
    * facturation (voir DOMAINRULES.md section 5/7). */
   pricePerDay?: number;
@@ -99,7 +111,11 @@ export interface UpdateVehicleInput {
   model?: string;
   year?: number;
   category?: string;
-  status?: VehicleStatus;
+  // `status` retiré (sprint "statut opérationnel automatique", 2026-08-28) : plus jamais
+  // modifiable via cette fonction générique — seules les transitions automatiques
+  // (src/lib/vehicle-status.ts, syncVehicleStatus) écrivent Vehicle.status. La désactivation
+  // administrative (deactivatedAt/deactivatedReason/deactivatedById) passe exclusivement par
+  // deactivateVehicle/reactivateVehicle ci-dessous, jamais par updateVehicle.
   pricePerDay?: number | null;
   currency?: string;
   ww?: string | null;
@@ -137,6 +153,75 @@ export async function updateVehicle(
   }
 
   return prisma.vehicle.update({ where: { id: vehicleId }, data });
+}
+
+/**
+ * Désactivation/réactivation administrative (sprint "statut opérationnel automatique",
+ * 2026-08-28) — remplace l'ancien `VehicleStatus.INACTIVE`. Décision réservée ADMIN (contrôle
+ * de rôle strict côté route, même principe que `adminCancelInvoice`/
+ * `adminCancelValidatedLocation`, DOMAINRULES.md section 43 — pas une permission granulaire),
+ * orthogonale au statut opérationnel calculé (`src/lib/vehicle-status.ts`). Ces deux fonctions
+ * sont les seules à écrire `deactivatedAt`/`deactivatedReason`/`deactivatedById` — jamais
+ * `updateVehicle` ci-dessus.
+ */
+export class VehicleAlreadyDeactivatedError extends Error {
+  constructor() {
+    super("Ce véhicule est déjà désactivé.");
+    this.name = "VehicleAlreadyDeactivatedError";
+  }
+}
+
+export class VehicleNotDeactivatedError extends Error {
+  constructor() {
+    super("Ce véhicule n'est pas désactivé.");
+    this.name = "VehicleNotDeactivatedError";
+  }
+}
+
+export class DeactivationReasonRequiredError extends Error {
+  constructor() {
+    super("Un motif est obligatoire pour désactiver un véhicule.");
+    this.name = "DeactivationReasonRequiredError";
+  }
+}
+
+export async function deactivateVehicle(
+  tenantId: string,
+  vehicleId: string,
+  reason: string,
+  performedByUserId: string
+): Promise<Vehicle | null> {
+  if (!reason || reason.trim() === "") {
+    throw new DeactivationReasonRequiredError();
+  }
+
+  const existing = await getVehicleById(tenantId, vehicleId);
+  if (!existing) {
+    return null;
+  }
+  if (existing.deactivatedAt) {
+    throw new VehicleAlreadyDeactivatedError();
+  }
+
+  return prisma.vehicle.update({
+    where: { id: vehicleId },
+    data: { deactivatedAt: new Date(), deactivatedReason: reason.trim(), deactivatedById: performedByUserId },
+  });
+}
+
+export async function reactivateVehicle(tenantId: string, vehicleId: string): Promise<Vehicle | null> {
+  const existing = await getVehicleById(tenantId, vehicleId);
+  if (!existing) {
+    return null;
+  }
+  if (!existing.deactivatedAt) {
+    throw new VehicleNotDeactivatedError();
+  }
+
+  return prisma.vehicle.update({
+    where: { id: vehicleId },
+    data: { deactivatedAt: null, deactivatedReason: null, deactivatedById: null },
+  });
 }
 
 export async function deleteVehicle(tenantId: string, vehicleId: string): Promise<boolean> {

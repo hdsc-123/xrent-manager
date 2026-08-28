@@ -13,6 +13,7 @@ import {
   InvalidFuelLevelError,
 } from "@/lib/vehicle-trips";
 import { getVehicleById } from "@/lib/vehicles";
+import { VehicleDeactivatedError } from "@/lib/vehicle-status";
 import { logAction } from "@/lib/audit";
 
 const TRIP_STATUSES: VehicleTripStatus[] = ["IN_PROGRESS", "COMPLETED", "CANCELLED"];
@@ -140,6 +141,9 @@ export async function POST(request: Request) {
     }
     if (error instanceof InvalidStartOdometerError || error instanceof InvalidFuelLevelError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof VehicleDeactivatedError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
 
     console.error("Erreur lors de la création du bon de déplacement :", error);

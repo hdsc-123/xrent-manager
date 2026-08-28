@@ -4,6 +4,7 @@ import { getClientById } from "@/lib/clients";
 import { logAction } from "@/lib/audit";
 import { getOrCreateMainInvoice, getInvoiceNetAmounts } from "@/lib/invoices";
 import { checkAvailability, lockVehicleForUpdate, findConflictingMaintenances } from "@/lib/vehicles";
+import { syncVehicleStatus } from "@/lib/vehicle-status";
 import { canAccessLocationAgency, type SessionUser } from "@/lib/authz";
 import {
   getLocationById,
@@ -309,6 +310,17 @@ async function createLocationExtensionLocked(
         },
         tx
       );
+
+      // Sprint "statut opérationnel automatique" (2026-08-28) : la nouvelle Location est créée
+      // directement ACTIVE ci-dessus — le véhicule (nouveau ou inchangé) doit refléter RENTED
+      // immédiatement. En cas de changement de véhicule, l'ancien est aussi recalculé (le
+      // contrat parent restant ACTIVE, voir le commentaire ci-dessus sur l'absence de clôture
+      // automatique du parent, il reste RENTED par construction — ce recalcul est donc surtout
+      // une garantie de cohérence du cache plutôt qu'un changement de valeur attendu).
+      await syncVehicleStatus(vehicleId, tx);
+      if (vehicleId !== parent.vehicleId) {
+        await syncVehicleStatus(parent.vehicleId, tx);
+      }
 
       return { location, invoice };
     } catch (error) {
