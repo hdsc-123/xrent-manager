@@ -2592,13 +2592,24 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
     return { startDate: start.toISOString().slice(0, 10), endDate: end.toISOString().slice(0, 10) };
   }
 
+  // Seconde agence (campagne QA, partie 3, 2026-08-28 — régression INC-16, isolation agence de
+  // isCategoryReallyAvailable) : nécessaire pour prouver qu'un véhicule de la catégorie
+  // réservée disponible dans une AUTRE agence du même tenant ne doit jamais empêcher une
+  // déclaration UNAVAILABILITY par ailleurs exacte pour l'agence qui traite le contrat.
+  let agencyA2Id: string;
+
   beforeAll(async () => {
-    async function createTestVehicle(name: string, category: string, plateSuffix: string) {
+    async function createTestVehicle(
+      name: string,
+      category: string,
+      plateSuffix: string,
+      vehicleAgencyId: string = agencyA1Id
+    ) {
       const response = await apiFetch("/api/vehicles", {
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
         body: JSON.stringify({
-          agencyId: agencyA1Id,
+          agencyId: vehicleAgencyId,
           name,
           licensePlate: `UPG-${plateSuffix}-${runId}`,
           make: "Dacia",
@@ -2618,12 +2629,22 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       return (await response.json()).vehicle.id;
     }
 
+    const agencyA2Response = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence A2 (surclassement)", slug: `agence-a2-upgrade-${runId}` }),
+    });
+    agencyA2Id = (await agencyA2Response.json()).agency.id;
+
     suvVehicleId = await createTestVehicle("SUV Surclassement", "SUV", "SUV");
     // Véhicule "Citadine" dédié et distinct de vehicleAId (partagé par tout le reste du
     // fichier, avec ses propres dates réservées ailleurs) — évite toute collision de
     // double réservation avec des tests sans rapport.
     citadineTwinVehicleId = await createTestVehicle("Citadine Jumelle", "Citadine", "TWIN");
     scarceVehicleId = await createTestVehicle("Véhicule Catégorie Rare", scarceCategoryName, "SCARCE");
+    // Même catégorie que scarceVehicleId mais dans l'agence A2 — reste AVAILABLE en permanence
+    // (jamais mis MAINTENANCE par les tests ci-dessous, contrairement à scarceVehicleId).
+    await createTestVehicle("Véhicule Catégorie Rare (Agence A2)", scarceCategoryName, "SCARCE-A2", agencyA2Id);
   });
 
   async function createReservationWithCategory(category: string, overrides: Record<string, unknown> = {}) {
@@ -2759,6 +2780,39 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       ),
     });
     expect(response.status).toBe(409);
+  });
+
+  it("accepte UNAVAILABILITY quand la catégorie réservée n'est disponible que dans une AUTRE agence du tenant (bug trouvé, campagne QA partie 3, isolation agence de isCategoryReallyAvailable)", async () => {
+    // Le véhicule de catégorie scarceCategoryName créé dans agencyA2Id (beforeAll) reste
+    // AVAILABLE en permanence. Avant le correctif, isCategoryReallyAvailable cherchait un
+    // véhicule disponible sur tout le tenant (toutes agences confondues) et aurait donc trouvé
+    // ce véhicule d'agence A2, refusant à tort (409) une déclaration UNAVAILABILITY pourtant
+    // exacte pour l'agence A1 (aucun véhicule de cette catégorie n'y est disponible : le seul,
+    // scarceVehicleId, est mis MAINTENANCE juste pour ce test puis restauré).
+    await prisma.vehicle.update({ where: { id: scarceVehicleId }, data: { status: "MAINTENANCE" } });
+    try {
+      const reservation = await createReservationWithCategory(scarceCategoryName);
+      const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify(
+          convertBody(reservation, {
+            vehicleId: suvVehicleId,
+            pricePerDay: 8000,
+            upgrade: {
+              type: "UNAVAILABILITY",
+              reason: "Aucun véhicule de cette catégorie disponible dans cette agence.",
+            },
+          })
+        ),
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.upgrade.type).toBe("UNAVAILABILITY");
+      expect(body.upgrade.totalSupplement).toBe(0);
+    } finally {
+      await prisma.vehicle.update({ where: { id: scarceVehicleId }, data: { status: "AVAILABLE" } });
+    }
   });
 
   it("4. COMMERCIAL_GESTURE : autorisé avec la permission dédiée, audité", async () => {

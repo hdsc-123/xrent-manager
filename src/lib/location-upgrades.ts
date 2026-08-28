@@ -183,6 +183,7 @@ export async function resolveLocationUpgrade(
 
     const available = await isCategoryReallyAvailable(
       input.tenantId,
+      input.vehicle.agencyId,
       reservedCategory,
       input.startDate,
       input.endDate,
@@ -223,18 +224,33 @@ export async function resolveLocationUpgrade(
 }
 
 /** Vérifie si au moins un véhicule de la catégorie réservée est réellement disponible (statut
- * hors {MAINTENANCE, TRANSFERRING, ON_TRIP, INACTIVE} et aucun conflit de dates) pour le tenant
- * donné — utilisée uniquement pour valider un motif UNAVAILABILITY. Ne vérifie pas les conflits
- * de maintenance planifiée (portée volontairement proportionnée : un contrôle de bonne foi,
- * pas une garantie exhaustive — voir le commentaire d'en-tête du fichier). */
+ * hors {MAINTENANCE, TRANSFERRING, ON_TRIP, INACTIVE} et aucun conflit de dates), **dans
+ * l'agence qui traite le contrat** — utilisée uniquement pour valider un motif UNAVAILABILITY.
+ *
+ * Bug trouvé (campagne QA, partie 3, 2026-08-28) : cette vérification portait jusqu'ici sur
+ * l'ensemble du tenant, toutes agences confondues (`{ tenantId, category }`, sans `agencyId`) —
+ * un véhicule de la catégorie réservée réellement disponible dans une agence distante (ex.
+ * Casablanca) faisait refuser à tort (409) une déclaration UNAVAILABILITY pourtant exacte pour
+ * l'agence qui traite réellement le contrat (ex. Marrakech), alors qu'aucun véhicule de cette
+ * catégorie n'y est disponible. Incohérent avec le reste du parcours (le sélecteur de véhicule
+ * de conversion est lui-même scopé par agence, et l'agence du contrat est dérivée du véhicule
+ * choisi) et avec la portée déjà agence-scopée de `checkAvailability`/`assertVehicleStatusAllowsLocation`
+ * pour toute autre vérification de disponibilité de ce parcours. Corrigé en scopant la recherche
+ * de véhicules candidats à `vehicle.agencyId` (l'agence réellement assignée au contrat, dérivée
+ * du véhicule choisi — jamais `Reservation.pickupAgencyId`, texte libre non fiable, voir
+ * DOMAINRULES.md section 21).
+ *
+ * Ne vérifie pas les conflits de maintenance planifiée (portée volontairement proportionnée : un
+ * contrôle de bonne foi, pas une garantie exhaustive — voir le commentaire d'en-tête du fichier). */
 async function isCategoryReallyAvailable(
   tenantId: string,
+  agencyId: string,
   category: string,
   start: Date,
   end: Date,
   tx: Prisma.TransactionClient
 ): Promise<boolean> {
-  const candidates = await tx.vehicle.findMany({ where: { tenantId, category } });
+  const candidates = await tx.vehicle.findMany({ where: { tenantId, agencyId, category } });
   for (const candidate of candidates) {
     if (VEHICLE_STATUSES_UNAVAILABLE.includes(candidate.status as (typeof VEHICLE_STATUSES_UNAVAILABLE)[number])) {
       continue;
