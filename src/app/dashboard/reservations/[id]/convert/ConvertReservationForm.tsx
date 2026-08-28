@@ -826,10 +826,7 @@ export function ConvertReservationForm({ reservation, agencies, canCommercialGes
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="startOdometer" required>
-                  Kilométrage départ{" "}
-                  <span className="text-muted-foreground">
-                    — prérempli depuis le dernier état connu du véhicule, à corriger si nécessaire
-                  </span>
+                  Kilométrage départ
                 </Label>
                 <Input
                   id="startOdometer"
@@ -840,6 +837,9 @@ export function ConvertReservationForm({ reservation, agencies, canCommercialGes
                   value={startOdometer}
                   onChange={(e) => setStartOdometer(e.target.value)}
                 />
+                <p className="text-xs text-muted-foreground">
+                  Prérempli depuis le dernier état connu du véhicule, à corriger si nécessaire.
+                </p>
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="startFuelLevel">

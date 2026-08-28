@@ -507,6 +507,22 @@ Sur autorisation explicite du propriétaire du projet, mots de passe réinitiali
 
 Aucun test de non-régression ajouté (aucun bug de code trouvé). Données modifiées : 2 alertes existantes + 1 nouvelle alerte de vérification, toutes `RESOLVED` via l'application (jamais de SQL direct), 4 entrées `AuditLog` (`alert.resolved`) créées. Aucune location/contrat/historique supprimé ou modifié. Aucun commit créé, aucun push effectué.
 
+## Tests session — campagne de validation QA, partie 6 : clôture ciblée (correctif UI 390px, fixture Hyundai reconfirmée, points 34/41-47 exécutés manuellement) (2026-08-28)
+
+**Contexte** : brief explicite du propriétaire du projet — clôture de trois points ouverts par les parties 4/5 : (1) corriger le déséquilibre visuel du champ « Kilométrage départ » à 390px (`ConvertReservationForm.tsx`) ; (2) analyser/décider le traitement de la fixture Hyundai qui recrée l'alerte `STOCK_INCONSISTENCY` ; (3) exécuter réellement en navigateur les points 34 et 41-47 du runbook, jusqu'ici seulement couverts par la suite automatisée.
+
+**Résultat** : **1 bug trouvé et corrigé** — INC-17, déséquilibre visuel du libellé « Kilométrage départ » à 390px, causé par un texte d'aide long placé dans le conteneur flex `Label` au lieu d'un `<p>` séparé (motif déjà utilisé ailleurs dans le même formulaire). Vérifié à 320/390/768/1280px, aucune régression. **Fixture Hyundai** : comportement reconfirmé conforme (aucun bug), par un mécanisme indépendant de celui de la partie 5 (scheduler opportuniste `maybeRunScheduledAlertChecks`, déclenché par la simple navigation dashboard, plutôt que l'appel manuel de `POST /api/tasks/check-alerts`) — voir INCIDENTS.md INC-17 et [docs/test-reports/2026-08-28-campagne-partie6-cloture.md](docs/test-reports/2026-08-28-campagne-partie6-cloture.md) pour le détail complet, y compris les points 34/41-47 (PDF groupé, import Excel valide/doublon/colonne manquante, export CSV avec BOM, injection de formule CSV confirmée neutralisée en conditions réelles).
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| Unitaires/Intégration (`node scripts/test-grouped.mjs`, après correctif) | 1335 | 1335 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+Aucun test Vitest automatisé dédié ajouté pour le correctif UI (défaut purement CSS/JSX, conforme à la convention déjà établie du projet — voir INC-17). La nouvelle alerte `STOCK_INCONSISTENCY` Hyundai recréée pendant cette session (16:12:03) a été **résolue applicativement le même jour à 16:41:51** (`PATCH /api/alerts/[id]/resolve`, 200 OK, `qa.superadmin`, même justification documentée qu'en partie 5 — fixture QA volontairement incohérente, aucune donnée métier modifiée) ; pourra se recréer lors d'un futur contrôle tant que la fixture existe, comportement déjà attendu et documenté. Données de test créées puis supprimées après vérification : réservation `QA-IMPORT-TEST-001`, client « QAInjTest =1+1 ». Aucune donnée QA préexistante supprimée. Aucun commit créé, aucun push effectué.
+
 ## 4. Format attendu des futurs rapports
 
 Chaque exécution future de la suite de tests devra être consignée dans ce document (ou dans un rapport daté associé) selon le format suivant :
