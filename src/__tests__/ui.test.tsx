@@ -119,6 +119,84 @@ describe("Page /dashboard/users (lecture seule)", () => {
     // d'un AUTRE utilisateur, jamais la sienne) prouve l'absence de fuite de l'annuaire.
     expect(html).not.toContain("UI Admin");
   });
+
+  it("distingue le rôle système (ADMIN/MEMBER) du groupe de permissions réel — jamais le second déduit du premier (correctif bug d'affichage)", async () => {
+    const groupsResponse = await apiFetch("/api/permission-groups", { headers: { Cookie: admin.sessionCookie } });
+    const groups: { id: string; name: string }[] = (await groupsResponse.json()).groups;
+    const agenceGroupId = groups.find((g) => g.name === "AGENCE")!.id;
+    const comptaGroupId = groups.find((g) => g.name === "COMPTABILITÉ")!.id;
+
+    const customGroupName = `UI Custom Group ${runId}`;
+    const customGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ name: customGroupName, permissions: ["vehicles.view"] }),
+    });
+    const customGroupId = (await customGroupResponse.json()).group.id;
+
+    const agenceMember = await createAndLoginMember({
+      tenantId: admin.tenantId,
+      name: "UI Table Agence",
+      email: `ui-table-agence-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    const comptaMember = await createAndLoginMember({
+      tenantId: admin.tenantId,
+      name: "UI Table Compta",
+      email: `ui-table-compta-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    const customMember = await createAndLoginMember({
+      tenantId: admin.tenantId,
+      name: "UI Table Custom",
+      email: `ui-table-custom-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+
+    await apiFetch(`/api/users/${agenceMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: agenceGroupId }),
+    });
+    await apiFetch(`/api/users/${comptaMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: comptaGroupId }),
+    });
+    await apiFetch(`/api/users/${customMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: customGroupId }),
+    });
+
+    const response = await apiFetch("/dashboard/users", { headers: { Cookie: admin.sessionCookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+
+    // Rôle système : ADMIN -> "Administrateur", MEMBER -> "Utilisateur" (jamais "Membre",
+    // qui prêtait à confusion avec le nom du groupe par défaut "MEMBER").
+    expect(html).toContain("Administrateur");
+    expect(html).toContain("Utilisateur");
+
+    // Groupe de permissions affiché distinctement pour chaque utilisateur, jamais déduit du
+    // rôle système — trois groupes différents doivent apparaître littéralement.
+    expect(html).toContain("AGENCE");
+    expect(html).toContain("COMPTABILITÉ");
+    expect(html).toContain(customGroupName);
+    // `member` (fixture du beforeAll) n'a jamais reçu de groupe assigné dans ce fichier.
+    expect(html).toContain("Aucun groupe");
+    // L'ADMIN contourne toujours can() (src/lib/permissions.ts) quel que soit son
+    // permissionGroupId (toujours `null` en pratique) — jamais confondu avec "Aucun groupe".
+    expect(html).toContain("Contournement ADMIN");
+
+    // Le groupe affiché ne modifie pas les permissions effectives : COMPTABILITÉ reste
+    // scopée finance/reporting (pas d'accès véhicules), exactement comme avant ce correctif
+    // purement visuel — comportement inchangé, vérifié au niveau de l'API réelle.
+    const comptaVehicles = await apiFetch("/api/vehicles", { headers: { Cookie: comptaMember.sessionCookie } });
+    expect(comptaVehicles.status).toBe(403);
+    const comptaInvoices = await apiFetch("/api/invoices", { headers: { Cookie: comptaMember.sessionCookie } });
+    expect(comptaInvoices.status).toBe(200);
+  });
 });
 
 describe("Sprint 18 — dashboard : alertes non gatées par alerts.view", () => {
@@ -272,6 +350,37 @@ describe("GET /api/users", () => {
     for (const user of body.users) {
       expect(user).not.toHaveProperty("passwordHash");
     }
+  });
+
+  it("expose permissionGroupName (nom réel du groupe, jamais déduit de role), null si aucun groupe assigné", async () => {
+    const groupsResponse = await apiFetch("/api/permission-groups", { headers: { Cookie: admin.sessionCookie } });
+    const groups: { id: string; name: string }[] = (await groupsResponse.json()).groups;
+    const agenceGroupId = groups.find((g) => g.name === "AGENCE")!.id;
+
+    const agenceMember = await createAndLoginMember({
+      tenantId: admin.tenantId,
+      name: "UI Agence GroupCheck",
+      email: `ui-agence-groupcheck-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await apiFetch(`/api/users/${agenceMember.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: agenceGroupId }),
+    });
+
+    const response = await apiFetch("/api/users", { headers: { Cookie: admin.sessionCookie } });
+    const body = await response.json();
+    const byEmail = Object.fromEntries(
+      body.users.map((u: { email: string; role: string; permissionGroupName: string | null }) => [u.email, u])
+    );
+
+    expect(byEmail[admin.email].role).toBe("ADMIN");
+    expect(byEmail[member.email].role).toBe("MEMBER");
+    // `member` (fixture du beforeAll) n'a jamais reçu de groupe assigné dans ce fichier.
+    expect(byEmail[member.email].permissionGroupName).toBeNull();
+    expect(byEmail[agenceMember.email].role).toBe("MEMBER");
+    expect(byEmail[agenceMember.email].permissionGroupName).toBe("AGENCE");
   });
 });
 

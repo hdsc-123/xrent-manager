@@ -28,9 +28,15 @@ export async function GET() {
       email: true,
       role: true,
       createdAt: true,
+      permissionGroup: { select: { name: true } },
     },
     orderBy: { createdAt: "asc" },
   });
 
-  return NextResponse.json({ users });
+  return NextResponse.json({
+    users: users.map(({ permissionGroup, ...rest }) => ({
+      ...rest,
+      permissionGroupName: permissionGroup?.name ?? null,
+    })),
+  });
 }

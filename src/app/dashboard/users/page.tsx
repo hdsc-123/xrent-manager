@@ -26,7 +26,14 @@ export default async function UsersPage() {
 
   const users = await prisma.user.findMany({
     where: { tenantId: user.tenantId },
-    select: { id: true, name: true, email: true, role: true, createdAt: true },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      createdAt: true,
+      permissionGroup: { select: { name: true } },
+    },
     orderBy: { createdAt: "asc" },
   });
 
@@ -35,6 +42,7 @@ export default async function UsersPage() {
     name: u.name,
     email: u.email,
     role: u.role,
+    permissionGroupName: u.permissionGroup?.name ?? null,
     createdAt: u.createdAt.toISOString(),
   }));
 

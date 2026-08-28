@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1335/1335** (2026-08-28).
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1367/1367** (2026-08-28).
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -317,8 +317,19 @@ Détail complet de chaque entrée ci-dessous (fichiers de test, nombre exact, pa
 | 2026-08-27 | Campagne de validation QA, partie 2 (création/consultation/validation des réservations) — BUG-008 |
 | 2026-08-27 | Passe de correction post-partie 2 — INC-12 (véhicule INACTIVE), permission agencies.view (groupe AGENT) |
 | 2026-08-27 | Passe de correction obligatoire — doublon Omar (INC-13), surclassement `LocationUpgrade` complet, INC-14/INC-15 |
+| 2026-08-28 | Correctif d'affichage `/dashboard/users` — distinction rôle système / groupe de permissions (INC-20) |
 
 ### Rapports récents (détail complet ci-dessous, pas archivés)
+
+## Tests session — correctif d'affichage `/dashboard/users`, rôle système vs groupe de permissions (2026-08-28)
+
+**Contexte** : lors d'une session de reprise de tests QA sur le nouveau tenant `Xrent QA Status Validation 20260828` (`xrent_dev`), la liste `/dashboard/users` a montré 5 comptes `MEMBER` à des groupes de permissions différents (`AGENCE`, `COMPTABILITÉ`, `MEMBER`, un groupe personnalisé) tous affichés de façon identique (« Membre »). Diagnostic en lecture seule préalable (schéma Prisma, code d'invitation/acceptation, `src/lib/permissions.ts`, données réelles des 6 comptes) : confirmé bug d'affichage pur — `User.role` (2 valeurs seulement) et `User.permissionGroupId` sont bien deux champs distincts, les permissions effectives proviennent déjà correctement du groupe, aucune donnée corrompue. Voir INCIDENTS.md INC-20 pour le détail complet.
+
+**Correctif** : `src/app/dashboard/users/page.tsx`/`src/app/api/users/route.ts` sélectionnent désormais `permissionGroup.name` (ajout rétrocompatible) ; `UsersTable.tsx` sépare « Rôle système » (Administrateur/Utilisateur) et « Groupe de permissions » (nom réel, « Aucun groupe », ou « Contournement ADMIN »).
+
+**Tests ajoutés** : 2 dans `src/__tests__/ui.test.tsx` — `GET /api/users` expose `permissionGroupName` correct sans le déduire de `role` ; rendu HTML de `/dashboard/users` distinguant littéralement les deux informations pour 3 groupes différents + absence de groupe + ADMIN, avec vérification que les permissions effectives (COMPTABILITÉ) restent inchangées.
+
+**Tests exécutés** : fichier isolé (`ui.test.tsx`, 25/25) ; suite complète (`node scripts/test-grouped.mjs`) **1367/1367**, 0 échec/timeout/résiduel ; `npx tsc --noEmit`/`npm run lint`/`npm run build` verts. Vérification manuelle en navigateur réel sur `xrent_dev` avec les 6 comptes QA réels du tenant `Xrent QA Status Validation 20260828` — chaque ligne affiche désormais le couple exact attendu, page de détail `/dashboard/users/[id]` toujours fonctionnelle et inchangée.
 
 ## Tests session — passe de correction obligatoire : doublon Omar, surclassement, INC-14/INC-15 (2026-08-27)
 

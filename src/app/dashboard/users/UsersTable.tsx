@@ -11,6 +11,10 @@ export interface UserRow {
   name: string;
   email: string;
   role: string;
+  /** Nom du PermissionGroup réellement assigné (User.permissionGroupId) — jamais déduit de
+   * `role`, qui ne distingue que le rôle système (ADMIN/MEMBER, voir DOMAINRULES.md section 4).
+   * `null` si aucun groupe n'est assigné. */
+  permissionGroupName: string | null;
   createdAt: string;
 }
 
@@ -21,12 +25,22 @@ export function UsersTable({ users }: { users: UserRow[] }) {
       { accessorKey: "email", header: "Email" },
       {
         accessorKey: "role",
-        header: "Rôle",
+        header: "Rôle système",
         cell: ({ getValue }) => (
           <Badge variant={getValue<string>() === "ADMIN" ? "default" : "secondary"}>
-            {getValue<string>() === "ADMIN" ? "Administrateur" : "Membre"}
+            {getValue<string>() === "ADMIN" ? "Administrateur" : "Utilisateur"}
           </Badge>
         ),
+      },
+      {
+        id: "permissionGroup",
+        header: "Groupe de permissions",
+        cell: ({ row }) =>
+          row.original.role === "ADMIN" ? (
+            <span className="text-muted-foreground">Contournement ADMIN</span>
+          ) : (
+            (row.original.permissionGroupName ?? "Aucun groupe")
+          ),
       },
       {
         accessorKey: "createdAt",
