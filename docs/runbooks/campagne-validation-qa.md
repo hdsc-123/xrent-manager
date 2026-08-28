@@ -1,6 +1,6 @@
 # Runbook — Reprise de la campagne de validation QA
 
-Procédure de reprise de la campagne de validation manuelle du tenant QA fictif. Dernière mise à jour : 2026-08-27 (passe de correction post-partie 2 — INC-12, permission `agencies.view` du groupe AGENT). Voir [HANDOFF.md](../../HANDOFF.md) pour l'état global du projet.
+Procédure de reprise de la campagne de validation manuelle du tenant QA fictif. Dernière mise à jour : 2026-08-28 (partie 4 — passe finale de validation manuelle, points 11-56, aucun bug trouvé). Voir [HANDOFF.md](../../HANDOFF.md) pour l'état global du projet.
 
 ## 1. Avant de commencer
 
@@ -13,7 +13,7 @@ Procédure de reprise de la campagne de validation manuelle du tenant QA fictif.
 
 - Environnement : développement, base `xrent_dev` (locale).
 - Tenant de campagne : `QA FICTIF - XRent Validation` (id `cmta2y6uy0000m4n9xvm0hr18`, slug `qa-fictif-xrent-2026`).
-- **Identifiants** : stockés uniquement dans `.env.qa.local` à la racine du dépôt (fichier local, exclu du suivi Git par le motif `.env*` de `.gitignore` — vérifié par `git check-ignore -v .env.qa.local`). Ce fichier contient les adresses email des comptes de campagne et un mot de passe partagé, réinitialisé le 2026-08-26 sur autorisation explicite du propriétaire du projet pour 4 comptes (`qa.superadmin`, `qa.agent.rak`, `qa.agent.casa`, `qa.auditeur`). **Ne jamais copier ces valeurs dans un document suivi par Git.**
+- **Identifiants** : stockés uniquement dans `.env.qa.local` à la racine du dépôt (fichier local, exclu du suivi Git par le motif `.env*` de `.gitignore` — vérifié par `git check-ignore -v .env.qa.local`). Ce fichier contient les adresses email des comptes de campagne et les mots de passe, réinitialisés le 2026-08-26 sur autorisation explicite du propriétaire du projet pour 4 comptes (`qa.superadmin`, `qa.agent.rak`, `qa.agent.casa`, `qa.auditeur`, mot de passe partagé), puis le 2026-08-28 (partie 4) pour 3 comptes supplémentaires nécessaires aux tests de permissions (`qa.compta` — groupe COMPTABILITÉ, `qa.responsable.rak` — groupe AGENCE, `qa.sanspermission` — groupe SANS ACCES, mots de passe individuels). Le tenant compte 10 comptes au total (2 restent sans mot de passe connu, non nécessaires à ce jour : `qa.admin2`, `qa.direction`). **Ne jamais copier ces valeurs dans un document suivi par Git.**
 - Si `.env.qa.local` est absent ou que les identifiants ne fonctionnent plus : réinitialiser le mot de passe des comptes nécessaires directement en base (`xrent_dev` uniquement), **uniquement sur autorisation explicite du propriétaire du projet**, et consigner la nouvelle valeur dans `.env.qa.local` (jamais ailleurs).
 
 ## 3. Données fictives de campagne (état au 2026-08-27, fin de la partie 2)
@@ -29,6 +29,7 @@ Procédure de reprise de la campagne de validation manuelle du tenant QA fictif.
 - Contrats n°00003/00004 : créés transitoirement pendant la partie 1 pour vérifier les bornes exactes d'âge/permis, **supprimés après vérification**.
 - Client résiduel `firstName: "Ahmed", lastName: "   "` (partie 1) : signalé puis **supprimé**.
 - Réservations `QA-PART2-WHITESPACE-TEST` et `QA-PART2-DATE-TEST-1` (partie 2) : créées pour reproduire/démontrer BUG-008 et le comportement des dates/heures, **supprimées après vérification** (aucune dépendance).
+- **Nouveau (partie 4, 2026-08-28)** : 15 réservations/contrats de test (préfixe `QA-PART4-`, conservés) démontrant conversion/surclassement (CUSTOMER_REQUEST/UNAVAILABILITY/COMMERCIAL_GESTURE)/paiements (espèces/mixte)/retour avec dommage facturable/âge-permis (refus et acceptations limites) — numérotation de contrat continue au-delà de `00007`. Véhicule « Dacia Duster QA-Transfert-RAK » **déplacé à l'agence CASA** suite à un transfert validé de bout en bout (cohérent avec son usage prévu, nom de fixture inchangé). 1 entrée `AuditLog` historique (« agency.created » du 2026-08-26) supprimée dans le cadre du test de suppression d'audit réservée ADMIN (auto-journalisée). 1 alerte `STOCK_INCONSISTENCY` stale (contrat n°00002, devenue obsolète après son passage à `COMPLETED`) acquittée. Détail complet : [docs/test-reports/2026-08-28-campagne-partie4-validation-finale.md](../test-reports/2026-08-28-campagne-partie4-validation-finale.md).
 - Détail complet partie 1 : [docs/test-reports/2026-08-26-campagne-partie1-clients.md](../test-reports/2026-08-26-campagne-partie1-clients.md). Détail complet partie 2 : [docs/test-reports/2026-08-27-campagne-partie2-reservations.md](../test-reports/2026-08-27-campagne-partie2-reservations.md). Détail complet BUG-001/004/005 : [docs/test-reports/2026-08-26-bug-001-004-005.md](../test-reports/2026-08-26-bug-001-004-005.md).
 
 ## 4. Règles de sécurité pour la reprise
@@ -46,56 +47,16 @@ Procédure de reprise de la campagne de validation manuelle du tenant QA fictif.
 - **Doublon « Omar Fictif-SecondCondValide » — élucidé et corrigé le 2026-08-27** (INC-13) : second conducteur d'une conversion créé sans détection de doublon, doublon supprimé (aucune relation), anti-réapparition testé. **Surclassement — implémenté côté serveur le 2026-08-27** (modèle `LocationUpgrade`, DOMAINRULES.md section 70) : ne reste plus une simple convention d'interface. Deux bugs supplémentaires trouvés/corrigés dans le même périmètre : INC-14 (`deleteClient`/second conducteur), INC-15 (audit client manquant à la conversion). Détail complet : [docs/test-reports/2026-08-27-passe-correction-surclassement-omar.md](../test-reports/2026-08-27-passe-correction-surclassement-omar.md).
 - Permission `agencies.view` du groupe personnalisé « AGENT » (tenant QA) : **corrigée le 2026-08-27** sur autorisation explicite du propriétaire du projet (34 permissions au lieu de 33, via `PATCH /api/permission-groups/[id]`, journalisée) — `qa.agent.rak`/`qa.agent.casa` voient désormais correctement les villes RAK/Casablanca dans `/dashboard/reservations/new`. Voir [docs/test-reports/2026-08-27-campagne-partie2-reservations.md](../test-reports/2026-08-27-campagne-partie2-reservations.md) section 12.4.
 - Isolation agence RAK/CASA (sélecteurs véhicule scopés, visibilité contrat n°00002 par l'agence de retour).
-- Retour de véhicule RAK→CASA (kilométrage, carburant, transition de statut) sur le contrat n°00002.
+- Retour de véhicule RAK→CASA (kilométrage, carburant, transition de statut) sur le contrat n°00002 — **revalidé sur un nouveau contrat en partie 4** (voir ci-dessous), le n°00002 n'a jamais été rejoué.
 - **Partie 1 (2026-08-26, complète)** : point 1 (clients fictifs — CRUD, champs obligatoires, coordonnées, pièce d'identité), point 13 (âge minimum du conducteur, borne exacte 21 ans testée), point 14 (dates d'obtention/expiration du permis), point 15 (permis expirant avant le retour), ainsi que persistance, audit, permissions (clients non agence-scopés, conforme DOMAINRULES.md section 9), isolation tenant, usage en réservation/conversion, refus serveur (âge/permis) et responsive du module clients. Détail complet : [docs/test-reports/2026-08-26-campagne-partie1-clients.md](../test-reports/2026-08-26-campagne-partie1-clients.md).
-- **Partie 2 (2026-08-27, complète)** : points 2 (réservation RAK→RAK), 3 (RAK→CASA), 4 (option GPS), 5 (siège bébé), 7 (conducteur supplémentaire), 8 (validation des dates et heures), 9 (véhicule indisponible, vérifié sur `Location`), 10 (double réservation, vérifié sur `Location`) — ainsi que modification/annulation/suppression d'une réservation, persistance, visibilité par agence RAK/CASA (y compris via l'agence de retour), refus d'accès direct, isolation tenant, contrôle des permissions et responsive **du module Réservations spécifiquement** (ces derniers points restent à revalider sur les modules non encore couverts avant de clore les points 51-56 du présent runbook). **Point 6 (« Supplément hors horaires ») classé N/A** : fonctionnalité non implémentée dans le code (constat documenté, pas une régression) — ne pas re-tester tant qu'aucune décision produit ne l'introduit. Détail complet : [docs/test-reports/2026-08-27-campagne-partie2-reservations.md](../test-reports/2026-08-27-campagne-partie2-reservations.md).
-- Non re-testé mais déjà couvert par la suite automatisée (pas nécessaire de refaire manuellement) : refus 403 d'un compte sans permission `clients.*`/`reservations.*` (mot de passe non disponible pour `qa.sanspermission@fictif.test`, voir rapports parties 1/2).
+- **Partie 2 (2026-08-27, complète)** : points 2 (réservation RAK→RAK), 3 (RAK→CASA), 4 (option GPS), 5 (siège bébé), 7 (conducteur supplémentaire), 8 (validation des dates et heures), 9 (véhicule indisponible, vérifié sur `Location`), 10 (double réservation, vérifié sur `Location`). **Point 6 (« Supplément hors horaires ») classé N/A** : fonctionnalité non implémentée dans le code. Détail complet : [docs/test-reports/2026-08-27-campagne-partie2-reservations.md](../test-reports/2026-08-27-campagne-partie2-reservations.md).
+- **Partie 3 (2026-08-28, revue ciblée + correction, pas un déroulé manuel de campagne)** : 1 bug trouvé et corrigé, INC-16 (disponibilité UNAVAILABILITY scopée par erreur à tout le tenant au lieu de la seule agence traitant le contrat) — commité et poussé par le propriétaire du projet (`0b918979151d1edbbf7521a6fbe8611d0899c121`).
+- **Partie 4 (2026-08-28, passe finale de validation manuelle, complète)** : points **11, 12, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 35, 36, 37, 38, 39, 40, 48, 49, 50, 51, 52, 53, 54, 55, 56** vérifiés en conditions réelles (navigateur + API + serveur, 7 comptes réels dont 3 nouveaux réinitialisés sur autorisation explicite) — **aucun bug de code trouvé**. Retour de véhicule (26-28) revalidé sur un nouveau contrat. 2 observations documentées non corrigées (alerte stale, déséquilibre visuel mineur mobile). Détail complet : [docs/test-reports/2026-08-28-campagne-partie4-validation-finale.md](../test-reports/2026-08-28-campagne-partie4-validation-finale.md).
+- Non re-testé manuellement mais déjà couvert par la suite automatisée (pas nécessaire de refaire manuellement, cohérent avec la convention déjà appliquée à ce runbook) : points **34** (PDF groupé), **41-47** (import Excel, export, injection CSV) — voir `batch-pdf.test.ts`/`csv-export-sanitization.test.ts`/`csv-exports.test.ts`/tests d'import de `reservations.test.ts`, tous verts (1335/1335). Refus 403 d'un compte sans permission `clients.*`/`reservations.*` : désormais vérifié directement avec `qa.sanspermission@fictif.test` (mot de passe réinitialisé en partie 4).
 
-## 6. Scénarios restants à exécuter (43/56, hors le point 6 classé N/A)
+## 6. Scénarios restants (0/56 non exécutés au sens strict — 9 reposent sur la couverture automatisée)
 
-Non exécutés, non validés, toujours dans le périmètre du projet. **Doublon Omar — résolu (2026-08-27)**, voir section 5. **Point de configuration résolu (2026-08-27)** : le groupe de permissions personnalisé « AGENT » a désormais `agencies.view` (voir section 5) — les comptes `qa.agent.rak`/`qa.agent.casa` peuvent utiliser normalement les listes déroulantes d'agence. **Surclassement (points 16-19) — implémenté côté serveur (2026-08-27)** : le contrôle serveur existe désormais réellement (modèle `LocationUpgrade`, DOMAINRULES.md section 70) — ces points peuvent être testés comme une vraie garantie serveur, plus seulement une convention d'interface. À exécuter dans l'ordre suivant (repris du brief de campagne original), en utilisant le terminal pour les vérifications déterministes (calculs, validations, permissions serveur, isolation) et Playwright pour tout ce qui nécessite un navigateur réel (navigation, formulaires, PDF, responsive) :
-
-11. Conversion en contrat.
-12. Numéro automatique du contrat.
-16. Surclassement demandé par le client.
-17. Surclassement imposé par indisponibilité.
-18. Supplément de surclassement.
-19. Surclassement gratuit.
-20. Paiement en espèces.
-21. Paiement par carte fictive.
-22. Paiement mixte.
-23. Solde restant.
-24. Paiement supérieur au solde.
-25. Double paiement.
-26-28. (Retour véhicule / kilométrage / carburant : déjà couverts sur le contrat n°00002 — à revalider sur un **nouveau** contrat, celui-ci étant déjà `COMPLETED`.)
-29. Dommages.
-30. Frais supplémentaires.
-31. Facture.
-32. PDF contrat.
-33. PDF facture.
-34. PDF groupé.
-35. Transfert RAK → CASA.
-36. Réception du transfert.
-37. Bon de déplacement interne.
-38. Absence de contrat pour déplacement interne.
-39. Kilométrage automatique.
-40. Niveau de carburant automatique.
-41. Import Excel valide.
-42. Dates Excel invalides.
-43. Villes mal orthographiées.
-44. Indication des lignes Excel en erreur.
-45. Import partiel.
-46. Export.
-47. Injection CSV.
-48. Audit.
-49. Suppression d'audit uniquement pour le super administrateur.
-50. Alertes.
-51. Permissions.
-52. Isolation agence.
-53. Isolation tenant.
-54. Responsive desktop.
-55. Responsive tablette.
-56. Responsive mobile.
+**Doublon Omar — résolu (2026-08-27)**, reconfirmé sans doublon en partie 4. **Surclassement (points 16-19) — implémenté côté serveur (2026-08-27), scoping agence corrigé (INC-16, 2026-08-28), et vérifié en conditions réelles en partie 4** : les 3 types (CUSTOMER_REQUEST, UNAVAILABILITY, COMMERCIAL_GESTURE) fonctionnent correctement, y compris le scoping par agence pour UNAVAILABILITY. **Plus aucun point du runbook n'est non exécuté au sens propre** — seuls les points 34 et 41-47 reposent sur la couverture automatisée plutôt qu'une revérification manuelle fraîche (voir section 5). À la discrétion du propriétaire du projet : programmer une revérification manuelle de ces 9 points si jugée nécessaire avant de déclarer la campagne formellement close, ou accepter la couverture automatisée existante comme suffisante (comme déjà fait pour d'autres points de ce runbook).
 
 ## 7. Après chaque lot de scénarios
 
