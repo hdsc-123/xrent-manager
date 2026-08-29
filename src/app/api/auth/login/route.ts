@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { AuthError } from "next-auth";
-import { signIn, resolveLoginTenants } from "@/lib/auth";
+import { signIn, resolveLoginTenants, verifyLoginPassword } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
   getClientIp,
@@ -68,6 +68,25 @@ export async function POST(request: Request) {
       await resetThrottle([ipKey, emailKey]);
       return NextResponse.json({ requiresTenantSelection: true, tenants: matches });
     }
+  }
+
+  // Phase 3B MFA (2026-08-29, AGENTS.md brief) : interrompt le flux *avant* toute création de
+  // session si l'utilisateur (mot de passe déjà validé ci-dessus, directement ou via
+  // resolveLoginTenants) a activé MFA — voir verifyLoginPassword, src/lib/auth.ts, pour la
+  // raison technique (authorize()/signIn() ne laissent aucun point d'interruption propre entre
+  // "mot de passe validé" et "session créée"). Utilisateur sans MFA : flux inchangé ci-dessous.
+  const verifiedUser = await verifyLoginPassword(email, password, tenantId);
+  if (!verifiedUser) {
+    await recordFailedAttempt(ipKey);
+    await recordFailedAttempt(emailKey);
+    return NextResponse.json({ error: "Identifiants invalides." }, { status: 401 });
+  }
+
+  if (verifiedUser.mfaEnabled) {
+    // Même principe que la sélection de tenant ci-dessus : mot de passe déjà prouvé correct,
+    // traité comme un succès pour le throttle bien qu'aucune session ne soit encore posée.
+    await resetThrottle([ipKey, emailKey]);
+    return NextResponse.json({ requiresMfa: true });
   }
 
   try {

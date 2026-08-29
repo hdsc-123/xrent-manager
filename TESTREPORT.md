@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1420/1420** (2026-08-29).
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1492/1492** (2026-08-29, Phase 3B MFA — voir HANDOFF.md Partie 18 et SECURITY.md section 44).
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -671,6 +671,44 @@ Migrations Prisma créées (`prisma/migrations/20260829152955_add_login_throttle
 | `npm run build` | — | vert | — | — |
 
 Suite complète (`node scripts/test-grouped.mjs`) non relancée dans cette session précise (hors périmètre demandé) — dernier résultat connu **1420/1420** (2026-08-29, avant ce reset ; le nouveau fichier `super-admin.test.ts` a été ajouté au registre `GROUPS` de `scripts/test-grouped.mjs`, à recompter lors de la prochaine exécution complète). Aucun secret (mot de passe, hash, valeur de `SUPER_ADMIN_EMAILS`) affiché dans aucune sortie de commande de cette session.
+
+## Tests session — Phase 3B MFA : intégration authentification, session, step-up, rate limiting, audit (2026-08-29, revue corrective incluse)
+
+**Contexte** : suite de la Phase 3A (schéma/primitives MFA, non listée séparément ici — voir SECURITY.md section 43). Phase 3B câble MFA à l'authentification en opt-in (aucune obligation), puis une revue corrective ciblée a vérifié précisément, route par route, ce qui est réellement protégé. Détail technique complet : HANDOFF.md Partie 18/19, SECURITY.md section 44.
+
+### Tests réellement exécutés et verts (suite complète)
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| Unitaires/Intégration (`node scripts/test-grouped.mjs`) | 1492 | 1492 | 0 | 0 |
+| `npx prisma validate` | — | vert | — | — |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+### Tests de routes MFA (`src/__tests__/mfa-routes.test.ts`, nouveau, 24 tests d'intégration HTTP réels contre `xrent_test`)
+
+Couvre exclusivement les routes `/api/mfa/*` et `/api/auth/mfa/verify` elles-mêmes : enrôlement authentifié, refus visiteur non authentifié, refus de ciblage d'un autre utilisateur par identifiant fourni dans le corps, secret jamais stocké en clair, remplacement d'un enrôlement non confirmé, confirmation valide/invalide/rate-limitée (429 au seuil), codes de récupération retournés une seule fois et non rejouables, hash uniquement en base, absence de secret/code dans `AuditLog`, login sans MFA inchangé, login avec MFA interrompu sans code (aucun cookie posé), connexion complète par code TOTP et par code de récupération, refus de code/mot de passe invalide sans distinction de message, rate limiting dédié à la connexion MFA (clé distincte du throttle mot de passe), isolation entre tenants, création/expiration/purge d'une preuve de step-up (testée isolément via `hasValidStepUp`/`purgeStepUpProofs`, jamais via une route métier — voir ci-dessous).
+
+**Ce que ces 24 tests ne couvrent PAS** : aucune route métier (facturation, caisse, audit, permissions, reset de données, création de tenant) — ces routes n'ont reçu aucun nouveau test dans cette phase parce qu'elles n'ont reçu aucune nouvelle protection MFA (voir « Tests manquants » ci-dessous).
+
+### Tests manquants pour la Phase 3C (aucun n'existe à ce jour, car aucune route métier ne consomme encore le step-up)
+
+- Step-up accepté avec preuve serveur fraîche, sur une vraie route métier (dépend du câblage Phase 3C).
+- Step-up refusé après expiration de `MfaStepUpProof`, sur une vraie route métier.
+- Step-up refusé quand la preuve provient d'une autre session (`sessionId` différent) — testable aujourd'hui uniquement en manipulant directement la base, aucun test HTTP bout-en-bout avec deux connexions réelles distinctes du même compte.
+- Step-up invalidé après rotation de `mfaSecurityStamp` — **impossible à écrire aujourd'hui**, aucune route ne rote ce stamp après l'activation initiale (pas de désactivation/reset MFA implémenté).
+- Un test de protection par route sensible, pour chacune des 10 routes suivantes, une fois câblées : `DELETE /api/audit/[id]`, `POST /api/audit/bulk-delete`, `GET`/`POST /api/audit/purge`, `DELETE /api/invoices/[id]`, `PATCH`/`DELETE /api/cash-register/[id]`, `POST /api/damage-invoices/[id]/cancel`, `PATCH /api/users/[id]/permissions`, `PATCH /api/users/[id]` (changement de rôle), `GET`/`POST /api/data-reset`, `POST /api/tenants` (Super Admin).
+- Vérification qu'aucune écriture ne se produit avant le contrôle de step-up (pattern déjà respecté par toutes les gardes existantes du projet, à reproduire une fois le step-up câblé).
+- Tests du reset/récupération MFA (auto-régénération de codes, désactivation self-service, reset admin-assisté avec séparation acteur/cible, intervention opérateur pour Super Admin unique) — aucun n'existe, aucune de ces routes n'est encore conçue au-delà de l'analyse documentée (HANDOFF.md).
+
+### Limites connues de la Phase 3B (confirmées par la revue corrective, pas de nouveau code)
+
+- Le step-up MFA (`POST /api/mfa/step-up/verify`, `MfaStepUpProof`) est implémenté et testé **isolément**, mais n'est consommé par **aucune** route métier — confirmé par grep exhaustif de `src/app/api/**` en dehors de `src/app/api/mfa/*`.
+- Les 10 routes sensibles listées ci-dessus restent protégées uniquement par leurs contrôles actuels (rôle/permission/agence, tous vérifiés côté serveur avant écriture) — aucune n'exige de preuve MFA fraîche à ce jour.
+- Aucun mécanisme de reset/récupération MFA n'existe (perte de téléphone, perte des codes, appareil compromis, Super Admin unique) — analysé et documenté (HANDOFF.md), non implémenté.
+- Aucune révocation de session n'existe : un cookie JWT déjà émis reste valide jusqu'à expiration naturelle (jusqu'à 30 jours), y compris après un futur reset MFA de son titulaire — limite structurelle des sessions JWT stateless, déjà documentée SECURITY.md section 5, non résolue par cette phase.
 
 ## 4. Format attendu des futurs rapports
 

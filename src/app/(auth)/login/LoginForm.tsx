@@ -19,6 +19,7 @@ interface LoginResponse {
   user?: { id: string; tenantId: string; email: string; name: string; role: string };
   requiresTenantSelection?: boolean;
   tenants?: { id: string; name: string }[];
+  requiresMfa?: boolean;
 }
 
 export function LoginForm() {
@@ -32,6 +33,13 @@ export function LoginForm() {
   const [tenants, setTenants] = useState<{ id: string; name: string }[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Phase 3B MFA (2026-08-29, AGENTS.md brief) : compte avec MFA activée — interrompt le flux
+  // après mot de passe validé, avant toute session, voir POST /api/auth/login (requiresMfa) et
+  // POST /api/auth/mfa/verify. selectedTenantId conserve le tenant déjà résolu (le cas échéant)
+  // pour le second appel, jamais redemandé à l'utilisateur.
+  const [requiresMfa, setRequiresMfa] = useState(false);
+  const [mfaCode, setMfaCode] = useState("");
+  const [selectedTenantId, setSelectedTenantId] = useState<string | undefined>(undefined);
 
   async function submitLogin(tenantId?: string) {
     setError(null);
@@ -50,6 +58,36 @@ export function LoginForm() {
         return;
       }
 
+      if (result.requiresMfa) {
+        setSelectedTenantId(tenantId);
+        setRequiresMfa(true);
+        return;
+      }
+
+      toast.success("Connexion réussie.");
+      router.push(callbackUrl);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Une erreur est survenue. Veuillez réessayer.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function submitMfaCode(event: React.FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setIsSubmitting(true);
+
+    try {
+      await apiPost<LoginResponse>("/api/auth/mfa/verify", {
+        email,
+        password,
+        tenantId: selectedTenantId,
+        rememberMe,
+        code: mfaCode,
+      });
+
       toast.success("Connexion réussie.");
       router.push(callbackUrl);
       router.refresh();
@@ -63,6 +101,59 @@ export function LoginForm() {
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     await submitLogin();
+  }
+
+  if (requiresMfa) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Vérification en deux étapes</CardTitle>
+          <CardDescription>
+            Entrez le code à 6 chiffres de votre application d&apos;authentification, ou l&apos;un
+            de vos codes de récupération.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={submitMfaCode} noValidate className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="mfaCode" required>Code</Label>
+              <Input
+                id="mfaCode"
+                name="mfaCode"
+                type="text"
+                autoComplete="one-time-code"
+                required
+                value={mfaCode}
+                onChange={(event) => setMfaCode(event.target.value)}
+                aria-invalid={Boolean(error)}
+              />
+            </div>
+
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+
+            <Button type="submit" disabled={isSubmitting} className="w-full">
+              {isSubmitting ? "Vérification..." : "Vérifier"}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setRequiresMfa(false);
+                setMfaCode("");
+                setError(null);
+              }}
+            >
+              Retour
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+    );
   }
 
   if (tenants) {

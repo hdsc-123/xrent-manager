@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import NextAuth, { type DefaultSession } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import { PrismaAdapter } from "@auth/prisma-adapter";
@@ -13,6 +14,25 @@ declare module "next-auth" {
       id: string;
       tenantId: string;
       role: string;
+      /**
+       * Phase 3B MFA (2026-08-29) : identifiant opaque de session, généré une seule fois à la
+       * connexion initiale (voir callback jwt() ci-dessous) et conservé tel quel pour toute la
+       * durée de vie de ce JWT — jamais régénéré par un rafraîchissement (trigger "update").
+       * Sert uniquement de clé d'appariement pour MfaStepUpProof (@@unique([userId, sessionId]),
+       * prisma/schema.prisma) : ce n'est pas une preuve en soi (un JWT signé n'est pas
+       * révocable unilatéralement côté serveur, voir SECURITY.md section 5) — la révocabilité
+       * réelle vient de MfaStepUpProof lui-même (ligne Postgres, purgée à la rotation de
+       * mfaSecurityStamp), pas de ce claim. Adaptation minimale de l'architecture JWT existante,
+       * documentée dans le rapport de Phase 3B — ne transforme pas la stratégie de session en
+       * sessions "database".
+       *
+       * Optionnel (et non `string`) délibérément : un JWT déjà émis avant l'introduction de ce
+       * claim ne l'a pas (voir le callback session() ci-dessous, qui ne le copie que s'il est
+       * présent sur le token) — tout consommateur doit donc gérer son absence explicitement
+       * (refuser le step-up, jamais fabriquer une valeur de repli), plutôt que de prétendre
+       * (via un typage `string` non optionnel) qu'il est toujours au rendez-vous.
+       */
+      sessionId?: string;
     } & DefaultSession["user"];
   }
 }
@@ -21,6 +41,7 @@ interface ExtendedToken {
   id?: string;
   tenantId?: string;
   role?: string;
+  sessionId?: string;
 }
 
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 jours ("se souvenir de moi" coché)
@@ -52,6 +73,52 @@ export async function resolveLoginTenants(
   }
 
   return matches;
+}
+
+export interface VerifiedLoginUser {
+  id: string;
+  email: string;
+  name: string;
+  tenantId: string;
+  role: string;
+  mfaEnabled: boolean;
+}
+
+/**
+ * Phase 3B MFA (2026-08-29) : même lookup + `bcrypt.compare` que `authorize()` ci-dessous,
+ * extrait pour être appelé *avant* `signIn()` par `POST /api/auth/login` — il faut connaître
+ * `mfaEnabled` pour décider d'interrompre le flux avant la création de session, ce que
+ * `authorize()` ne permet pas (il crée la session dès qu'il retourne un utilisateur). Ne
+ * remplace pas `authorize()` (qui reste la source de vérité réelle pour `signIn()`), simple
+ * duplication assumée du même contrôle — même principe déjà en place pour
+ * `resolveLoginTenants` ci-dessus.
+ */
+export async function verifyLoginPassword(
+  email: string,
+  password: string,
+  tenantId?: string
+): Promise<VerifiedLoginUser | null> {
+  const user = tenantId
+    ? await prisma.user.findUnique({ where: { tenantId_email: { tenantId, email } } })
+    : await prisma.user.findFirst({ where: { email } });
+
+  if (!user?.passwordHash) {
+    return null;
+  }
+
+  const isValidPassword = await bcrypt.compare(password, user.passwordHash);
+  if (!isValidPassword) {
+    return null;
+  }
+
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    tenantId: user.tenantId,
+    role: user.role,
+    mfaEnabled: user.mfaEnabled,
+  };
 }
 
 /**
@@ -128,6 +195,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         extendedToken.id = user.id;
         extendedToken.tenantId = (user as { tenantId: string }).tenantId;
         extendedToken.role = (user as { role: string }).role;
+        // Phase 3B MFA : identifiant de session opaque, généré une seule fois à la connexion
+        // initiale (voir le commentaire sur Session.user.sessionId ci-dessus) — jamais régénéré
+        // par le rafraîchissement trigger === "update" ci-dessous.
+        extendedToken.sessionId = crypto.randomUUID();
         const rememberMe = (user as { rememberMe?: boolean }).rememberMe;
         const maxAge = rememberMe === false ? SESSION_SHORT_MAX_AGE_SECONDS : SESSION_MAX_AGE_SECONDS;
         extendedToken.exp = Math.floor(Date.now() / 1000) + maxAge;
@@ -162,6 +233,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         session.user.id = extendedToken.id;
         session.user.tenantId = extendedToken.tenantId;
         session.user.role = extendedToken.role;
+        // Phase 3B MFA : absent sur un JWT déjà émis avant ce changement (utilisateur
+        // reconnecté normalement à sa prochaine connexion, jamais de déconnexion forcée pour
+        // cette seule raison) — tout consommateur (step-up) doit donc traiter ce champ comme
+        // potentiellement absent malgré le typage, et refuser le step-up dans ce cas plutôt que
+        // de fabriquer une valeur de repli.
+        if (extendedToken.sessionId) {
+          session.user.sessionId = extendedToken.sessionId;
+        }
       }
       return session;
     },

@@ -54,6 +54,28 @@ export function emailThrottleKey(email: string): string {
 }
 
 /**
+ * Phase 3B MFA (2026-08-29, AGENTS.md brief) : clés de throttle dédiées, distinctes de
+ * `emailThrottleKey`/`ipThrottleKey` ci-dessus — un contexte de connexion MFA (code TOTP après
+ * mot de passe déjà validé) ne doit jamais partager son compteur avec le mot de passe seul,
+ * pour ne jamais masquer/diluer l'un par l'autre. Trois catégories séparées (spec explicite) :
+ * connexion par code TOTP, connexion par code de récupération, confirmation d'enrôlement.
+ * Réutilisent les mêmes primitives génériques (`isLocked`/`recordFailedAttempt`/
+ * `resetThrottle`, toutes scopées sur `keys: string[]`) — aucune nouvelle logique de fenêtre/
+ * palier, uniquement de nouvelles clés.
+ */
+export function mfaLoginThrottleKey(email: string): string {
+  return `mfa-login:${email.trim().toLowerCase()}`;
+}
+
+export function mfaRecoveryThrottleKey(email: string): string {
+  return `mfa-recovery:${email.trim().toLowerCase()}`;
+}
+
+export function mfaEnrollConfirmThrottleKey(userId: string): string {
+  return `mfa-enroll-confirm:${userId}`;
+}
+
+/**
  * Adresse IP du client. `x-forwarded-for` peut contenir plusieurs adresses séparées par des
  * virgules (proxys successifs) — seule la première (la plus proche du client) est retenue.
  * En développement local (aucun proxy), ces en-têtes sont absents : toutes les requêtes sans
