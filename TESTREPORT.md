@@ -322,8 +322,21 @@ Détail complet de chaque entrée ci-dessous (fichiers de test, nombre exact, pa
 | 2026-08-29 | Correctif préexistant `getInvoices` — filtres `from`/`to` combinés de `GET /api/invoices` (INC-22) |
 | 2026-08-29 | Suppression multiple des réservations (confirmation), recherche par numéro de contrat, jeu de données QA facturation |
 | 2026-08-29 | Revue approfondie de l'import Excel des réservations — validation calendaire stricte des dates françaises, normalisation Unicode NFC des villes (INC-23) |
+| 2026-08-29 | Affichage du supplément de surclassement (`LocationUpgrade`) sur la fiche contrat, la fiche facture, le contrat PDF et la facture PDF (unitaires + lots) |
 
 ### Rapports récents (détail complet ci-dessous, pas archivés)
+
+## Tests session — affichage du supplément de surclassement (`LocationUpgrade`) sur la fiche contrat, la fiche facture et les PDF (2026-08-29)
+
+**Contexte** : brief explicite du propriétaire du projet — point resté ouvert depuis la Partie F du 2026-08-27 (voir HANDOFF.md section 7) : une fois un surclassement enregistré (voir DOMAINRULES.md section 70), `Location.totalPrice`/`Invoice.totalAmount` l'intègrent déjà correctement, mais aucun écran n'expliquait visuellement pourquoi. Portée strictement limitée à l'affichage : aucune nouvelle logique de calcul, aucun nouveau champ, aucun changement de schéma ni de workflow métier — uniquement la lecture de `LocationUpgrade` (déjà exposé par `getLocationUpgradeByLocationId`, `src/lib/location-upgrades.ts`) sur les écrans qui ne l'affichaient pas encore.
+
+**Écrans corrigés** : fiche contrat (`/dashboard/locations/[id]`), fiche facture (`/dashboard/invoices/[id]`), contrat PDF unitaire (`GET /api/locations/[id]/pdf`) et de lot (`POST /api/documents/batch-pdf`, type `CONTRACT`), facture PDF unitaire (`GET /api/invoices/[id]/pdf`) et de lot (même route, type `INVOICE`). Chaque écran affiche, uniquement si un surclassement existe pour le contrat : type (libellé court, mêmes intitulés que `ConvertReservationForm.tsx`), catégorie réservée → catégorie attribuée, supplément par jour, jours concernés, total du supplément, avec la mention explicite « Déjà inclus dans le Total/total ci-dessus » — jamais un second total recalculé côté client. Les PDF de lot chargent les surclassements du lot concerné en une seule requête (`prisma.locationUpgrade.findMany`), jamais en boucle (pas de N+1).
+
+**Tests ajoutés** : `src/__tests__/reservations.test.ts`, describe existant « POST /api/reservations/[id]/convert — surclassement », 4 nouveaux tests (9-12) — fiche contrat avec surclassement (type/catégories/montants corrects, total final présent une seule fois, jamais le total + supplément réaffiché en double) ; fiche facture avec surclassement (même contrôle) ; location sans surclassement (aucune carte affichée sur la fiche contrat ni la fiche facture — repérée par le texte propre de la carte, jamais par le mot « Surclassement » seul, qui apparaît légitimement dans le nom du client fictif de ce describe) ; PDF contrat et PDF facture toujours générés (200, `Content-Type: application/pdf`) lorsqu'un surclassement existe (non-régression du rendu `@react-pdf/renderer`, pas de test de contenu PDF — aucun outil de parsing PDF dans ce dépôt, convention déjà établie).
+
+**Résultats** : describe ciblé (`-t "surclassement"`) — **21/21** (17 existants + 4 nouveaux). Suite complète `node scripts/test-grouped.mjs` — **1411/1411**, 0 échec/timeout/résiduel (1407 + 4 nouveaux). `npx tsc --noEmit`/`npm run lint`/`npm run build`/`git diff --check` tous verts.
+
+**Fichiers modifiés** : `src/app/dashboard/locations/[id]/page.tsx`, `src/app/dashboard/invoices/[id]/page.tsx`, `src/components/contracts/ContractPdf.tsx`, `src/components/invoices/InvoicePdf.tsx`, `src/app/api/locations/[id]/pdf/route.tsx`, `src/app/api/invoices/[id]/pdf/route.tsx`, `src/app/api/documents/batch-pdf/route.tsx`, `src/__tests__/reservations.test.ts`, `DOMAINRULES.md` (section 70), `TESTREPORT.md` (cette entrée), `HANDOFF.md`.
 
 ## Tests session — revue approfondie de l'import Excel des réservations, dates et villes (2026-08-29)
 

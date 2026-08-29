@@ -8,6 +8,14 @@ import { InvoicePdfPage } from "@/components/invoices/InvoicePdf";
 
 type BatchType = "CONTRACT" | "INVOICE";
 
+// Mêmes libellés que UPGRADE_TYPE_OPTIONS (ConvertReservationForm.tsx), raccourcis pour
+// l'affichage en lecture seule (contexte déjà donné par la ligne "Surclassement" du PDF).
+const UPGRADE_TYPE_LABELS: Record<string, string> = {
+  CUSTOMER_REQUEST: "Demande du client",
+  UNAVAILABILITY: "Indisponibilité de la catégorie réservée",
+  COMMERCIAL_GESTURE: "Geste commercial",
+};
+
 interface BatchPdfBody {
   type?: BatchType;
   ids?: string[];
@@ -204,6 +212,25 @@ export async function POST(request: Request) {
     });
     const agencyNameById = new Map(agencies.map((agency) => [agency.id, agency.name]));
 
+    // Surclassements du lot, chargés en une seule requête (pas de N+1) — voir
+    // GET /api/locations/[id]/pdf pour l'équivalent unitaire.
+    const upgrades = await prisma.locationUpgrade.findMany({
+      where: { tenantId: user.tenantId, locationId: { in: locations.map((location) => location.id) } },
+    });
+    const upgradeByLocationId = new Map(
+      upgrades.map((upgrade) => [
+        upgrade.locationId,
+        {
+          typeLabel: UPGRADE_TYPE_LABELS[upgrade.type] ?? upgrade.type,
+          reservedCategory: upgrade.reservedCategory,
+          assignedCategory: upgrade.assignedCategory,
+          dailySupplement: upgrade.dailySupplement,
+          daysCount: upgrade.daysCount,
+          totalSupplement: upgrade.totalSupplement,
+        },
+      ])
+    );
+
     const buffer = await renderToBuffer(
       <Document title={`Lot de contrats (${locations.length})`}>
         {locations.map((location) => (
@@ -230,6 +257,7 @@ export async function POST(request: Request) {
             endOdometer={location.endOdometer}
             currency={location.currency}
             notes={location.notes}
+            upgrade={upgradeByLocationId.get(location.id) ?? null}
           />
         ))}
       </Document>
@@ -294,6 +322,28 @@ export async function POST(request: Request) {
       : [];
   const replacedNumberById = new Map(replacedInvoices.map((invoice) => [invoice.id, invoice.number]));
 
+  // Surclassements du lot, chargés en une seule requête (pas de N+1) — même principe que le
+  // branchement CONTRACT ci-dessus.
+  const invoiceUpgrades = await prisma.locationUpgrade.findMany({
+    where: {
+      tenantId: user.tenantId,
+      locationId: { in: invoices.map((invoice) => invoice.locationId) },
+    },
+  });
+  const upgradeByLocationIdForInvoices = new Map(
+    invoiceUpgrades.map((upgrade) => [
+      upgrade.locationId,
+      {
+        typeLabel: UPGRADE_TYPE_LABELS[upgrade.type] ?? upgrade.type,
+        reservedCategory: upgrade.reservedCategory,
+        assignedCategory: upgrade.assignedCategory,
+        dailySupplement: upgrade.dailySupplement,
+        daysCount: upgrade.daysCount,
+        totalSupplement: upgrade.totalSupplement,
+      },
+    ])
+  );
+
   const buffer = await renderToBuffer(
     <Document title={`Lot de factures (${invoices.length})`}>
       {invoices.map((invoice) => (
@@ -324,6 +374,7 @@ export async function POST(request: Request) {
           amountPaid={invoice.amountPaid}
           currency={invoice.currency}
           notes={invoice.notes}
+          upgrade={upgradeByLocationIdForInvoices.get(invoice.locationId) ?? null}
         />
       ))}
     </Document>

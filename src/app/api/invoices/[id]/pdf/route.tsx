@@ -3,6 +3,7 @@ import { renderToBuffer } from "@react-pdf/renderer";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getInvoiceById, getInvoiceNetAmounts, getCreditNoteRefundableAmount } from "@/lib/invoices";
+import { getLocationUpgradeByLocationId } from "@/lib/location-upgrades";
 import { prisma } from "@/lib/prisma";
 import { InvoicePdf } from "@/components/invoices/InvoicePdf";
 import { CreditNotePdf } from "@/components/invoices/CreditNotePdf";
@@ -10,6 +11,14 @@ import { CreditNotePdf } from "@/components/invoices/CreditNotePdf";
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
+
+// Mêmes libellés que UPGRADE_TYPE_OPTIONS (ConvertReservationForm.tsx), raccourcis pour
+// l'affichage en lecture seule (contexte déjà donné par la ligne "Surclassement" du PDF).
+const UPGRADE_TYPE_LABELS: Record<string, string> = {
+  CUSTOMER_REQUEST: "Demande du client",
+  UNAVAILABILITY: "Indisponibilité de la catégorie réservée",
+  COMMERCIAL_GESTURE: "Geste commercial",
+};
 
 export async function GET(_request: Request, { params }: RouteParams) {
   const user = await getSessionUser();
@@ -104,6 +113,18 @@ export async function GET(_request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Données de facture incomplètes." }, { status: 500 });
   }
 
+  const locationUpgrade = await getLocationUpgradeByLocationId(user.tenantId, location.id);
+  const upgrade = locationUpgrade
+    ? {
+        typeLabel: UPGRADE_TYPE_LABELS[locationUpgrade.type] ?? locationUpgrade.type,
+        reservedCategory: locationUpgrade.reservedCategory,
+        assignedCategory: locationUpgrade.assignedCategory,
+        dailySupplement: locationUpgrade.dailySupplement,
+        daysCount: locationUpgrade.daysCount,
+        totalSupplement: locationUpgrade.totalSupplement,
+      }
+    : null;
+
   const buffer = await renderToBuffer(
     <InvoicePdf
       tenantName={tenant.name}
@@ -131,6 +152,7 @@ export async function GET(_request: Request, { params }: RouteParams) {
       amountPaid={invoice.amountPaid}
       currency={invoice.currency}
       notes={invoice.notes}
+      upgrade={upgrade}
     />
   );
 

@@ -77,6 +77,18 @@ export interface InvoicePdfProps {
   amountPaid: number;
   currency: string;
   notes: string | null;
+  /** Surclassement (LocationUpgrade) — `null` si aucun n'a été enregistré pour le contrat
+   * source de cette facture. `totalSupplement` est purement descriptif ici : déjà compris dans
+   * `subtotal`/`totalAmount` (Location.totalPrice l'inclut déjà, voir POST
+   * /api/reservations/[id]/convert, étape 7bis), jamais rajouté une seconde fois au total. */
+  upgrade: {
+    typeLabel: string;
+    reservedCategory: string;
+    assignedCategory: string;
+    dailySupplement: number;
+    daysCount: number;
+    totalSupplement: number;
+  } | null;
 }
 
 /**
@@ -139,6 +151,14 @@ export function InvoicePdfPage(props: InvoicePdfProps) {
             <Text style={styles.colAmount}>{formatMoneyPdf(props.subtotal, props.currency)}</Text>
           </View>
         </View>
+        {props.upgrade && (
+          <Text style={{ marginTop: 6, color: "#555555" }}>
+            Surclassement ({props.upgrade.typeLabel}) : {props.upgrade.reservedCategory} →{" "}
+            {props.upgrade.assignedCategory} — {props.upgrade.daysCount} jour(s) ×{" "}
+            {formatMoneyPdf(props.upgrade.dailySupplement, props.currency)} ={" "}
+            {formatMoneyPdf(props.upgrade.totalSupplement, props.currency)} (inclus dans le sous-total)
+          </Text>
+        )}
       </View>
 
       <View style={styles.totalsBlock}>

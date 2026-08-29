@@ -12,6 +12,7 @@ import { createClient } from "@/lib/clients";
 import { createLocation } from "@/lib/locations";
 import { createInvoice, updateInvoice } from "@/lib/invoices";
 import { createPayment, PaymentExceedsRemainingBalanceError } from "@/lib/payments";
+import { formatMoney } from "@/lib/format";
 import { apiFetch } from "./helpers/http";
 import { TEST_BASE_URL } from "./helpers/testServer";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
@@ -3918,6 +3919,153 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
 
     const upgradeCount = await prisma.locationUpgrade.count({ where: { vehicleId: deactivatedVehicleId } });
     expect(upgradeCount).toBe(0);
+  });
+
+  // Point 1 (2026-08-29) : affichage du supplément de surclassement (déjà calculé/persisté par
+  // le serveur ci-dessus, jamais recalculé côté interface) sur la fiche contrat
+  // (/dashboard/locations/[id]), la fiche facture (/dashboard/invoices/[id]) et les PDF
+  // (contrat + facture). Aucune nouvelle logique de calcul : ces tests vérifient uniquement la
+  // lecture/le rendu des champs déjà exposés par LocationUpgrade.
+
+  it("9. contrat avec surclassement : /dashboard/locations/[id] affiche le détail, sans dupliquer le total final", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: suvVehicleId,
+          pricePerDay: 8000,
+          upgrade: {
+            type: "CUSTOMER_REQUEST",
+            dailySupplement: 1500,
+            customerConsent: true,
+            reason: "Test affichage — fiche contrat.",
+          },
+        })
+      ),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.upgrade.totalSupplement).toBe(4500);
+    expect(body.location.totalPrice).toBe(28500);
+
+    const pageResponse = await apiFetch(`/dashboard/locations/${body.location.id}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(pageResponse.status).toBe(200);
+    const html = await pageResponse.text();
+
+    expect(html).toContain("Surclassement");
+    expect(html).toContain("Demande du client");
+    expect(html).toContain("Catégorie réservée");
+    expect(html).toContain("Catégorie attribuée");
+    expect(html).toContain(formatMoney(1500, body.upgrade.currency)); // supplément / jour
+    expect(html).toContain(formatMoney(4500, body.upgrade.currency)); // total du supplément
+    expect(html).toContain("Déjà inclus dans le Total ci-dessus.");
+    // Le total final (28500) inclut déjà le supplément (28500 = 24000 + 4500, vérifié via
+    // l'API ci-dessus) : il ne doit jamais être réaffiché en y ajoutant une seconde fois le
+    // supplément détaillé de la carte "Surclassement" (ce qui donnerait à tort 33000).
+    expect(html).toContain(formatMoney(28500, body.location.currency));
+    expect(html).not.toContain(formatMoney(28500 + 4500, body.location.currency));
+  });
+
+  it("10. facture avec surclassement : /dashboard/invoices/[id] affiche le détail, sans dupliquer le total final", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: suvVehicleId,
+          pricePerDay: 8000,
+          upgrade: { type: "COMMERCIAL_GESTURE", dailySupplement: 200, reason: "Test affichage — facture." },
+        })
+      ),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.upgrade.totalSupplement).toBe(600);
+    expect(body.invoice.totalAmount).toBe(24600);
+
+    const pageResponse = await apiFetch(`/dashboard/invoices/${body.invoice.id}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(pageResponse.status).toBe(200);
+    const html = await pageResponse.text();
+
+    expect(html).toContain("Surclassement");
+    expect(html).toContain("Geste commercial");
+    expect(html).toContain(formatMoney(200, body.upgrade.currency));
+    expect(html).toContain(formatMoney(600, body.upgrade.currency));
+    expect(html).toContain("Déjà inclus dans le total ci-dessus.");
+    // Même contrôle que pour la fiche contrat (test 9) : 24600 = 24000 + 600 (vérifié via
+    // l'API ci-dessus), jamais réaffiché en y ajoutant une seconde fois le supplément détaillé.
+    expect(html).toContain(formatMoney(24600, body.invoice.currency));
+    expect(html).not.toContain(formatMoney(24600 + 600, body.invoice.currency));
+  });
+
+  it("11. location sans surclassement : aucune carte « Surclassement » sur la fiche contrat ni la facture", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBody(reservation, { vehicleId: citadineTwinVehicleId, pricePerDay: 5000 })),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.upgrade).toBeNull();
+
+    // Le nom du client fictif de ce describe contient lui-même le mot "Surclassement"
+    // (createReservationWithCategory, voir clientFirstName ci-dessus) — la carte dédiée est
+    // donc repérée par son texte propre ("Déjà inclus..."), jamais par le mot "Surclassement"
+    // seul, qui apparaît légitimement ailleurs sur la page (nom du client).
+    const locationPage = await apiFetch(`/dashboard/locations/${body.location.id}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(locationPage.status).toBe(200);
+    expect(await locationPage.text()).not.toContain("Déjà inclus dans le Total ci-dessus.");
+
+    const invoicePage = await apiFetch(`/dashboard/invoices/${body.invoice.id}`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(invoicePage.status).toBe(200);
+    expect(await invoicePage.text()).not.toContain("Déjà inclus dans le total ci-dessus.");
+  });
+
+  it("12. PDF contrat et PDF facture générés sans erreur lorsqu'un surclassement existe", async () => {
+    const reservation = await createReservationWithCategory("Citadine");
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(
+        convertBody(reservation, {
+          vehicleId: suvVehicleId,
+          pricePerDay: 8000,
+          upgrade: {
+            type: "CUSTOMER_REQUEST",
+            dailySupplement: 1000,
+            customerConsent: true,
+            reason: "Test affichage — PDF.",
+          },
+        })
+      ),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.upgrade).toBeTruthy();
+
+    const contractPdf = await apiFetch(`/api/locations/${body.location.id}/pdf`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(contractPdf.status).toBe(200);
+    expect(contractPdf.headers.get("content-type")).toBe("application/pdf");
+
+    const invoicePdf = await apiFetch(`/api/invoices/${body.invoice.id}/pdf`, {
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(invoicePdf.status).toBe(200);
+    expect(invoicePdf.headers.get("content-type")).toBe("application/pdf");
   });
 });
 

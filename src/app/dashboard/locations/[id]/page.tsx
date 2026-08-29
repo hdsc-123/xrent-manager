@@ -5,6 +5,7 @@ import { getSessionUser, canAccessAgency, canAccessLocationAgency } from "@/lib/
 import { can } from "@/lib/permissions";
 import { getLocationById } from "@/lib/locations";
 import { getLocationChain } from "@/lib/location-chains";
+import { getLocationUpgradeByLocationId } from "@/lib/location-upgrades";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/format";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Icon } from "@/components/ui";
@@ -22,6 +23,14 @@ const STATUS_LABELS: Record<string, string> = {
   ACTIVE: "En cours",
   COMPLETED: "Terminée",
   CANCELLED: "Annulée",
+};
+
+// Mêmes libellés que UPGRADE_TYPE_OPTIONS (ConvertReservationForm.tsx), raccourcis pour
+// l'affichage en lecture seule (contexte déjà donné par le titre de la carte).
+const UPGRADE_TYPE_LABELS: Record<string, string> = {
+  CUSTOMER_REQUEST: "Demande du client",
+  UNAVAILABILITY: "Indisponibilité de la catégorie réservée",
+  COMMERCIAL_GESTURE: "Geste commercial",
 };
 
 export default async function LocationDetailPage({ params }: PageProps) {
@@ -80,17 +89,19 @@ export default async function LocationDetailPage({ params }: PageProps) {
   const canCreateExtension =
     location.status === "ACTIVE" && hasPickupAccess && (isAdmin || hasExtensionCreate);
 
-  const [vehicle, client, secondDriver, agency, dropoffAgency, invoice, existingChild] = await Promise.all([
-    prisma.vehicle.findUnique({ where: { id: location.vehicleId } }),
-    prisma.client.findUnique({ where: { id: location.clientId } }),
-    location.secondDriverId ? prisma.client.findUnique({ where: { id: location.secondDriverId } }) : null,
-    prisma.agency.findUnique({ where: { id: location.agencyId }, select: { name: true } }),
-    location.dropoffAgencyId
-      ? prisma.agency.findUnique({ where: { id: location.dropoffAgencyId }, select: { name: true } })
-      : null,
-    prisma.invoice.findFirst({ where: { locationId: location.id }, orderBy: { createdAt: "desc" } }),
-    prisma.location.findFirst({ where: { parentLocationId: location.id }, select: { id: true } }),
-  ]);
+  const [vehicle, client, secondDriver, agency, dropoffAgency, invoice, existingChild, upgrade] =
+    await Promise.all([
+      prisma.vehicle.findUnique({ where: { id: location.vehicleId } }),
+      prisma.client.findUnique({ where: { id: location.clientId } }),
+      location.secondDriverId ? prisma.client.findUnique({ where: { id: location.secondDriverId } }) : null,
+      prisma.agency.findUnique({ where: { id: location.agencyId }, select: { name: true } }),
+      location.dropoffAgencyId
+        ? prisma.agency.findUnique({ where: { id: location.dropoffAgencyId }, select: { name: true } })
+        : null,
+      prisma.invoice.findFirst({ where: { locationId: location.id }, orderBy: { createdAt: "desc" } }),
+      prisma.location.findFirst({ where: { parentLocationId: location.id }, select: { id: true } }),
+      getLocationUpgradeByLocationId(user.tenantId, location.id),
+    ]);
 
   // Sprint technique 2 (DOMAINRULES.md section 60, règle 12) : chaîne contractuelle + soldes
   // (individuel par contrat + consolidé). Erreur contrôlée : une panne de ce bloc de lecture
@@ -229,6 +240,41 @@ export default async function LocationDetailPage({ params }: PageProps) {
           )}
         </CardContent>
       </Card>
+
+      {upgrade && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Surclassement</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 gap-4 text-sm">
+            <div className="col-span-2">
+              <p className="text-xs font-medium text-muted-foreground">Type</p>
+              <p>{UPGRADE_TYPE_LABELS[upgrade.type] ?? upgrade.type}</p>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">Catégorie réservée</p>
+              <p>{upgrade.reservedCategory}</p>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">Catégorie attribuée</p>
+              <p>{upgrade.assignedCategory}</p>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">Supplément / jour</p>
+              <p>{formatMoney(upgrade.dailySupplement, upgrade.currency)}</p>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">Jours concernés</p>
+              <p>{upgrade.daysCount}</p>
+            </div>
+            <div className="col-span-2">
+              <p className="text-xs font-medium text-muted-foreground">Total du supplément</p>
+              <p className="font-medium">{formatMoney(upgrade.totalSupplement, upgrade.currency)}</p>
+              <p className="text-xs text-muted-foreground">Déjà inclus dans le Total ci-dessus.</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {chain ? (
         <ContractChainSection chain={chain} />

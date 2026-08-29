@@ -72,6 +72,18 @@ export interface ContractPdfProps {
   endOdometer: number | null;
   currency: string;
   notes: string | null;
+  /** Surclassement (LocationUpgrade) — `null` si aucun n'a été enregistré pour ce contrat.
+   * `totalSupplement` est purement descriptif ici : déjà compris dans `totalPrice` (voir
+   * POST /api/reservations/[id]/convert, étape 7bis), jamais rajouté une seconde fois au total
+   * affiché en bas de page. */
+  upgrade: {
+    typeLabel: string;
+    reservedCategory: string;
+    assignedCategory: string;
+    dailySupplement: number;
+    daysCount: number;
+    totalSupplement: number;
+  } | null;
 }
 
 /**
@@ -136,6 +148,14 @@ export function ContractPdfPage(props: ContractPdfProps) {
         {(props.startOdometer !== null || props.endOdometer !== null) && (
           <Text style={{ marginTop: 6, color: "#555555" }}>
             Kilométrage : {props.startOdometer ?? "—"} km → {props.endOdometer ?? "—"} km
+          </Text>
+        )}
+        {props.upgrade && (
+          <Text style={{ marginTop: 6, color: "#555555" }}>
+            Surclassement ({props.upgrade.typeLabel}) : {props.upgrade.reservedCategory} →{" "}
+            {props.upgrade.assignedCategory} — {props.upgrade.daysCount} jour(s) ×{" "}
+            {formatMoneyPdf(props.upgrade.dailySupplement, props.currency)} ={" "}
+            {formatMoneyPdf(props.upgrade.totalSupplement, props.currency)} (inclus dans le total)
           </Text>
         )}
       </View>
