@@ -58,20 +58,43 @@ afterAll(async () => {
 });
 
 describe("Pages d'authentification", () => {
-  it("GET /login est accessible sans authentification et rend le formulaire", async () => {
+  it("GET /login est accessible sans authentification, rend le formulaire de connexion et n'affiche aucune inscription publique permettant de créer un tenant", async () => {
     const response = await apiFetch("/login");
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain('name="email"');
     expect(html).toContain('name="password"');
+    // 2026-08-29 : suppression du parcours d'inscription publique (DOMAINRULES.md — création
+    // de tenant réservée au Super Admin plateforme). Ni lien vers /register, ni formulaire de
+    // création de tenant (tenantName) ne doivent plus apparaître sur la page de connexion.
+    expect(html).not.toContain("/register");
+    expect(html).not.toContain('name="tenantName"');
   });
 
-  it("GET /register est accessible sans authentification et rend le formulaire", async () => {
+  it("GET /register n'existe plus (404) — la création de tenant n'est plus un parcours public", async () => {
     const response = await apiFetch("/register");
-    expect(response.status).toBe(200);
-    const html = await response.text();
-    expect(html).toContain('name="tenantName"');
-    expect(html).toContain('name="email"');
+    expect(response.status).toBe(404);
+  });
+
+  it("POST /api/auth/register n'existe plus — aucun visiteur non authentifié ne peut créer de tenant", async () => {
+    // Aucune route dédiée sous src/app/api/auth/register/ : le chemin retombe sur le
+    // catch-all NextAuth (src/app/api/auth/[...nextauth]/route.ts, qui intercepte tout
+    // /api/auth/* non explicitement routé ailleurs) — 400 "UnknownAction", jamais 201, et
+    // surtout aucun tenant/utilisateur n'est créé (vérifié ci-dessous).
+    const tenantSlug = "should-not-exist-anymore";
+    const response = await apiFetch("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({
+        tenantName: "Should Not Exist",
+        tenantSlug,
+        name: "Nobody",
+        email: "nobody-register-gone@test.local",
+        password: "Correct-Horse-Battery-Staple9!",
+      }),
+    });
+    expect(response.status).not.toBe(201);
+    const tenant = await prisma.tenant.findUnique({ where: { slug: tenantSlug } });
+    expect(tenant).toBeNull();
   });
 });
 

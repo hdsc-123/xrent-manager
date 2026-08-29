@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1407/1407** (2026-08-29).
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1420/1420** (2026-08-29).
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -632,6 +632,28 @@ Aucune donnée métier réelle modifiée ou supprimée (`xrent_dev` déjà vide)
 | `git diff --check` | — | vert | — | — |
 
 Aucun autre fichier de code modifié. Aucune donnée modifiée. Aucun commit créé, aucun push effectué. INC-19 clôturé (INCIDENTS.md).
+
+## Tests session — sécurisation de l'authentification : suppression de l'inscription publique, Super Admin plateforme, rate limiting de connexion (2026-08-29)
+
+**Contexte** : brief explicite du propriétaire du projet — empêcher un visiteur public de créer un tenant, réserver cette capacité à un Super Admin plateforme, permettre à l'ADMIN d'un tenant nouvellement créé de configurer villes/agences/utilisateurs, et implémenter le rate limiting de connexion déjà spécifié (SECURITY.md section 33) mais jamais codé. Détail métier complet : DOMAINRULES.md section 72.
+
+**Résultat** : `POST /api/auth/register` et la page `/register` retirés. `POST /api/tenants` (route existante, `GET` seul jusqu'ici) reprend la même logique de création (tenant + premier ADMIN, atomique) derrière une double garde `role === "ADMIN" && isSuperAdminEmail(email)` (`src/lib/super-admin.ts`, allowlist `SUPER_ADMIN_EMAILS`). Bootstrap hors HTTP : `scripts/bootstrap-superadmin.js` (nouveau). Rate limiting : nouveau modèle `LoginThrottle` (migration `20260829152955_add_login_throttle`), verrou de ligne (`SELECT ... FOR UPDATE`) dans `src/lib/login-throttle.ts`, câblé dans `POST /api/auth/login` — fenêtre glissante 15 min, verrouillage progressif 5/10/15 échecs → 1/5/15 min, vérifié par IP et par email, 429 générique, remise à zéro complète sur succès.
+
+**Infrastructure de test** : `registerTenantAdmin` (`src/__tests__/helpers/fixtures.ts`) réécrit pour créer tenant + ADMIN directement via Prisma plutôt que via l'ancienne route HTTP publique désormais retirée — aucun des 44 fichiers de test qui l'utilisent n'a nécessité de modification. Nouvelle fonction `createTenantAdmin` (sans connexion) pour les 2 cas où deux tenants partagent volontairement un même email (`auth.test.ts`, `e2e-full.test.ts`). `apiFetch` (`src/__tests__/helpers/http.ts`) envoie désormais par défaut une IP synthétique aléatoire distincte à chaque appel (`x-forwarded-for`), pour qu'aucun des tests de la suite ne collisionne involontairement sur la clé de throttle IP partagée par le serveur `next dev` de test.
+
+**Incident non lié trouvé et corrigé en cours de tâche (INC-24)** : `xrent_test` avait un registre `_prisma_migrations` désynchronisé de son schéma physique réel pour une migration antérieure (même classe de défaut que la découverte du 2026-08-28 sur `xrent_dev`) — bloquait `prisma migrate deploy` pour `add_login_throttle`. Corrigé par `prisma migrate resolve --applied` après vérification exhaustive (checksum, colonnes, index, FK, enum) sur autorisation explicite du propriétaire du projet — bookkeeping uniquement, aucune donnée touchée. Détail complet : INCIDENTS.md INC-24.
+
+**Tests ajoutés** : `src/__tests__/tenants.test.ts` (nouveau describe `POST /api/tenants`, 9 tests — refus visiteur/MEMBER/ADMIN ordinaire, création par Super Admin, isolation, hash bcrypt, mot de passe court/slug dupliqué rejetés, parcours complet admin du nouveau tenant → agence avec ville → invitation → utilisateur créé) ; `src/__tests__/login-throttle.test.ts` (nouveau, 5 tests — verrouillage par email, par IP avec identifiant changeant, message générique indiscernable, remise à zéro sur succès, reconnexion après expiration simulée) ; `src/__tests__/ui.test.tsx` (2 tests adaptés/ajoutés — `/register` et `POST /api/auth/register` confirmés absents, `/login` confirmée sans lien d'inscription).
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| Unitaires/Intégration (`node scripts/test-grouped.mjs`) | 1420 | 1420 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+Migrations Prisma créées (`prisma/migrations/20260829152955_add_login_throttle/`) et appliquées à `xrent_dev`/`xrent_test` uniquement (jamais de production, qui n'existe pas à ce jour). Aucun fichier de contrats/factures/paiements/réservations/PDF modifié. Aucune donnée métier réelle modifiée ou supprimée — aucun reset, aucun seed, aucune commande SQL exécutée sur des données (la seule opération hors application est la résolution de bookkeeping INC-24, métadonnée uniquement).
 
 ## 4. Format attendu des futurs rapports
 

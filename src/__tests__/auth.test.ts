@@ -1,7 +1,7 @@
-import { afterAll, describe, expect, it } from "vitest";
-import bcrypt from "bcryptjs";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch, extractSessionCookie, findSetCookie } from "./helpers/http";
+import { registerTenantAdmin, createTenantAdmin } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const tenantSlug = `auth-test-tenant-${runId}`;
@@ -19,64 +19,22 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-describe("POST /api/auth/register", () => {
-  it("crée un tenant et un user ADMIN, sans jamais retourner passwordHash", async () => {
-    const response = await apiFetch("/api/auth/register", {
-      method: "POST",
-      body: JSON.stringify({
-        tenantName: "Auth Test Tenant",
-        tenantSlug,
-        name: "Admin Test",
-        email: adminEmail,
-        password,
-      }),
-    });
+// Bootstrap direct (Prisma), pas via HTTP : POST /api/auth/register a été retiré (2026-08-29,
+// DOMAINRULES.md — création de tenant réservée au Super Admin plateforme). La couverture de la
+// création de tenant elle-même (garde Super Admin, premier ADMIN correctement rattaché, refus
+// visiteur/MEMBER/ADMIN ordinaire) vit désormais dans tenants.test.ts (POST /api/tenants) et
+// ui.test.tsx (confirmation que /register et POST /api/auth/register n'existent plus).
+let bootstrapped: Awaited<ReturnType<typeof registerTenantAdmin>>;
 
-    expect(response.status).toBe(201);
-    const body = await response.json();
-    createdTenantIds.push(body.tenant.id);
-
-    expect(body.user.email).toBe(adminEmail);
-    expect(body.user.role).toBe("ADMIN");
-    expect(body.user.tenantId).toBe(body.tenant.id);
-    expect(body.user.passwordHash).toBeUndefined();
-    expect(JSON.stringify(body)).not.toContain("passwordHash");
-
-    const stored = await prisma.user.findUniqueOrThrow({ where: { id: body.user.id } });
-    expect(stored.passwordHash).toBeTruthy();
-    expect(stored.passwordHash).not.toBe(password);
-    expect(await bcrypt.compare(password, stored.passwordHash as string)).toBe(true);
+beforeAll(async () => {
+  bootstrapped = await registerTenantAdmin({
+    tenantName: "Auth Test Tenant",
+    tenantSlug,
+    name: "Admin Test",
+    email: adminEmail,
+    password,
   });
-
-  it("rejette un mot de passe trop court", async () => {
-    const response = await apiFetch("/api/auth/register", {
-      method: "POST",
-      body: JSON.stringify({
-        tenantName: "Short Pw Tenant",
-        tenantSlug: `short-pw-${runId}`,
-        name: "Nobody",
-        email: `short-${runId}@test.local`,
-        password: "short",
-      }),
-    });
-
-    expect(response.status).toBe(400);
-  });
-
-  it("refuse un slug de tenant déjà utilisé", async () => {
-    const response = await apiFetch("/api/auth/register", {
-      method: "POST",
-      body: JSON.stringify({
-        tenantName: "Duplicate Slug Tenant",
-        tenantSlug,
-        name: "Someone Else",
-        email: `dup-${runId}@test.local`,
-        password,
-      }),
-    });
-
-    expect(response.status).toBe(409);
-  });
+  createdTenantIds.push(bootstrapped.tenantId);
 });
 
 describe("GET /api/auth/me sans session", () => {
@@ -124,33 +82,25 @@ describe("Résolution du tenant à la connexion (Sprint 9, Option B)", () => {
   let sharedTenant1Id: string;
   let sharedTenant2Id: string;
 
-  it("prépare deux tenants avec le même email+mot de passe (registerTenantAdmin non utilisable : sa propre étape de login serait déjà ambiguë pour le 2e tenant)", async () => {
-    const register1 = await apiFetch("/api/auth/register", {
-      method: "POST",
-      body: JSON.stringify({
-        tenantName: "Shared Email Tenant 1",
-        tenantSlug: `shared-1-${runId}`,
-        name: "User One",
-        email: sharedEmail,
-        password,
-      }),
+  it("prépare deux tenants avec le même email+mot de passe (createTenantAdmin, sans connexion : registerTenantAdmin déclencherait une connexion déjà ambiguë pour le 2e tenant)", async () => {
+    const tenant1 = await createTenantAdmin({
+      tenantName: "Shared Email Tenant 1",
+      tenantSlug: `shared-1-${runId}`,
+      name: "User One",
+      email: sharedEmail,
+      password,
     });
-    expect(register1.status).toBe(201);
-    sharedTenant1Id = (await register1.json()).tenant.id;
+    sharedTenant1Id = tenant1.tenantId;
     createdTenantIds.push(sharedTenant1Id);
 
-    const register2 = await apiFetch("/api/auth/register", {
-      method: "POST",
-      body: JSON.stringify({
-        tenantName: "Shared Email Tenant 2",
-        tenantSlug: `shared-2-${runId}`,
-        name: "User Two",
-        email: sharedEmail,
-        password,
-      }),
+    const tenant2 = await createTenantAdmin({
+      tenantName: "Shared Email Tenant 2",
+      tenantSlug: `shared-2-${runId}`,
+      name: "User Two",
+      email: sharedEmail,
+      password,
     });
-    expect(register2.status).toBe(201);
-    sharedTenant2Id = (await register2.json()).tenant.id;
+    sharedTenant2Id = tenant2.tenantId;
     createdTenantIds.push(sharedTenant2Id);
   });
 

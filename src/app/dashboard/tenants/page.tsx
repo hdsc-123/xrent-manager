@@ -34,7 +34,8 @@ export default async function TenantsPage() {
         <h1 className="font-heading text-2xl font-semibold">Tenants</h1>
         <p className="text-sm text-muted-foreground">
           Un tenant n&apos;affiche jamais que sa propre organisation. La création d&apos;un
-          tenant se fait exclusivement via l&apos;inscription (/register).
+          nouveau tenant est réservée au Super Admin de la plateforme (aucune inscription
+          publique).
         </p>
       </div>
 

@@ -20,6 +20,11 @@ export type SessionUser = Session["user"];
  * getSessionUser(), et documente explicitement rester une vérification optimiste sans DB).
  * Si l'utilisateur n'existe plus (supprimé), la session est traitée comme inexistante —
  * déconnexion immédiate plutôt que d'attendre l'expiration naturelle du JWT.
+ *
+ * `email` est relu ici pour la même raison que `role` ci-dessus (2026-08-29) : la capacité
+ * Super Admin (création de tenant, `src/lib/super-admin.ts`) est déterminée par une allowlist
+ * d'emails côté serveur — un JWT déjà émis avant un changement d'email ne doit pas conserver
+ * indéfiniment (ou perdre) cette capacité jusqu'à expiration naturelle du jeton (30 jours).
  */
 export async function getSessionUser(): Promise<SessionUser | null> {
   const session = await auth();
@@ -30,14 +35,14 @@ export async function getSessionUser(): Promise<SessionUser | null> {
 
   const current = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { role: true },
+    select: { role: true, email: true },
   });
 
   if (!current) {
     return null;
   }
 
-  return { ...session.user, role: current.role };
+  return { ...session.user, role: current.role, email: current.email };
 }
 
 /**

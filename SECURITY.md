@@ -16,7 +16,9 @@ Ce document définit les règles de sécurité de XRent Manager. Il mélange des
 
 ## 3. Authentification
 
-**Implémenté (Sprint 3)** : NextAuth.js (Auth.js) v5, avec un unique fournisseur `CredentialsProvider` (email/password, pas d'OAuth à ce stade — décision explicite du propriétaire du projet). Les mots de passe sont hashés avec `bcryptjs` (`src/app/api/auth/register/route.ts`), jamais stockés ni retournés en clair (voir section 10).
+**Implémenté (Sprint 3)** : NextAuth.js (Auth.js) v5, avec un unique fournisseur `CredentialsProvider` (email/password, pas d'OAuth à ce stade — décision explicite du propriétaire du projet). Les mots de passe sont hashés avec `bcryptjs`, jamais stockés ni retournés en clair (voir section 10).
+
+- **Révision (2026-08-29)** : `POST /api/auth/register` (auto-inscription publique, créait un tenant + son premier ADMIN) est **retiré** — un visiteur non authentifié ne peut plus créer de tenant. Remplacé par `POST /api/tenants`, réservé au Super Admin plateforme (`role === "ADMIN"` et email listé dans `SUPER_ADMIN_EMAILS`, voir `src/lib/super-admin.ts` et DOMAINRULES.md section 72 pour le détail complet — révise la décision « aucun rôle superadmin transverse » des sections 24/25 ci-dessous). `/login` n'affiche plus aucun lien d'inscription publique. La capacité Super Admin reste strictement la création d'un tenant : `GET /api/tenants` continue de ne renvoyer que le tenant de l'appelant (section 1 ci-dessus, inchangé).
 
 - `src/app/api/auth/login/route.ts` renvoie systématiquement le même message d'erreur (« Identifiants invalides. », HTTP 401) pour un mot de passe incorrect et pour un email inexistant — vérifié par test (`src/__tests__/auth.test.ts`), conformément à l'exigence de ne pas distinguer un compte existant d'un compte inexistant.
 - **Non implémenté à ce jour, spécification validée (cadrage 2026-08-24)** : limitation du nombre de tentatives (protection brute force) — voir section 33 pour la spécification complète. **Spécification validée, implémentation non confirmée ou non terminée** — ne pas considérer ce point comme opérationnel sans preuve dans le code et les tests.
@@ -165,7 +167,7 @@ Checklist de conformité MVP, vérifiée section par section de ce document :
 | 7 | Aucune donnée de carte bancaire stockée | ✅ Respecté (aucune fonctionnalité de paiement en ligne n'existe, section 9) |
 | 8 | Audit exhaustif sur le CRUD métier | ✅ Implémenté ce sprint (section 13) |
 | 9 | Garde « dernier ADMIN » (self et tiers) | ✅ Confirmé ([docs/decisions/technical-decisions-log-archive.md](docs/decisions/technical-decisions-log-archive.md)) |
-| 10 | Rate limiting / protection brute force sur l'authentification | ❌ **Non implémenté — spécification validée (cadrage 2026-08-24), voir section 33** — à traiter avant mise en production (section 3) |
+| 10 | Rate limiting / protection brute force sur l'authentification | ✅ **Implémenté (2026-08-29), voir section 33** |
 | 11 | MFA | ❌ **Non implémenté**, **À DÉCIDER** (section 3) |
 | 12 | Headers de sécurité (CSP, HSTS, etc.) | ❌ **Non implémenté**, **À DÉCIDER** (section 19) |
 | 13 | Environnement de production / stratégie de sauvegarde | ❌ **Non défini**, **À DÉCIDER** (section 16, [docs/decisions/open-items-tracker.md](docs/decisions/open-items-tracker.md)) |
@@ -316,19 +318,28 @@ Voir DOMAINRULES.md section 65 pour le détail métier complet. Trouvé pendant 
 
 Vérifié par test : reproduction exacte du scénario original (changement de véhicule sur l'enfant, ADMIN via le formulaire générique) — 409 dans tous les cas, aucune donnée modifiée ; la protection ne bloque que le bord réellement partagé (`endDate` d'un enfant sans descendance, `startDate` d'une racine sans parent, restent librement modifiables — vérifié explicitement pour ne pas sur-restreindre). Aucune nouvelle faille d'isolation tenant/agence trouvée par ailleurs.
 
-## 33. Rate limiting d'authentification — spécification validée, non implémentée (cadrage 2026-08-24)
+## 33. Rate limiting d'authentification — implémenté (2026-08-29, spécification validée le 2026-08-24)
 
-**Statut : spécification validée, implémentation à confirmer ou à réaliser.** Aucune occurrence de rate limiting n'existe dans le code à la date de cette mise à jour (vérifié : aucun mécanisme de throttling/limitation de tentatives dans `src/lib` ni `src/app/api/auth`). Ne pas marquer ce point comme opérationnel tant que le code et les tests correspondants ne l'attestent pas.
+**Statut : implémenté et testé.** `src/lib/login-throttle.ts` + modèle `LoginThrottle` (migration `20260829152955_add_login_throttle`), câblé dans `POST /api/auth/login`. Conforme à la spécification validée ci-dessous, avec les paramètres concrets retenus.
 
-**Spécification validée** :
+**Spécification validée (rappel, cadrage 2026-08-24)** :
 
 - Mécanisme obligatoire avant toute exposition publique.
 - Première implémentation retenue : **PostgreSQL**, pas Redis — Redis explicitement différé, à n'ajouter que si le volume ou les performances le justifient réellement (pas par anticipation).
 - Portée minimale à couvrir : tentatives de connexion répétées ; essais répétés sur un même compte ; essais répétés depuis une même adresse/origine lorsque c'est techniquement possible ; résistance au contournement par changement d'identifiant (un attaquant changeant d'email à chaque tentative ne doit pas échapper à la limite par IP/origine).
-- Mécanisme **atomique** : même patron de conception que le throttle déjà en production dans ce projet pour les alertes CRON (`Tenant.lastAlertCheckAt`, `UPDATE … WHERE` conditionnel via `prisma.tenant.updateMany`, `src/lib/scheduled-tasks.ts`, section 31) — une seule instruction Postgres atomique, jamais un compteur en mémoire (`Map`/`Set`) qui ne protégerait qu'une seule instance.
-- **Compatible nativement avec un déploiement multi-instance futur** de par ce choix (contrairement au verrou en mémoire du reset de données, section 17, qui reste à corriger séparément avant un tel déploiement — voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 21).
+- Mécanisme **atomique**.
+- **Compatible nativement avec un déploiement multi-instance futur** (contrairement au verrou en mémoire du reset de données, section 17, qui reste à corriger séparément avant un tel déploiement — voir [ARCHITECTURE.md](./ARCHITECTURE.md) section 21).
 
-**Non fait par cette tâche documentaire** : aucun code écrit, aucune table/colonne ajoutée, aucune migration créée. Cette section documente une exigence à implémenter, pas un état déjà atteint.
+**Implémentation retenue** : une ligne `LoginThrottle` par clé (`ip:<adresse>` ou `email:<email normalisé>`), verrouillée explicitement (`SELECT ... FOR UPDATE`, dans une transaction) avant lecture/décision — plutôt qu'un simple `updateMany` conditionnel (le patron `Tenant.lastAlertCheckAt`, section 31) : un compteur qui s'incrémente doit lire sa valeur courante pour décider entre « incrémenter » et « réinitialiser la fenêtre », ce qu'un `updateMany` atomique seul ne permet pas sans verrou explicite. Même primitive que `lockVehicleForUpdate`/`lockInvoiceForUpdate` déjà en production dans ce projet.
+
+- **Fenêtre glissante** : 15 minutes. Un échec en dehors de la fenêtre courante réinitialise le compteur à 1 plutôt que de l'incrémenter indéfiniment.
+- **Verrouillage progressif** : 5 échecs → 1 minute ; 10 échecs → 5 minutes ; 15 échecs et plus → 15 minutes (plafond).
+- **Vérifié par IP et par email avant tout `bcrypt.compare`** : un attaquant changeant d'email à chaque tentative reste bloqué par la clé IP dès que celle-ci atteint le seuil, quel que soit l'email essayé — et réciproquement.
+- **Réponse** : `429`, message générique (« Trop de tentatives. Réessayez plus tard. »), identique que le verrouillage provienne de la clé IP ou de la clé email, et que le compte existe ou non (même principe que le `401` générique de la section 3).
+- **Remise à zéro sur succès** : complète (compteur à 0, `lockedUntil` effacé) pour les deux clés (IP et email), y compris à l'étape intermédiaire de sélection de tenant (Sprint 9, Option B — le mot de passe est déjà vérifié à ce stade par `resolveLoginTenants`).
+- Jamais de mot de passe journalisé (`LoginThrottle` ne stocke que la clé dérivée, jamais l'identifiant en clair au-delà de l'email déjà normalisé, jamais le mot de passe).
+
+**Tests** : `src/__tests__/login-throttle.test.ts` (5 tests — verrouillage par email, par IP avec identifiant changeant à chaque tentative, message générique indiscernable compte existant/inexistant, remise à zéro complète sur succès, reconnexion après expiration simulée du blocage via manipulation directe de `lockedUntil`, même principe que les tests existants qui manipulent une date de planification pour tester un seuil temporel). `src/__tests__/helpers/http.ts` : chaque appel de test reçoit par défaut une IP synthétique aléatoire distincte (`x-forwarded-for`), pour qu'aucun des ~1400 autres tests de la suite (partageant le même serveur `next dev` de test) ne puisse jamais collisionner sur la clé IP du rate limiting.
 
 ## 34. Affichage de la chaîne contractuelle et soldes — gate de permission corrigé, IDOR sur les contrats liés (Sprint technique 2, 2026-08-24)
 

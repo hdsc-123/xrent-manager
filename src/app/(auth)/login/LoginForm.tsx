@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
 import { toast } from "sonner";
 import { apiPost, ApiError } from "@/lib/api";
 import {
@@ -160,13 +159,6 @@ export function LoginForm() {
             {isSubmitting ? "Connexion..." : "Se connecter"}
           </Button>
         </form>
-
-        <p className="mt-4 text-center text-sm text-muted-foreground">
-          Pas encore de compte ?{" "}
-          <Link href="/register" className="font-medium text-foreground underline underline-offset-4">
-            Créer un tenant
-          </Link>
-        </p>
       </CardContent>
     </Card>
   );

@@ -1372,6 +1372,24 @@ model ExpenseCategory {
   @@index([tenantId])
 }
 
+// Rate limiting d'authentification (SECURITY.md section 33, spécification validée 2026-08-24,
+// implémentée le 2026-08-29). Une ligne par clé de throttle (`ip:<adresse>` ou
+// `email:<email normalisé>`) — pas de table par tentative, un compteur fenêtré unique par clé,
+// mis à jour sous verrou de ligne (`SELECT ... FOR UPDATE`, src/lib/login-throttle.ts) — même
+// primitive que lockVehicleForUpdate/lockInvoiceForUpdate déjà en usage dans ce projet pour les
+// mutations concurrentes, choisie plutôt qu'un simple `updateMany` conditionnel (pattern
+// Tenant.lastAlertCheckAt) car un compteur qui s'incrémente doit lire sa valeur avant de décider
+// (réinitialiser la fenêtre ou incrémenter), ce qu'un `updateMany` atomique seul ne permet pas
+// sans verrou explicite. PostgreSQL, pas Redis (décision explicite, voir SECURITY.md).
+model LoginThrottle {
+  id          String    @id @default(cuid())
+  key         String    @unique
+  failCount   Int       @default(0)
+  windowStart DateTime  @default(now())
+  lockedUntil DateTime?
+  updatedAt   DateTime  @updatedAt
+}
+
 // Modèles NextAuth (Auth.js) requis par @auth/prisma-adapter.
 // Sessions actives : JWT (cookie), pas de lecture de la table Session à chaque requête —
 // voir HANDOFF.md pour la décision (conflit CredentialsProvider + stratégie "database").

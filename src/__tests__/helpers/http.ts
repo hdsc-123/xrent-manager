@@ -78,11 +78,32 @@ async function retryOnConnectionFailure(doFetch: () => Promise<Response>): Promi
   throw lastError;
 }
 
+/**
+ * IP synthétique aléatoire par appel, jamais partagée entre deux appels par défaut. Sans ceci,
+ * toutes les requêtes de la suite (des centaines de fichiers, un seul serveur `next dev` de
+ * test partagé) tomberaient sur la même clé de throttle IP (`ip:unknown`, aucun en-tête
+ * `x-forwarded-for` n'existant en environnement de test réel) — le rate limiting
+ * d'authentification (src/lib/login-throttle.ts) verrouillerait alors *toute* la suite dès
+ * qu'un fichier quelconque provoque 5 échecs de connexion, quel que soit l'email concerné. Un
+ * test qui vérifie explicitement le comportement par IP doit fournir son propre en-tête
+ * `x-forwarded-for` fixe (il prévaut, voir la fusion des headers ci-dessous) pour accumuler
+ * volontairement plusieurs échecs sous la même clé.
+ */
+function randomTestIp(): string {
+  const octet = () => Math.floor(Math.random() * 254) + 1;
+  return `10.${octet()}.${octet()}.${octet()}`;
+}
+
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   return retryOnConnectionFailure(() =>
     fetch(`${TEST_BASE_URL}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", Connection: "close", ...init.headers },
+      headers: {
+        "Content-Type": "application/json",
+        Connection: "close",
+        "x-forwarded-for": randomTestIp(),
+        ...init.headers,
+      },
     })
   );
 }

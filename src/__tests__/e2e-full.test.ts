@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { createAlert } from "@/lib/alerts";
 import { apiFetch, extractSessionCookie } from "./helpers/http";
-import { registerTenantAdmin } from "./helpers/fixtures";
+import { registerTenantAdmin, createTenantAdmin } from "./helpers/fixtures";
 
 /**
  * Scénario de bout en bout couvrant l'intégralité du MVP (Sprint 10) : inscription,
@@ -51,19 +51,17 @@ describe("Scénario complet Sprint 10 : inscription → sélection de tenant →
     });
     createdTenantIds.push(tenant1.tenantId);
 
-    const registerTenant2 = await apiFetch("/api/auth/register", {
-      method: "POST",
-      body: JSON.stringify({
-        tenantName: "E2E Full Tenant 2",
-        tenantSlug: `e2e-full-2-${runId}`,
-        name: "Admin Tenant 2",
-        email: sharedEmail,
-        password,
-      }),
+    // createTenantAdmin (sans connexion) : registerTenantAdmin déclencherait ici une connexion
+    // déjà ambiguë (sharedEmail existe désormais dans 2 tenants), voir auth.test.ts pour le
+    // même motif documenté en détail.
+    const tenant2 = await createTenantAdmin({
+      tenantName: "E2E Full Tenant 2",
+      tenantSlug: `e2e-full-2-${runId}`,
+      name: "Admin Tenant 2",
+      email: sharedEmail,
+      password,
     });
-    expect(registerTenant2.status).toBe(201);
-    const tenant2 = await registerTenant2.json();
-    createdTenantIds.push(tenant2.tenant.id);
+    createdTenantIds.push(tenant2.tenantId);
 
     // 2. Connexion sans tenantId : l'email est ambigu (2 tenants), la liste doit être
     // révélée sans créer de session, seulement après vérification du mot de passe.
