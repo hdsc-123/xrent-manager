@@ -110,6 +110,25 @@ model User {
   avatar            String?
   permissionGroupId String?
 
+  // Phase 3A MFA (2026-08-29, cadrage validé par le propriétaire du projet) : le secret TOTP
+  // n'est jamais stocké en clair — enveloppe opaque chiffrée AES-256-GCM (voir
+  // src/lib/mfa-encryption.ts), une seule colonne pour éviter toute désynchronisation entre
+  // IV/tag/ciphertext lus indépendamment. mfaSecretConfirmedAt reste `null` tant que la
+  // possession n'a pas été prouvée par un code TOTP valide — mfaEnabled ne passe à `true` qu'à
+  // ce moment (voir src/lib/mfa.ts). mfaSecurityStamp est roté à chaque changement MFA sensible
+  // (activation, désactivation, reset) pour invalider toute preuve de step-up déjà émise
+  // (MfaStepUpProof ci-dessous), indépendamment de l'expiration naturelle d'un JWT NextAuth
+  // (limite structurelle des sessions JWT, voir SECURITY.md section 5 et authz.ts) — même
+  // principe déjà en place pour `role`/`email`, relus frais à chaque requête par
+  // getSessionUser(). mfaLastUsedStep bloque la réutilisation d'un même code TOTP dans sa
+  // fenêtre de validité (anti-rejeu). Aucun de ces champs n'est encore consulté par une route
+  // (Phase 3A = schéma et primitives uniquement, aucune route MFA câblée).
+  mfaEnabled           Boolean   @default(false)
+  mfaSecretCiphertext  String?
+  mfaSecretConfirmedAt DateTime?
+  mfaSecurityStamp     String?
+  mfaLastUsedStep      Int?
+
   tenant                      Tenant            @relation(fields: [tenantId], references: [id])
   userAgencies                UserAgency[]
   accounts                    Account[]
@@ -127,6 +146,9 @@ model User {
   damagesCreated              Damage[]          @relation("DamageCreatedBy")
   // Sprint "statut opérationnel automatique" (2026-08-28) : ADMIN ayant désactivé un véhicule.
   vehiclesDeactivated         Vehicle[]         @relation("VehicleDeactivatedBy")
+  // Phase 3A MFA (2026-08-29) : voir modèles MfaRecoveryCode/MfaStepUpProof ci-dessous.
+  mfaRecoveryCodes            MfaRecoveryCode[]
+  mfaStepUpProofs             MfaStepUpProof[]
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -1388,6 +1410,50 @@ model LoginThrottle {
   windowStart DateTime  @default(now())
   lockedUntil DateTime?
   updatedAt   DateTime  @updatedAt
+}
+
+// Phase 3A MFA (2026-08-29, cadrage validé par le propriétaire du projet) : codes de
+// récupération à usage unique — une ligne par code plutôt qu'un tableau JSON, pour permettre
+// l'usage unique par ligne (`usedAt`), l'audit individuel et la révocation ciblée. Générés par
+// lot de 10 à l'activation/régénération (src/lib/mfa.ts), affichés en clair au client une seule
+// fois puis jamais reconstitués — seul le hash (SHA-256 + pepper serveur dérivé de
+// MFA_ENCRYPTION_KEY, jamais un second secret dédié à ce stade — voir src/lib/mfa.ts) est
+// persisté, jamais le code en clair.
+model MfaRecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// Phase 3A MFA (2026-08-29) : preuve de step-up MFA pour une action critique, liée au compte ET
+// à une session/appareil précis (sessionId), jamais uniquement à un claim JWT non révocable —
+// correction explicite du propriétaire du projet sur le cadrage initial (un JWT signé ne peut
+// pas être invalidé unilatéralement côté serveur, voir SECURITY.md section 5). Fraîcheur exacte
+// de 10 minutes (expiresAt), vérifiée côté serveur à chaque action critique, jamais une valeur
+// fournie par le client. `@@unique([userId, sessionId])` permet un upsert : une seule preuve
+// active par session, rafraîchie à chaque step-up réussi plutôt qu'accumulée. Une réinitialisation
+// MFA sensible (rotation de User.mfaSecurityStamp) doit purger toutes les lignes de l'utilisateur
+// concerné — non implémenté dans cette phase (aucune route MFA câblée, Phase 3A = schéma et
+// primitives uniquement). `sessionId` n'est pas encore émis nulle part : il nécessitera un claim
+// dédié dans le JWT NextAuth (src/lib/auth.ts, callback jwt()), explicitement hors périmètre de
+// cette phase (« Ne modifie pas le login ») — à traiter en Phase 3B avant tout câblage de route.
+model MfaStepUpProof {
+  id         String   @id @default(cuid())
+  userId     String
+  sessionId  String
+  verifiedAt DateTime @default(now())
+  expiresAt  DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, sessionId])
+  @@index([expiresAt])
 }
 
 // Modèles NextAuth (Auth.js) requis par @auth/prisma-adapter.
