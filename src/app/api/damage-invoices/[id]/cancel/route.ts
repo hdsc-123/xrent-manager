@@ -9,6 +9,7 @@ import {
   CorrectionReasonRequiredError,
 } from "@/lib/damage-invoices";
 import { logAction } from "@/lib/audit";
+import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -38,6 +39,11 @@ export async function POST(request: Request, { params }: RouteParams) {
   const invoice = await getDamageInvoiceById(user.tenantId, id);
   if (!invoice || !(await canAccessAgency(user, invoice.agencyId))) {
     return NextResponse.json({ error: "Facture de dégâts introuvable." }, { status: 404 });
+  }
+
+  // Phase 3C MFA : step-up requis avant toute mutation (opt-in, voir src/lib/mfa-session.ts).
+  if (await stepUpRequiredAndMissing(user)) {
+    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
   }
 
   let body: CancelDamageInvoiceBody;

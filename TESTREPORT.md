@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1492/1492** (2026-08-29, Phase 3B MFA — voir HANDOFF.md Partie 18 et SECURITY.md section 44).
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1545/1545** (2026-08-29, Phase 3C MFA — voir HANDOFF.md Partie 20 et SECURITY.md section 45).
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -323,6 +323,8 @@ Détail complet de chaque entrée ci-dessous (fichiers de test, nombre exact, pa
 | 2026-08-29 | Suppression multiple des réservations (confirmation), recherche par numéro de contrat, jeu de données QA facturation |
 | 2026-08-29 | Revue approfondie de l'import Excel des réservations — validation calendaire stricte des dates françaises, normalisation Unicode NFC des villes (INC-23) |
 | 2026-08-29 | Affichage du supplément de surclassement (`LocationUpgrade`) sur la fiche contrat, la fiche facture, le contrat PDF et la facture PDF (unitaires + lots) |
+| 2026-08-29 | Phase 3A/3B MFA — schéma, primitives, intégration authentification/session/step-up (voir HANDOFF.md Partie 17/18) |
+| 2026-08-29 | Phase 3C MFA — step-up câblé sur 10 routes sensibles, révocation globale de session, récupération/désactivation/reset administrateur |
 
 ### Rapports récents (détail complet ci-dessous, pas archivés)
 
@@ -703,12 +705,41 @@ Couvre exclusivement les routes `/api/mfa/*` et `/api/auth/mfa/verify` elles-mê
 - Vérification qu'aucune écriture ne se produit avant le contrôle de step-up (pattern déjà respecté par toutes les gardes existantes du projet, à reproduire une fois le step-up câblé).
 - Tests du reset/récupération MFA (auto-régénération de codes, désactivation self-service, reset admin-assisté avec séparation acteur/cible, intervention opérateur pour Super Admin unique) — aucun n'existe, aucune de ces routes n'est encore conçue au-delà de l'analyse documentée (HANDOFF.md).
 
-### Limites connues de la Phase 3B (confirmées par la revue corrective, pas de nouveau code)
+### Limites connues de la Phase 3B (confirmées par la revue corrective, pas de nouveau code) — **toutes fermées par la Phase 3C ci-dessous, sauf mention contraire**
 
-- Le step-up MFA (`POST /api/mfa/step-up/verify`, `MfaStepUpProof`) est implémenté et testé **isolément**, mais n'est consommé par **aucune** route métier — confirmé par grep exhaustif de `src/app/api/**` en dehors de `src/app/api/mfa/*`.
-- Les 10 routes sensibles listées ci-dessus restent protégées uniquement par leurs contrôles actuels (rôle/permission/agence, tous vérifiés côté serveur avant écriture) — aucune n'exige de preuve MFA fraîche à ce jour.
-- Aucun mécanisme de reset/récupération MFA n'existe (perte de téléphone, perte des codes, appareil compromis, Super Admin unique) — analysé et documenté (HANDOFF.md), non implémenté.
-- Aucune révocation de session n'existe : un cookie JWT déjà émis reste valide jusqu'à expiration naturelle (jusqu'à 30 jours), y compris après un futur reset MFA de son titulaire — limite structurelle des sessions JWT stateless, déjà documentée SECURITY.md section 5, non résolue par cette phase.
+- ~~Le step-up MFA (`POST /api/mfa/step-up/verify`, `MfaStepUpProof`) est implémenté et testé **isolément**, mais n'est consommé par **aucune** route métier~~ — **résolu** : câblé sur les 10 routes sensibles, voir ci-dessous.
+- ~~Les 10 routes sensibles listées ci-dessus restent protégées uniquement par leurs contrôles actuels~~ — **résolu**, step-up désormais exigé en plus pour tout compte MFA activée.
+- ~~Aucun mécanisme de reset/récupération MFA n'existe~~ — **résolu** : régénération de codes, désactivation personnelle, reset administrateur assisté, tous implémentés et testés. Procédure opérateur hors bande pour un Super Admin unique sans pair ADMIN : **toujours non rédigée**, reste ouverte.
+- ~~Aucune révocation de session n'existe~~ — **résolu** pour les événements MFA sensibles (désactivation, reset administrateur) via `User.sessionRevokedAt`. La limite structurelle plus générale des sessions JWT stateless (un cookie déjà émis reste valide jusqu'à expiration naturelle en l'absence de tout événement de révocation, SECURITY.md section 5) demeure pour tout le reste — non spécifique à MFA, hors périmètre de cette phase.
+
+## Tests session — Phase 3C MFA : step-up câblé sur les 10 routes sensibles, révocation globale de session, récupération/désactivation/reset administrateur (2026-08-29)
+
+**Contexte** : suite de la Phase 3B (ci-dessus). Ferme les deux points de la « prochaine tâche prioritaire » posés à la fin de la Phase 3B (HANDOFF.md Partie 19) : câblage du step-up sur les 10 routes sensibles, et conception/implémentation d'une procédure de reset/récupération MFA avec révocation de session. MFA reste opt-in, aucune obligation activée. Détail technique complet : HANDOFF.md Partie 20, SECURITY.md section 45.
+
+### Tests réellement exécutés et verts (suite complète)
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| Unitaires/Intégration (`node scripts/test-grouped.mjs`) | 1545 | 1545 | 0 | 0 |
+| `npx prisma validate` | — | vert | — | — |
+| `npx prisma migrate status` (`xrent_dev` et `xrent_test`) | — | vert (synchronisées) | — | — |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+### Nouveaux fichiers de test
+
+- `src/__tests__/mfa-step-up-gating.test.ts` (nouveau) — pour chacune des 10 routes sensibles : absence de step-up refusée (403 générique) avec confirmation explicite qu'aucune mutation n'a eu lieu (relecture directe de l'état en base après refus), step-up valide accepté (comportement normal de la route). Comportement opt-in inchangé pour un compte sans MFA revérifié sur 3 routes de nature différente (`data-reset`, changement de rôle, écriture de caisse). Preuve expirée et preuve liée à une autre session (second login réel du même utilisateur, `sessionId` distinct) revérifiées de bout en bout sur 2 routes représentatives de gravité différente (`data-reset` ; changement de rôle) — la primitive `hasValidStepUp()` elle-même restant exhaustivement couverte au niveau unitaire par `mfa-routes.test.ts` (Phase 3B), non dupliquée ici.
+- `src/__tests__/mfa-lifecycle.test.ts` (nouveau) — désactivation personnelle (mot de passe+TOTP, mot de passe seul refusé, mot de passe incorrect refusé même avec TOTP valide, code de récupération accepté, rate limiting dédié), régénération des codes de récupération (mot de passe+TOTP, anciens codes intégralement invalidés, nouveaux codes retournés une seule fois, hash uniquement en base, rate limiting), reset administrateur assisté (acteur non-ADMIN refusé, acteur sans MFA activée refusé, acteur sans step-up frais refusé, acteur=cible refusé, motif manquant refusé, cible d'un autre tenant refusée avec confirmation qu'elle reste intacte, reset valide avec purge complète de la cible/rotation de `mfaSecurityStamp`/révocation de ses sessions/audit acteur-cible séparé, rate limiting), et un bloc dédié à la révocation globale de session (session ouverte après une révocation reste valide, `sessionRevokedAt` jamais influençable par une valeur client).
+
+### Défaut de test trouvé et corrigé en cours de session (aucun bug applicatif)
+
+Une marge fixe de 31 secondes (`Math.floor(Date.now()/1000) + 31`), utilisée pour générer un « code TOTP suivant » dans les tests (même motif que `mfa-routes.test.ts`, Phase 3B), s'est révélée intermittente pour deux consommations rapprochées dans le même test : la fenêtre de tolérance serveur (±30s, `TOTP_EPOCH_TOLERANCE_SECONDS`) peut être dépassée selon le délai réel écoulé entre génération côté test et vérification côté serveur (souvent inférieur à la seconde en local). Corrigé par un calcul déterministe (`nextTotpCode`, local à chaque nouveau fichier de test) qui lit le pas réellement consommé (`User.mfaLastUsedStep`) et vise le tout début du prochain pas valide ; les scénarios nécessitant deux connexions successives du même compte utilisent désormais un code de récupération pour la seconde plutôt que deux TOTP consommés à quelques millisecondes d'écart. `mfa-routes.test.ts` (Phase 3B), qui n'utilise ce motif qu'une seule fois par test, n'a pas été modifié (hors périmètre de cette phase).
+
+### Bug applicatif trouvé et corrigé pendant cette phase, avant tout commit
+
+Précision de `sessionIssuedAt` : la première implémentation le stockait en secondes (comme `iat`), ce qui pouvait faire apparaître à tort comme révoquée une session pourtant créée *après* la révocation, si les deux surviennent dans la même seconde réelle (`User.sessionRevokedAt` est un `DateTime` PostgreSQL à précision milliseconde) — détecté par le test « une session ouverte après la révocation reste valide » (`mfa-lifecycle.test.ts`), qui échouait en 401 au lieu de 200. Corrigé en stockant `sessionIssuedAt` en millisecondes (`Date.now()`) dans `src/lib/auth.ts`/`src/lib/authz.ts`. Détail complet : SECURITY.md section 45.
 
 ## 4. Format attendu des futurs rapports
 

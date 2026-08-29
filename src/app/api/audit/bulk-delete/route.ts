@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { deleteAuditLogEntries } from "@/lib/audit";
+import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
 
 interface BulkDeleteBody {
   ids?: string[];
@@ -21,6 +22,11 @@ export async function POST(request: Request) {
   }
   if (user.role !== "ADMIN" || !(await can(user, "audit.delete"))) {
     return NextResponse.json({ error: "Accès réservé aux administrateurs disposant de la permission audit.delete." }, { status: 403 });
+  }
+
+  // Phase 3C MFA : step-up requis avant toute mutation (opt-in, voir src/lib/mfa-session.ts).
+  if (await stepUpRequiredAndMissing(user)) {
+    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
   }
 
   let body: BulkDeleteBody;

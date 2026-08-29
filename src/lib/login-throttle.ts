@@ -76,6 +76,26 @@ export function mfaEnrollConfirmThrottleKey(userId: string): string {
 }
 
 /**
+ * Phase 3C MFA (2026-08-29, brief explicite du propriétaire du projet) : trois clés
+ * supplémentaires, même principe de séparation que ci-dessus — chacune de ces actions revérifie
+ * un mot de passe et/ou un code dans la même requête, jamais partagé avec un autre compteur.
+ */
+export function mfaDisableThrottleKey(userId: string): string {
+  return `mfa-disable:${userId}`;
+}
+
+export function mfaRecoveryRegenThrottleKey(userId: string): string {
+  return `mfa-recovery-regen:${userId}`;
+}
+
+/** Reset admin-assisté : ne compare aucun secret (le step-up de l'acteur est déjà vérifié via
+ * MfaStepUpProof), mais reste rate-limité pour freiner un abus répété de la route elle-même
+ * (tentatives de cible invalide, tenant différent, etc.), clé par acteur. */
+export function mfaAdminResetThrottleKey(actorUserId: string): string {
+  return `mfa-admin-reset:${actorUserId}`;
+}
+
+/**
  * Adresse IP du client. `x-forwarded-for` peut contenir plusieurs adresses séparées par des
  * virgules (proxys successifs) — seule la première (la plus proche du client) est retenue.
  * En développement local (aucun proxy), ces en-têtes sont absents : toutes les requêtes sans

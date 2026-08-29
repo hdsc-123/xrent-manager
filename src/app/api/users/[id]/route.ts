@@ -12,6 +12,7 @@ import {
 } from "@/lib/users";
 import { validatePassword } from "@/lib/password-policy";
 import { logAction } from "@/lib/audit";
+import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -87,6 +88,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
   if (body.agencyIds !== undefined && !Array.isArray(body.agencyIds)) {
     return NextResponse.json({ error: "agencyIds doit être un tableau." }, { status: 400 });
+  }
+
+  // Phase 3C MFA (périmètre : uniquement le changement de rôle) : step-up requis avant toute
+  // mutation de cette requête si un changement de rôle est effectivement demandé — vérifié avant
+  // le bloc try ci-dessous pour ne jamais laisser passer un changement de mot de passe/d'agences
+  // bundlé dans la même requête pendant qu'un changement de rôle est bloqué (aucune mutation
+  // partielle). Un compte sans MFA garde le comportement actuel (opt-in, src/lib/mfa-session.ts).
+  if (body.role !== undefined && body.role !== target.role && (await stepUpRequiredAndMissing(user))) {
+    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
   }
 
   try {

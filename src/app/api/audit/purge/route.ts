@@ -3,6 +3,7 @@ import { getSessionUser, type SessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { getAuditLogCount, purgeAuditLog, logAction } from "@/lib/audit";
+import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
 
 /**
  * Sprint 24-1 : purge complète du journal d'audit du tenant courant — la suppression la plus
@@ -49,6 +50,13 @@ export async function POST(request: Request) {
   const access = await requireAuditDeleteAccess();
   if (access instanceof NextResponse) return access;
   const user = access;
+
+  // Phase 3C MFA : step-up requis avant toute mutation (opt-in, voir src/lib/mfa-session.ts) —
+  // uniquement sur POST (la purge elle-même), jamais sur GET ci-dessus (simple aperçu en lecture,
+  // aucune mutation).
+  if (await stepUpRequiredAndMissing(user)) {
+    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
+  }
 
   let body: PurgeAuditLogBody;
   try {

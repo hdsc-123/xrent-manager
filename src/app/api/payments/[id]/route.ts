@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { PaymentMethod, Prisma } from "@prisma/client";
-import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { getSessionUser, canAccessAgency, type SessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getInvoiceById } from "@/lib/invoices";
 import {
@@ -23,7 +23,7 @@ interface RouteParams {
   params: Promise<{ id: string }>;
 }
 
-async function loadAuthorizedPayment(tenantId: string, paymentId: string, user: { tenantId: string; id: string; role: string }) {
+async function loadAuthorizedPayment(tenantId: string, paymentId: string, user: SessionUser) {
   const payment = await getPaymentById(tenantId, paymentId);
   if (!payment) {
     return null;

@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { getSessionUser } from "@/lib/authz";
 import { getUserById } from "@/lib/users";
 import { logAction } from "@/lib/audit";
+import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
 import {
   ensureDefaultGroups,
   getUserPermissionsView,
@@ -52,6 +53,11 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   const target = await getUserById(user.tenantId, id);
   if (!target) {
     return NextResponse.json({ error: "Utilisateur introuvable." }, { status: 404 });
+  }
+
+  // Phase 3C MFA : step-up requis avant toute mutation (opt-in, voir src/lib/mfa-session.ts).
+  if (await stepUpRequiredAndMissing(user)) {
+    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
   }
 
   let body: PatchPermissionsBody;

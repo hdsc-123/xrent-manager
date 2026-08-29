@@ -58,3 +58,58 @@ export async function purgeStepUpProofs(userId: string, tx?: Prisma.TransactionC
 export function generateMfaSecurityStamp(): string {
   return crypto.randomUUID();
 }
+
+/**
+ * Phase 3C MFA (2026-08-29, brief explicite du propriétaire du projet) : message générique unique
+ * pour tout refus de step-up sur les routes sensibles — jamais de distinction entre preuve
+ * absente, expirée, ou liée à une autre session (toutes trois indiscernables depuis
+ * hasValidStepUp() ci-dessus, qui les traite déjà identiquement).
+ */
+export const STEP_UP_REQUIRED_MESSAGE = "Vérification de sécurité supplémentaire (MFA) requise pour cette action.";
+
+/**
+ * Gate à appeler par chacune des routes sensibles (avant toute mutation, après les contrôles de
+ * rôle/permission/tenant/agence existants — jamais en remplacement). Un compte sans MFA activée
+ * n'est jamais bloqué ici : MFA reste opt-in (SECURITY.md), aucune exigence artificielle. Un
+ * compte avec MFA activée doit avoir une preuve de step-up fraîche pour *cette session précise*
+ * (`user.sessionId`, jamais un identifiant fourni par le client).
+ */
+export async function stepUpRequiredAndMissing(user: {
+  id: string;
+  sessionId?: string;
+  mfaEnabled: boolean;
+}): Promise<boolean> {
+  if (!user.mfaEnabled) {
+    return false;
+  }
+  return !(await hasValidStepUp(user.id, user.sessionId));
+}
+
+/**
+ * Purge complète de la MFA d'un compte + révocation globale de ses sessions — logique partagée
+ * entre la désactivation personnelle (POST /api/mfa/disable) et le reset administrateur assisté
+ * (POST /api/mfa/admin-reset), volontairement identique dans les deux cas (même brief : "purger
+ * entièrement la MFA", "faire tourner mfaSecurityStamp", "renseigner sessionRevokedAt", "purger
+ * MfaStepUpProof"). `mfaSecurityStamp` reste un marqueur de génération pour l'audit/la
+ * documentation (jamais relu ailleurs pour une décision d'accès, voir prisma/schema.prisma) —
+ * l'invalidation réelle vient de la suppression des lignes MfaStepUpProof (immédiate) et de
+ * `sessionRevokedAt` (tue le JWT lui-même au prochain getSessionUser(), src/lib/authz.ts).
+ * Exige `tx` : doit toujours faire partie de la même transaction que l'audit qui l'accompagne
+ * (même convention que logAction avec tx, src/lib/audit.ts).
+ */
+export async function purgeMfaAndRevokeSessions(userId: string, tx: Prisma.TransactionClient): Promise<void> {
+  const now = new Date();
+  await tx.user.update({
+    where: { id: userId },
+    data: {
+      mfaEnabled: false,
+      mfaSecretCiphertext: null,
+      mfaSecretConfirmedAt: null,
+      mfaLastUsedStep: null,
+      mfaSecurityStamp: generateMfaSecurityStamp(),
+      sessionRevokedAt: now,
+    },
+  });
+  await tx.mfaRecoveryCode.deleteMany({ where: { userId } });
+  await tx.mfaStepUpProof.deleteMany({ where: { userId } });
+}

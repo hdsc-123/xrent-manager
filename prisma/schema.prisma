@@ -129,6 +129,21 @@ model User {
   mfaSecurityStamp     String?
   mfaLastUsedStep      Int?
 
+  // Phase 3C MFA (2026-08-29, cadrage validé par le propriétaire du projet) : révocation globale
+  // de session, distincte de MfaStepUpProof (qui ne révoque qu'une preuve de step-up, jamais le
+  // JWT lui-même — limite documentée en Phase 3B, SECURITY.md section 44). `sessionRevokedAt`
+  // est comparé côté serveur (getSessionUser(), src/lib/authz.ts) à un claim JWT custom
+  // `sessionIssuedAt` (src/lib/auth.ts) — jamais au `iat` natif du JWT, qui n'est pas stable dans
+  // cette codebase : NextAuth réencode le JWT (donc avance `iat`) à chaque appel de
+  // `GET /api/auth/session` (stratégie JWT, aucun throttle d'`updateAge` sur cette branche —
+  // vérifié dans node_modules/@auth/core/lib/actions/session.js), ce qui rendrait une
+  // comparaison sur `iat` contournable par un simple rafraîchissement de session côté client.
+  // `sessionIssuedAt`, comme `sessionId` avant lui (Phase 3B), n'est posé qu'une seule fois à la
+  // connexion initiale et jamais retouché par un rafraîchissement. Un JWT émis avant
+  // l'introduction de ce claim (donc sans `sessionIssuedAt`) est traité comme révoqué dès qu'une
+  // révocation existe sur le compte (fail-closed), jamais l'inverse.
+  sessionRevokedAt DateTime?
+
   tenant                      Tenant            @relation(fields: [tenantId], references: [id])
   userAgencies                UserAgency[]
   accounts                    Account[]

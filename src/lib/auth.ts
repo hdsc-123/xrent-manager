@@ -33,6 +33,26 @@ declare module "next-auth" {
        * (via un typage `string` non optionnel) qu'il est toujours au rendez-vous.
        */
       sessionId?: string;
+      /**
+       * Phase 3C MFA (2026-08-29) : horodatage (secondes epoch) de la connexion initiale — posé
+       * une seule fois dans le même bloc que sessionId ci-dessus, jamais retouché par un
+       * rafraîchissement (trigger "update" ou simple lecture de session). Sert de référence
+       * stable pour la révocation globale de session (getSessionUser(), src/lib/authz.ts),
+       * comparée à User.sessionRevokedAt — jamais le `iat` natif du JWT, qui n'est pas stable
+       * dans cette codebase : NextAuth réencode le token (donc avance `iat`) à chaque appel de
+       * GET /api/auth/session (stratégie JWT, aucun throttle d'updateAge sur cette branche,
+       * vérifié dans node_modules/@auth/core/lib/actions/session.js), ce qui rendrait `iat`
+       * contournable par un simple rafraîchissement de session côté client (ex. useSession()
+       * actif dans un onglet déjà compromis). Optionnel pour la même raison que sessionId :
+       * absent sur tout JWT émis avant ce déploiement.
+       *
+       * En **millisecondes** (`Date.now()`), pas en secondes comme `iat` — une troncature à la
+       * seconde ferait apparaître comme "révoquée" une session pourtant créée après la
+       * révocation si les deux surviennent dans la même seconde (ex. désactivation MFA suivie
+       * d'une reconnexion immédiate dans le même test/la même seconde réelle), puisque
+       * `User.sessionRevokedAt` est un DateTime PostgreSQL à précision milliseconde.
+       */
+      sessionIssuedAt?: number;
     } & DefaultSession["user"];
   }
 }
@@ -42,6 +62,7 @@ interface ExtendedToken {
   tenantId?: string;
   role?: string;
   sessionId?: string;
+  sessionIssuedAt?: number;
 }
 
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 jours ("se souvenir de moi" coché)
@@ -199,6 +220,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // initiale (voir le commentaire sur Session.user.sessionId ci-dessus) — jamais régénéré
         // par le rafraîchissement trigger === "update" ci-dessous.
         extendedToken.sessionId = crypto.randomUUID();
+        // Phase 3C MFA : voir le commentaire sur Session.user.sessionIssuedAt ci-dessus — posé
+        // uniquement ici, jamais dans la branche trigger === "update" plus bas.
+        extendedToken.sessionIssuedAt = Date.now();
         const rememberMe = (user as { rememberMe?: boolean }).rememberMe;
         const maxAge = rememberMe === false ? SESSION_SHORT_MAX_AGE_SECONDS : SESSION_MAX_AGE_SECONDS;
         extendedToken.exp = Math.floor(Date.now() / 1000) + maxAge;
@@ -240,6 +264,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // de fabriquer une valeur de repli.
         if (extendedToken.sessionId) {
           session.user.sessionId = extendedToken.sessionId;
+        }
+        // Phase 3C MFA : même garantie que sessionId ci-dessus — absent sur un JWT émis avant ce
+        // claim, jamais de valeur de repli fabriquée (voir getSessionUser(), src/lib/authz.ts,
+        // qui traite l'absence comme une révocation dès qu'une révocation existe sur le compte).
+        if (extendedToken.sessionIssuedAt) {
+          session.user.sessionIssuedAt = extendedToken.sessionIssuedAt;
         }
       }
       return session;

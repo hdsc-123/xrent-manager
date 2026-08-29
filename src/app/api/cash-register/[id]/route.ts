@@ -10,6 +10,7 @@ import {
   CashEntryAgencyAccessDeniedError,
 } from "@/lib/cash-register";
 import { logAction } from "@/lib/audit";
+import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -31,6 +32,11 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   }
   if (!(await can(user, "cash_register.edit"))) {
     return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
+  }
+
+  // Phase 3C MFA : step-up requis avant toute mutation (opt-in, voir src/lib/mfa-session.ts).
+  if (await stepUpRequiredAndMissing(user)) {
+    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
   }
 
   const { id } = await params;
@@ -96,6 +102,11 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
   }
   if (!(await can(user, "cash_register.delete"))) {
     return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
+  }
+
+  // Phase 3C MFA : step-up requis avant toute mutation (opt-in, voir src/lib/mfa-session.ts).
+  if (await stepUpRequiredAndMissing(user)) {
+    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
   }
 
   const { id } = await params;

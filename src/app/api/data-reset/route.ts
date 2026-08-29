@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/authz";
+import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
 import {
   DataResetInProgressError,
   DataResetNotAllowedInProductionError,
@@ -49,6 +50,12 @@ export async function POST(request: Request) {
 
   if (user.role !== "ADMIN") {
     return NextResponse.json({ error: "Accès réservé aux administrateurs." }, { status: 403 });
+  }
+
+  // Phase 3C MFA : step-up requis avant toute mutation pour un compte MFA activée (opt-in,
+  // comportement inchangé pour un compte sans MFA — voir src/lib/mfa-session.ts).
+  if (await stepUpRequiredAndMissing(user)) {
+    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
   }
 
   let body: DataResetBody;

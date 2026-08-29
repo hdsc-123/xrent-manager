@@ -2,7 +2,14 @@ import { auth } from "@/lib/auth";
 import type { Session } from "next-auth";
 import { prisma } from "@/lib/prisma";
 
-export type SessionUser = Session["user"];
+/**
+ * Phase 3C MFA (2026-08-29) : `mfaEnabled` n'existe jamais sur le JWT lui-même (jamais mis en
+ * cache côté client, toujours relu frais ici, même principe que `role`/`email` ci-dessous) —
+ * cette intersection de type documente que ce champ n'est disponible qu'après être passé par
+ * getSessionUser(), jamais sur le `Session["user"]` brut renvoyé par `auth()` (voir src/proxy.ts,
+ * qui appelle `auth()` directement et ne doit jamais supposer ce champ présent).
+ */
+export type SessionUser = Session["user"] & { mfaEnabled: boolean };
 
 /**
  * Point d'entrée unique pour récupérer l'utilisateur authentifié dans les route handlers.
@@ -25,6 +32,19 @@ export type SessionUser = Session["user"];
  * Super Admin (création de tenant, `src/lib/super-admin.ts`) est déterminée par une allowlist
  * d'emails côté serveur — un JWT déjà émis avant un changement d'email ne doit pas conserver
  * indéfiniment (ou perdre) cette capacité jusqu'à expiration naturelle du jeton (30 jours).
+ *
+ * Phase 3C MFA : deux ajouts, même principe de fraîcheur que role/email ci-dessus.
+ * 1. `mfaEnabled` relu ici (jamais mis en cache dans le JWT) pour que le gate de step-up
+ *    (src/lib/mfa-session.ts, stepUpRequiredAndMissing()) sache si ce compte doit produire une
+ *    preuve fraîche — sans requête supplémentaire, cette fonction interroge déjà `User`.
+ * 2. Révocation globale de session : si `User.sessionRevokedAt` est renseigné, toute session dont
+ *    le claim `sessionIssuedAt` (posé une seule fois à la connexion, src/lib/auth.ts) est
+ *    antérieur — ou absent (JWT émis avant ce claim) — est traitée comme inexistante, exactement
+ *    comme un utilisateur supprimé ci-dessus. Comparaison strictement serveur (jamais une date
+ *    fournie par le client) : `sessionIssuedAt` provient du JWT déchiffré par NextAuth (`auth()`),
+ *    authentifié (JWE), pas du corps de la requête. Volontairement PAS le `iat` natif du JWT —
+ *    voir le commentaire sur `sessionRevokedAt` dans prisma/schema.prisma pour la raison complète
+ *    (NextAuth réencode `iat` à chaque GET /api/auth/session, ce qui le rendrait contournable).
  */
 export async function getSessionUser(): Promise<SessionUser | null> {
   const session = await auth();
@@ -35,14 +55,24 @@ export async function getSessionUser(): Promise<SessionUser | null> {
 
   const current = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { role: true, email: true },
+    select: { role: true, email: true, mfaEnabled: true, sessionRevokedAt: true },
   });
 
   if (!current) {
     return null;
   }
 
-  return { ...session.user, role: current.role, email: current.email };
+  if (current.sessionRevokedAt) {
+    // sessionIssuedAt est en millisecondes (Date.now(), src/lib/auth.ts) — jamais en secondes
+    // comme `iat` : une troncature à la seconde ferait apparaître comme révoquée une session
+    // pourtant créée après la révocation si les deux surviennent dans la même seconde.
+    const issuedAtMs = session.user.sessionIssuedAt ?? null;
+    if (issuedAtMs === null || issuedAtMs < current.sessionRevokedAt.getTime()) {
+      return null;
+    }
+  }
+
+  return { ...session.user, role: current.role, email: current.email, mfaEnabled: current.mfaEnabled };
 }
 
 /**

@@ -7,6 +7,7 @@ import { validatePassword } from "@/lib/password-policy";
 import { ensureDefaultGroups } from "@/lib/permissions";
 import { BCRYPT_COST } from "@/lib/bcrypt-cost";
 import { logAction } from "@/lib/audit";
+import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
 
 /**
  * Isolation multi-tenant (SECURITY.md section 1) : un ADMIN ne voit jamais que son propre
@@ -80,6 +81,11 @@ export async function POST(request: Request) {
       { error: "Accès réservé au Super Admin de la plateforme." },
       { status: 403 }
     );
+  }
+
+  // Phase 3C MFA : step-up requis avant toute mutation (opt-in, voir src/lib/mfa-session.ts).
+  if (await stepUpRequiredAndMissing(user)) {
+    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
   }
 
   let body: CreateTenantBody;
