@@ -105,9 +105,17 @@ export function ImportReservationsForm() {
       <Card>
         <CardHeader>
           <CardTitle>Fichier</CardTitle>
-          <CardDescription>
-            Fichier .xlsx, première feuille, première ligne = en-têtes exacts (en français) : {RESERVATION_IMPORT_COLUMNS_CLIENT.join(", ")}.
-            Colonnes requises : {REQUIRED_IMPORT_COLUMNS_CLIENT.join(", ")}.
+          <CardDescription className="flex flex-col gap-2">
+            <span>
+              Fichier .xlsx, première feuille, première ligne = en-têtes exacts (en français) : {RESERVATION_IMPORT_COLUMNS_CLIENT.join(", ")}.
+              Colonnes requises : {REQUIRED_IMPORT_COLUMNS_CLIENT.join(", ")}.
+            </span>
+            <span>
+              Dates (« Date de départ », « Date de retour ») : format <strong>JJ/MM/AAAA</strong> (jour/mois/année,
+              séparateur <code>/</code>, <code>-</code> ou <code>.</code>), ou une vraie cellule Excel de type Date.
+              Le format américain MM/JJ/AAAA n&apos;est jamais reconnu — une date invalide dans ce format (ex. mois
+              supérieur à 12, jour inexistant dans le mois) sera rejetée avec le numéro de ligne concerné.
+            </span>
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">

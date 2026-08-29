@@ -579,8 +579,31 @@ function excelSerialToDate(serial: number): Date {
 
 /** DD/MM/YYYY, DD-MM-YYYY ou DD.MM.YYYY — formats français courants qu'un fichier Excel mal
  * formaté peut produire en texte brut ; `new Date(string)` les interprète de façon peu fiable
- * (souvent comme MM/DD/YYYY ou pas du tout). */
+ * (souvent comme MM/DD/YYYY ou pas du tout). Le premier groupe est **toujours** le jour et le
+ * second **toujours** le mois — jamais l'inverse, jamais d'interprétation américaine MM/DD/YYYY,
+ * quelle que soit la valeur numérique des deux groupes (voir `isValidFrenchDateComponents`
+ * ci-dessous pour le rejet des valeurs qui en résultent invalides plutôt qu'une réinterprétation
+ * dans l'autre sens). */
 const FRENCH_DATE_RE = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/;
+
+/** Valide qu'un triplet jour/mois/année interprété au format français (DD/MM/YYYY) désigne une
+ * date calendaire réellement existante — correctif (revue import Excel, 2026-08-29) : `Date.UTC`
+ * ne rejette jamais un débordement, il le fait rouler silencieusement sur le mois/l'année suivant
+ * (ex. `31/02/2030` → 2030-03-03, `15/13/2030` → 2031-01-15, `29/02/2030` (non bissextile) →
+ * 2030-03-01) — un fichier broker avec une faute de frappe sur le jour/mois était donc importé
+ * avec une date silencieusement fausse, sans jamais être rejeté. Le round-trip ci-dessous compare
+ * les composants effectivement reconstruits par `Date.UTC` aux valeurs saisies : toute
+ * divergence (mois > 12, mois < 1, jour inexistant dans ce mois, 29 février hors année
+ * bissextile...) est ainsi détectée après coup, sans avoir à réimplémenter un calendrier gréorien
+ * complet (jours par mois, règle bissextile) — `Date.UTC`/`getUTCFullYear`/`getUTCMonth`/
+ * `getUTCDate` le font déjà correctement, il suffisait de vérifier le résultat. */
+function isValidFrenchDateComponents(day: number, month: number, year: number, date: Date): boolean {
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
 
 /** Borne basse de plausibilité, même valeur que la borne déjà appliquée à `Vehicle.year`
  * (`POST`/`PATCH /api/vehicles*`, `src/app/api/vehicles/route.ts`) — réutilisée ici pour rester
@@ -626,9 +649,15 @@ function cellToDate(value: unknown): Date | undefined {
   }
   const frenchMatch = str.match(FRENCH_DATE_RE);
   if (frenchMatch) {
-    const [, day, month, year] = frenchMatch;
-    const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
-    return isPlausibleDate(date) ? date : undefined;
+    const [, dayStr, monthStr, yearStr] = frenchMatch;
+    const day = Number(dayStr);
+    const month = Number(monthStr);
+    const year = Number(yearStr);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (!isPlausibleDate(date) || !isValidFrenchDateComponents(day, month, year, date)) {
+      return undefined;
+    }
+    return date;
   }
   const date = new Date(str);
   return isPlausibleDate(date) ? date : undefined;
@@ -737,10 +766,10 @@ export function parseReservationImportRow(
   // validation est ignorée (rien à valider contre, pas de régression pour un tenant qui vient
   // de s'inscrire).
   if (knownAgencyNames && knownAgencyNames.size > 0) {
-    if (pickupAgency && !knownAgencyNames.has(pickupAgency.trim().toLowerCase())) {
+    if (pickupAgency && !knownAgencyNames.has(normalizeAgencyName(pickupAgency))) {
       return { error: `Ville de départ inconnue : "${pickupAgency}" (aucune agence correspondante)` };
     }
-    if (dropoffAgency && !knownAgencyNames.has(dropoffAgency.trim().toLowerCase())) {
+    if (dropoffAgency && !knownAgencyNames.has(normalizeAgencyName(dropoffAgency))) {
       return { error: `Ville de retour inconnue : "${dropoffAgency}" (aucune agence correspondante)` };
     }
   }
@@ -786,7 +815,20 @@ export function parseReservationImportRow(
   };
 }
 
-/** Ensemble normalisé (minuscules, trim) des villes/noms d'agence du tenant — utilisé pour
+/** Normalise une ville/nom d'agence pour comparaison : trim, normalisation Unicode NFC (une
+ * même ville accentuée peut arriver en forme composée "é" (NFC) ou décomposée "é" (NFD)
+ * selon l'origine du fichier Excel/l'OS qui l'a produit — visuellement identiques, mais deux
+ * séquences de code points différentes, donc `===`/`Set.has` les traiteraient comme distinctes
+ * sans cette normalisation), puis minuscules. Un seul point d'entrée pour cette règle, réutilisé
+ * par `getKnownAgencyNames`/la validation de `parseReservationImportRow` (aucune correspondance
+ * approximative : normalisation stricte de forme, jamais de recherche par proximité) et par
+ * `buildAgencyLookupMap`/`lookupAgencyId` ci-dessous, pour que la résolution d'agence (visibilité/
+ * autorisation, section 37 DOMAINRULES.md) reste cohérente avec la validation. */
+function normalizeAgencyName(value: string): string {
+  return value.trim().normalize("NFC").toLowerCase();
+}
+
+/** Ensemble normalisé (minuscules, trim, NFC) des villes/noms d'agence du tenant — utilisé pour
  * valider pickupAgency/dropoffAgency à l'import (ci-dessus) et à la création manuelle
  * (POST /api/reservations). Vide si le tenant n'a aucune agence avec une ville renseignée
  * (la validation est alors ignorée par l'appelant, voir commentaire plus haut). */
@@ -798,8 +840,8 @@ export async function getKnownAgencyNames(tenantId: string): Promise<Set<string>
 
   const names = new Set<string>();
   for (const agency of agencies) {
-    if (agency.city) names.add(agency.city.trim().toLowerCase());
-    if (agency.name) names.add(agency.name.trim().toLowerCase());
+    if (agency.city) names.add(normalizeAgencyName(agency.city));
+    if (agency.name) names.add(normalizeAgencyName(agency.name));
   }
   return names;
 }
@@ -822,7 +864,7 @@ export async function buildAgencyLookupMap(tenantId: string): Promise<AgencyLook
   for (const agency of agencies) {
     for (const value of [agency.city, agency.name]) {
       if (!value) continue;
-      const normalized = value.trim().toLowerCase();
+      const normalized = normalizeAgencyName(value);
       if (!normalized) continue;
       counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
       map.set(normalized, agency.id);
@@ -836,7 +878,7 @@ export async function buildAgencyLookupMap(tenantId: string): Promise<AgencyLook
 
 function lookupAgencyId(map: AgencyLookupMap, cityOrName: string | null | undefined): string | null {
   if (!cityOrName) return null;
-  return map.get(cityOrName.trim().toLowerCase()) ?? null;
+  return map.get(normalizeAgencyName(cityOrName)) ?? null;
 }
 
 export async function deleteReservation(tenantId: string, reservationId: string): Promise<boolean> {

@@ -6,6 +6,7 @@ import {
   RESERVATION_IMPORT_COLUMN_MAP,
   claimReservationConversion,
   markReservationConverted,
+  parseReservationImportRow,
 } from "@/lib/reservations";
 import { createClient } from "@/lib/clients";
 import { createLocation } from "@/lib/locations";
@@ -1436,6 +1437,611 @@ describe("POST /api/reservations/import", () => {
       const body = await response.json();
       expect(body.errors).toHaveLength(1);
       expect(body.errors[0].error).toContain("Ville de retour inconnue");
+    });
+  });
+
+  describe("Revue import Excel — validation calendaire stricte, villes Unicode, erreurs multi-lignes (2026-08-29)", () => {
+    describe("validation calendaire stricte (jour/mois/année français, jamais MM/DD/YYYY)", () => {
+      it("accepte les séparateurs DD-MM-YYYY et DD.MM.YYYY (DD/MM/YYYY déjà couvert par ailleurs)", async () => {
+        const voucherNumber = `V-FR-SEP-${runId}`;
+        const rows = [
+          importRow({
+            voucherNumber,
+            clientFirstName: "Separateur",
+            clientLastName: "Tiret",
+            startDate: "25-07-2030",
+            endDate: "27.07.2030",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.errors).toHaveLength(0);
+        expect(body.imported).toBe(1);
+
+        const persisted = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber } });
+        expect(persisted?.startDate.toISOString().slice(0, 10)).toBe("2030-07-25");
+        expect(persisted?.endDate.toISOString().slice(0, 10)).toBe("2030-07-27");
+      });
+
+      it("rejette 31/02/2030 (jour inexistant dans le mois) au lieu de rouler silencieusement sur mars", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-FEB31-${runId}`,
+            clientFirstName: "Fevrier",
+            clientLastName: "Trente1",
+            startDate: "31/02/2030",
+            endDate: "2030-03-05",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toContain("Colonne invalide: Date de départ");
+
+        const persisted = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, clientFirstName: "Fevrier", clientLastName: "Trente1" },
+        });
+        expect(persisted).toBeNull();
+      });
+
+      it("accepte 29/02/2028 (année bissextile réelle)", async () => {
+        const voucherNumber = `V-LEAP2028-${runId}`;
+        const rows = [
+          importRow({
+            voucherNumber,
+            clientFirstName: "Bissextile",
+            clientLastName: "Valide",
+            startDate: "29/02/2028",
+            endDate: "2028-03-02",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.errors).toHaveLength(0);
+        expect(body.imported).toBe(1);
+
+        const persisted = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber } });
+        expect(persisted?.startDate.toISOString().slice(0, 10)).toBe("2028-02-29");
+      });
+
+      it("rejette 29/02/2027 (2027 n'est pas une année bissextile)", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-NOTLEAP2027-${runId}`,
+            clientFirstName: "NonBissextile",
+            clientLastName: "Invalide",
+            startDate: "29/02/2027",
+            endDate: "2027-03-05",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toContain("Colonne invalide: Date de départ");
+      });
+
+      it("rejette un mois supérieur à 12 (15/13/2030), sans le réinterpréter comme une autre date", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-MONTH13-${runId}`,
+            clientFirstName: "Mois",
+            clientLastName: "Treize",
+            startDate: "15/13/2030",
+            endDate: "2030-07-30",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toContain("Colonne invalide: Date de départ");
+
+        const persisted = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, clientFirstName: "Mois", clientLastName: "Treize" },
+        });
+        expect(persisted).toBeNull();
+      });
+
+      it("rejette un jour à 00 (00/05/2030)", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-DAY00-${runId}`,
+            clientFirstName: "Jour",
+            clientLastName: "Zero",
+            startDate: "00/05/2030",
+            endDate: "2030-05-10",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toContain("Colonne invalide: Date de départ");
+      });
+
+      it("rejette un mois à 00 (05/00/2030)", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-MONTH00-${runId}`,
+            clientFirstName: "Mois",
+            clientLastName: "Zero",
+            startDate: "05/00/2030",
+            endDate: "2030-05-10",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toContain("Colonne invalide: Date de départ");
+      });
+
+      it("rejette 07/25/2030 (mois 25 invalide en français) sans jamais l'interpréter comme le 25 juillet (format américain)", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-USFORMAT-${runId}`,
+            clientFirstName: "FormatUS",
+            clientLastName: "Rejete",
+            startDate: "07/25/2030",
+            endDate: "2030-08-01",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toContain("Colonne invalide: Date de départ");
+
+        // Aucune réservation créée, en particulier pas une réservation avec la date
+        // "réinterprétée" en MM/DD/YYYY (25 juillet 2030) — la ligne est purement rejetée.
+        const persisted = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, clientFirstName: "FormatUS", clientLastName: "Rejete" },
+        });
+        expect(persisted).toBeNull();
+      });
+
+      it("date ambiguë 07/05/2030 : toujours interprétée jour/mois (7 mai), jamais mois/jour (5 juillet)", async () => {
+        const voucherNumber = `V-AMBIGUOUS-${runId}`;
+        const rows = [
+          importRow({
+            voucherNumber,
+            clientFirstName: "Ambigu",
+            clientLastName: "Francais",
+            startDate: "07/05/2030",
+            endDate: "2030-05-09",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.errors).toHaveLength(0);
+        expect(body.imported).toBe(1);
+
+        const persisted = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber } });
+        // 7 mai 2030 (jour=07, mois=05) — jamais le 5 juillet 2030 (interprétation américaine).
+        expect(persisted?.startDate.toISOString().slice(0, 10)).toBe("2030-05-07");
+      });
+
+      it("numéro de série Excel non fini (NaN/Infinity) rejeté comme une série implausible", () => {
+        const knownAgencyNames = new Set<string>();
+        const nanResult = parseReservationImportRow(
+          { voucherNumber: "V-NAN", clientFirstName: "Nan", clientLastName: "Serie", startDate: NaN, endDate: 46405 },
+          knownAgencyNames
+        );
+        expect("error" in nanResult).toBe(true);
+        if ("error" in nanResult) {
+          expect(nanResult.error).toContain("Colonne invalide: Date de départ");
+        }
+
+        const infinityResult = parseReservationImportRow(
+          {
+            voucherNumber: "V-INF",
+            clientFirstName: "Infini",
+            clientLastName: "Serie",
+            startDate: Infinity,
+            endDate: 46405,
+          },
+          knownAgencyNames
+        );
+        expect("error" in infinityResult).toBe(true);
+        if ("error" in infinityResult) {
+          expect(infinityResult.error).toContain("Colonne invalide: Date de départ");
+        }
+      });
+
+      it("nettoie une heure stockée comme cellule Date sans corrompre la date elle-même (complément au test existant)", async () => {
+        const voucherNumber = `V-TIME-NOCORRUPT-${runId}`;
+        const rows = [
+          importRow({
+            voucherNumber,
+            clientFirstName: "Heure",
+            clientLastName: "NonCorrompue",
+            startDate: new Date("2030-09-05"),
+            startTime: new Date(Date.UTC(1899, 11, 30, 9, 15)),
+            endDate: new Date("2030-09-07"),
+            endTime: new Date(Date.UTC(1899, 11, 30, 11, 45)),
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.errors).toHaveLength(0);
+
+        const persisted = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber } });
+        expect(persisted?.startDate.toISOString().slice(0, 10)).toBe("2030-09-05");
+        expect(persisted?.endDate.toISOString().slice(0, 10)).toBe("2030-09-07");
+        expect(persisted?.startTime).toBe("09:15");
+        expect(persisted?.endTime).toBe("11:45");
+      });
+
+      it("cellule Date de départ vide : message 'obligatoire manquante', jamais confondu avec une date invalide", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-EMPTYDATE-${runId}`,
+            clientFirstName: "Cellule",
+            clientLastName: "Vide",
+            startDate: null,
+            endDate: new Date("2030-09-10"),
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toBe("Colonne obligatoire manquante: Date de départ");
+      });
+    });
+
+    describe("villes — espaces superflus, accents, normalisation Unicode NFC/NFD", () => {
+      it("accepte une ville avec espaces superflus en début/fin de cellule", async () => {
+        const voucherNumber = `V-CITYSPACES-${runId}`;
+        const rows = [
+          importRow({
+            voucherNumber,
+            clientFirstName: "Espaces",
+            clientLastName: "Superflus",
+            startDate: new Date("2030-09-12"),
+            endDate: new Date("2030-09-14"),
+            pickupAgency: "  Agence A1  ",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.errors).toHaveLength(0);
+        expect(body.imported).toBe(1);
+      });
+
+      it("accepte une ville accentuée identique caractère pour caractère (forme NFC)", async () => {
+        const accentedName = "Agence Émeraude".normalize("NFC");
+        const agencyResponse = await apiFetch("/api/agencies", {
+          method: "POST",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify({ name: accentedName, slug: `agence-emeraude-${runId}` }),
+        });
+        expect(agencyResponse.status).toBe(201);
+
+        const voucherNumber = `V-ACCENT-NFC-${runId}`;
+        const rows = [
+          importRow({
+            voucherNumber,
+            clientFirstName: "Accent",
+            clientLastName: "NFC",
+            startDate: new Date("2030-09-15"),
+            endDate: new Date("2030-09-16"),
+            pickupAgency: accentedName,
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.errors).toHaveLength(0);
+        expect(body.imported).toBe(1);
+      });
+
+      it("reconnaît une ville accentuée même encodée en forme Unicode décomposée (NFD) dans le fichier, alors que l'agence est enregistrée en forme composée (NFC)", async () => {
+        const nameWithAccents = "Agence Kénitra Décomposée".normalize("NFC");
+        const agencyResponse = await apiFetch("/api/agencies", {
+          method: "POST",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify({ name: nameWithAccents, slug: `agence-kenitra-decomposee-${runId}` }),
+        });
+        expect(agencyResponse.status).toBe(201);
+
+        // Même texte, encodé en forme décomposée (NFD) — "é"/"É" devient "e"/"E" + accent
+        // combinant U+0301, deux séquences de code points différentes pour un rendu identique.
+        const nameWithAccentsNFD = nameWithAccents.normalize("NFD");
+        expect(nameWithAccentsNFD).not.toBe(nameWithAccents); // s'assure que les 2 formes diffèrent réellement
+
+        const voucherNumber = `V-ACCENT-NFD-${runId}`;
+        const rows = [
+          importRow({
+            voucherNumber,
+            clientFirstName: "Accent",
+            clientLastName: "NFD",
+            startDate: new Date("2030-09-17"),
+            endDate: new Date("2030-09-18"),
+            pickupAgency: nameWithAccentsNFD,
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.errors).toHaveLength(0);
+        expect(body.imported).toBe(1);
+      });
+
+      it("ne fait jamais de correspondance approximative : une ville proche mais différente reste refusée", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-NOFUZZY-${runId}`,
+            clientFirstName: "Fuzzy",
+            clientLastName: "Refuse",
+            startDate: new Date("2030-09-19"),
+            endDate: new Date("2030-09-20"),
+            // Une lettre de différence par rapport à "Agence A1" — ne doit jamais matcher
+            // (nom garanti inexistant, contrairement à "Agence A2", créée ailleurs dans ce
+            // fichier de test pour un autre describe).
+            pickupAgency: "Agence A1X",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(0);
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors[0].error).toContain("Ville de départ inconnue");
+      });
+    });
+
+    describe("tenant sans agence — validation de ville ignorée, aucune agence créée automatiquement", () => {
+      it("importe sans erreur de ville quand le tenant n'a encore aucune agence, sans jamais créer d'agence", async () => {
+        const agencyCountBefore = await prisma.agency.count({ where: { tenantId: adminB.tenantId } });
+        expect(agencyCountBefore).toBe(0);
+
+        const voucherNumber = `V-NOAGENCY-${runId}`;
+        const rows = [
+          importRow({
+            voucherNumber,
+            clientFirstName: "SansAgence",
+            clientLastName: "Tenant",
+            startDate: new Date("2030-09-21"),
+            endDate: new Date("2030-09-22"),
+            pickupAgency: "Ville Totalement Inconnue",
+            dropoffAgency: "Autre Ville Inconnue",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminB, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.errors).toHaveLength(0);
+        expect(body.imported).toBe(1);
+
+        const persisted = await prisma.reservation.findFirst({ where: { tenantId: adminB.tenantId, voucherNumber } });
+        expect(persisted).not.toBeNull();
+        expect(persisted?.pickupAgency).toBe("Ville Totalement Inconnue");
+
+        const agencyCountAfter = await prisma.agency.count({ where: { tenantId: adminB.tenantId } });
+        expect(agencyCountAfter).toBe(0);
+      });
+    });
+
+    describe("isolation tenant/agence : une ville connue d'un autre tenant n'est jamais reconnue", () => {
+      it("'Agence A1' (agence réelle du tenant A) importée pour le tenant B (sans agence) reste du texte libre non résolu, jamais rattachée à l'agence du tenant A", async () => {
+        const rows = [
+          importRow({
+            voucherNumber: `V-CROSSTENANT-${runId}`,
+            clientFirstName: "Isolation",
+            clientLastName: "Tenant",
+            startDate: new Date("2030-09-23"),
+            endDate: new Date("2030-09-24"),
+            pickupAgency: "Agence A1",
+          }),
+        ];
+
+        // adminB n'a aucune agence : la validation de ville est donc ignorée pour lui (voir
+        // describe ci-dessus) — "Agence A1" est acceptée telle quelle, comme n'importe quel
+        // texte libre, jamais résolue vers l'agence réelle du tenant A.
+        const response = await importReservationsFile(adminB, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.errors).toHaveLength(0);
+        expect(body.imported).toBe(1);
+
+        const persisted = await prisma.reservation.findFirst({
+          where: { tenantId: adminB.tenantId, clientFirstName: "Isolation", clientLastName: "Tenant" },
+        });
+        expect(persisted).not.toBeNull();
+        // Jamais rattachée à l'agence réelle du tenant A (isolation tenant) — pickupAgencyId
+        // doit rester null (aucune correspondance résolue pour ce tenant).
+        expect(persisted?.pickupAgencyId).toBeNull();
+      });
+    });
+
+    describe("erreurs multiples sur plusieurs lignes — aucune ne masque les suivantes", () => {
+      it("rapporte toutes les erreurs (date invalide + ville départ inconnue + ville retour inconnue) avec le bon numéro de ligne chacune", async () => {
+        const validVoucher = `V-MULTI-VALID-${runId}`;
+        const rows = [
+          // Ligne Excel 2 : valide.
+          importRow({
+            voucherNumber: validVoucher,
+            clientFirstName: "Multi",
+            clientLastName: "Valide",
+            startDate: new Date("2030-09-25"),
+            endDate: new Date("2030-09-26"),
+          }),
+          // Ligne Excel 3 : date de départ invalide (31/02/2030).
+          importRow({
+            voucherNumber: `V-MULTI-DATE-${runId}`,
+            clientFirstName: "Multi",
+            clientLastName: "DateInvalide",
+            startDate: "31/02/2030",
+            endDate: "2030-09-28",
+          }),
+          // Ligne Excel 4 : ville de départ inconnue.
+          importRow({
+            voucherNumber: `V-MULTI-PICKUP-${runId}`,
+            clientFirstName: "Multi",
+            clientLastName: "VilleDepart",
+            startDate: new Date("2030-09-29"),
+            endDate: new Date("2030-09-30"),
+            pickupAgency: "Ville Departs Inexistante",
+          }),
+          // Ligne Excel 5 : ville de retour inconnue.
+          importRow({
+            voucherNumber: `V-MULTI-DROPOFF-${runId}`,
+            clientFirstName: "Multi",
+            clientLastName: "VilleRetour",
+            startDate: new Date("2030-10-01"),
+            endDate: new Date("2030-10-02"),
+            pickupAgency: "Agence A1",
+            dropoffAgency: "Ville Retour Inexistante",
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+
+        expect(body.imported).toBe(1);
+        expect(body.errors).toHaveLength(3);
+
+        const errorByRow = new Map<number, string>(
+          body.errors.map((e: { row: number; error: string }) => [e.row, e.error])
+        );
+        expect(errorByRow.get(3)).toContain("Colonne invalide: Date de départ");
+        expect(errorByRow.get(4)).toContain("Ville de départ inconnue");
+        expect(errorByRow.get(5)).toContain("Ville de retour inconnue");
+
+        const persistedValid = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, voucherNumber: validVoucher },
+        });
+        expect(persistedValid).not.toBeNull();
+
+        const persistedDate = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, clientFirstName: "Multi", clientLastName: "DateInvalide" },
+        });
+        expect(persistedDate).toBeNull();
+        const persistedPickup = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, clientFirstName: "Multi", clientLastName: "VilleDepart" },
+        });
+        expect(persistedPickup).toBeNull();
+        const persistedDropoff = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, clientFirstName: "Multi", clientLastName: "VilleRetour" },
+        });
+        expect(persistedDropoff).toBeNull();
+      });
+    });
+
+    describe("lignes entièrement vides — ignorées silencieusement, ni erreur ni import", () => {
+      it("ignore une ligne Excel entièrement vide au milieu du fichier", async () => {
+        const validVoucher1 = `V-BLANK-BEFORE-${runId}`;
+        const validVoucher2 = `V-BLANK-AFTER-${runId}`;
+        const rows = [
+          importRow({
+            voucherNumber: validVoucher1,
+            clientFirstName: "Avant",
+            clientLastName: "Vide",
+            startDate: new Date("2030-10-03"),
+            endDate: new Date("2030-10-04"),
+          }),
+          importRow({}), // ligne entièrement vide
+          importRow({
+            voucherNumber: validVoucher2,
+            clientFirstName: "Apres",
+            clientLastName: "Vide",
+            startDate: new Date("2030-10-05"),
+            endDate: new Date("2030-10-06"),
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(2);
+        expect(body.errors).toHaveLength(0);
+
+        const persisted1 = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, voucherNumber: validVoucher1 },
+        });
+        const persisted2 = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, voucherNumber: validVoucher2 },
+        });
+        expect(persisted1).not.toBeNull();
+        expect(persisted2).not.toBeNull();
+      });
+    });
+
+    describe("import partiel — comportement conservé (lignes valides importées, invalides rejetées, jamais tout-ou-rien)", () => {
+      it("un fichier avec 2 lignes valides et 1 invalide importe les 2 valides, rejette seule l'invalide, sans mode tout-ou-rien", async () => {
+        const voucher1 = `V-PARTIAL-1-${runId}`;
+        const voucher2 = `V-PARTIAL-2-${runId}`;
+        const rows = [
+          importRow({
+            voucherNumber: voucher1,
+            clientFirstName: "Partiel",
+            clientLastName: "Un",
+            startDate: new Date("2030-10-07"),
+            endDate: new Date("2030-10-08"),
+          }),
+          importRow({
+            voucherNumber: `V-PARTIAL-BAD-${runId}`,
+            clientFirstName: "Partiel",
+            clientLastName: "Invalide",
+            startDate: "31/04/2030", // avril n'a que 30 jours
+            endDate: "2030-10-10",
+          }),
+          importRow({
+            voucherNumber: voucher2,
+            clientFirstName: "Partiel",
+            clientLastName: "Deux",
+            startDate: new Date("2030-10-11"),
+            endDate: new Date("2030-10-12"),
+          }),
+        ];
+
+        const response = await importReservationsFile(adminA, rows, "commit");
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.imported).toBe(2);
+        expect(body.errors).toHaveLength(1);
+
+        const persisted1 = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, voucherNumber: voucher1 },
+        });
+        const persisted2 = await prisma.reservation.findFirst({
+          where: { tenantId: adminA.tenantId, voucherNumber: voucher2 },
+        });
+        expect(persisted1).not.toBeNull();
+        expect(persisted2).not.toBeNull();
+      });
     });
   });
 });
