@@ -393,6 +393,31 @@ describe("Sprint 23 — nouveaux onglets Contrats/Performance véhicules, gated 
     expect(html).toContain("Contrats");
   });
 
+  it("/dashboard/contracts : champ de recherche par numéro de contrat présent, combinable avec le filtre Statut, valeur trop longue signalée", async () => {
+    const noSearch = await apiFetch("/dashboard/contracts", { headers: { Cookie: member.sessionCookie } });
+    const noSearchHtml = await noSearch.text();
+    expect(noSearchHtml).toContain('name="contractNumber"');
+    expect(noSearchHtml).toContain("N° de contrat");
+
+    // Combinaison avec Statut : les deux paramètres cohabitent dans la même URL (formulaire
+    // GET natif, même patron déjà en place pour Statut seul) sans erreur serveur.
+    const combined = await apiFetch("/dashboard/contracts?contractNumber=00001&status=PENDING", {
+      headers: { Cookie: member.sessionCookie },
+    });
+    expect(combined.status).toBe(200);
+    const combinedHtml = await combined.text();
+    expect(combinedHtml).toContain('value="00001"');
+
+    // Valeur trop longue (> 50 caractères) : signalée, jamais transmise telle quelle à la
+    // requête (voir MAX_CONTRACT_NUMBER_SEARCH_LENGTH, page.tsx).
+    const tooLong = await apiFetch(`/dashboard/contracts?contractNumber=${"X".repeat(60)}`, {
+      headers: { Cookie: member.sessionCookie },
+    });
+    expect(tooLong.status).toBe(200);
+    const tooLongHtml = await tooLong.text();
+    expect(tooLongHtml).toContain("caractères maximum");
+  });
+
   it("/dashboard/vehicle-performance rend la page pour un MEMBER par défaut (vehicle_performance.view accordée)", async () => {
     const response = await apiFetch("/dashboard/vehicle-performance", { headers: { Cookie: member.sessionCookie } });
     expect(response.status).toBe(200);

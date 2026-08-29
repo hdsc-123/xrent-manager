@@ -799,6 +799,98 @@ describe("DELETE /api/reservations/[id]", () => {
     });
     expect(deleteResponse.status).toBe(409);
   });
+
+  // Suppression multiple (DOMAINRULES.md section 24, Sprint 14A) : ReservationsTable.tsx
+  // n'a pas de route bulk dédiée — elle enchaîne cet endpoint DELETE/[id] par ligne
+  // sélectionnée (Promise.allSettled). Ces tests valident donc directement le comportement
+  // réel exercé par la sélection multiple, sans dupliquer un chemin API distinct.
+  it("suppression multiple : plusieurs réservations PENDING sont toutes supprimées et journalisées individuellement", async () => {
+    const ids = await Promise.all(
+      [1, 2, 3].map(async () => {
+        const res = await createReservation(adminA);
+        return (await res.json()).reservation.id;
+      })
+    );
+
+    const results = await Promise.all(
+      ids.map((id) => apiFetch(`/api/reservations/${id}`, { method: "DELETE", headers: { Cookie: adminA.sessionCookie } }))
+    );
+    expect(results.every((r) => r.status === 200)).toBe(true);
+
+    for (const id of ids) {
+      const getResponse = await apiFetch(`/api/reservations/${id}`, { headers: { Cookie: adminA.sessionCookie } });
+      expect(getResponse.status).toBe(404);
+
+      const audit = await prisma.auditLog.findFirst({
+        where: { tenantId: adminA.tenantId, action: "reservation.deleted", resourceId: id },
+      });
+      expect(audit).toBeDefined();
+    }
+  });
+
+  it("suppression multiple : résultat partiel — une réservation PENDING supprimée, une CONFIRMED refusée (409), aucune n'empêche l'autre", async () => {
+    const deletableRes = await createReservation(adminA);
+    const deletableId = (await deletableRes.json()).reservation.id;
+
+    const blockedRes = await createReservation(adminA);
+    const blockedId = (await blockedRes.json()).reservation.id;
+    await apiFetch(`/api/reservations/${blockedId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+
+    const [deletableResult, blockedResult] = await Promise.all([
+      apiFetch(`/api/reservations/${deletableId}`, { method: "DELETE", headers: { Cookie: adminA.sessionCookie } }),
+      apiFetch(`/api/reservations/${blockedId}`, { method: "DELETE", headers: { Cookie: adminA.sessionCookie } }),
+    ]);
+    expect(deletableResult.status).toBe(200);
+    expect(blockedResult.status).toBe(409);
+
+    // La réservation refusée existe toujours, avec son statut inchangé.
+    const stillThere = await apiFetch(`/api/reservations/${blockedId}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect(stillThere.status).toBe(200);
+    expect((await stillThere.json()).reservation.status).toBe("CONFIRMED");
+  });
+
+  it("isolation agence : un MEMBER d'une autre agence ne peut pas supprimer une réservation via sélection multiple (404, agence de départ non accessible)", async () => {
+    const otherAgencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Agence Isolation Bulk ${runId}`, slug: `agence-isolation-bulk-${runId}` }),
+    });
+    const otherAgencyId = (await otherAgencyResponse.json()).agency.id;
+    const outsider = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Outsider Bulk Delete",
+      email: `outsider-bulk-delete-${runId}@test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    await prisma.userAgency.create({ data: { userId: outsider.userId, agencyId: otherAgencyId } });
+    // Groupe AGENCE (a reservations.delete, contrairement à MEMBER par défaut) — nécessaire
+    // pour que cette requête atteigne réellement la vérification d'isolation agence
+    // (canEditReservationAgency) plutôt que d'échouer plus tôt sur la permission elle-même.
+    const groupsResponse = await apiFetch("/api/permission-groups", { headers: { Cookie: adminA.sessionCookie } });
+    const agenceGroupId = (await groupsResponse.json()).groups.find((g: { name: string }) => g.name === "AGENCE").id;
+    await apiFetch(`/api/users/${outsider.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: agenceGroupId }),
+    });
+
+    const createResponse = await createReservation(adminA, { pickupAgency: "Agence A1" });
+    const id = (await createResponse.json()).reservation.id;
+
+    const deleteResponse = await apiFetch(`/api/reservations/${id}`, {
+      method: "DELETE",
+      headers: { Cookie: outsider.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(404);
+
+    // La réservation existe toujours, visible par son agence réelle.
+    const stillThere = await apiFetch(`/api/reservations/${id}`, { headers: { Cookie: adminA.sessionCookie } });
+    expect(stillThere.status).toBe(200);
+  });
 });
 
 describe("Sprint 19 — visibilité des réservations par agence de départ/retour (DOMAINRULES.md section 37)", () => {

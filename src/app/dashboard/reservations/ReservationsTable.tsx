@@ -145,6 +145,7 @@ export function ReservationsTable({
   const [isDeleting, setIsDeleting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [confirmingBulkDelete, setConfirmingBulkDelete] = useState(false);
 
   const deletableReservations = useMemo(
     () =>
@@ -209,6 +210,7 @@ export function ReservationsTable({
         toast.warning(`${succeeded} supprimée(s), ${failed} refusée(s) (statut non supprimable).`);
       }
       setSelectedIds(new Set());
+      setConfirmingBulkDelete(false);
       router.refresh();
     } finally {
       setIsBulkDeleting(false);
@@ -480,7 +482,7 @@ export function ReservationsTable({
       {canDelete && selectedIds.size > 0 && (
         <div className="mb-3 flex items-center justify-between rounded-md border border-border bg-muted/50 px-3 py-2">
           <p className="text-sm text-muted-foreground">{selectedIds.size} sélectionnée(s)</p>
-          <Button variant="destructive" size="sm" onClick={handleBulkDelete} disabled={isBulkDeleting}>
+          <Button variant="destructive" size="sm" onClick={() => setConfirmingBulkDelete(true)} disabled={isBulkDeleting}>
             <Icon icon={Trash2} className="size-4" />
             {isBulkDeleting ? "Suppression..." : "Supprimer la sélection"}
           </Button>
@@ -542,6 +544,25 @@ export function ReservationsTable({
             </Button>
             <Button onClick={handleReset} disabled={isResetting}>
               {isResetting ? "Réinitialisation..." : "Réinitialiser"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={confirmingBulkDelete} onOpenChange={(open) => !open && setConfirmingBulkDelete(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Supprimer {selectedIds.size} réservation(s) ?</DialogTitle>
+            <DialogDescription>
+              {selectedIds.size} réservation(s) seront définitivement supprimée(s). Cette action est irréversible.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmingBulkDelete(false)}>
+              Retour
+            </Button>
+            <Button variant="destructive" onClick={handleBulkDelete} disabled={isBulkDeleting}>
+              {isBulkDeleting ? "Suppression..." : "Supprimer la sélection"}
             </Button>
           </DialogFooter>
         </DialogContent>

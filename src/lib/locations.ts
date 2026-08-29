@@ -633,13 +633,17 @@ export interface ContractOverviewRow {
  */
 export async function getContractsOverview(
   tenantId: string,
-  filters: { agencyIds?: string[] | null; status?: LocationStatus } = {}
+  filters: { agencyIds?: string[] | null; status?: LocationStatus; contractNumber?: string } = {}
 ): Promise<ContractOverviewRow[]> {
   const locations = await prisma.location.findMany({
     where: {
       tenantId,
       ...(filters.status ? { status: filters.status } : {}),
       ...(filters.agencyIds !== undefined ? locationAgencyScopeWhere(filters.agencyIds) : {}),
+      // Recherche exacte/partielle, insensible à la casse (ex. "00004" ou "RAK-00004") — le
+      // contrôle de longueur/espaces a déjà eu lieu côté route avant l'appel (voir
+      // MAX_CONTRACT_NUMBER_SEARCH_LENGTH, src/app/api/locations/route.ts).
+      ...(filters.contractNumber ? { contractNumber: { contains: filters.contractNumber, mode: "insensitive" } } : {}),
     },
     include: {
       vehicle: { select: { make: true, licensePlate: true } },

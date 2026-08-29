@@ -14,8 +14,14 @@ const STATUS_OPTIONS: { value: LocationStatus; label: string }[] = [
   { value: "CANCELLED", label: "Annulée" },
 ];
 
+/** Longueur maximale acceptée pour la recherche par numéro de contrat — un numéro de contrat
+ * réel ne dépasse jamais quelques dizaines de caractères (préfixe agence + compteur), cette
+ * limite n'existe que pour rejeter proprement une valeur aberrante plutôt que de la transmettre
+ * telle quelle à la requête Prisma. */
+const MAX_CONTRACT_NUMBER_SEARCH_LENGTH = 50;
+
 interface PageProps {
-  searchParams: Promise<{ status?: string }>;
+  searchParams: Promise<{ status?: string; contractNumber?: string }>;
 }
 
 /**
@@ -45,8 +51,18 @@ export default async function ContractsPage({ searchParams }: PageProps) {
     ? (params.status as LocationStatus)
     : undefined;
 
+  // Valeur vide/composée uniquement d'espaces ignorée proprement (jamais transmise à la
+  // requête) ; valeur trop longue rejetée plutôt que tronquée silencieusement, pour ne jamais
+  // laisser croire qu'une recherche a été appliquée alors qu'elle a été altérée.
+  const rawContractNumber = params.contractNumber?.trim();
+  const contractNumber =
+    rawContractNumber && rawContractNumber.length <= MAX_CONTRACT_NUMBER_SEARCH_LENGTH ? rawContractNumber : undefined;
+  const contractNumberTooLong = Boolean(
+    rawContractNumber && rawContractNumber.length > MAX_CONTRACT_NUMBER_SEARCH_LENGTH
+  );
+
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);
-  const contracts = await getContractsOverview(user.tenantId, { agencyIds: accessibleAgencyIds, status });
+  const contracts = await getContractsOverview(user.tenantId, { agencyIds: accessibleAgencyIds, status, contractNumber });
 
   const rows: ContractOverviewRow[] = contracts.map((contract) => ({
     id: contract.id,
@@ -78,6 +94,21 @@ export default async function ContractsPage({ searchParams }: PageProps) {
 
       <form className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3" method="get">
         <div className="flex flex-col gap-1.5">
+          <label htmlFor="contractNumber" className="text-xs font-medium text-muted-foreground">
+            N° de contrat
+          </label>
+          <input
+            id="contractNumber"
+            name="contractNumber"
+            type="text"
+            placeholder="ex. 00004 ou RAK-00004"
+            defaultValue={params.contractNumber ?? ""}
+            maxLength={MAX_CONTRACT_NUMBER_SEARCH_LENGTH}
+            className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm sm:w-56"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1.5">
           <label htmlFor="status" className="text-xs font-medium text-muted-foreground">
             Statut
           </label>
@@ -99,12 +130,18 @@ export default async function ContractsPage({ searchParams }: PageProps) {
         <Button type="submit" variant="outline" size="sm">
           Filtrer
         </Button>
-        {status && (
+        {(status || params.contractNumber) && (
           <Button render={<Link href="/dashboard/contracts" />} variant="ghost" size="sm">
             Réinitialiser
           </Button>
         )}
       </form>
+
+      {contractNumberTooLong && (
+        <p className="text-sm text-destructive">
+          Recherche ignorée : {MAX_CONTRACT_NUMBER_SEARCH_LENGTH} caractères maximum.
+        </p>
+      )}
 
       <ContractsOverviewTable contracts={rows} />
     </div>

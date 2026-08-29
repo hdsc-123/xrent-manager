@@ -2373,3 +2373,84 @@ describe("getContractsOverview — filtre status (Sprint 30, point 6b Sprint A)"
     expect(otherAgencyScope.map((contract) => contract.id)).not.toContain(pendingLocationId);
   });
 });
+
+// Recherche par numéro de contrat (2026-08-29) — même principe de test que le filtre status
+// ci-dessus : getContractsOverview appelée directement, /dashboard/contracts n'ayant pas de
+// route API dédiée (Server Component).
+describe("getContractsOverview — filtre contractNumber (recherche par numéro de contrat)", () => {
+  it("recherche exacte : ne retourne que le contrat dont le numéro correspond exactement", async () => {
+    const response = await createLocation(adminA, { startDate: "2028-12-01", endDate: "2028-12-03" });
+    const location = (await response.json()).location;
+    const exactNumber = location.contractNumber as string;
+
+    const results = await getContractsOverview(adminA.tenantId, {
+      agencyIds: [agencyA1Id],
+      contractNumber: exactNumber,
+    });
+    expect(results.map((c) => c.id)).toContain(location.id);
+    expect(results.every((c) => c.contractNumber === exactNumber)).toBe(true);
+  });
+
+  it("recherche partielle : un sous-ensemble du numéro suffit à retrouver le contrat", async () => {
+    const response = await createLocation(adminA, { startDate: "2028-12-05", endDate: "2028-12-07" });
+    const location = (await response.json()).location;
+    const exactNumber = location.contractNumber as string;
+    const partial = exactNumber.slice(-3); // ex. les 3 derniers chiffres du compteur
+
+    const results = await getContractsOverview(adminA.tenantId, {
+      agencyIds: [agencyA1Id],
+      contractNumber: partial,
+    });
+    expect(results.map((c) => c.id)).toContain(location.id);
+  });
+
+  it("insensible à la casse : une recherche en minuscules retrouve un numéro contenant des lettres majuscules", async () => {
+    const prefixResponse = await apiFetch(`/api/agencies/${agencyA1Id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ contractNumberPrefix: "CASE" }),
+    });
+    expect(prefixResponse.status).toBe(200);
+
+    const response = await createLocation(adminA, { startDate: "2028-12-09", endDate: "2028-12-11" });
+    const location = (await response.json()).location;
+    expect(location.contractNumber as string).toMatch(/^CASE-/);
+
+    const results = await getContractsOverview(adminA.tenantId, {
+      agencyIds: [agencyA1Id],
+      contractNumber: "case-",
+    });
+    expect(results.map((c) => c.id)).toContain(location.id);
+  });
+
+  it("aucun résultat pour un numéro inexistant, combinable avec le filtre status", async () => {
+    const results = await getContractsOverview(adminA.tenantId, {
+      agencyIds: [agencyA1Id],
+      contractNumber: "NUMERO-INEXISTANT-XYZ",
+      status: "PENDING",
+    });
+    expect(results).toHaveLength(0);
+  });
+
+  it("isolation agence préservée : un numéro de contrat existant dans une autre agence n'apparaît jamais hors de son scope", async () => {
+    const response = await createLocation(adminA, { startDate: "2028-12-13", endDate: "2028-12-15" });
+    const location = (await response.json()).location;
+
+    const otherAgencyScope = await getContractsOverview(adminA.tenantId, {
+      agencyIds: [agencyB1Id],
+      contractNumber: location.contractNumber as string,
+    });
+    expect(otherAgencyScope.map((c) => c.id)).not.toContain(location.id);
+  });
+
+  it("isolation tenant préservée : un numéro de contrat existant dans un autre tenant n'apparaît jamais", async () => {
+    const response = await createLocation(adminA, { startDate: "2028-12-17", endDate: "2028-12-19" });
+    const location = (await response.json()).location;
+
+    const otherTenantResults = await getContractsOverview(adminB.tenantId, {
+      agencyIds: null,
+      contractNumber: location.contractNumber as string,
+    });
+    expect(otherTenantResults).toHaveLength(0);
+  });
+});
