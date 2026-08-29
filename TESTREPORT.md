@@ -655,6 +655,23 @@ Aucun autre fichier de code modifié. Aucune donnée modifiée. Aucun commit cr�
 
 Migrations Prisma créées (`prisma/migrations/20260829152955_add_login_throttle/`) et appliquées à `xrent_dev`/`xrent_test` uniquement (jamais de production, qui n'existe pas à ce jour). Aucun fichier de contrats/factures/paiements/réservations/PDF modifié. Aucune donnée métier réelle modifiée ou supprimée — aucun reset, aucun seed, aucune commande SQL exécutée sur des données (la seule opération hors application est la résolution de bookkeeping INC-24, métadonnée uniquement).
 
+## Tests session — réinitialisation complète des bases locales et bootstrap du Super Admin réel (2026-08-29)
+
+**Contexte** : brief explicite du propriétaire du projet — réinitialisation totale de `xrent_dev`/`xrent_test` (débris de test accumulés, données QA fictives) puis création du premier Super Admin réel (`saadscott123@gmail.com`) via `scripts/bootstrap-superadmin.js`, corrigé au préalable pour ne plus jamais accepter de mot de passe en argument de ligne de commande (saisie interactive masquée, confirmée par double saisie).
+
+**Résultat** : nouveau test unitaire pur `src/__tests__/super-admin.test.ts` (7 tests, aucun serveur `next dev` requis) validant `isSuperAdminEmail` (correspondance exacte, normalisation casse/espaces sans élargissement, email différent refusé, variable absente → tout refusé, allowlist par domaine, plusieurs entrées). Suite ciblée relancée contre les bases fraîchement vidées pour confirmer l'absence de dépendance à une donnée préexistante : `auth`/`tenants`/`super-admin`/`login-throttle`/`ui`/`e2e-full`.
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| Ciblés (`npx vitest run auth tenants super-admin login-throttle ui e2e-full`) | 67 | 67 | 0 | 0 |
+| `npx prisma validate` (dev + test) | — | vert | — | — |
+| `npx prisma migrate status` (dev + test) | — | vert (à jour, 32 migrations) | — | — |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+
+Suite complète (`node scripts/test-grouped.mjs`) non relancée dans cette session précise (hors périmètre demandé) — dernier résultat connu **1420/1420** (2026-08-29, avant ce reset ; le nouveau fichier `super-admin.test.ts` a été ajouté au registre `GROUPS` de `scripts/test-grouped.mjs`, à recompter lors de la prochaine exécution complète). Aucun secret (mot de passe, hash, valeur de `SUPER_ADMIN_EMAILS`) affiché dans aucune sortie de commande de cette session.
+
 ## 4. Format attendu des futurs rapports
 
 Chaque exécution future de la suite de tests devra être consignée dans ce document (ou dans un rapport daté associé) selon le format suivant :
