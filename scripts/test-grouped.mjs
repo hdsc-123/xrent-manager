@@ -15,7 +15,7 @@ import { spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
 
 const GROUPS = [
-  ["reservations", "permissions", "vehicle-mobility-alerts", "invoice-status-alerts", "reports", "db", "password-policy", "scheduled-alerts-cron", "responsive-layout"],
+  ["reservations", "permissions", "vehicle-mobility-alerts", "invoice-status-alerts", "reports", "db", "password-policy", "super-admin", "scheduled-alerts-cron", "responsive-layout"],
   ["locations", "location-extension", "location-chains", "location-chain-balance", "dashboard-route-guards", "data-reset", "invoices", "audit-deletion", "auth", "login-throttle", "csv-export-sanitization", "csv-exports", "damages", "location-return"],
   ["vehicles", "agencies", "audit", "ui", "e2e-full", "invitations", "location-return-route", "credit-notes-ui", "damage-invoices-ui", "icon-hydration"],
   ["users", "maintenances", "clients", "vehicle-trips", "batch-pdf", "location-payment", "damages-route", "damage-invoices-route", "test-grouped-integrity"],

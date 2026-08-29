@@ -10,6 +10,22 @@
  *
  * Refuse de s'exécuter si DATABASE_URL ne pointe pas vers une base nommée *_dev/*_test
  * sur localhost — garde-fou contre une exécution accidentelle ailleurs.
+ *
+ * --full (2026-08-29, tâche « sécurisation Super Admin/MFA ») : réinitialisation totale —
+ * vide en plus TOUTE la configuration normalement préservée ci-dessus (Tenant/User/Agency/
+ * PermissionGroup/GroupPermission/UserAgency/CashRegister/ExpenseCategory/NextAuth) ainsi que
+ * `LoginThrottle` (nouveau depuis le Sprint « rate limiting », jamais ajouté à ce script — gap
+ * comblé ici). Utilisé quand un environnement doit repartir strictement vide (schéma/migrations
+ * intacts, aucune ligne de données) — cas d'usage : `xrent_test` avait accumulé des milliers de
+ * lignes résiduelles de sessions de test interrompues, sans rapport avec le schéma lui-même.
+ *
+ * Mécanisme différent du mode par défaut, sur demande explicite : un unique `TRUNCATE ...
+ * CASCADE` (une seule instruction Postgres) au lieu d'une boucle de `deleteMany` ordonnée à la
+ * main — élimine structurellement le risque de bug d'ordre de suppression déjà rencontré deux
+ * fois sur ce script (INC-18) : `CASCADE` résout lui-même les dépendances de clé étrangère,
+ * quel que soit l'ordre dans lequel les tables sont listées. Ne touche jamais
+ * `_prisma_migrations` (jamais listée, jamais dans le schéma applicatif de toute façon) —
+ * vérifié explicitement après exécution (voir plus bas).
  */
 
 const path = require("path");
@@ -19,9 +35,10 @@ const args = process.argv.slice(2);
 const envArg = args.find((a) => a.startsWith("--env="));
 const env = envArg ? envArg.split("=")[1] : null;
 const confirmed = args.includes("--yes");
+const full = args.includes("--full");
 
 if (env !== "dev" && env !== "test") {
-  console.error("Usage: node scripts/reset-dev-data.js --env=dev|test [--yes]");
+  console.error("Usage: node scripts/reset-dev-data.js --env=dev|test [--full] [--yes]");
   process.exit(1);
 }
 
@@ -98,6 +115,44 @@ const PRESERVED_MODELS = [
   "cashRegister",
 ];
 
+// --full uniquement : modèles ci-dessus + LoginThrottle (absent de PRESERVED_MODELS, jamais
+// ajouté depuis son introduction — voir le commentaire d'en-tête). Nom de table Postgres réel
+// identique au nom de modèle Prisma dans tout ce schéma (aucun `@@map`, vérifié).
+const FULL_ONLY_MODELS = [...PRESERVED_MODELS, "loginThrottle"];
+
+const MODEL_TO_TABLE = {
+  tenant: "Tenant",
+  agency: "Agency",
+  user: "User",
+  userAgency: "UserAgency",
+  permissionGroup: "PermissionGroup",
+  groupPermission: "GroupPermission",
+  userPermission: "UserPermission",
+  expenseCategory: "ExpenseCategory",
+  account: "Account",
+  session: "Session",
+  verificationToken: "VerificationToken",
+  cashRegister: "CashRegister",
+  loginThrottle: "LoginThrottle",
+  cashEntry: "CashEntry",
+  damageInvoiceLine: "DamageInvoiceLine",
+  payment: "Payment",
+  damage: "Damage",
+  damageInvoice: "DamageInvoice",
+  locationUpgrade: "LocationUpgrade",
+  invoice: "Invoice",
+  maintenance: "Maintenance",
+  vehicleTransfer: "VehicleTransfer",
+  vehicleTrip: "VehicleTrip",
+  location: "Location",
+  vehicle: "Vehicle",
+  client: "Client",
+  reservation: "Reservation",
+  alert: "Alert",
+  invitation: "Invitation",
+  auditLog: "AuditLog",
+};
+
 async function countAll(models) {
   const counts = {};
   for (const model of models) {
@@ -106,9 +161,12 @@ async function countAll(models) {
   return counts;
 }
 
-async function main() {
-  console.log(`Environnement : ${env} (${envFile}) — base : ${dbName}@${parsed.hostname}`);
+async function getPrismaMigrationsCount() {
+  const rows = await prisma.$queryRawUnsafe('SELECT count(*)::int AS count FROM "_prisma_migrations"');
+  return rows[0].count;
+}
 
+async function mainDefault() {
   const beforeWipe = await countAll(WIPE_ORDER);
   const beforePreserved = await countAll(PRESERVED_MODELS);
 
@@ -158,6 +216,65 @@ async function main() {
   console.log("\nConfiguration (inchangée) :");
   for (const model of PRESERVED_MODELS) {
     console.log(`  ${model.padEnd(18)} ${afterPreserved[model]}`);
+  }
+}
+
+async function mainFull() {
+  const allModels = [...WIPE_ORDER, ...FULL_ONLY_MODELS];
+  const tables = allModels.map((model) => MODEL_TO_TABLE[model]);
+
+  const before = await countAll(allModels);
+  const migrationsBefore = await getPrismaMigrationsCount();
+
+  console.log("\n[--full] TOUTES les tables métier/auth seront vidées (aucune exception) :");
+  for (const model of allModels) {
+    console.log(`  ${model.padEnd(18)} ${before[model]}`);
+  }
+  console.log(`\n_prisma_migrations (jamais touchée) : ${migrationsBefore} ligne(s)`);
+
+  console.log("\nInstruction qui sera exécutée :");
+  const truncateSql = `TRUNCATE TABLE ${tables.map((t) => `"${t}"`).join(", ")} RESTART IDENTITY CASCADE`;
+  console.log(`  ${truncateSql};`);
+
+  if (!confirmed) {
+    console.log("\nDry-run (aucune suppression effectuée). Relancer avec --full --yes pour exécuter.");
+    return;
+  }
+
+  console.log("\nTRUNCATE en cours...");
+  await prisma.$executeRawUnsafe(truncateSql);
+
+  const after = await countAll(allModels);
+  const migrationsAfter = await getPrismaMigrationsCount();
+
+  console.log("\nTerminé. Comptages après réinitialisation complète :");
+  let anyNonZero = false;
+  for (const model of allModels) {
+    console.log(`  ${model.padEnd(18)} ${after[model]}`);
+    if (after[model] !== 0) anyNonZero = true;
+  }
+
+  if (anyNonZero) {
+    throw new Error(
+      "Au moins une table ciblée n'est pas vide après TRUNCATE — voir le détail ci-dessus."
+    );
+  }
+  if (migrationsAfter !== migrationsBefore) {
+    throw new Error(
+      `_prisma_migrations a changé (${migrationsBefore} -> ${migrationsAfter}) alors qu'il ne devait jamais être touché.`
+    );
+  }
+
+  console.log(`\n_prisma_migrations (confirmée inchangée) : ${migrationsAfter} ligne(s)`);
+  console.log("Toutes les tables ciblées sont vides. Registre de migrations intact.");
+}
+
+async function main() {
+  console.log(`Environnement : ${env} (${envFile}) — base : ${dbName}@${parsed.hostname}`);
+  if (full) {
+    await mainFull();
+  } else {
+    await mainDefault();
   }
 }
 
