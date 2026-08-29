@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1369/1369** (2026-08-29).
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1386/1386** (2026-08-29).
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -319,8 +319,19 @@ Détail complet de chaque entrée ci-dessous (fichiers de test, nombre exact, pa
 | 2026-08-27 | Passe de correction obligatoire — doublon Omar (INC-13), surclassement `LocationUpgrade` complet, INC-14/INC-15 |
 | 2026-08-28 | Correctif d'affichage `/dashboard/users` — distinction rôle système / groupe de permissions (INC-20) |
 | 2026-08-29 | Correctif préexistant `getMaintenanceEffectiveEnd` — maintenance sans fin explicite ne bloquait plus après minuit (INC-21) |
+| 2026-08-29 | Correctif préexistant `getInvoices` — filtres `from`/`to` combinés de `GET /api/invoices` (INC-22) |
 
 ### Rapports récents (détail complet ci-dessous, pas archivés)
+
+## Tests session — correctif préexistant `getInvoices`, filtres from/to combinés de GET /api/invoices (2026-08-29)
+
+**Contexte** : découvert en testant manuellement la combinaison `from`+`to` de `GET /api/invoices` (exigence explicite de la session en cours, préalable à l'implémentation des tests automatisés de ce filtre) — reproduction directe de la construction de la clause `where` de `getInvoices` confirmant que `from` et `to`, fournis ensemble, ne produisaient qu'une seule borne effective (`to`). Défaut sans rapport avec INC-21/INC-20 (module disjoint). Voir INCIDENTS.md INC-22 pour le détail complet.
+
+**Correctif** : `getInvoices` (`src/lib/invoices.ts`) fusionne désormais `from`/`to` dans un seul objet `issuedAt` au lieu de deux spreads séparés ciblant la même clé (le second écrasait systématiquement le premier). `GET /api/invoices` (`src/app/api/invoices/route.ts`) valide en outre `from`/`to` comme dates ISO (400 si invalide), sur le modèle déjà suivi par les autres routes de l'API.
+
+**Tests ajoutés** : `invoices.test.ts`, nouveau bloc `describe("INC-22 — filtres from/to (issuedAt)")` — 7 tests : `from` seul, `to` seul, `from`+`to` combinés (reproduit exactement le défaut d'origine), bornes inclusives, dates invalides (`from`/`to`, 400), isolation tenant, permission `invoices.view` (groupe personnalisé vide ⇒ 403).
+
+**Tests exécutés** : `invoices.test.ts` isolé (189/189, incluant les 7 nouveaux tests) ; suite complète (`node scripts/test-grouped.mjs`) **1386/1386** ; `npx tsc --noEmit`/`npm run lint`/`npm run build` verts ; `git diff --check` propre.
 
 ## Tests session — correctif préexistant `getMaintenanceEffectiveEnd`, maintenance sans fin explicite après minuit (2026-08-29)
 

@@ -49,13 +49,22 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Accès refusé à cette agence." }, { status: 403 });
   }
 
+  const from = fromParam ? new Date(fromParam) : undefined;
+  if (from && Number.isNaN(from.getTime())) {
+    return NextResponse.json({ error: "from doit être une date ISO valide." }, { status: 400 });
+  }
+  const to = toParam ? new Date(toParam) : undefined;
+  if (to && Number.isNaN(to.getTime())) {
+    return NextResponse.json({ error: "to doit être une date ISO valide." }, { status: 400 });
+  }
+
   const filters: InvoiceFilters = {
     status: statusParam as InvoiceStatus | undefined,
     agencyId,
     clientId,
     locationId,
-    from: fromParam ? new Date(fromParam) : undefined,
-    to: toParam ? new Date(toParam) : undefined,
+    from,
+    to,
   };
 
   const accessibleAgencyIds = await getAccessibleAgencyIds(user);

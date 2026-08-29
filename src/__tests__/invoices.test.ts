@@ -387,6 +387,111 @@ describe("GET /api/invoices", () => {
     const body = await response.json();
     expect(body.invoices.every((i: { status: string }) => i.status === "DRAFT")).toBe(true);
   });
+
+  describe("INC-22 — filtres from/to (issuedAt)", () => {
+    // t0 < t1 < t2 < t3, chacune séparée d'un jour, dans une plage dédiée (2032) sans
+    // chevauchement possible avec les autres factures créées ailleurs dans ce fichier.
+    const base = Date.UTC(2032, 0, 1);
+    const t0 = new Date(base);
+    const t1 = new Date(base + 24 * 60 * 60 * 1000);
+    const t2 = new Date(base + 2 * 24 * 60 * 60 * 1000);
+    const t3 = new Date(base + 3 * 24 * 60 * 60 * 1000);
+
+    let invoice0Id: string;
+    let invoice1Id: string;
+    let invoice2Id: string;
+    let invoice3Id: string;
+
+    beforeAll(async () => {
+      const responses = await Promise.all([createInvoice(adminA), createInvoice(adminA), createInvoice(adminA), createInvoice(adminA)]);
+      const ids = await Promise.all(responses.map(async (r) => (await r.json()).invoice.id as string));
+      [invoice0Id, invoice1Id, invoice2Id, invoice3Id] = ids;
+      await prisma.invoice.update({ where: { id: invoice0Id }, data: { issuedAt: t0 } });
+      await prisma.invoice.update({ where: { id: invoice1Id }, data: { issuedAt: t1 } });
+      await prisma.invoice.update({ where: { id: invoice2Id }, data: { issuedAt: t2 } });
+      await prisma.invoice.update({ where: { id: invoice3Id }, data: { issuedAt: t3 } });
+    });
+
+    async function idsFor(query: string, actor: AuthenticatedTestUser = adminA): Promise<string[]> {
+      const response = await apiFetch(`/api/invoices?${query}`, { headers: { Cookie: actor.sessionCookie } });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      return body.invoices.map((i: { id: string }) => i.id);
+    }
+
+    it("from seul — inclut la borne et tout ce qui suit, exclut ce qui précède", async () => {
+      const ids = await idsFor(`from=${t1.toISOString()}`);
+      expect(ids).not.toContain(invoice0Id);
+      expect(ids).toContain(invoice1Id); // borne incluse
+      expect(ids).toContain(invoice2Id);
+      expect(ids).toContain(invoice3Id);
+    });
+
+    it("to seul — inclut la borne et tout ce qui précède, exclut ce qui suit", async () => {
+      const ids = await idsFor(`to=${t2.toISOString()}`);
+      expect(ids).toContain(invoice0Id);
+      expect(ids).toContain(invoice1Id);
+      expect(ids).toContain(invoice2Id); // borne incluse
+      expect(ids).not.toContain(invoice3Id);
+    });
+
+    it("from + to combinés — les deux bornes s'appliquent réellement (non-régression INC-22)", async () => {
+      // Avant correction, ce cas précis passait à tort : le second spread sur la clé issuedAt
+      // écrasait le premier, la borne from (gte) disparaissait, et invoice0Id (émise avant t1)
+      // était incluse à tort dès lors qu'elle respectait seulement la borne to.
+      const ids = await idsFor(`from=${t1.toISOString()}&to=${t2.toISOString()}`);
+      expect(ids).not.toContain(invoice0Id);
+      expect(ids).toContain(invoice1Id);
+      expect(ids).toContain(invoice2Id);
+      expect(ids).not.toContain(invoice3Id);
+    });
+
+    it("date invalide sur from — 400, aucun filtrage appliqué à tort", async () => {
+      const response = await apiFetch("/api/invoices?from=not-a-date", { headers: { Cookie: adminA.sessionCookie } });
+      expect(response.status).toBe(400);
+    });
+
+    it("date invalide sur to — 400", async () => {
+      const response = await apiFetch("/api/invoices?to=not-a-date", { headers: { Cookie: adminA.sessionCookie } });
+      expect(response.status).toBe(400);
+    });
+
+    it("isolation tenant — from/to ne renvoient jamais les factures d'un autre tenant", async () => {
+      const ids = await idsFor(`from=${t0.toISOString()}&to=${t3.toISOString()}`, adminB);
+      expect(ids).not.toContain(invoice0Id);
+      expect(ids).not.toContain(invoice1Id);
+      expect(ids).not.toContain(invoice2Id);
+      expect(ids).not.toContain(invoice3Id);
+    });
+
+    it("permission invoices.view — refuse un utilisateur sans cette permission, même avec from/to valides", async () => {
+      // Un MEMBER sans groupe explicite retombe sur le groupe par défaut "MEMBER", qui a
+      // invoices.view — un groupe personnalisé vide est donc nécessaire ici pour obtenir un
+      // utilisateur réellement dénué de cette permission (même pattern que la ligne 1010 ci-dessus).
+      const unprivileged = await createAndLoginMember({
+        tenantId: adminA.tenantId,
+        name: "Sans permission factures",
+        email: `no-invoices-view-${runId}@example.com`,
+        password: "Password123!",
+      });
+      const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+        method: "POST",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ name: `NoInvoicesView-${runId}`, permissions: [] }),
+      });
+      const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+      await apiFetch(`/api/users/${unprivileged.userId}/permissions`, {
+        method: "PATCH",
+        headers: { Cookie: adminA.sessionCookie },
+        body: JSON.stringify({ permissionGroupId: emptyGroupId }),
+      });
+
+      const response = await apiFetch(`/api/invoices?from=${t0.toISOString()}&to=${t3.toISOString()}`, {
+        headers: { Cookie: unprivileged.sessionCookie },
+      });
+      expect(response.status).toBe(403);
+    });
+  });
 });
 
 describe("PATCH /api/invoices/[id]", () => {

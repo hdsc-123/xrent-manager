@@ -223,8 +223,17 @@ export async function getInvoices(tenantId: string, filters: InvoiceFilters = {}
       ...(filters.agencyId ? { agencyId: filters.agencyId } : {}),
       ...(filters.clientId ? { clientId: filters.clientId } : {}),
       ...(filters.locationId ? { locationId: filters.locationId } : {}),
-      ...(filters.from ? { issuedAt: { gte: filters.from } } : {}),
-      ...(filters.to ? { issuedAt: { lte: filters.to } } : {}),
+      // INC-22 : from et to ciblent tous deux la clé issuedAt — deux spreads séparés sur
+      // cette même clé se seraient écrasés l'un l'autre (le second gagnant toujours), d'où
+      // la fusion explicite dans un seul objet ci-dessous.
+      ...(filters.from || filters.to
+        ? {
+            issuedAt: {
+              ...(filters.from ? { gte: filters.from } : {}),
+              ...(filters.to ? { lte: filters.to } : {}),
+            },
+          }
+        : {}),
       ...(filters.excludeReplaced ? { replacedBy: null } : {}),
     },
     orderBy: { issuedAt: "desc" },
