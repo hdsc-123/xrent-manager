@@ -667,6 +667,36 @@ describe("19. Concurrence sur l'activation d'un contrat", () => {
     const vehicle = await getVehicle(adminA, vehicleId);
     expect(vehicle.status).toBe("RENTED");
   });
+
+  it("réactivation séquentielle (non concurrente) d'un contrat déjà ACTIVE refusée en conflit (409), jamais un no-op silencieux — même cause racine que le test ci-dessus, sans dépendre du timing", async () => {
+    const vehicleId = await createFreshVehicle(adminA, agencyA1Id);
+    const createResponse = await createLocation(adminA, vehicleId);
+    const location = (await createResponse.json()).location;
+    await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CONFIRMED" }),
+    });
+    const firstActivation = await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "ACTIVE" }),
+    });
+    expect(firstActivation.status).toBe(200);
+
+    // Appel séquentiel, strictement après que le premier a déjà commité — reproduit directement
+    // la cause racine corrigée (statusChanging à tort false quand data.status === existing.status
+    // déjà à jour), indépendamment de tout aléa de concurrence réelle.
+    const secondActivation = await apiFetch(`/api/locations/${location.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "ACTIVE" }),
+    });
+    expect(secondActivation.status).toBe(409);
+
+    const vehicle = await getVehicle(adminA, vehicleId);
+    expect(vehicle.status).toBe("RENTED");
+  });
 });
 
 describe("20-21. Désactivation/réactivation administrative — permissions, motif, audit", () => {

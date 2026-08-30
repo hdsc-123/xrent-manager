@@ -82,15 +82,26 @@ async function enableMfa(admin: AuthenticatedTestUser): Promise<{ secretBase32: 
   return { secretBase32, recoveryCodes: body.recoveryCodes };
 }
 
+const TOTP_PERIOD_SECONDS = 30;
+
 /**
- * Génère un code TOTP pour un pas de temps garanti strictement postérieur à celui déjà
- * consommé par `enableMfa()` ci-dessus (confirmation d'enrôlement) — nécessaire pour tout appel
- * ultérieur (login, step-up) dans le même test : sans avancer explicitement l'horodatage,
- * l'exécution rapide de la suite génère souvent le même code (même fenêtre de 30s), que
- * l'anti-rejeu (`afterTimeStep`, voir src/lib/mfa.ts) rejette à raison comme déjà utilisé.
+ * INC-26 (2026-08-30) : remplace l'ancienne marge fixe « +31s » (`subsequentTotpCode`),
+ * intermittente sous forte charge — voir INCIDENTS.md pour le détail de la cause racine. Même
+ * stratégie déjà en place et stable dans src/__tests__/mfa-lifecycle.test.ts/
+ * mfa-step-up-gating.test.ts : cible le pas de temps courant (ou `mfaLastUsedStep + 1` si ce
+ * dernier est postérieur, pour l'anti-rejeu — nécessaire après `enableMfa()` ci-dessus, dont la
+ * confirmation d'enrôlement consomme déjà un pas), jamais un décalage arbitraire dans le futur —
+ * reste valide quelle que soit la latence réelle avant vérification côté serveur (fenêtre de
+ * tolérance ±30s autour du « maintenant » du serveur, jamais un horodatage client, voir
+ * src/lib/mfa.ts).
  */
-async function subsequentTotpCode(secretBase32: string): Promise<string> {
-  return generateTotpToken(secretBase32, Math.floor(Date.now() / 1000) + 31);
+async function nextTotpCode(userId: string, secretBase32: string): Promise<string> {
+  const current = await prisma.user.findUnique({ where: { id: userId }, select: { mfaLastUsedStep: true } });
+  const now = Math.floor(Date.now() / 1000);
+  const nowStep = Math.floor(now / TOTP_PERIOD_SECONDS);
+  const lastUsedStep = current?.mfaLastUsedStep ?? null;
+  const targetStep = lastUsedStep !== null ? Math.max(nowStep, lastUsedStep + 1) : nowStep;
+  return generateTotpToken(secretBase32, targetStep * TOTP_PERIOD_SECONDS + 1);
 }
 
 describe("MFA — enrôlement (POST /api/mfa/enroll)", () => {
@@ -278,7 +289,7 @@ describe("MFA — intégration au login", () => {
     });
     expect((await loginResponse.json()).requiresMfa).toBe(true);
 
-    const code = await subsequentTotpCode(secretBase32);
+    const code = await nextTotpCode(admin.userId, secretBase32);
     const verifyResponse = await apiFetch("/api/auth/mfa/verify", {
       method: "POST",
       body: JSON.stringify({ email: admin.email, password, code }),
@@ -308,7 +319,7 @@ describe("MFA — intégration au login", () => {
   it("refuse un mot de passe incorrect même avec un code valide, sans distinguer le motif de l'échec", async () => {
     const admin = await newAdmin("login-mfa-wrong-password");
     const { secretBase32 } = await enableMfa(admin);
-    const code = await subsequentTotpCode(secretBase32);
+    const code = await nextTotpCode(admin.userId, secretBase32);
 
     const response = await apiFetch("/api/auth/mfa/verify", {
       method: "POST",
@@ -405,7 +416,7 @@ describe("MFA — step-up (POST /api/mfa/step-up/verify)", () => {
   it("crée une preuve de step-up valide pour la session courante avec un code correct", async () => {
     const admin = await newAdmin("step-up-valid");
     const { secretBase32 } = await enableMfa(admin);
-    const code = await subsequentTotpCode(secretBase32);
+    const code = await nextTotpCode(admin.userId, secretBase32);
 
     const response = await apiFetch("/api/mfa/step-up/verify", {
       method: "POST",
@@ -427,7 +438,7 @@ describe("MFA — step-up (POST /api/mfa/step-up/verify)", () => {
   it("la preuve de step-up expirée n'est plus considérée valide côté serveur", async () => {
     const admin = await newAdmin("step-up-expired");
     const { secretBase32 } = await enableMfa(admin);
-    const code = await subsequentTotpCode(secretBase32);
+    const code = await nextTotpCode(admin.userId, secretBase32);
 
     await apiFetch("/api/mfa/step-up/verify", {
       method: "POST",

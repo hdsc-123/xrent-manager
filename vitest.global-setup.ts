@@ -1,6 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { config as loadDotenv } from "dotenv";
 import { TEST_BASE_URL, TEST_PORT } from "./src/__tests__/helpers/testServer";
+import {
+  resetRecyclingState,
+  isRestartRequested,
+  clearRestartRequest,
+  FILES_PER_RESTART,
+} from "./src/__tests__/helpers/testServerRecycling";
 
 /**
  * Les routes app/api/** appellent NextAuth (`auth()`), qui utilise `next/headers` en
@@ -158,16 +164,11 @@ async function startServer(): Promise<ChildProcess> {
   return proc;
 }
 
-async function restartServer(): Promise<void> {
+async function restartServer(reason: string): Promise<void> {
   if (restarting || stopped) return;
   restarting = true;
   restartCount += 1;
-  process.stderr.write(
-    `[vitest.global-setup] INC-3 : serveur de test injoignable depuis ${(
-      (CONSECUTIVE_FAILURES_BEFORE_RESTART * HEALTH_CHECK_INTERVAL_MS) /
-      1000
-    ).toFixed(0)}s au moins — redémarrage contrôlé n°${restartCount}.\n`,
-  );
+  process.stderr.write(`[vitest.global-setup] ${reason} — redémarrage contrôlé n°${restartCount}.\n`);
   try {
     const previous = serverProcess;
     if (previous) {
@@ -197,7 +198,12 @@ function startHealthCheckLoop(): void {
         if (stopped) return;
         consecutiveFailures += 1;
         if (consecutiveFailures >= CONSECUTIVE_FAILURES_BEFORE_RESTART) {
-          restartPromise = restartServer();
+          restartPromise = restartServer(
+            `INC-3 : serveur de test injoignable depuis ${(
+              (CONSECUTIVE_FAILURES_BEFORE_RESTART * HEALTH_CHECK_INTERVAL_MS) /
+              1000
+            ).toFixed(0)}s au moins`
+          );
         }
       })
       .finally(() => {
@@ -208,13 +214,46 @@ function startHealthCheckLoop(): void {
   healthCheckTimer.unref();
 }
 
+/**
+ * INC-27 (2026-08-30, INCIDENTS.md) : recyclage préventif du serveur de test partagé, distinct du
+ * contrôle de vivacité INC-3 ci-dessus (qui ne réagit qu'à une panne déjà avérée). Ce
+ * `setInterval` séparé surveille un signal posé par `recordFileCompletion()`
+ * (`src/__tests__/helpers/testServerRecycling.ts`, appelée depuis `vitest.setup.ts` après chaque
+ * fichier de test) — un redémarrage n'est déclenché qu'à une frontière entre deux fichiers,
+ * jamais pendant l'exécution de l'un d'eux (voir le commentaire de ce module pour la garantie
+ * complète). Réutilise `restartServer()` telle quelle (même verrou `restarting`, même logique
+ * d'arrêt gracieux/forcé) — un redémarrage déjà en cours suite à une panne INC-3 n'est jamais
+ * dupliqué. `RECYCLING_POLL_INTERVAL_MS` volontairement plus court que
+ * `HEALTH_CHECK_INTERVAL_MS` : un fichier de test reste bloqué (via `recordFileCompletion()`)
+ * tant que ce drapeau n'est pas retombé, un intervalle de contrôle trop long ajouterait un délai
+ * inutile à chaque cycle de recyclage.
+ */
+const RECYCLING_POLL_INTERVAL_MS = 250;
+let recyclingTimer: NodeJS.Timeout | undefined;
+
+function startRecyclingLoop(): void {
+  recyclingTimer = setInterval(() => {
+    if (stopped || restarting) return;
+    if (!isRestartRequested()) return;
+    restartPromise = restartServer(
+      `INC-27 : recyclage préventif (${FILES_PER_RESTART} fichiers de test traités)`
+    ).then(() => {
+      clearRestartRequest();
+    });
+  }, RECYCLING_POLL_INTERVAL_MS);
+  recyclingTimer.unref();
+}
+
 export default async function setup() {
+  resetRecyclingState();
   serverProcess = await startServer();
   startHealthCheckLoop();
+  startRecyclingLoop();
 
   return async () => {
     stopped = true;
     if (healthCheckTimer) clearInterval(healthCheckTimer);
+    if (recyclingTimer) clearInterval(recyclingTimer);
     inFlightHealthCheck?.abort();
     // Si un redémarrage est en cours, on le laisse aboutir pour connaître la référence
     // réelle du serveur final avant de l'arrêter — sinon le serveur nouvellement (re)lancé

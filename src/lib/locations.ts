@@ -1127,6 +1127,18 @@ export async function updateLocation(
 
   const datesChanging = Boolean(data.startDate || data.endDate);
   const statusChanging = data.status !== undefined && data.status !== existing.status;
+  // Sprint technique 6 (DOMAINRULES.md section 43, corrige une course non couverte par le
+  // correctif Sprint 31A ci-dessous) : condition d'entrée dans la branche verrouillée distincte
+  // de `statusChanging` — une demande de statut explicite (`data.status !== undefined`) doit
+  // toujours passer sous verrou, même quand elle semble déjà correspondre à `existing.status`.
+  // Sans cette distinction, une seconde requête d'activation arrivant juste après qu'une
+  // première ait déjà committé (donc lisant `existing.status` déjà à jour, "ACTIVE") avait
+  // `statusChanging === false` et retombait sur l'`prisma.location.update` non gardé tout en bas
+  // de cette fonction — aucun verrou, aucun `updateMany` conditionné, 200 silencieux sur une
+  // "activation" redondante d'un contrat déjà actif. Voir le test de concurrence dédié
+  // (src/__tests__/vehicle-status.test.ts, describe « 19. Concurrence sur l'activation d'un
+  // contrat ») pour la reproduction déterministe de cette course.
+  const statusRequested = data.status !== undefined;
 
   const totalPrice = datesChanging
     ? calculateTotalPrice(existing.pricePerDay, nextStart, nextEnd)
@@ -1159,7 +1171,7 @@ export async function updateLocation(
   // dans la même transaction que l'écriture finale — même ordre de validation qu'avant ce
   // sprint (disponibilité, puis transition de statut). Une modification qui ne touche ni les
   // dates ni le statut n'a besoin d'aucune des deux gardes.
-  if (datesChanging || statusChanging) {
+  if (datesChanging || statusRequested) {
     return prisma.$transaction(async (tx) => {
       // Sprint 31A (DOMAINRULES.md section 43) : verrou de ligne posé en tout premier, avant
       // toute garde dépendant du statut — corrige une course où la garde admin-cancel et le
@@ -1173,6 +1185,20 @@ export async function updateLocation(
         throw new LocationStatusConflictError();
       }
       if (locked.status !== existing.status) {
+        throw new LocationStatusConflictError();
+      }
+
+      // Sprint technique 6 (DOMAINRULES.md section 43) : au-delà de la staleness ci-dessus (qui
+      // ne détecte qu'une divergence entre `existing.status` et l'état verrouillé), une demande
+      // de statut explicite identique au statut déjà en place n'est jamais une vraie transition
+      // — la machine à états (`ALLOWED_TRANSITIONS`) ne définit d'ailleurs aucune boucle sur
+      // elle-même (ex. `ACTIVE → ACTIVE` n'existe pas). Traité comme un conflit, jamais un no-op
+      // silencieux : redemander l'activation d'un contrat déjà actif signifie presque toujours
+      // qu'une autre requête a déjà effectué cette transition entre-temps (voir le commentaire
+      // sur `statusRequested` ci-dessus) — jamais contournable par `adminOverride`, qui ne
+      // dispense que d'un saut de la machine à états non listé, pas d'une écriture concurrente
+      // potentiellement déjà appliquée par quelqu'un d'autre.
+      if (data.status !== undefined && data.status === locked.status) {
         throw new LocationStatusConflictError();
       }
 

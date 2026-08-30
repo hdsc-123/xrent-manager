@@ -1,6 +1,6 @@
 # TESTREPORT.md — Suivi des tests
 
-Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). Dernier résultat connu de la suite complète : **1545/1545** (2026-08-29, Phase 3C MFA — voir HANDOFF.md Partie 20 et SECURITY.md section 45).
+Ce document fait le point sur les tests réellement exécutés à ce jour et définit la stratégie de test future. Version condensée depuis le 2026-08-26 — l'historique détaillé sprint par sprint (Sprint 0 à Sprint technique 5) est archivé dans [docs/test-reports/sprint-test-history-archive.md](./docs/test-reports/sprint-test-history-archive.md), sans perte d'information (voir [docs/decisions/2026-08-26-documentation-restructuring-plan.md](./docs/decisions/2026-08-26-documentation-restructuring-plan.md)). Framework de test : **Vitest**, tranché au Sprint 2. Commande recommandée pour la suite complète : `node scripts/test-grouped.mjs` (voir INCIDENTS.md INC-3 pour le détail de cette recommandation). `npm test` (commande officielle sans wrapper) reconfirmée tout aussi fiable depuis le correctif INC-27 (2026-08-30, recyclage préventif du serveur de test partagé toutes les 10 fichiers) — les deux commandes sont désormais équivalentes en fiabilité, `node scripts/test-grouped.mjs` reste néanmoins recommandée par défaut (marge de sécurité historique, voir INC-3). Dernier résultat connu de la suite complète : **1565/1565** (2026-08-30, correctifs INC-25/INC-26/INC-27/INC-28 — voir HANDOFF.md et INCIDENTS.md).
 
 ## 1. Tests déjà exécutés et résultats
 
@@ -740,6 +740,92 @@ Une marge fixe de 31 secondes (`Math.floor(Date.now()/1000) + 31`), utilisée po
 ### Bug applicatif trouvé et corrigé pendant cette phase, avant tout commit
 
 Précision de `sessionIssuedAt` : la première implémentation le stockait en secondes (comme `iat`), ce qui pouvait faire apparaître à tort comme révoquée une session pourtant créée *après* la révocation, si les deux surviennent dans la même seconde réelle (`User.sessionRevokedAt` est un `DateTime` PostgreSQL à précision milliseconde) — détecté par le test « une session ouverte après la révocation reste valide » (`mfa-lifecycle.test.ts`), qui échouait en 401 au lieu de 200. Corrigé en stockant `sessionIssuedAt` en millisecondes (`Date.now()`) dans `src/lib/auth.ts`/`src/lib/authz.ts`. Détail complet : SECURITY.md section 45.
+
+## Tests session — correctif de concurrence sur l'activation d'un contrat, INC-25 (2026-08-30)
+
+**Contexte** : `npm test` (suite complète lancée par le propriétaire du projet) a fait apparaître 1 échec déterministe dans `src/__tests__/vehicle-status.test.ts` — deux activations concurrentes de la même `Location` (`PATCH status=ACTIVE`) renvoyaient toutes deux `200` au lieu d'exactement un `200`/un `409`. Détail complet de la cause racine et du correctif : INCIDENTS.md INC-25.
+
+**Corrigé** : `src/lib/locations.ts`, `updateLocation` — la condition d'entrée dans la branche verrouillée (`lockLocationForUpdate`, `SELECT ... FOR UPDATE`, puis `updateMany` conditionné) était `statusChanging` (`data.status !== existing.status`, lu hors transaction), court-circuitée à tort quand une seconde requête arrivait après le commit de la première et lisait donc déjà la valeur à jour. Remplacée par `statusRequested` (`data.status !== undefined`) pour l'entrée, plus un nouveau contrôle explicite sous verrou rejetant toute demande dont le statut cible égale déjà le statut verrouillé — `LocationStatusConflictError` (409), jamais contournable par `adminOverride`.
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `vehicle-status.test.ts` isolé (répété 3×, déterminisme du correctif) | 32 | 32 | 0 | 0 |
+| `locations.test.ts`/`location-extension.test.ts`/`location-chains.test.ts`/`location-chain-balance.test.ts`/`location-return.test.ts`/`location-return-route.test.ts`/`location-payment.test.ts` | 203 | 203 | 0 | 0 |
+| `vehicle-transfers.test.ts`/`vehicle-trips.test.ts`/`scheduled-alerts-cron.test.ts` (scénarios de concurrence déjà existants) | 60 | 60 | 0 | 0 |
+| Unitaires/Intégration (`node scripts/test-grouped.mjs`, suite complète) | 1564 | 1564 | 0 | 0 |
+| `npm test` (`vitest run` brut, parallélisme maximal) | 1564 | 1562 | 2 (voir ci-dessous, sans rapport) | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+### Nouveau test
+
+`src/__tests__/vehicle-status.test.ts`, describe « 19. Concurrence sur l'activation d'un contrat » : 1 test ajouté (« réactivation séquentielle (non concurrente) d'un contrat déjà ACTIVE refusée en conflit (409) ») — deux appels `PATCH status=ACTIVE` strictement séquentiels (pas de `Promise.all`), pour verrouiller le correctif indépendamment de tout aléa d'ordonnancement/minutage, en complément du test de concurrence réelle déjà existant (désormais déterministe, 3/3 répétitions).
+
+### Observation hors périmètre, non corrigée (sur instruction explicite)
+
+`npm test` (parallélisme maximal, 58 fichiers simultanés, contrairement à `node scripts/test-grouped.mjs` qui restart le serveur de test entre groupes) a montré 2 échecs intermittents dans `src/__tests__/mfa-routes.test.ts` (describe « MFA — step-up ») — marge fixe `+31s` pour générer un code TOTP, motif déjà documenté comme fragile sous charge (voir l'entrée Phase 3C ci-dessus) et déjà corrigé dans les fichiers de test MFA plus récents (`nextTotpCode` déterministe), mais jamais rétrofité sur ce fichier plus ancien. Confirmé sans rapport avec le correctif INC-25 : 24/24 en isolation (`npx vitest run src/__tests__/mfa-routes.test.ts`), et 1564/1564 via `node scripts/test-grouped.mjs`. Log `InvalidCashEntryAmountError` observé pendant `npm test` : correspond à un rejet volontaire déjà couvert par un test passant (montant de correction de caisse invalide), aucune anomalie. Aucune occurrence de « unique constraint » sur `Invoice` observée dans les deux exécutions complètes de `npm test`. Non corrigés, conformément au périmètre demandé (« corrige uniquement ce problème de concurrence »).
+
+## Tests session — recyclage préventif du serveur de test partagé pour `npm test`, INC-27 (2026-08-30)
+
+**Contexte** : `npm test` (suite complète lancée par le propriétaire du projet) a fait apparaître 1 timeout (20s) dans `src/__tests__/auth.test.ts` (`GET /api/auth/me sans session > retourne 401`) — absent de `node scripts/test-grouped.mjs`. Détail complet de l'investigation (reproduction répétée, mesure directe de latence de compilation à froid, surveillance de ressources en direct) et de la cause racine : INCIDENTS.md INC-27.
+
+**Cause** : le serveur `next dev` de test partagé, jamais redémarré sur toute la durée d'un `npm test` (contrairement à `node scripts/test-grouped.mjs`, qui redémarre entre ses 5 groupes), accumule une pression de ressource déjà documentée par INC-3 (churn de workers `jest-worker` Next.js, non désactivable) — mesurée directement : RSS ~4,0 Go → ~6,6 Go en ~76s sous charge soutenue. La suite ayant grossi d'environ 22% depuis la clôture d'INC-3 (1280 → 1564 tests), la marge de sécurité originelle s'est érodée.
+
+**Corrigé** : nouveau mécanisme de recyclage préventif interne à Vitest (`src/__tests__/helpers/testServerRecycling.ts`, `vitest.global-setup.ts`, `vitest.setup.ts`) — redémarre le serveur partagé tous les 10 fichiers de test, sûr par construction (`fileParallelism: false` garantit qu'aucune requête ne peut être en vol à la frontière entre deux fichiers). `npm test` reste une commande unique sans wrapper (aucune régression sur l'exigence posée à la clôture d'INC-3). Effet de bord corrigé au passage : `scripts/test-grouped.mjs` distingue désormais explicitement les redémarrages « watchdog » (panne réelle INC-3) des redémarrages « recyclage » (préventif INC-27, bénin) dans son résumé — auparavant comptés ensemble sous une même étiquette devenue ambiguë.
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `auth.test.ts` isolé (répété 3×) | 8 | 8 | 0 | 0 |
+| `npm test` (run 1, post-correctif) | 1564 | 1564 | 0 | 0 |
+| `npm test` (run 2, post-correctif) | 1564 | 1563 | 1 (voir ci-dessous, sans rapport) | 0 |
+| `node scripts/test-grouped.mjs` (×2, avant/après correctif d'étiquetage) | 1564 | 1564 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+Timeout `auth.test.ts` : absent des deux exécutions complètes de `npm test` après correctif (contre systématique avant, selon le signalement initial).
+
+### Nouveau fichier
+
+`src/__tests__/helpers/testServerRecycling.ts` — coordination inter-processus (fichier JSON dans le répertoire temporaire du système, jamais dans le dépôt) entre le processus principal de Vitest et chaque fichier de test forké. Pas de test automatisé dédié (mécanisme d'infrastructure de test, non-régression confirmée empiriquement par les runs répétés ci-dessus).
+
+### Observation hors périmètre, non corrigée (sur instruction explicite)
+
+Le run 2 de `npm test` a montré un échec dans `src/__tests__/reservations.test.ts` (describe « surclassement », test « 3. UNAVAILABILITY... » — `expected 409 to be 400`) — un troisième symptôme (distinct des deux déjà rencontrés lors d'une session précédente) de la même classe de sensibilité à l'état/l'ordre au sein de ce describe volumineux. Jamais reproduit isolément ni via `node scripts/test-grouped.mjs`. Sans rapport avec le recyclage du serveur (`fileParallelism: false` exclut toute concurrence réelle). Non corrigé, hors périmètre explicite de cette tâche (portait uniquement sur le timeout `auth.test.ts`) — à traiter comme chantier dédié séparé si sa fréquence le justifie.
+
+## Tests session — correctif du faux 409 intermittent dans le describe surclassement, INC-28 (2026-08-30)
+
+**Contexte** : l'échec intermittent de `reservations.test.ts` (describe surclassement, `expected 400, reçu 409`) signalé dans le rapport INC-27 a été traité. Détail complet de l'investigation (comparaison isolé/`npm test`/runner groupé, lecture complète du describe, de `resolveLocationUpgrade`, de la route de conversion et de `findDuplicateClient`) et de la cause racine : INCIDENTS.md INC-28.
+
+**Cause** : `findDuplicateClient` (détection floue de doublon client, Levenshtein < 3, scopée à tout le tenant) s'exécute dans la transaction de conversion **avant** `resolveLocationUpgrade` — un nom de client aléatoire (`"Surclassement Client-{runId}-{N}"`, N aléatoire) trop proche d'un nom déjà créé ailleurs dans le describe (dizaines d'appels accumulant des clients dans le même tenant) déclenchait un faux 409 avant que la validation testée (400) n'ait pu s'exécuter. **Confirmé probabiliste et indépendant de la charge/du parallélisme** — chaque fichier de test s'exécute dans son propre processus avec son propre état `Math.random()` ; les deux manifestations précédentes (tests différents, sessions différentes) sont deux tirages différents du même phénomène, pas un effet de concurrence.
+
+**Corrigé** : `src/__tests__/reservations.test.ts` — nouveau wrapper local `convertBodyForUpgrade` (describe surclassement uniquement) fixant `forceCreateClient: true` par défaut, appliqué aux 24 appels du describe. Aucun code de production modifié — la détection de doublon reste intégralement active pour tout autre appelant.
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `reservations.test.ts` isolé (×3) | 161 | 161 | 0 | 0 (à chaque exécution) |
+| Describe surclassement seul (`-t "surclassement"`) | 22 | 22 | 0 | 0 |
+| `npm test` (×2) | 1565 | 1565 | 0 | 0 (à chaque exécution) |
+| `node scripts/test-grouped.mjs` | 1565 | 1565 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+### Nouveau test
+
+`src/__tests__/reservations.test.ts`, describe surclassement — « INC-28 : la détection de doublon client (floue, Levenshtein < 3) reste pleinement active — forceCreateClient la contourne intentionnellement, jamais une désactivation globale ». Collision de nom délibérée (un caractère de différence, jamais laissée au hasard) : confirme que la détection refuse (409) sans le wrapper, puis que le wrapper la contourne (201) — déterministe, ne dépend d'aucun tirage aléatoire.
+
+### Vérification données de production
+
+Aucune donnée de production concernée à aucun moment — `xrent_test` uniquement, fixtures entièrement recréées par le fichier lui-même (`beforeAll`/`afterAll`), jamais de dépendance à un état préexistant hors du fichier.
 
 ## 4. Format attendu des futurs rapports
 

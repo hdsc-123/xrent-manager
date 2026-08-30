@@ -165,6 +165,7 @@ async function main() {
   let totalTests = 0;
   let totalTimeouts = 0;
   let totalWatchdogRestarts = 0;
+  let totalRecyclingRestarts = 0;
   let totalResidual = 0;
   let anyGroupExitNonZero = false;
   const groupResults = [];
@@ -185,7 +186,15 @@ async function main() {
     const result = await runGroup(files);
     const summary = parseSummary(result.stdout);
     const timeouts = (result.stdout.match(/Test timed out|Hook timed out/g) || []).length;
-    const watchdogRestarts = (result.stderr.match(/redémarrage contrôlé n°/g) || []).length;
+    // INC-27 (INCIDENTS.md) : `redémarrage contrôlé n°` est désormais émis pour deux raisons
+    // distinctes par vitest.global-setup.ts — une panne réelle détectée par le contrôle de
+    // vivacité INC-3 ("INC-3 : serveur de test injoignable...") et un recyclage préventif
+    // bénin/attendu tous les 10 fichiers de test (`FILES_PER_RESTART`,
+    // src/__tests__/helpers/testServerRecycling.ts), possible dans tout groupe d'au moins 10
+    // fichiers. Comptées séparément pour ne jamais faire paraître un recyclage préventif normal
+    // comme une panne watchdog réelle dans ce résumé.
+    const watchdogRestarts = (result.stderr.match(/INC-3 : .*redémarrage contrôlé n°/g) || []).length;
+    const recyclingRestarts = (result.stderr.match(/INC-27 : .*redémarrage contrôlé n°/g) || []).length;
 
     // Le code de sortie du process est la source de vérité : un crash à la collecte
     // (erreur de syntaxe, exception hors test, "Tests  no tests") ne produit aucune
@@ -198,6 +207,7 @@ async function main() {
     totalTests += summary.total;
     totalTimeouts += timeouts;
     totalWatchdogRestarts += watchdogRestarts;
+    totalRecyclingRestarts += recyclingRestarts;
 
     // Le teardown de vitest.global-setup.ts attend déjà la sortie du process serveur
     // (SIGTERM puis SIGKILL après 5s de grâce) avant que `vitest run` ne se termine —
@@ -213,12 +223,13 @@ async function main() {
       ...summary,
       timeouts,
       watchdogRestarts,
+      recyclingRestarts,
       durationMs: result.durationMs,
       residual: residual.length,
     });
 
     console.log(
-      `\n--- Groupe ${i + 1} : ${summary.passed}/${summary.total} (échecs ${summary.failed}, timeouts ${timeouts}, watchdog ${watchdogRestarts}, ${(result.durationMs / 1000).toFixed(1)}s, résiduel ${residual.length}) ---\n`,
+      `\n--- Groupe ${i + 1} : ${summary.passed}/${summary.total} (échecs ${summary.failed}, timeouts ${timeouts}, watchdog ${watchdogRestarts}, recyclage ${recyclingRestarts}, ${(result.durationMs / 1000).toFixed(1)}s, résiduel ${residual.length}) ---\n`,
     );
     if (residual.length > 0) {
       console.error(`ATTENTION : processus résiduel après le groupe ${i + 1} : ${residual.join(",")}`);
@@ -240,12 +251,13 @@ async function main() {
   console.log(`Timeouts : ${totalTimeouts}`);
   console.log(`Redémarrages préventifs (entre groupes) : ${preventiveRestarts}`);
   console.log(`Redémarrages watchdog (dans un groupe) : ${totalWatchdogRestarts}`);
+  console.log(`Redémarrages de recyclage préventif INC-27 (dans un groupe) : ${totalRecyclingRestarts}`);
   console.log(`Durée totale : ${(overallDurationMs / 1000).toFixed(1)}s`);
   console.log(`Processus résiduels détectés (cumulé) : ${totalResidual}`);
   console.log("\nDétail par groupe :");
   for (const g of groupResults) {
     console.log(
-      `  Groupe ${g.group} : ${g.passed}/${g.total} (échecs ${g.failed}, timeouts ${g.timeouts}, watchdog ${g.watchdogRestarts}, ${(g.durationMs / 1000).toFixed(1)}s, résiduel ${g.residual}, code sortie ${g.exitCode})`,
+      `  Groupe ${g.group} : ${g.passed}/${g.total} (échecs ${g.failed}, timeouts ${g.timeouts}, watchdog ${g.watchdogRestarts}, recyclage ${g.recyclingRestarts}, ${(g.durationMs / 1000).toFixed(1)}s, résiduel ${g.residual}, code sortie ${g.exitCode})`,
     );
   }
 

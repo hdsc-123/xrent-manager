@@ -3400,12 +3400,38 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
     return { ...reservation, startDate, endDate, vehicleCategory: category };
   }
 
+  /**
+   * INC-28 (2026-08-30, INCIDENTS.md) : `forceCreateClient: true` par défaut pour tout
+   * `convertBody` de ce describe — cause racine d'une intermittence déjà rencontrée sur
+   * plusieurs tests distincts d'ici (jamais un bug de `resolveLocationUpgrade`, dont l'ordre de
+   * validation est déterministe et sans état, voir INCIDENTS.md pour la démonstration complète).
+   * `findDuplicateClient` (src/lib/clients.ts) compare par correspondance floue de nom
+   * (`levenshteinDistance(...) < 3`), scopée à tout le tenant — chaque appel à
+   * `createReservationWithCategory` ci-dessus crée un nouveau client "Surclassement
+   * Client-{runId}-{N}" (N aléatoire 0-999999) ; sur les dizaines d'appels de ce describe, deux
+   * suffixes numériques ne différant que d'un ou deux chiffres (distance de Levenshtein < 3)
+   * peuvent survenir par pur hasard, quel que soit l'ordre ou le parallélisme d'exécution. Cette
+   * détection s'exécute dans la transaction de conversion *avant* `resolveLocationUpgrade`
+   * (src/app/api/reservations/[id]/convert/route.ts, étape 5 avant étape 6bis) — un faux positif
+   * y renvoie 409 (`ConversionClientDuplicateError`) avant même que la validation du
+   * surclassement testée par ce describe (400 attendu) n'ait la moindre chance de s'exécuter.
+   * Aucun test de ce describe ne porte sur la détection de doublon elle-même (déjà couverte
+   * ailleurs, voir POST /api/reservations/[id]/convert) — `forceCreateClient: true` y est donc
+   * toujours sûr, même précédent déjà exercé ponctuellement ici avant ce correctif (test 16).
+   */
+  function convertBodyForUpgrade(
+    reservation: { startDate: string; endDate: string; clientFirstName: string; clientLastName: string; clientPhone?: string | null },
+    overrides: Record<string, unknown> = {}
+  ) {
+    return convertBody(reservation, { forceCreateClient: true, ...overrides });
+  }
+
   it("1. catégorie identique : aucun surclassement enregistré, prix inchangé", async () => {
     const reservation = await createReservationWithCategory("Citadine");
     const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify(convertBody(reservation, { vehicleId: citadineTwinVehicleId, pricePerDay: 5000 })),
+      body: JSON.stringify(convertBodyForUpgrade(reservation, { vehicleId: citadineTwinVehicleId, pricePerDay: 5000 })),
     });
     expect(response.status).toBe(201);
     const body = await response.json();
@@ -3422,7 +3448,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: suvVehicleId,
           pricePerDay: 8000,
           upgrade: {
@@ -3463,7 +3489,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
         body: JSON.stringify(
-          convertBody(reservation, {
+          convertBodyForUpgrade(reservation, {
             vehicleId: suvVehicleId,
             pricePerDay: 8000,
             upgrade: { type: "UNAVAILABILITY", reason: "Aucun véhicule de cette catégorie disponible sur la période." },
@@ -3484,7 +3510,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
         body: JSON.stringify(
-          convertBody(reservation2, {
+          convertBodyForUpgrade(reservation2, {
             vehicleId: suvVehicleId,
             pricePerDay: 8000,
             upgrade: { type: "UNAVAILABILITY", dailySupplement: 500, reason: "Test" },
@@ -3504,7 +3530,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: suvVehicleId,
           pricePerDay: 8000,
           upgrade: { type: "UNAVAILABILITY", reason: "Prétendument indisponible." },
@@ -3528,7 +3554,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
         body: JSON.stringify(
-          convertBody(reservation, {
+          convertBodyForUpgrade(reservation, {
             vehicleId: suvVehicleId,
             pricePerDay: 8000,
             upgrade: {
@@ -3576,7 +3602,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
         body: JSON.stringify(
-          convertBody(reservationDeactivated, {
+          convertBodyForUpgrade(reservationDeactivated, {
             vehicleId: suvVehicleId,
             pricePerDay: 8000,
             upgrade: {
@@ -3601,7 +3627,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
         body: JSON.stringify(
-          convertBody(reservationBypass, {
+          convertBodyForUpgrade(reservationBypass, {
             vehicleId: scarceVehicleId,
             pricePerDay: 8000,
           })
@@ -3623,7 +3649,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
         body: JSON.stringify(
-          convertBody(reservationReactivated, {
+          convertBodyForUpgrade(reservationReactivated, {
             vehicleId: suvVehicleId,
             pricePerDay: 8000,
             upgrade: { type: "UNAVAILABILITY", reason: "Prétendument indisponible après réactivation." },
@@ -3649,7 +3675,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: adminA.sessionCookie }, // adminA : ADMIN, bypass toute permission
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: suvVehicleId,
           pricePerDay: 8000,
           upgrade: { type: "COMMERCIAL_GESTURE", dailySupplement: 200, reason: "Geste commercial client fidèle." },
@@ -3699,7 +3725,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: member.sessionCookie },
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: suvVehicleId,
           pricePerDay: 8000,
           upgrade: { type: "COMMERCIAL_GESTURE", dailySupplement: 0, reason: "Tentative sans permission." },
@@ -3718,7 +3744,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
     const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify(convertBody(reservation, { vehicleId: suvVehicleId, pricePerDay: 8000 })),
+      body: JSON.stringify(convertBodyForUpgrade(reservation, { vehicleId: suvVehicleId, pricePerDay: 8000 })),
     });
     expect(response.status).toBe(400);
 
@@ -3740,7 +3766,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: vehicleAId,
           pricePerDay: 5000,
           upgrade: { type: "CUSTOMER_REQUEST", dailySupplement: 100, customerConsent: true, reason: "Inutile" },
@@ -3756,7 +3782,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: suvVehicleId,
           pricePerDay: 8000,
           upgrade: { type: "FREE_UPGRADE_INVENTED", reason: "Type inconnu" },
@@ -3773,7 +3799,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
         body: JSON.stringify(
-          convertBody(reservation, {
+          convertBodyForUpgrade(reservation, {
             vehicleId: suvVehicleId,
             pricePerDay: 8000,
             upgrade: { type, dailySupplement: type === "UNAVAILABILITY" ? 0 : 100, customerConsent: true },
@@ -3790,7 +3816,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: suvVehicleId,
           pricePerDay: 8000,
           upgrade: { type: "CUSTOMER_REQUEST", dailySupplement: 100, reason: "Sans accord" },
@@ -3807,15 +3833,9 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
         method: "POST",
         headers: { Cookie: adminA.sessionCookie },
         body: JSON.stringify(
-          convertBody(reservation, {
+          convertBodyForUpgrade(reservation, {
             vehicleId: suvVehicleId,
             pricePerDay: 8000,
-            // forceCreateClient (même correctif que les tests de répétition second conducteur
-            // plus haut) : ce test porte sur le rejet du supplément négatif, pas sur la
-            // détection de doublon — évite une collision floue accidentelle (Levenshtein < 3)
-            // avec l'un des nombreux autres clients "Surclassement Client-..." créés ailleurs
-            // dans ce fichier lors d'une exécution complète de la suite.
-            forceCreateClient: true,
             upgrade: { type, dailySupplement: -100, customerConsent: true, reason: "Négatif" },
           })
         ),
@@ -3830,7 +3850,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: suvVehicleId,
           pricePerDay: 8000,
           upgrade: { type: "CUSTOMER_REQUEST", dailySupplement: 0, customerConsent: true, reason: "Gratuit demandé" },
@@ -3846,7 +3866,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: suvVehicleId,
           pricePerDay: 8000,
           upgrade: {
@@ -3908,7 +3928,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: deactivatedVehicleId,
           pricePerDay: 8000,
           upgrade: { type: "CUSTOMER_REQUEST", dailySupplement: 100, customerConsent: true, reason: "Test désactivation" },
@@ -3933,7 +3953,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: suvVehicleId,
           pricePerDay: 8000,
           upgrade: {
@@ -3976,7 +3996,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: suvVehicleId,
           pricePerDay: 8000,
           upgrade: { type: "COMMERCIAL_GESTURE", dailySupplement: 200, reason: "Test affichage — facture." },
@@ -4010,7 +4030,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
     const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
-      body: JSON.stringify(convertBody(reservation, { vehicleId: citadineTwinVehicleId, pricePerDay: 5000 })),
+      body: JSON.stringify(convertBodyForUpgrade(reservation, { vehicleId: citadineTwinVehicleId, pricePerDay: 5000 })),
     });
     expect(response.status).toBe(201);
     const body = await response.json();
@@ -4039,7 +4059,7 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify(
-        convertBody(reservation, {
+        convertBodyForUpgrade(reservation, {
           vehicleId: suvVehicleId,
           pricePerDay: 8000,
           upgrade: {
@@ -4066,6 +4086,43 @@ describe("POST /api/reservations/[id]/convert — surclassement (campagne QA, 20
     });
     expect(invoicePdf.status).toBe(200);
     expect(invoicePdf.headers.get("content-type")).toBe("application/pdf");
+  });
+
+  it("INC-28 : la détection de doublon client (floue, Levenshtein < 3) reste pleinement active — forceCreateClient la contourne intentionnellement, jamais une désactivation globale", async () => {
+    const sharedLastName = `NearDuplicate-${runId}`;
+    const original = await createReservationWithCategory("Citadine", { clientLastName: sharedLastName });
+    const originalConvert = await apiFetch(`/api/reservations/${original.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBodyForUpgrade(original, { vehicleId: citadineTwinVehicleId, pricePerDay: 5000 })),
+    });
+    expect(originalConvert.status).toBe(201);
+
+    // Un seul caractère différent (distance de Levenshtein = 1, largement sous le seuil de 3) —
+    // reproduit délibérément la collision qu'INC-28 a rencontrée par pur hasard sur ce describe,
+    // jamais laissée au hasard dans ce test de non-régression.
+    const nearDuplicateName = `NearDuplicatf-${runId}`;
+    const nearDuplicate = await createReservationWithCategory("Citadine", { clientLastName: nearDuplicateName });
+
+    // Sans forceCreateClient (convertBody nu, jamais le wrapper de ce describe) : la détection de
+    // doublon reste pleinement active, comportement inchangé — preuve qu'INC-28 ne l'a jamais
+    // affaiblie, seulement contournée là où c'est explicitement voulu par ce describe.
+    const withoutBypass = await apiFetch(`/api/reservations/${nearDuplicate.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBody(nearDuplicate, { vehicleId: citadineTwinVehicleId, pricePerDay: 5000 })),
+    });
+    expect(withoutBypass.status).toBe(409);
+
+    // Avec le wrapper de ce describe (forceCreateClient: true) : la même quasi-collision de nom
+    // n'empêche plus la conversion — exactement le mécanisme qui protège désormais tous les
+    // autres tests de ce describe contre une collision accidentelle de nom aléatoire.
+    const withBypass = await apiFetch(`/api/reservations/${nearDuplicate.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBodyForUpgrade(nearDuplicate, { vehicleId: citadineTwinVehicleId, pricePerDay: 5000 })),
+    });
+    expect(withBypass.status).toBe(201);
   });
 });
 
