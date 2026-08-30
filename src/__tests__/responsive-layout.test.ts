@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { createAndLoginMember, registerTenantAdmin, type AuthenticatedTestUser } from "./helpers/fixtures";
 
 /**
  * Sprint de stabilisation technique — correctif tablette portrait 768px (HANDOFF.md/
@@ -25,6 +25,7 @@ const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
 
 let admin: AuthenticatedTestUser;
+let restrictedMember: AuthenticatedTestUser;
 
 beforeAll(async () => {
   admin = await registerTenantAdmin({
@@ -35,6 +36,29 @@ beforeAll(async () => {
     password: "Correct-Horse-Battery-Staple9!",
   });
   createdTenantIds.push(admin.tenantId);
+
+  // Groupe de permissions restreint (ni vehicles.view ni reservations.view) — sert à vérifier
+  // que BottomNav masque désormais ces deux liens comme le fait déjà Sidebar, au lieu de les
+  // afficher inconditionnellement (voir nav-visibility.ts / HANDOFF.md).
+  const restrictedGroup = await prisma.permissionGroup.create({
+    data: {
+      tenantId: admin.tenantId,
+      name: `BottomNav Restreint ${runId}`,
+      groupPermissions: { create: [{ permissionKey: "alerts.view" }] },
+    },
+  });
+
+  restrictedMember = await createAndLoginMember({
+    tenantId: admin.tenantId,
+    name: "Membre Restreint",
+    email: `membre-restreint-${runId}@test.local`,
+    password: "Correct-Horse-Battery-Staple9!",
+  });
+
+  await prisma.user.update({
+    where: { id: restrictedMember.userId },
+    data: { permissionGroupId: restrictedGroup.id },
+  });
 });
 
 afterAll(async () => {
@@ -77,6 +101,31 @@ describe("Sidebar/Header/BottomNav — seuil de bascule desktop/mobile relevé �
   it("la navigation rapide mobile (BottomNav) est présente et bascule aussi sur `lg:hidden`", async () => {
     const response = await apiFetch("/dashboard", { headers: { Cookie: admin.sessionCookie } });
     const html = await response.text();
+    expect(html).toContain('aria-label="Navigation rapide"');
+  });
+});
+
+describe("BottomNav — navigation rapide mobile filtrée par permission (comme Sidebar, correctif HANDOFF.md)", () => {
+  it("un ADMIN voit toujours les liens Véhicules/Réservations/Accueil/Profil", async () => {
+    const response = await apiFetch("/dashboard", { headers: { Cookie: admin.sessionCookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('href="/dashboard/vehicles"');
+    expect(html).toContain('href="/dashboard/reservations"');
+    expect(html).toContain('href="/dashboard/settings"');
+  });
+
+  it("un MEMBER sans vehicles.view ni reservations.view ne voit ces liens nulle part (ni Sidebar, ni BottomNav)", async () => {
+    const response = await apiFetch("/dashboard", { headers: { Cookie: restrictedMember.sessionCookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    // Avant correctif, BottomNav affichait ces deux liens à tout le monde, y compris ce
+    // profil restreint — alors même que la route cible refuse déjà l'accès côté serveur.
+    expect(html).not.toContain('href="/dashboard/vehicles"');
+    expect(html).not.toContain('href="/dashboard/reservations"');
+    // Accueil et Profil restent visibles : aucune permission requise pour ces deux entrées,
+    // dans Sidebar comme dans BottomNav (voir nav-visibility.ts).
+    expect(html).toContain('href="/dashboard/settings"');
     expect(html).toContain('aria-label="Navigation rapide"');
   });
 });

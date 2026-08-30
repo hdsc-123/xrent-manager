@@ -30,23 +30,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button, Icon } from "@/components/ui";
-import type { LucideIcon } from "lucide-react";
-
-interface NavItem {
-  href: string;
-  label: string;
-  icon: LucideIcon;
-  /** Clé de permission requise pour afficher l'entrée (voir src/lib/permissions.ts). Sprint 15 :
-   * le retrofit de permissions granulaires côté serveur couvre désormais (quasiment) tous les
-   * modules métier (DOMAINRULES.md section 22) — chaque entrée ci-dessous reflète la clé
-   * `<module>.view` réellement vérifiée par la route/page cible. */
-  permission?: string;
-  /** true = n'afficher qu'aux ADMIN, reflète une vérification `role !== "ADMIN"` réelle côté
-   * page/route cible — modules volontairement non convertis en permission granulaire ce sprint
-   * (gestion des utilisateurs/invitations/permissions/audit, réservée ADMIN même sur son
-   * propre compte, DOMAINRULES.md section 4). */
-  adminOnly?: boolean;
-}
+import { isNavItemVisible, type NavItem } from "./nav-visibility";
 
 const navItems: NavItem[] = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
@@ -104,12 +88,7 @@ interface SidebarProps {
 
 export function Sidebar({ isOpen, onClose, permissions, role }: SidebarProps) {
   const pathname = usePathname();
-  const visibleItems = navItems.filter((item) => {
-    if (item.adminOnly) {
-      return role === "ADMIN";
-    }
-    return !item.permission || permissions === null || permissions.includes(item.permission);
-  });
+  const visibleItems = navItems.filter((item) => isNavItemVisible(item, { permissions, role }));
 
   const nav = (
     <nav aria-label="Navigation principale" className="flex flex-1 flex-col gap-1 p-3">

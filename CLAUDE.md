@@ -15,7 +15,7 @@ XRent Manager est un **SaaS de gestion de location de véhicules**, conçu dès 
 - **mobile-first** dans son approche d'interface ;
 - doté d'un **dashboard-admin** dès le MVP.
 
-À la date de ce document, le projet a dépassé le stade de fondation : les Sprints 0 à 14C sont livrés (authentification, multi-tenant/multi-agence, véhicules, réservations, contrats/locations, facturation, paiements, caisse, maintenance, alertes, transferts entre agences, bons de déplacement, permissions granulaires, audit, etc.). Le Sprint 14D (réalignement documentaire, reset de données de test, harmonisation UI) est en cours. Voir [PROJECT_MAP.md](./PROJECT_MAP.md) pour l'état réel des dossiers et [HANDOFF.md](./HANDOFF.md) pour l'état d'avancement détaillé, sprint par sprint.
+À la date de ce document, le projet est très au-delà du Sprint 13E : authentification (dont MFA opt-in, Phases 3A à 3C), multi-tenant/multi-agence, véhicules, réservations, contrats/locations (dont chaînes de prolongation et surclassements), facturation (dont factures de dégâts), paiements, caisse, maintenance, alertes, transferts entre agences, bons de déplacement, permissions granulaires, audit, rate limiting d'authentification, super admin plateforme (création de tenant uniquement) sont livrés et testés. Dernier commit connu : `426bfaa` (« fix: stabilize concurrency and test infrastructure »), branche `main` propre et synchronisée avec `origin/main`. **Aucun environnement de production n'existe à ce jour.** Voir [PROJECT_MAP.md](./PROJECT_MAP.md) pour l'état réel des dossiers et [HANDOFF.md](./HANDOFF.md) section 0 pour l'état de reprise détaillé et à jour.
 
 ## 2. Règles impératives
 
@@ -27,6 +27,11 @@ XRent Manager est un **SaaS de gestion de location de véhicules**, conçu dès 
 6. Ne pas créer de fonctionnalité métier, de schéma de base de données, de migration ou d'authentification sans validation préalable du propriétaire du projet.
 7. Ne pas créer de données fictives (fake data / seed) dans l'application.
 8. Respecter le bloc `AGENTS.md` généré par `next dev` (voir [AGENTS.md](./AGENTS.md)) : ce bloc peut différer des connaissances par défaut sur Next.js — lire la documentation locale dans `node_modules/next/dist/docs/` avant d'écrire du code lié à Next.js.
+9. Ne jamais désactiver, affaiblir ou contourner un test existant pour faire passer une implémentation — corriger la cause réelle.
+10. Toute anomalie découverte pendant une tâche doit être corrigée (avec test de non-régression), pas seulement documentée, sauf instruction explicite contraire du propriétaire du projet limitant la portée à une inspection.
+11. Ne jamais utiliser le compte réel `saadscott123@gmail.com` (Super Admin plateforme, tenant `XRent Platform`) pour un test ou une donnée de démonstration — toute validation manuelle doit passer par un tenant et des comptes de test dédiés et isolés, créés via le parcours applicatif officiel, avec identifiants stockés uniquement dans un fichier `.env*.local` local (jamais suivi par Git, jamais dans un commit/log/rapport).
+12. Aucun commit ni push ne peut être effectué sans autorisation explicite du propriétaire du projet pour cette action précise — une autorisation donnée pour une action ne vaut pas pour les suivantes. Avant tout push, vérifier les commits locaux, l'absence de divergence avec `origin/main`, et le contenu exact envoyé.
+13. `role === "ADMIN"` + permission `audit.delete` (gestion de l'audit à l'intérieur d'un tenant) et le Super Admin plateforme (`SUPER_ADMIN_EMAILS`, capacité strictement limitée à la création d'un tenant via `POST /api/tenants`) sont deux mécanismes distincts et non interchangeables — voir [SECURITY.md](./SECURITY.md) sections 13 et 33-45 et [DOMAINRULES.md](./DOMAINRULES.md) sections 62 et 72 pour le détail exact avant toute décision ou implémentation les concernant. Définition métier confirmée (2026-08-30) : le « Super Admin » au sens suppression d'audit désigne l'administrateur principal **de son propre tenant** (`role === "ADMIN"`) — `can()` court-circuite sur ce rôle avant toute consultation de `PermissionGroup`/`UserPermission` (`src/lib/permissions.ts`), si bien que **tout** `ADMIN` d'un tenant passe de fait les deux conditions du garde-fou sans affectation explicite (vérifié par `src/__tests__/audit-deletion.test.ts`). `isSuperAdminEmail()` (Super Admin plateforme) n'est référencée dans aucune route d'audit — un Super Admin plateforme qui ne serait pas lui-même `ADMIN` du tenant concerné n'obtient donc aucun accès à la suppression de son audit.
 
 ## 3. Règles de sécurité
 
@@ -90,3 +95,19 @@ Aucune commande de seed n'existe à ce jour — voir règle 7 du présent docume
 4. En cas de doute sur une règle métier, consulter [DOMAINRULES.md](./DOMAINRULES.md) ; si la règle y est marquée **À DÉCIDER**, ne pas trancher seul — demander confirmation.
 5. En cas d'implication sécurité ou financière, consulter [SECURITY.md](./SECURITY.md) avant d'écrire du code.
 6. Après la tâche, mettre à jour [HANDOFF.md](./HANDOFF.md) (et [TESTREPORT.md](./TESTREPORT.md) / [INCIDENTS.md](./INCIDENTS.md) si applicable).
+
+## 11. Méthode de livraison efficace
+
+Cette méthode est permanente pour ce projet et prévaut sur toute habitude par défaut, jusqu'à instruction contraire explicite du propriétaire du projet :
+
+- Analyser rapidement, mais anticiper plusieurs coups à l'avance avant d'agir.
+- Traiter tout le périmètre documentaire ou fonctionnel lié à une tâche donnée en une seule phase cohérente, plutôt que par petits bouts.
+- Implémenter directement une fois l'analyse suffisante — ne pas se limiter à un rapport quand une correction est demandée.
+- Corriger les problèmes découverts en cours de tâche, ne pas se contenter de les documenter (sauf instruction contraire ou portée explicitement limitée par le propriétaire du projet — voir règle 10).
+- Ne jamais désactiver, affaiblir ou contourner un test (règle 9).
+- Préserver les fonctionnalités déjà validées.
+- Privilégier une solution robuste, déterministe et maintenable à un correctif rapide fragile.
+- Exécuter les contrôles adaptés après toute modification (lint/typecheck/tests pertinents), sans nécessairement relancer toute la suite si la modification ne le justifie pas.
+- Fournir un seul rapport final clair par tâche, plutôt que des mises à jour fragmentées.
+- Ne demander une validation au propriétaire du projet que pour une décision réellement bloquante : migration sensible, nouvelle dépendance, changement d'architecture, commit, push — pas pour chaque étape intermédiaire.
+- Ne créer aucun commit ni push sans autorisation explicite (règle 12).

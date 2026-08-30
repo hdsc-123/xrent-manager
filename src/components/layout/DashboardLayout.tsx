@@ -46,7 +46,7 @@ export function DashboardLayout({
         />
         <main className="flex-1 overflow-x-hidden p-4 pb-20 sm:p-6 lg:pb-6">{children}</main>
       </div>
-      <BottomNav />
+      <BottomNav permissions={permissions} role={user.role} />
     </div>
   );
 }
