@@ -13,6 +13,7 @@ import {
 import { validatePassword } from "@/lib/password-policy";
 import { logAction } from "@/lib/audit";
 import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
+import { createSecurityNotification } from "@/lib/security-notifications";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -110,9 +111,20 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         resourceId: target.id,
         metadata: { from: target.role, to: body.role },
       });
+      // Politique MFA (2026-08-30) : notification de sécurité pour la cible, distincte de
+      // l'acteur (un ADMIN ne se change jamais son propre rôle via cette route qu'à la
+      // condition ordinaire — la cible reste toujours le destinataire de la notification).
+      await createSecurityNotification({
+        tenantId: user.tenantId,
+        userId: target.id,
+        type: "ROLE_OR_PERMISSIONS_CHANGED",
+      });
     }
 
     if (body.password !== undefined) {
+      // Politique MFA (2026-08-30) : resetUserPassword révoque désormais les sessions actives
+      // de la cible (src/lib/users.ts) — comportement voulu, une réinitialisation par un ADMIN
+      // doit invalider tout accès obtenu avec l'ancien mot de passe.
       await resetUserPassword(user.tenantId, target.id, body.password);
       await logAction({
         tenantId: user.tenantId,
@@ -120,6 +132,11 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         action: "user.password_reset",
         resource: "User",
         resourceId: target.id,
+      });
+      await createSecurityNotification({
+        tenantId: user.tenantId,
+        userId: target.id,
+        type: "PASSWORD_CHANGED",
       });
     }
 

@@ -116,6 +116,13 @@ export async function setUserAgencies(
   ]);
 }
 
+/**
+ * Politique MFA (2026-08-30, brief explicite du propriétaire du projet) : un changement de mot
+ * de passe doit révoquer les sessions actives concernées, y compris quand il est déclenché par
+ * un ADMIN sur le compte d'un tiers — même garantie que updateUserProfile ci-dessous. La
+ * notification de sécurité et l'entrée d'audit restent à la charge de l'appelant (route), même
+ * convention que le reste de ce module.
+ */
 export async function resetUserPassword(
   tenantId: string,
   targetUserId: string,
@@ -127,7 +134,10 @@ export async function resetUserPassword(
   }
 
   const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
-  return prisma.user.update({ where: { id: targetUserId }, data: { passwordHash } });
+  return prisma.user.update({
+    where: { id: targetUserId },
+    data: { passwordHash, sessionRevokedAt: new Date() },
+  });
 }
 
 export interface UpdateUserProfileInput {
@@ -139,25 +149,46 @@ export interface UpdateUserProfileInput {
   newPassword?: string;
 }
 
+export interface UpdateUserProfileResult {
+  user: User;
+  /** Reflète un changement réellement appliqué (valeur différente de l'existante), pas la
+   * simple présence du champ dans la requête — voir la politique MFA (2026-08-30) sur la
+   * notification de sécurité/révocation de session, qui ne doit se déclencher que sur un
+   * changement réel. */
+  emailChanged: boolean;
+  passwordChanged: boolean;
+}
+
 /**
  * Édition du profil par l'user lui-même (Sprint 10) — distinct de resetUserPassword
  * (réinitialisation par un ADMIN sur un autre user, sans vérification de l'ancien mot
  * de passe). Ici, tout changement de mot de passe exige la vérification du mot de passe
  * actuel. Le tenantId reste requis en signature pour rester cohérent avec le reste de ce
  * module, même si un userId est déjà non-ambigu à lui seul.
+ *
+ * Politique MFA (2026-08-30, brief explicite du propriétaire du projet) : un changement
+ * d'email ou de mot de passe révoque désormais toutes les sessions actives du compte,
+ * y compris celle à l'origine du changement (même comportement voulu que la désactivation
+ * MFA — force une reconnexion propre, voir src/lib/mfa-session.ts).
  */
 export async function updateUserProfile(
   tenantId: string,
   userId: string,
   data: UpdateUserProfileInput
-): Promise<User | null> {
+): Promise<UpdateUserProfileResult | null> {
   const existing = await getUserById(tenantId, userId);
   if (!existing) {
     return null;
   }
 
-  const updateData: { name?: string; email?: string; phone?: string | null; avatar?: string | null; passwordHash?: string } =
-    {};
+  const updateData: {
+    name?: string;
+    email?: string;
+    phone?: string | null;
+    avatar?: string | null;
+    passwordHash?: string;
+    sessionRevokedAt?: Date;
+  } = {};
 
   if (data.name !== undefined) {
     updateData.name = data.name;
@@ -192,7 +223,14 @@ export async function updateUserProfile(
     updateData.passwordHash = await bcrypt.hash(data.newPassword, BCRYPT_COST);
   }
 
-  return prisma.user.update({ where: { id: userId }, data: updateData });
+  const emailChanged = updateData.email !== undefined;
+  const passwordChanged = updateData.passwordHash !== undefined;
+  if (emailChanged || passwordChanged) {
+    updateData.sessionRevokedAt = new Date();
+  }
+
+  const user = await prisma.user.update({ where: { id: userId }, data: updateData });
+  return { user, emailChanged, passwordChanged };
 }
 
 /**

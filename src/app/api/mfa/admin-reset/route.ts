@@ -3,8 +3,10 @@ import { getSessionUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { getUserById } from "@/lib/users";
 import { hasValidStepUp, purgeMfaAndRevokeSessions, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
+import { isSuperAdminEmail } from "@/lib/super-admin";
 import { mfaAdminResetThrottleKey, isLocked, recordFailedAttempt, resetThrottle } from "@/lib/login-throttle";
 import { logAction } from "@/lib/audit";
+import { createSecurityNotification } from "@/lib/security-notifications";
 
 interface AdminResetBody {
   targetUserId?: string;
@@ -95,6 +97,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Utilisateur introuvable." }, { status: 404 });
   }
 
+  // Politique MFA (2026-08-30, brief explicite du propriétaire du projet, point 7) : la
+  // récupération MFA du Super Admin doit passer par la procédure opérateur hors bande dédiée
+  // (scripts/superadmin-mfa-recovery.js, jamais exposée en HTTP), jamais par un reset assisté
+  // par un pair ADMIN via cette route — même si un tel pair existait dans le tenant dédié du
+  // Super Admin (voir src/lib/super-admin.ts).
+  if (isSuperAdminEmail(target.email)) {
+    await recordFailedAttempt(throttleKey);
+    return NextResponse.json(
+      {
+        error:
+          "La récupération MFA du Super Admin ne peut pas passer par cette route. Utilisez la procédure opérateur hors bande dédiée.",
+      },
+      { status: 403 }
+    );
+  }
+
   await prisma.$transaction(async (tx) => {
     await purgeMfaAndRevokeSessions(target.id, tx);
     await logAction(
@@ -108,6 +126,7 @@ export async function POST(request: Request) {
       },
       tx
     );
+    await createSecurityNotification({ tenantId: actor.tenantId, userId: target.id, type: "MFA_RESET" }, tx);
   });
 
   await resetThrottle([throttleKey]);

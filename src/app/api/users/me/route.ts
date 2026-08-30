@@ -8,6 +8,7 @@ import {
 } from "@/lib/users";
 import { validatePassword } from "@/lib/password-policy";
 import { logAction } from "@/lib/audit";
+import { createSecurityNotification } from "@/lib/security-notifications";
 
 /**
  * Profil de l'user connecté (Sprint 10) : GET (lecture directe en base, plus à jour que
@@ -90,7 +91,7 @@ export async function PATCH(request: Request) {
   }
 
   try {
-    const updated = await updateUserProfile(user.tenantId, user.id, {
+    const result = await updateUserProfile(user.tenantId, user.id, {
       name: body.name,
       email: body.email,
       phone: body.phone === "" ? null : body.phone,
@@ -99,9 +100,11 @@ export async function PATCH(request: Request) {
       newPassword: body.newPassword,
     });
 
-    if (!updated) {
+    if (!result) {
       return NextResponse.json({ error: "Utilisateur introuvable." }, { status: 404 });
     }
+
+    const { user: updated, emailChanged, passwordChanged } = result;
 
     await logAction({
       tenantId: user.tenantId,
@@ -111,12 +114,23 @@ export async function PATCH(request: Request) {
       resourceId: user.id,
       metadata: {
         nameChanged: body.name !== undefined,
-        emailChanged: body.email !== undefined,
+        emailChanged,
         phoneChanged: body.phone !== undefined,
         avatarChanged: body.avatar !== undefined,
-        passwordChanged: body.newPassword !== undefined,
+        passwordChanged,
       },
     });
+
+    // Politique MFA (2026-08-30) : notification de sécurité in-app sur un changement réel
+    // d'email/mot de passe — jamais sur la simple présence du champ dans la requête (voir
+    // UpdateUserProfileResult, src/lib/users.ts). Les sessions actives ont déjà été révoquées
+    // par updateUserProfile lui-même (sessionRevokedAt), y compris celle de cette requête.
+    if (emailChanged) {
+      await createSecurityNotification({ tenantId: user.tenantId, userId: user.id, type: "EMAIL_CHANGED" });
+    }
+    if (passwordChanged) {
+      await createSecurityNotification({ tenantId: user.tenantId, userId: user.id, type: "PASSWORD_CHANGED" });
+    }
 
     return NextResponse.json({
       user: {

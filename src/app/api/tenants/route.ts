@@ -83,7 +83,22 @@ export async function POST(request: Request) {
     );
   }
 
-  // Phase 3C MFA : step-up requis avant toute mutation (opt-in, voir src/lib/mfa-session.ts).
+  // Politique MFA (2026-08-30, brief explicite du propriétaire du projet, point 1) : la MFA est
+  // obligatoire pour le Super Admin — contrairement au step-up opt-in ci-dessous (Phase 3C, qui
+  // ne s'applique qu'aux comptes ayant déjà activé la MFA), cette route est la seule capacité
+  // Super Admin du projet (voir src/lib/super-admin.ts) et n'est jamais accessible sans MFA
+  // activée, quel que soit l'état de step-up. Reste opt-in pour tout autre rôle/permission —
+  // aucune autre route ne reçoit ce contrôle supplémentaire.
+  if (!user.mfaEnabled) {
+    return NextResponse.json(
+      { error: "La MFA doit être activée sur le compte Super Admin avant de pouvoir créer un tenant." },
+      { status: 403 }
+    );
+  }
+
+  // Phase 3C MFA : step-up requis avant toute mutation — désormais toujours applicable ici
+  // puisque mfaEnabled est garanti true par le contrôle ci-dessus (stepUpRequiredAndMissing
+  // reste par ailleurs opt-in pour les routes qui n'imposent pas mfaEnabled).
   if (await stepUpRequiredAndMissing(user)) {
     return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
   }

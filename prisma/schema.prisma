@@ -22,27 +22,29 @@ model Tenant {
   // atomique (updateMany conditionné), jamais lu/écrit hors de cette garde.
   lastAlertCheckAt DateTime?
 
-  agencies          Agency[]
-  users             User[]
-  vehicles          Vehicle[]
-  locations         Location[]
-  clients           Client[]
-  invoices          Invoice[]
-  payments          Payment[]
-  maintenances      Maintenance[]
-  alerts            Alert[]
-  invitations       Invitation[]
-  auditLogs         AuditLog[]
-  reservations      Reservation[]
-  permissionGroups  PermissionGroup[]
-  cashRegister      CashRegister?
-  cashEntries       CashEntry[]
-  expenseCategories ExpenseCategory[]
-  vehicleTransfers  VehicleTransfer[]
-  vehicleTrips      VehicleTrip[]
-  damages           Damage[]
-  damageInvoices    DamageInvoice[]
-  locationUpgrades  LocationUpgrade[]
+  agencies              Agency[]
+  users                 User[]
+  vehicles              Vehicle[]
+  locations             Location[]
+  clients               Client[]
+  invoices              Invoice[]
+  payments              Payment[]
+  maintenances          Maintenance[]
+  alerts                Alert[]
+  invitations           Invitation[]
+  auditLogs             AuditLog[]
+  reservations          Reservation[]
+  permissionGroups      PermissionGroup[]
+  cashRegister          CashRegister?
+  cashEntries           CashEntry[]
+  expenseCategories     ExpenseCategory[]
+  vehicleTransfers      VehicleTransfer[]
+  vehicleTrips          VehicleTrip[]
+  damages               Damage[]
+  damageInvoices        DamageInvoice[]
+  locationUpgrades      LocationUpgrade[]
+  // Politique MFA (2026-08-30) : voir modèle SecurityNotification ci-dessous.
+  securityNotifications SecurityNotification[]
 }
 
 model Agency {
@@ -144,26 +146,28 @@ model User {
   // révocation existe sur le compte (fail-closed), jamais l'inverse.
   sessionRevokedAt DateTime?
 
-  tenant                      Tenant            @relation(fields: [tenantId], references: [id])
+  tenant                      Tenant                 @relation(fields: [tenantId], references: [id])
   userAgencies                UserAgency[]
   accounts                    Account[]
   sessions                    Session[]
   alerts                      Alert[]
   sentInvitations             Invitation[]
-  permissionGroup             PermissionGroup?  @relation(fields: [permissionGroupId], references: [id])
+  permissionGroup             PermissionGroup?       @relation(fields: [permissionGroupId], references: [id])
   userPermissions             UserPermission[]
-  vehicleTransfersResponsible VehicleTransfer[] @relation("VehicleTransferResponsible")
+  vehicleTransfersResponsible VehicleTransfer[]      @relation("VehicleTransferResponsible")
   vehicleTrips                VehicleTrip[]
   // Sprint 26D (Finding D1) : agent à l'origine d'une correction/compensation de caisse.
-  cashEntriesPerformed        CashEntry[]       @relation("CashEntryPerformedBy")
+  cashEntriesPerformed        CashEntry[]            @relation("CashEntryPerformedBy")
   locationUpgradesValidated   LocationUpgrade[]
   // Sprint 32 : agent ayant déclaré un dégât (Damage.createdByUserId).
-  damagesCreated              Damage[]          @relation("DamageCreatedBy")
+  damagesCreated              Damage[]               @relation("DamageCreatedBy")
   // Sprint "statut opérationnel automatique" (2026-08-28) : ADMIN ayant désactivé un véhicule.
-  vehiclesDeactivated         Vehicle[]         @relation("VehicleDeactivatedBy")
+  vehiclesDeactivated         Vehicle[]              @relation("VehicleDeactivatedBy")
   // Phase 3A MFA (2026-08-29) : voir modèles MfaRecoveryCode/MfaStepUpProof ci-dessous.
   mfaRecoveryCodes            MfaRecoveryCode[]
   mfaStepUpProofs             MfaStepUpProof[]
+  // Politique MFA (2026-08-30) : voir modèle SecurityNotification ci-dessous.
+  securityNotifications       SecurityNotification[]
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -266,29 +270,29 @@ enum FuelType {
 // fixtures de test existantes qui créent un véhicule sans les fournir ; requis
 // uniquement au niveau du formulaire dashboard (voir NewVehiclePage/EditVehicleForm).
 model Vehicle {
-  id            String            @id @default(cuid())
-  tenantId      String
-  agencyId      String
-  name          String
-  licensePlate  String
-  make          String
-  model         String
-  year          Int
-  category      String
-  ww            String?
-  chassisNumber String?
-  color         String?
-  doors         Int?
-  seats         Int?
-  transmission  TransmissionType?
-  fuel          FuelType?
-  horsepower    Int?
-  powerKW       Int?
-  engineSize    Float?
-  ac            Boolean           @default(false)
-  gps           Boolean           @default(false)
-  imageUrl      String?
-  status        VehicleStatus     @default(AVAILABLE)
+  id                String            @id @default(cuid())
+  tenantId          String
+  agencyId          String
+  name              String
+  licensePlate      String
+  make              String
+  model             String
+  year              Int
+  category          String
+  ww                String?
+  chassisNumber     String?
+  color             String?
+  doors             Int?
+  seats             Int?
+  transmission      TransmissionType?
+  fuel              FuelType?
+  horsepower        Int?
+  powerKW           Int?
+  engineSize        Float?
+  ac                Boolean           @default(false)
+  gps               Boolean           @default(false)
+  imageUrl          String?
+  status            VehicleStatus     @default(AVAILABLE)
   // État administratif séparé (sprint "statut opérationnel automatique", 2026-08-28) — remplace
   // l'ancien VehicleStatus.INACTIVE. Décision réservée ADMIN (contrôle de rôle strict, même
   // principe que adminCancelInvoice/adminCancelValidatedLocation, DOMAINRULES.md section 43),
@@ -301,8 +305,8 @@ model Vehicle {
   // Optionnel depuis le Sprint 14A : purement informatif, jamais la source de vérité de la
   // facturation (voir DOMAINRULES.md section 5/7) — le prix réel est saisi à la location/au
   // contrat (src/lib/locations.ts, createLocation).
-  pricePerDay   Int?
-  currency      String            @default("MAD")
+  pricePerDay       Int?
+  currency          String            @default("MAD")
 
   // Sprint 24 : kilométrage/carburant actuels du véhicule, capturés à la création — dernier
   // état connu avant toute Location/VehicleTransfer/VehicleTrip. Purement informatifs comme
@@ -1434,6 +1438,45 @@ model LoginThrottle {
 // fois puis jamais reconstitués — seul le hash (SHA-256 + pepper serveur dérivé de
 // MFA_ENCRYPTION_KEY, jamais un second secret dédié à ce stade — voir src/lib/mfa.ts) est
 // persisté, jamais le code en clair.
+enum SecurityNotificationType {
+  EMAIL_CHANGED
+  PASSWORD_CHANGED
+  MFA_ENABLED
+  MFA_DISABLED
+  MFA_RECOVERY_CODES_REGENERATED
+  MFA_RESET
+  ROLE_OR_PERMISSIONS_CHANGED
+}
+
+/**
+ * Politique MFA (2026-08-30, brief explicite du propriétaire du projet) : notification de
+ * sécurité in-app, distincte d'AuditLog — AuditLog reste la preuve administrative (consultable
+ * par un ADMIN avec audit.view), cette table informe directement l'utilisateur concerné
+ * (userId) d'un événement sensible sur son propre compte. Contenu toujours générique (voir
+ * src/lib/security-notifications.ts, SECURITY_NOTIFICATION_MESSAGES) — jamais de mot de passe,
+ * code MFA, code de récupération, token ou secret. Aucun canal email/push n'existe dans ce
+ * projet à ce jour : strictement in-app, jamais un remplacement d'une notification email future.
+ * `auditLogId` est une référence informative optionnelle (pas de contrainte FK — AuditLog n'a
+ * aucune relation Prisma entrante ailleurs dans ce schéma, même convention conservée ici).
+ */
+model SecurityNotification {
+  id         String                   @id @default(cuid())
+  tenantId   String
+  userId     String
+  type       SecurityNotificationType
+  message    String
+  auditLogId String?
+  readAt     DateTime?
+  createdAt  DateTime                 @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([userId, readAt])
+  @@index([createdAt])
+}
+
 model MfaRecoveryCode {
   id        String    @id @default(cuid())
   userId    String

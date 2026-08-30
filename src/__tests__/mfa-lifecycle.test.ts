@@ -564,3 +564,89 @@ describe("Révocation globale de session — comportement transverse", () => {
     expect(user.sessionRevokedAt).toBeNull();
   });
 });
+
+/**
+ * Politique MFA (2026-08-30, brief explicite du propriétaire du projet, points 6/7) : le Super
+ * Admin ne doit pas pouvoir désactiver durablement sa MFA par un parcours normal de l'interface,
+ * et sa récupération doit passer par la procédure opérateur hors bande dédiée
+ * (scripts/superadmin-mfa-recovery.js), jamais par POST /api/mfa/disable ni par un reset assisté
+ * ordinaire (POST /api/mfa/admin-reset). Domaine @superadmin.test.local reconnu par
+ * SUPER_ADMIN_EMAILS en environnement de test (.env.test), même convention que
+ * src/__tests__/tenants.test.ts/mfa-step-up-gating.test.ts.
+ */
+async function newSuperAdmin(label: string): Promise<AuthenticatedTestUser> {
+  counter += 1;
+  const admin = await registerTenantAdmin({
+    tenantName: `LC SuperAdmin ${label} ${counter} ${runId}`,
+    tenantSlug: `lc-superadmin-${label}-${counter}-${runId}`,
+    name: `LC SuperAdmin ${label}`,
+    email: `lc-superadmin-${label}-${counter}-${runId}@superadmin.test.local`,
+    password,
+  });
+  createdTenantIds.push(admin.tenantId);
+  return admin;
+}
+
+describe("POST /api/mfa/disable — Super Admin (politique MFA 2026-08-30)", () => {
+  it("refuse même avec mot de passe et code TOTP valides — la MFA reste activée", async () => {
+    const superAdmin = await newSuperAdmin("disable-blocked");
+    const { secretBase32 } = await enableMfa(superAdmin);
+
+    const response = await apiFetch("/api/mfa/disable", {
+      method: "POST",
+      headers: { Cookie: superAdmin.sessionCookie },
+      body: JSON.stringify({ password, code: await nextTotpCode(superAdmin.userId, secretBase32) }),
+    });
+    expect(response.status).toBe(403);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: superAdmin.userId } });
+    expect(user.mfaEnabled).toBe(true);
+    expect(user.sessionRevokedAt).toBeNull();
+  });
+
+  it("un ADMIN de tenant ordinaire (même mot de passe/code valides) peut toujours se désactiver — le blocage est strictement réservé au Super Admin", async () => {
+    const admin = await newAdmin("disable-not-blocked-ordinary");
+    const { secretBase32 } = await enableMfa(admin);
+
+    const response = await apiFetch("/api/mfa/disable", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ password, code: await nextTotpCode(admin.userId, secretBase32) }),
+    });
+    expect(response.status).toBe(200);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: admin.userId } });
+    expect(user.mfaEnabled).toBe(false);
+  });
+});
+
+describe("POST /api/mfa/admin-reset — cible Super Admin (politique MFA 2026-08-30)", () => {
+  it("refuse de réinitialiser la MFA d'un Super Admin, même si acteur et cible partagent le même tenant", async () => {
+    const superAdmin = await newSuperAdmin("reset-target-blocked");
+    await enableMfa(superAdmin);
+
+    // Second ADMIN du même tenant que le Super Admin, avec sa propre MFA activée (précondition
+    // de la route) — représente le cas d'un pair ADMIN qui existerait exceptionnellement dans le
+    // tenant dédié d'un Super Admin (src/lib/super-admin.ts).
+    const peerAdmin = await createAndLoginMember({
+      tenantId: superAdmin.tenantId,
+      name: "Peer Admin",
+      email: `lc-peer-admin-${counter}-${runId}@test.local`,
+      password,
+    });
+    await prisma.user.update({ where: { id: peerAdmin.userId }, data: { role: "ADMIN" } });
+    const { secretBase32: peerSecret } = await enableMfa(peerAdmin);
+    await stepUp(peerAdmin, peerSecret);
+
+    const response = await apiFetch("/api/mfa/admin-reset", {
+      method: "POST",
+      headers: { Cookie: peerAdmin.sessionCookie },
+      body: JSON.stringify({ targetUserId: superAdmin.userId, reason: "Tentative refusée par la politique" }),
+    });
+    expect(response.status).toBe(403);
+
+    const target = await prisma.user.findUniqueOrThrow({ where: { id: superAdmin.userId } });
+    expect(target.mfaEnabled).toBe(true);
+    expect(target.sessionRevokedAt).toBeNull();
+  });
+});

@@ -1,8 +1,61 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { generateTotpToken } from "@/lib/mfa";
 import { apiFetch, extractSessionCookie } from "./helpers/http";
 import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+
+/**
+ * Politique MFA (2026-08-30, brief explicite du propriétaire du projet, point 1) : la MFA est
+ * désormais obligatoire pour exercer la capacité Super Admin (POST /api/tenants) — chaque test
+ * Super Admin de ce fichier doit donc enrôler la MFA et prouver un step-up frais avant d'appeler
+ * cette route, sans quoi il reçoit désormais 403 avant même le contrôle de step-up opt-in
+ * existant (Phase 3C). Mêmes helpers que src/__tests__/mfa-step-up-gating.test.ts (dupliqués ici
+ * par convention établie, un fichier de test par module ne partage pas ses helpers MFA locaux).
+ */
+async function enableSuperAdminMfa(admin: AuthenticatedTestUser): Promise<string> {
+  const enrollResponse = await apiFetch("/api/mfa/enroll", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({}),
+  });
+  const { secretBase32 } = await enrollResponse.json();
+  const code = await generateTotpToken(secretBase32);
+  const confirmResponse = await apiFetch("/api/mfa/enroll/confirm", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ code }),
+  });
+  expect(confirmResponse.status).toBe(200);
+  return secretBase32;
+}
+
+const TOTP_PERIOD_SECONDS = 30;
+
+async function nextTotpCode(userId: string, secretBase32: string): Promise<string> {
+  const current = await prisma.user.findUnique({ where: { id: userId }, select: { mfaLastUsedStep: true } });
+  const now = Math.floor(Date.now() / 1000);
+  const nowStep = Math.floor(now / TOTP_PERIOD_SECONDS);
+  const lastUsedStep = current?.mfaLastUsedStep ?? null;
+  const targetStep = lastUsedStep !== null ? Math.max(nowStep, lastUsedStep + 1) : nowStep;
+  return generateTotpToken(secretBase32, targetStep * TOTP_PERIOD_SECONDS + 1);
+}
+
+async function stepUpSuperAdmin(admin: AuthenticatedTestUser, secretBase32: string): Promise<void> {
+  const response = await apiFetch("/api/mfa/step-up/verify", {
+    method: "POST",
+    headers: { Cookie: admin.sessionCookie },
+    body: JSON.stringify({ code: await nextTotpCode(admin.userId, secretBase32) }),
+  });
+  expect(response.status).toBe(200);
+}
+
+/** Enrôle la MFA et prouve un step-up frais pour ce Super Admin — à appeler juste avant tout
+ * POST /api/tenants attendu en succès dans ce fichier (voir le commentaire ci-dessus). */
+async function readySuperAdminForTenantCreation(admin: AuthenticatedTestUser): Promise<void> {
+  const secret = await enableSuperAdminMfa(admin);
+  await stepUpSuperAdmin(admin, secret);
+}
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -202,6 +255,65 @@ describe("POST /api/tenants — création réservée au Super Admin plateforme (
     expect(response.status).toBe(403);
   });
 
+  it("Politique MFA (2026-08-30) — refuse un Super Admin sans MFA activée, même identifiants et rôle corrects (aucun tenant créé)", async () => {
+    const superAdmin = await registerTenantAdmin({
+      tenantName: "Platform Seat No MFA",
+      tenantSlug: `platform-seat-no-mfa-${runId}`,
+      name: "Super Admin No MFA",
+      email: `superadmin-no-mfa-${runId}@superadmin.test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    createdTenantIds.push(superAdmin.tenantId);
+
+    const attemptedSlug = `no-mfa-attempt-${runId}`;
+    const response = await apiFetch("/api/tenants", {
+      method: "POST",
+      headers: { Cookie: superAdmin.sessionCookie },
+      body: JSON.stringify({
+        tenantName: "Should Not Exist No MFA",
+        tenantSlug: attemptedSlug,
+        name: "Nobody",
+        email: `nobody-no-mfa-${runId}@test.local`,
+        password: "Correct-Horse-Battery-Staple9!",
+      }),
+    });
+    expect(response.status).toBe(403);
+    const body = await response.json();
+    expect(body.error).toMatch(/MFA/);
+
+    const created = await prisma.tenant.findUnique({ where: { slug: attemptedSlug } });
+    expect(created).toBeNull();
+  });
+
+  it("Politique MFA (2026-08-30) — refuse un Super Admin avec MFA activée mais sans step-up frais (aucun tenant créé)", async () => {
+    const superAdmin = await registerTenantAdmin({
+      tenantName: "Platform Seat MFA No StepUp",
+      tenantSlug: `platform-seat-mfa-no-stepup-${runId}`,
+      name: "Super Admin MFA No StepUp",
+      email: `superadmin-mfa-no-stepup-${runId}@superadmin.test.local`,
+      password: "Correct-Horse-Battery-Staple9!",
+    });
+    createdTenantIds.push(superAdmin.tenantId);
+    await enableSuperAdminMfa(superAdmin);
+
+    const attemptedSlug = `mfa-no-stepup-attempt-${runId}`;
+    const response = await apiFetch("/api/tenants", {
+      method: "POST",
+      headers: { Cookie: superAdmin.sessionCookie },
+      body: JSON.stringify({
+        tenantName: "Should Not Exist MFA No StepUp",
+        tenantSlug: attemptedSlug,
+        name: "Nobody",
+        email: `nobody-mfa-no-stepup-${runId}@test.local`,
+        password: "Correct-Horse-Battery-Staple9!",
+      }),
+    });
+    expect(response.status).toBe(403);
+
+    const created = await prisma.tenant.findUnique({ where: { slug: attemptedSlug } });
+    expect(created).toBeNull();
+  });
+
   it("le Super Admin (email listé dans SUPER_ADMIN_EMAILS) peut créer un tenant et son premier ADMIN", async () => {
     const superAdmin = await registerTenantAdmin({
       tenantName: "Platform Seat",
@@ -211,6 +323,7 @@ describe("POST /api/tenants — création réservée au Super Admin plateforme (
       password: "Correct-Horse-Battery-Staple9!",
     });
     createdTenantIds.push(superAdmin.tenantId);
+    await readySuperAdminForTenantCreation(superAdmin);
 
     const newAdminEmail = `new-tenant-admin-${runId}@test.local`;
     const response = await apiFetch("/api/tenants", {
@@ -256,6 +369,7 @@ describe("POST /api/tenants — création réservée au Super Admin plateforme (
       password: "Correct-Horse-Battery-Staple9!",
     });
     createdTenantIds.push(superAdmin.tenantId);
+    await readySuperAdminForTenantCreation(superAdmin);
 
     const createResponse = await apiFetch("/api/tenants", {
       method: "POST",
@@ -288,6 +402,7 @@ describe("POST /api/tenants — création réservée au Super Admin plateforme (
       password: "Correct-Horse-Battery-Staple9!",
     });
     createdTenantIds.push(superAdmin.tenantId);
+    await readySuperAdminForTenantCreation(superAdmin);
 
     const rawPassword = "Correct-Horse-Battery-Staple9!";
     const newTenantSlug = `hash-check-${runId}`;
@@ -347,6 +462,7 @@ describe("POST /api/tenants — création réservée au Super Admin plateforme (
       password: "Correct-Horse-Battery-Staple9!",
     });
     createdTenantIds.push(superAdmin.tenantId);
+    await readySuperAdminForTenantCreation(superAdmin);
 
     const newAdminPassword = "Correct-Horse-Battery-Staple9!";
     const newAdminEmail = `provisioned-admin-${runId}@test.local`;

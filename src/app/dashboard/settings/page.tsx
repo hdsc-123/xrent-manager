@@ -5,6 +5,7 @@ import { EditTenantForm } from "@/app/dashboard/tenants/[id]/EditTenantForm";
 import { EditProfileForm } from "./EditProfileForm";
 import { DataResetCard } from "./DataResetCard";
 import { MfaSettingsCard } from "./MfaSettingsCard";
+import { SecurityNotificationsCard } from "./SecurityNotificationsCard";
 
 export default async function SettingsPage() {
   const user = await getSessionUser();
@@ -33,6 +34,8 @@ export default async function SettingsPage() {
       />
 
       <MfaSettingsCard />
+
+      <SecurityNotificationsCard />
 
       {tenant && user.role === "ADMIN" && <DataResetCard tenantName={tenant.name} />}
     </div>

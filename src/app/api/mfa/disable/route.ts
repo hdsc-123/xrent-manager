@@ -5,6 +5,7 @@ import bcrypt from "bcryptjs";
 import { verifyTotpToken, verifyRecoveryCode } from "@/lib/mfa";
 import { decryptMfaSecret, MfaDecryptionError } from "@/lib/mfa-encryption";
 import { purgeMfaAndRevokeSessions } from "@/lib/mfa-session";
+import { isSuperAdminEmail } from "@/lib/super-admin";
 import {
   getClientIp,
   ipThrottleKey,
@@ -14,6 +15,7 @@ import {
   resetThrottle,
 } from "@/lib/login-throttle";
 import { logAction } from "@/lib/audit";
+import { createSecurityNotification } from "@/lib/security-notifications";
 
 interface DisableBody {
   password?: string;
@@ -57,6 +59,22 @@ export async function POST(request: Request) {
 
   if (!current.mfaEnabled) {
     return NextResponse.json({ error: "MFA non activée sur ce compte." }, { status: 400 });
+  }
+
+  // Politique MFA (2026-08-30, brief explicite du propriétaire du projet, point 6) : le Super
+  // Admin ne doit pas pouvoir désactiver durablement sa MFA par un parcours normal de
+  // l'interface — aucun mot de passe/code, aussi valides soient-ils, ne permet de contourner ce
+  // blocage ici. Seule la procédure opérateur hors bande dédiée (scripts/superadmin-mfa-recovery.js,
+  // jamais exposée en HTTP) peut réinitialiser la MFA d'un Super Admin — voir POST
+  // /api/mfa/admin-reset pour le même principe côté reset assisté par un tiers.
+  if (isSuperAdminEmail(user.email)) {
+    return NextResponse.json(
+      {
+        error:
+          "La MFA du Super Admin ne peut pas être désactivée depuis l'interface. Contactez un opérateur pour la procédure de récupération dédiée.",
+      },
+      { status: 403 }
+    );
   }
 
   const ipKey = ipThrottleKey(getClientIp(request));
@@ -150,6 +168,7 @@ export async function POST(request: Request) {
       },
       tx
     );
+    await createSecurityNotification({ tenantId: current.tenantId, userId: user.id, type: "MFA_DISABLED" }, tx);
   });
 
   await resetThrottle([ipKey, userKey]);

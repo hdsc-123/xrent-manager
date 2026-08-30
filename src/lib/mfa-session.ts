@@ -97,6 +97,19 @@ export async function stepUpRequiredAndMissing(user: {
  * Exige `tx` : doit toujours faire partie de la même transaction que l'audit qui l'accompagne
  * (même convention que logAction avec tx, src/lib/audit.ts).
  */
+/**
+ * Politique MFA (2026-08-30, brief explicite du propriétaire du projet) : révocation globale de
+ * session, sans purge MFA — distincte de purgeMfaAndRevokeSessions ci-dessous (réservée aux
+ * changements de second facteur). Utilisée par un changement d'email/mot de passe (self-service
+ * ou réinitialisation par un ADMIN, src/lib/users.ts), où aucun champ MFA n'est concerné. `tx`
+ * optionnel : à fournir pour rester dans la même transaction que la mutation appelante quand une
+ * transaction existe déjà, sinon écrit via le client global.
+ */
+export async function revokeAllSessions(userId: string, tx?: Prisma.TransactionClient): Promise<void> {
+  const client = tx ?? prisma;
+  await client.user.update({ where: { id: userId }, data: { sessionRevokedAt: new Date() } });
+}
+
 export async function purgeMfaAndRevokeSessions(userId: string, tx: Prisma.TransactionClient): Promise<void> {
   const now = new Date();
   await tx.user.update({

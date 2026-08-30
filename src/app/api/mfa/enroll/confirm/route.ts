@@ -6,6 +6,7 @@ import { decryptMfaSecret, MfaDecryptionError } from "@/lib/mfa-encryption";
 import { generateMfaSecurityStamp } from "@/lib/mfa-session";
 import { mfaEnrollConfirmThrottleKey, isLocked, recordFailedAttempt, resetThrottle } from "@/lib/login-throttle";
 import { logAction } from "@/lib/audit";
+import { createSecurityNotification } from "@/lib/security-notifications";
 
 interface ConfirmBody {
   code?: string;
@@ -125,6 +126,9 @@ export async function POST(request: Request) {
     // Aucune preuve de step-up ne devrait exister à ce stade (compte qui vient d'activer MFA
     // pour la première fois) — purge défensive, même garantie que pour un reset futur.
     await tx.mfaStepUpProof.deleteMany({ where: { userId: user.id } });
+
+    // Politique MFA (2026-08-30) : notification de sécurité, même transaction que l'activation.
+    await createSecurityNotification({ tenantId: current.tenantId, userId: user.id, type: "MFA_ENABLED" }, tx);
   });
 
   await resetThrottle([throttleKey]);

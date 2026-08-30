@@ -4,6 +4,7 @@ import { getSessionUser } from "@/lib/authz";
 import { getUserById } from "@/lib/users";
 import { logAction } from "@/lib/audit";
 import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
+import { createSecurityNotification } from "@/lib/security-notifications";
 import {
   ensureDefaultGroups,
   getUserPermissionsView,
@@ -84,6 +85,13 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       resource: "User",
       resourceId: id,
       metadata: { changes: body } as unknown as Prisma.InputJsonValue,
+    });
+
+    // Politique MFA (2026-08-30) : notification de sécurité pour la cible.
+    await createSecurityNotification({
+      tenantId: user.tenantId,
+      userId: id,
+      type: "ROLE_OR_PERMISSIONS_CHANGED",
     });
 
     return NextResponse.json({ permissions });

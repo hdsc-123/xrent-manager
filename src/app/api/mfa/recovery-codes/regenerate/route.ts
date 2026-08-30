@@ -13,6 +13,7 @@ import {
   resetThrottle,
 } from "@/lib/login-throttle";
 import { logAction } from "@/lib/audit";
+import { createSecurityNotification } from "@/lib/security-notifications";
 
 interface RegenerateBody {
   password?: string;
@@ -134,6 +135,10 @@ export async function POST(request: Request) {
         codeHash: hashRecoveryCode(recoveryCode),
       })),
     });
+    await createSecurityNotification(
+      { tenantId: current.tenantId, userId: user.id, type: "MFA_RECOVERY_CODES_REGENERATED" },
+      tx
+    );
   });
 
   await resetThrottle([ipKey, userKey]);
