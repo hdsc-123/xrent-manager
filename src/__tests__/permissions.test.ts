@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -39,15 +39,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await prisma.userPermission.deleteMany({ where: { user: { tenantId: { in: createdTenantIds } } } });
-  await prisma.reservation.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 
@@ -226,6 +218,103 @@ describe("Sprint 19 — persistance des permissions de groupe (correctif du back
       headers: { Cookie: adminA.sessionCookie },
       body: JSON.stringify({ permissions: memberGroup!.permissions }),
     });
+  });
+});
+
+describe("Révocation immédiate d'un droit déjà en usage, sans reconnexion (phase 2.2)", () => {
+  it("modifier un groupe personnalisé déjà assigné (retrait d'une clé) révoque l'accès au prochain appel, même cookie de session", async () => {
+    const groupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `LiveRevoke-${runId}`, permissions: ["reservations.view", "reservations.create"] }),
+    });
+    const groupId = (await groupResponse.json()).group.id;
+
+    const target = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Live Revoke Member",
+      email: `live-revoke-${runId}@test.local`,
+      password,
+    });
+    await apiFetch(`/api/users/${target.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: groupId }),
+    });
+
+    const beforeRevoke = await apiFetch("/api/reservations", {
+      method: "POST",
+      headers: { Cookie: target.sessionCookie },
+      body: JSON.stringify({
+        voucherNumber: `V-LIVEREV-BEFORE-${runId}`,
+        clientFirstName: "Test",
+        clientLastName: "AvantRevocation",
+        startDate: "2030-01-01",
+        endDate: "2030-01-02",
+      }),
+    });
+    expect(beforeRevoke.status).toBe(201);
+
+    // L'utilisateur cible n'est jamais touché ici — c'est la DÉFINITION du groupe qui perd la
+    // clé, pas son rattachement (`permissionGroupId` inchangé). getEffectivePermissions()
+    // relit GroupPermission à chaque appel (src/lib/permissions.ts) : aucune raison technique
+    // que ce cas diverge du retrait direct d'une UserPermission déjà couvert ci-dessus.
+    await apiFetch(`/api/permission-groups/${groupId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissions: ["reservations.view"] }),
+    });
+
+    const afterRevoke = await apiFetch("/api/reservations", {
+      method: "POST",
+      headers: { Cookie: target.sessionCookie },
+      body: JSON.stringify({
+        voucherNumber: `V-LIVEREV-AFTER-${runId}`,
+        clientFirstName: "Test",
+        clientLastName: "ApresRevocation",
+        startDate: "2030-01-01",
+        endDate: "2030-01-02",
+      }),
+    });
+    expect(afterRevoke.status).toBe(403);
+
+    // La lecture, encore accordée par le groupe, reste elle utilisable avec ce même cookie —
+    // preuve que le 403 ci-dessus vient bien de la permission retirée, pas d'un effet de bord.
+    const stillReadable = await apiFetch("/api/reservations", { headers: { Cookie: target.sessionCookie } });
+    expect(stillReadable.status).toBe(200);
+  });
+
+  it("retirer une permission individuelle déjà accordée la révoque immédiatement, même cookie de session", async () => {
+    const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Empty-LiveRevoke-${runId}`, permissions: [] }),
+    });
+    const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+
+    const target = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Individual Revoke Member",
+      email: `individual-revoke-${runId}@test.local`,
+      password,
+    });
+    await apiFetch(`/api/users/${target.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId, individualPermissions: ["reservations.view"] }),
+    });
+
+    const beforeRevoke = await apiFetch("/api/reservations", { headers: { Cookie: target.sessionCookie } });
+    expect(beforeRevoke.status).toBe(200);
+
+    await apiFetch(`/api/users/${target.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId, individualPermissions: [] }),
+    });
+
+    const afterRevoke = await apiFetch("/api/reservations", { headers: { Cookie: target.sessionCookie } });
+    expect(afterRevoke.status).toBe(403);
   });
 });
 

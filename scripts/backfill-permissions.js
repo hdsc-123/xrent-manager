@@ -17,38 +17,22 @@
  */
 
 const path = require("path");
-const dotenv = require("dotenv");
+const { parseEnvFlag, loadEnvFileForEnv, assertDatabaseMatchesEnv, EnvironmentGuardError } = require("./env-guard");
 
 const args = process.argv.slice(2);
-const envArg = args.find((a) => a.startsWith("--env="));
-const env = envArg ? envArg.split("=")[1] : null;
 const confirmed = args.includes("--yes");
 
-if (env !== "dev" && env !== "test") {
-  console.error("Usage: node scripts/backfill-permissions.js --env=dev|test [--yes]");
-  process.exit(1);
-}
-
-const envFile = env === "dev" ? ".env" : ".env.test";
-dotenv.config({ path: path.resolve(__dirname, "..", envFile), override: true });
-
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
-  console.error(`DATABASE_URL introuvable après chargement de ${envFile}.`);
-  process.exit(1);
-}
-
-const parsed = new URL(databaseUrl);
-const dbName = parsed.pathname.slice(1);
-const isLocalHost = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
-const looksLikeDevOrTest = /_dev$|_test$/.test(dbName);
-
-if (!isLocalHost || !looksLikeDevOrTest) {
-  console.error(
-    `Garde-fou : DATABASE_URL (${parsed.hostname}/${dbName}) ne ressemble pas à une base ` +
-      `dev/test locale (attendu : localhost, nom se terminant par _dev ou _test). Abandon.`
-  );
-  process.exit(1);
+let env, envFile, dbName, hostname;
+try {
+  env = parseEnvFlag(args, "Usage: node scripts/backfill-permissions.js --env=dev|test [--yes]");
+  envFile = loadEnvFileForEnv(env, path.resolve(__dirname, ".."));
+  ({ dbName, hostname } = assertDatabaseMatchesEnv(process.env.DATABASE_URL, env));
+} catch (error) {
+  if (error instanceof EnvironmentGuardError) {
+    console.error(error.message);
+    process.exit(1);
+  }
+  throw error;
 }
 
 // Doit rester synchronisé manuellement avec PAST_PERMISSION_BACKFILLS (src/lib/permissions.ts)
@@ -93,7 +77,7 @@ const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log(`Environnement : ${env} (${envFile}) — base : ${dbName}@${parsed.hostname}`);
+  console.log(`Environnement : ${env} (${envFile}) — base : ${dbName}@${hostname}`);
 
   const groups = await prisma.permissionGroup.findMany({
     where: { name: { in: Object.keys(BACKFILLS) } },

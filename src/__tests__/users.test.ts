@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch, extractSessionCookie, findSetCookie } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const password = "Correct-Horse-Battery-Staple9!";
@@ -31,14 +31,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
-  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 
@@ -408,6 +401,62 @@ describe("PATCH /api/users/[id] — agencyIds (Sprint 13C)", () => {
     const afterVehicles = (await afterAssignment.json()).vehicles;
     expect(afterVehicles).toHaveLength(1);
     expect(afterVehicles[0].agencyId).toBe(agencyId);
+  });
+
+  it("un MEMBER perd instantanément l'accès aux véhicules d'une agence retirée, même cookie de session (phase 2.2)", async () => {
+    const agencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence Revoke", slug: `agence-revoke-${runId}` }),
+    });
+    const agencyId = (await agencyResponse.json()).agency.id;
+
+    await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId,
+        name: "Clio",
+        licensePlate: `REVOKE-${Math.floor(Math.random() * 1_000_000)}-AA`,
+        make: "Renault",
+        model: "Clio",
+        year: 2023,
+        category: "Citadine",
+        pricePerDay: 4000,
+        chassisNumber: `VF1REVOKE${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Bleu",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 67,
+        engineSize: 1.2,
+      }),
+    });
+
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Revoke Member",
+      email: `revoke-member-${runId}@test.local`,
+      password,
+    });
+
+    await apiFetch(`/api/users/${member.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ agencyIds: [agencyId] }),
+    });
+    const beforeRevoke = await apiFetch("/api/vehicles", { headers: { Cookie: member.sessionCookie } });
+    expect((await beforeRevoke.json()).vehicles).toHaveLength(1);
+
+    // Retire l'unique agence assignée — le user cible n'est jamais reconnecté ci-dessous.
+    await apiFetch(`/api/users/${member.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ agencyIds: [] }),
+    });
+
+    const afterRevoke = await apiFetch("/api/vehicles", { headers: { Cookie: member.sessionCookie } });
+    expect((await afterRevoke.json()).vehicles).toEqual([]);
   });
 });
 

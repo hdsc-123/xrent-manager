@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 /**
  * Sprint 24-1 : suppression du journal d'audit (unité/masse/purge complète du tenant), brief
@@ -48,15 +48,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
-  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.userPermission.deleteMany({ where: { user: { tenantId: { in: createdTenantIds } } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.groupPermission.deleteMany({ where: { group: { tenantId: { in: createdTenantIds } } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 
@@ -309,6 +301,112 @@ describe("Purge complète du journal d'audit (Sprint 24-1)", () => {
     expect(agencyCount).toBeGreaterThan(0);
 
     // Le tenant B n'est jamais affecté par la purge du tenant A.
+    const otherTenantCountAfter = await prisma.auditLog.count({ where: { tenantId: adminB.tenantId } });
+    expect(otherTenantCountAfter).toBe(otherTenantCountBefore);
+  });
+});
+
+/**
+ * Phase 2.1 (2026-08-31, finalisation des permissions d'audit) — le Super Admin plateforme
+ * (SUPER_ADMIN_EMAILS, src/lib/super-admin.ts) est un mécanisme distinct et non interchangeable
+ * avec le garde-fou audit.delete (CLAUDE.md règle 13, SECURITY.md section 13, DOMAINRULES.md
+ * section 72) : isSuperAdminEmail() n'est référencée nulle part dans le module audit (vérifié par
+ * lecture exhaustive de src/app/api/audit/**, src/lib/audit.ts) — un Super Admin plateforme n'a
+ * donc, sur l'audit, exactement les mêmes droits qu'un ADMIN ordinaire sur SON PROPRE tenant :
+ * ni plus (aucun accès à l'audit d'un autre tenant), ni moins. Tenant dédié et jetable, distinct
+ * d'adminA/adminB (dont l'état a été mutés par les describe précédents, notamment la purge
+ * complète d'adminA).
+ */
+describe("Suppression du journal d'audit — Super Admin plateforme (phase 2.1, aucun droit automatique)", () => {
+  let superAdmin: AuthenticatedTestUser;
+
+  beforeAll(async () => {
+    superAdmin = await registerTenantAdmin({
+      tenantName: "Audit Super Admin Delete Home",
+      tenantSlug: `audit-super-admin-delete-home-${runId}`,
+      name: "Super Admin",
+      email: `audit-super-admin-delete-${runId}@superadmin.test.local`,
+      password,
+    });
+    createdTenantIds.push(superAdmin.tenantId);
+  });
+
+  it("supprime une entrée d'audit de SON PROPRE tenant comme n'importe quel ADMIN, mais reçoit 404 sur une entrée d'un autre tenant (isolation, aucun droit supplémentaire)", async () => {
+    const ownAgency = await createAgency(superAdmin, `Agence Super Admin Home ${runId}`);
+    const ownLog = await prisma.auditLog.findFirst({
+      where: { tenantId: superAdmin.tenantId, resource: "Agency", resourceId: ownAgency.id },
+    });
+    expect(ownLog).not.toBeNull();
+
+    const ownDeleteResponse = await apiFetch(`/api/audit/${ownLog!.id}`, {
+      method: "DELETE",
+      headers: { Cookie: superAdmin.sessionCookie },
+    });
+    expect(ownDeleteResponse.status).toBe(200);
+
+    const otherAgency = await createAgency(adminB, `Agence Super Admin Cible ${runId}`);
+    const otherLog = await prisma.auditLog.findFirst({
+      where: { tenantId: adminB.tenantId, resource: "Agency", resourceId: otherAgency.id },
+    });
+    expect(otherLog).not.toBeNull();
+
+    const crossTenantResponse = await apiFetch(`/api/audit/${otherLog!.id}`, {
+      method: "DELETE",
+      headers: { Cookie: superAdmin.sessionCookie },
+    });
+    expect(crossTenantResponse.status).toBe(404);
+
+    const stillThere = await prisma.auditLog.findUnique({ where: { id: otherLog!.id } });
+    expect(stillThere).not.toBeNull();
+  });
+
+  it("suppression en masse — seules les entrées du tenant du Super Admin sont supprimées, celles d'un autre tenant sont silencieusement ignorées", async () => {
+    const ownAgency = await createAgency(superAdmin, `Agence Super Admin Bulk ${runId}`);
+    const otherAgency = await createAgency(adminB, `Agence Super Admin Bulk Cible ${runId}`);
+    const [ownLog, otherLog] = await Promise.all([
+      prisma.auditLog.findFirst({ where: { tenantId: superAdmin.tenantId, resource: "Agency", resourceId: ownAgency.id } }),
+      prisma.auditLog.findFirst({ where: { tenantId: adminB.tenantId, resource: "Agency", resourceId: otherAgency.id } }),
+    ]);
+    expect(ownLog && otherLog).toBeTruthy();
+
+    const response = await apiFetch("/api/audit/bulk-delete", {
+      method: "POST",
+      headers: { Cookie: superAdmin.sessionCookie },
+      body: JSON.stringify({ ids: [ownLog!.id, otherLog!.id] }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.deleted).toBe(1);
+
+    const [ownRemaining, otherRemaining] = await Promise.all([
+      prisma.auditLog.findUnique({ where: { id: ownLog!.id } }),
+      prisma.auditLog.findUnique({ where: { id: otherLog!.id } }),
+    ]);
+    expect(ownRemaining).toBeNull();
+    expect(otherRemaining).not.toBeNull();
+  });
+
+  it("purge complète — vide uniquement le journal du tenant du Super Admin, jamais celui d'un autre tenant", async () => {
+    await createAgency(superAdmin, `Agence Super Admin Purge ${runId}`);
+    const otherTenantCountBefore = await prisma.auditLog.count({ where: { tenantId: adminB.tenantId } });
+    expect(otherTenantCountBefore).toBeGreaterThan(0);
+
+    const preview = await apiFetch("/api/audit/purge", { headers: { Cookie: superAdmin.sessionCookie } });
+    expect(preview.status).toBe(200);
+    const { tenantName } = await preview.json();
+    expect(tenantName).toBe("Audit Super Admin Delete Home");
+
+    const response = await apiFetch("/api/audit/purge", {
+      method: "POST",
+      headers: { Cookie: superAdmin.sessionCookie },
+      body: JSON.stringify({ confirmTenantName: tenantName }),
+    });
+    expect(response.status).toBe(200);
+
+    const remaining = await prisma.auditLog.findMany({ where: { tenantId: superAdmin.tenantId } });
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].action).toBe("audit.purged");
+
     const otherTenantCountAfter = await prisma.auditLog.count({ where: { tenantId: adminB.tenantId } });
     expect(otherTenantCountAfter).toBe(otherTenantCountBefore);
   });

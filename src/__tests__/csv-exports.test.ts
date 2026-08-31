@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import Papa from "papaparse";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 // Import depuis @/lib/export-constants (et non @/lib/exports) : ce dernier importe @/lib/authz,
 // donc @/lib/auth (next-auth), qui échoue à se résoudre hors du serveur Next.js réel — même
 // contrainte que le reste de la suite (routes appelées en HTTP réel, jamais leurs modules
@@ -395,26 +395,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  // Ordre imposé par les clés étrangères : Payment/Invoice avant Location, Location avant
-  // Vehicle/Client, comme dans les autres fichiers de test (ex. damages-route.test.ts).
-  await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.userAgency.deleteMany({ where: { user: { tenantId: { in: createdTenantIds } } } });
-  await prisma.groupPermission.deleteMany({ where: { group: { tenantId: { in: createdTenantIds } } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  // Le CRON planifié (src/lib/scheduled-tasks.ts) balaie tous les tenants de la base de test à
-  // chaque requête, y compris les nôtres — sous la suite complète (beaucoup plus de requêtes
-  // qu'en exécution isolée de ce fichier), il peut créer une Alert pour un de nos véhicules/
-  // locations avant que ce afterAll ne s'exécute. Nettoyage nécessaire avant de supprimer le
-  // tenant, même interférence déjà documentée ailleurs dans la suite (ex. damages-route.test.ts).
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
 });
 
 describe("GET /api/exports/vehicles — authentification, permission, entité inconnue", () => {

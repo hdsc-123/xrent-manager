@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 import {
   getContractsOverview,
   updateLocation,
@@ -741,22 +741,7 @@ describe("Sprint 26C, Finding C — verrou Vehicle contre le double booking conc
 });
 
 afterAll(async () => {
-  // Sprint 23 — les tests d'annulation admin avec réversibilité créent des Payment/CashEntry
-  // réels (voir createLocationWithPayment ci-dessous), à purger avant Payment/Location.
-  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 

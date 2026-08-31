@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { createAlert } from "@/lib/alerts";
 import { apiFetch, extractSessionCookie } from "./helpers/http";
-import { registerTenantAdmin, createTenantAdmin } from "./helpers/fixtures";
+import { registerTenantAdmin, createTenantAdmin, deleteTestTenants } from "./helpers/fixtures";
 
 /**
  * Scénario de bout en bout couvrant l'intégralité du MVP (Sprint 10) : inscription,
@@ -19,22 +19,7 @@ const sharedEmail = `e2e-full-shared-${runId}@test.local`;
 const createdTenantIds: string[] = [];
 
 afterAll(async () => {
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.invitation.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.maintenance.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
-  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 

@@ -1,28 +1,14 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch, extractSessionCookie } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const password = "Correct-Horse-Battery-Staple9!";
 const createdTenantIds: string[] = [];
 
 afterAll(async () => {
-  await prisma.invitation.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 

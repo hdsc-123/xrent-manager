@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 /**
  * Finding F (Sprint 27) : checkOverdueInvoices/checkContractsAtRisk/checkPaymentsDue
@@ -133,18 +133,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.payment.deleteMany({ where: { invoice: { tenantId: { in: createdTenantIds } } } });
-  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 

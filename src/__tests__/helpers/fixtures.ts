@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { BCRYPT_COST } from "@/lib/bcrypt-cost";
 import { ensureDefaultGroups } from "@/lib/permissions";
 import { apiFetch, extractSessionCookie } from "./http";
+import { TENANT_MODEL_DELETE_ORDER } from "../../../scripts/tenant-delete-order.mjs";
 
 export interface AuthenticatedTestUser {
   tenantId: string;
@@ -84,6 +85,47 @@ export async function registerTenantAdmin(params: {
   }
 
   return { ...created, sessionCookie };
+}
+
+/**
+ * Suppression complète et déterministe d'un ou plusieurs tenants de test, dans l'ordre imposé
+ * par les contraintes de clé étrangère réelles de prisma/schema.prisma (vérifiées une à une par
+ * lecture directe des migrations, pas supposées) — un seul endroit à maintenir plutôt qu'une
+ * liste dupliquée dans chaque fichier de test, recopiée et adaptée au fil des sprints sans
+ * jamais être revérifiée contre le schéma complet. Cause racine de l'accumulation de tenants
+ * résiduels dans xrent_test (voir HANDOFF.md, nettoyage du 2026-08-31) : cette divergence
+ * silencieuse — une liste locale oubliant une table ajoutée par un sprint ultérieur (Damage/
+ * DamageInvoice/LocationUpgrade/SecurityNotification...) — fait échouer un `deleteMany`
+ * intermédiaire (contrainte de clé étrangère non respectée), ce qui interrompt tout le reste de
+ * la chaîne `await` séquentielle et empêche `prisma.tenant.deleteMany()` (toujours en dernier)
+ * de jamais s'exécuter — le tenant entier reste alors orphelin, silencieusement, sans qu'aucun
+ * test n'échoue de façon visible. Quatre fichiers avaient même perdu toute suppression réelle du
+ * tenant (un unique `deleteMany` partiel avalé par un `.catch(() => undefined)`).
+ *
+ * Ordre ci-dessous (enfants avant parents) : les relations obligatoires sans `onDelete` explicite
+ * sont RESTRICT par défaut (bloquent la suppression du parent tant qu'une ligne y fait encore
+ * référence) ; les relations optionnelles sans surcharge sont SET NULL par défaut (gérées
+ * automatiquement par Postgres, pas besoin d'ordre) ; UserPermission/Account/Session/
+ * SecurityNotification/MfaRecoveryCode/MfaStepUpProof (onDelete: Cascade sur `user`) et
+ * GroupPermission (onDelete: Cascade sur `group`) sont donc purgées automatiquement à la
+ * suppression de User/PermissionGroup ci-dessous, sans ligne dédiée ici.
+ *
+ * L'ordre lui-même vit dans scripts/tenant-delete-order.mjs (TENANT_MODEL_DELETE_ORDER),
+ * partagé avec scripts/delete-test-tenant.mjs (suppression ciblée opérationnelle d'un seul
+ * tenant) — exactement pour ne plus jamais reproduire la divergence qui a causé INC-29.
+ */
+export async function deleteTestTenants(tenantIds: string[]): Promise<void> {
+  const ids = [...new Set(tenantIds)].filter(Boolean);
+  if (ids.length === 0) return;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- délégué Prisma dynamique, partagé avec scripts/delete-test-tenant.mjs (JS, non typé).
+  const client = prisma as any;
+  await prisma.$transaction([
+    ...TENANT_MODEL_DELETE_ORDER.map(({ model, where }: { model: string; where: (ids: string[]) => object }) =>
+      client[model].deleteMany({ where: where(ids) })
+    ),
+    prisma.tenant.deleteMany({ where: { id: { in: ids } } }),
+  ]);
 }
 
 export async function createAndLoginMember(params: {

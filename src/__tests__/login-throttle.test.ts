@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { ipThrottleKey, emailThrottleKey } from "@/lib/login-throttle";
 import { apiFetch, extractSessionCookie } from "./helpers/http";
-import { registerTenantAdmin } from "./helpers/fixtures";
+import { registerTenantAdmin, deleteTestTenants } from "./helpers/fixtures";
 
 /**
  * Rate limiting d'authentification (SECURITY.md section 33). Chaque test fixe explicitement
@@ -19,11 +19,7 @@ const usedThrottleKeys: string[] = [];
 
 afterAll(async () => {
   await prisma.loginThrottle.deleteMany({ where: { key: { in: usedThrottleKeys } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 

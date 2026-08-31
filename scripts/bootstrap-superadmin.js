@@ -45,8 +45,8 @@
  */
 
 const path = require("path");
-const dotenv = require("dotenv");
 const bcrypt = require("bcryptjs");
+const { parseEnvFlag, loadEnvFileForEnv, assertDatabaseMatchesEnv, EnvironmentGuardError } = require("./env-guard");
 
 function parseArgs(args) {
   const parsed = {};
@@ -62,7 +62,6 @@ function parseArgs(args) {
 const args = process.argv.slice(2);
 const flags = parseArgs(args);
 const confirmed = args.includes("--yes");
-const env = flags.env;
 
 if ("admin-password" in flags) {
   console.error(
@@ -73,9 +72,15 @@ if ("admin-password" in flags) {
   process.exit(1);
 }
 
-if (env !== "dev" && env !== "test") {
-  console.error("Usage: node scripts/bootstrap-superadmin.js --env=dev|test [options] [--yes]");
-  process.exit(1);
+let env;
+try {
+  env = parseEnvFlag(args, "Usage: node scripts/bootstrap-superadmin.js --env=dev|test [options] [--yes]");
+} catch (error) {
+  if (error instanceof EnvironmentGuardError) {
+    console.error(error.message);
+    process.exit(1);
+  }
+  throw error;
 }
 
 const CTRL_C = "\u0003";
@@ -146,26 +151,16 @@ async function promptPasswordWithConfirmation() {
   return first;
 }
 
-const envFile = env === "dev" ? ".env" : ".env.test";
-dotenv.config({ path: path.resolve(__dirname, "..", envFile), override: true });
-
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
-  console.error(`DATABASE_URL introuvable après chargement de ${envFile}.`);
-  process.exit(1);
-}
-
-const parsedUrl = new URL(databaseUrl);
-const dbName = parsedUrl.pathname.slice(1);
-const isLocalHost = parsedUrl.hostname === "localhost" || parsedUrl.hostname === "127.0.0.1";
-const looksLikeDevOrTest = /_dev$|_test$/.test(dbName);
-
-if (!isLocalHost || !looksLikeDevOrTest) {
-  console.error(
-    `Garde-fou : DATABASE_URL (${parsedUrl.hostname}/${dbName}) ne ressemble pas à une base ` +
-      `dev/test locale (attendu : localhost, nom se terminant par _dev ou _test). Abandon.`
-  );
-  process.exit(1);
+let envFile, dbName, hostname;
+try {
+  envFile = loadEnvFileForEnv(env, path.resolve(__dirname, ".."));
+  ({ dbName, hostname } = assertDatabaseMatchesEnv(process.env.DATABASE_URL, env));
+} catch (error) {
+  if (error instanceof EnvironmentGuardError) {
+    console.error(error.message);
+    process.exit(1);
+  }
+  throw error;
 }
 
 const tenantName = flags["tenant-name"];
@@ -210,7 +205,7 @@ function slugify(value) {
 }
 
 async function main() {
-  console.log(`Environnement : ${env} (${envFile}) — base : ${dbName}@${parsedUrl.hostname}`);
+  console.log(`Environnement : ${env} (${envFile}) — base : ${dbName}@${hostname}`);
 
   const normalizedSlug = slugify(tenantSlug);
 

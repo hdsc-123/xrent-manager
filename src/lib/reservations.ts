@@ -39,9 +39,17 @@ export class InvalidReservationDateRangeError extends Error {
 }
 
 export class InvalidReservationStatusTransitionError extends Error {
+  /** Statut réellement observé au moment du refus (voir claimReservationConversion/
+   * markReservationConverted, phase 3 INC-30) — pour un échec de CAS concurrent, c'est le
+   * statut RELU après coup, jamais le statut potentiellement obsolète lu avant l'écriture
+   * conditionnée, pour que tout appelant puisse construire un message exact. */
+  from: ReservationStatus;
+  to: ReservationStatus;
   constructor(from: ReservationStatus, to: ReservationStatus) {
     super(`Transition de statut invalide : ${from} → ${to}.`);
     this.name = "InvalidReservationStatusTransitionError";
+    this.from = from;
+    this.to = to;
   }
 }
 
@@ -908,6 +916,16 @@ export async function deleteReservation(tenantId: string, reservationId: string)
  * commité — ou est en train de committer — son passage à CONVERTED, verrou ligne Postgres)
  * et échoue proprement avant d'avoir rien créé, avec la même erreur que la machine à états
  * normale (`InvalidReservationStatusTransitionError`, 409).
+ *
+ * Phase 3 (INC-30) : un échec du CAS ci-dessous (`count === 0`) relit désormais le statut
+ * réellement en base à cet instant, plutôt que de réutiliser `existing.status` (la valeur lue
+ * *avant* l'écriture conditionnée, donc potentiellement déjà obsolète — c'est précisément
+ * pour cette raison que le CAS a échoué). Sans ce correctif, le perdant d'une course légitime
+ * recevait un message trompeur du type « Transition de statut invalide : PENDING →
+ * CONVERTED. », qui laisse croire que PENDING → CONVERTED est en général interdit (faux — voir
+ * ALLOWED_TRANSITIONS) au lieu de refléter la vraie cause (un autre appel a déjà gagné la
+ * course entre-temps). La route appelante (POST /api/reservations/[id]/convert) construit
+ * désormais un message métier clair à partir de `error.from` réellement à jour.
  */
 export async function claimReservationConversion(
   tenantId: string,
@@ -928,7 +946,8 @@ export async function claimReservationConversion(
     data: { status: "CONVERTED" },
   });
   if (count === 0) {
-    throw new InvalidReservationStatusTransitionError(existing.status, "CONVERTED");
+    const current = await tx.reservation.findUniqueOrThrow({ where: { id: reservationId } });
+    throw new InvalidReservationStatusTransitionError(current.status, "CONVERTED");
   }
   return tx.reservation.findUniqueOrThrow({ where: { id: reservationId } });
 }
@@ -978,7 +997,10 @@ export async function markReservationConverted(
     data: { status: "CONVERTED", convertedLocationId: locationId },
   });
   if (count === 0) {
-    throw new InvalidReservationStatusTransitionError(existing.status, "CONVERTED");
+    // Phase 3 (INC-30) : même correctif que claimReservationConversion ci-dessus — statut relu
+    // après l'échec du CAS, jamais la valeur potentiellement obsolète lue avant.
+    const current = await tx.reservation.findUniqueOrThrow({ where: { id: reservationId } });
+    throw new InvalidReservationStatusTransitionError(current.status, "CONVERTED");
   }
   return tx.reservation.findUniqueOrThrow({ where: { id: reservationId } });
 }

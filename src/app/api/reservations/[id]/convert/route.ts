@@ -164,6 +164,29 @@ class ConversionClientDuplicateError extends Error {
 class ConversionPaymentError extends Error {}
 
 /**
+ * Phase 3 (INC-30) : message métier clair pour le 409 volontaire de la machine à états, à la
+ * place du message technique brut de `InvalidReservationStatusTransitionError` (« Transition
+ * de statut invalide : PENDING → CONVERTED. », qui laisse à tort penser que cette transition
+ * est en général interdite). `error.from` reflète désormais le statut réellement observé au
+ * moment du refus (voir claimReservationConversion/markReservationConverted,
+ * src/lib/reservations.ts) — jamais une valeur potentiellement obsolète lue avant l'échec du
+ * CAS, ce qui distingue correctement une course perdue (from === "CONVERTED", quelqu'un
+ * d'autre vient de gagner) d'un statut réellement terminal (CANCELLED/NO_SHOW).
+ */
+function buildConversionConflictMessage(from: string): string {
+  switch (from) {
+    case "CONVERTED":
+      return "Cette réservation vient d'être convertie en contrat par un autre utilisateur — rechargez la page.";
+    case "CANCELLED":
+      return "Cette réservation est annulée, elle ne peut plus être convertie en contrat.";
+    case "NO_SHOW":
+      return "Cette réservation est marquée « Absence », elle ne peut plus être convertie en contrat.";
+    default:
+      return "Cette réservation ne peut plus être convertie en contrat dans son état actuel — rechargez la page.";
+  }
+}
+
+/**
  * Convertit une réservation en contrat (Location + Invoice + Payment(s)) — Sprint 13D,
  * refonte complète du flux (voir DOMAINRULES.md section 26). Le formulaire de conversion
  * (`/dashboard/reservations/[id]/convert`) pré-remplit ses champs depuis la réservation, mais
@@ -209,10 +232,7 @@ export async function POST(request: Request, { params }: RouteParams) {
   // transaction et de valider tout le corps de requête pour une réservation déjà
   // manifestement CONVERTED/CANCELLED/NO_SHOW.
   if (!canTransition(reservation.status, "CONVERTED")) {
-    return NextResponse.json(
-      { error: `Transition de statut invalide : ${reservation.status} → CONVERTED.` },
-      { status: 409 }
-    );
+    return NextResponse.json({ error: buildConversionConflictMessage(reservation.status) }, { status: 409 });
   }
 
   let body: ConvertBody;
@@ -745,7 +765,7 @@ export async function POST(request: Request, { params }: RouteParams) {
       );
     }
     if (error instanceof InvalidReservationStatusTransitionError) {
-      return NextResponse.json({ error: error.message }, { status: 409 });
+      return NextResponse.json({ error: buildConversionConflictMessage(error.from) }, { status: 409 });
     }
     if (error instanceof ReservationNotFoundError) {
       return NextResponse.json({ error: error.message }, { status: 404 });

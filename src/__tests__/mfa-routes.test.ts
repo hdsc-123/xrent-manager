@@ -8,7 +8,7 @@ import {
   mfaEnrollConfirmThrottleKey,
 } from "@/lib/login-throttle";
 import { apiFetch, extractSessionCookie } from "./helpers/http";
-import { registerTenantAdmin, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 /**
  * Phase 3B MFA (2026-08-29, AGENTS.md brief) : tests d'intégration HTTP réels (serveur `next
@@ -26,11 +26,7 @@ const usedThrottleKeys: string[] = [];
 
 afterAll(async () => {
   await prisma.loginThrottle.deleteMany({ where: { key: { in: usedThrottleKeys } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 

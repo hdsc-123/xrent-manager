@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 /**
  * Sprint technique 1 (DOMAINRULES.md section 60, HANDOFF.md point 43) — prolongations comme
@@ -174,9 +174,7 @@ function extendLocation(actor: AuthenticatedTestUser, parentId: string, body: Re
 }
 
 afterAll(async () => {
-  for (const tenantId of createdTenantIds) {
-    await prisma.location.deleteMany({ where: { tenantId } }).catch(() => undefined);
-  }
+  await deleteTestTenants(createdTenantIds);
 });
 
 describe("Prolongation — création depuis un contrat ACTIVE", () => {

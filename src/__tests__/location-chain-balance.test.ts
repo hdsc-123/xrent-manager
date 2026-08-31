@@ -1,7 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 /**
  * Sprint technique 2 (DOMAINRULES.md section 60, règle 12) — affichage de la chaîne
@@ -330,9 +329,7 @@ async function createSupplementInvoice(tenant: Tenant, locationId: string, amoun
 }
 
 afterAll(async () => {
-  for (const tenantId of createdTenantIds) {
-    await prisma.location.deleteMany({ where: { tenantId } }).catch(() => undefined);
-  }
+  await deleteTestTenants(createdTenantIds);
 });
 
 // ---------------------------------------------------------------------------------------------

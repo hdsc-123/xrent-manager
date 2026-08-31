@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { getAgencyById, getTenantById, getUserById } from "@/lib/db";
+import { deleteTestTenants } from "./helpers/fixtures";
 
 const runId = Date.now();
 
@@ -36,11 +37,7 @@ describe("couche d'accès aux données — isolation multi-tenant", () => {
   });
 
   afterAll(async () => {
-    await prisma.user.deleteMany({ where: { tenantId: { in: [tenantA.id, tenantB.id] } } });
-    await prisma.agency.deleteMany({ where: { tenantId: { in: [tenantA.id, tenantB.id] } } });
-    await prisma.auditLog.deleteMany({ where: { tenantId: { in: [tenantA.id, tenantB.id] } } });
-    await prisma.alert.deleteMany({ where: { tenantId: { in: [tenantA.id, tenantB.id] } } });
-    await prisma.tenant.deleteMany({ where: { id: { in: [tenantA.id, tenantB.id] } } });
+    await deleteTestTenants([tenantA.id, tenantB.id]);
     await prisma.$disconnect();
   });
 

@@ -168,7 +168,7 @@ export const PERMISSIONS: PermissionDefinition[] = [
 
   { key: "audit.view", label: "Voir le journal d'audit", category: "Audit" },
   // Sprint 24-1 : suppression du journal d'audit (unité, en masse, purge totale du tenant),
-  // strictement réservée ADMIN — voir PATCH /api/audit/[id]/route.ts et le commentaire sur
+  // strictement réservée ADMIN — voir DELETE /api/audit/[id]/route.ts et le commentaire sur
   // requireAuditDeleteAccess. Contrairement à audit.view (décorative, DOMAINRULES.md section 22
   // — l'accès en lecture reste un contrôle de rôle strict, jamais can()), cette clé est une
   // vraie permission vérifiée : l'accès exige à la fois role === "ADMIN" ET can(user,

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 /**
  * Tests d'intégration HTTP sur le rendu des pages UI (Sprint 4), dans la continuité
@@ -36,24 +36,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  // Sprint 22 : /dashboard/reports appelle désormais getCashBalanceByAgency (pilotage
-  // financier par agence), qui crée paresseusement le CashRegister singleton du tenant s'il
-  // n'existe pas encore (getOrCreateCashRegister) — jusqu'ici seule la page /dashboard/cash-
-  // register le faisait. CashEntry purgé par précaution même si aucun test de ce fichier n'en
-  // crée, pour rester dans le même ordre que les autres fichiers de test.
-  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  // Sprint 30 (point 6b, Sprint B) : userAgency/agency purgés (le second test de filtre Agence
-  // de VehicleStatusOverviewTable est le premier de ce fichier à créer une Agency/UserAgency) —
-  // userAgency avant user/agency (contrainte de clé étrangère sur les deux), même ordre
-  // enfants-avant-parents que locations.test.ts.
-  await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 

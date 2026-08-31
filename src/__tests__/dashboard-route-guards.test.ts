@@ -1,7 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { prisma } from "@/lib/prisma";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 /**
  * Correctif sprint soft 404 (2026-08-24, DOMAINRULES.md section 64, SECURITY.md section 35) —
@@ -201,9 +200,7 @@ function fetchPage(path: string, cookie?: string) {
 }
 
 afterAll(async () => {
-  for (const tenantId of createdTenantIds) {
-    await prisma.location.deleteMany({ where: { tenantId } }).catch(() => undefined);
-  }
+  await deleteTestTenants(createdTenantIds);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -1038,5 +1035,89 @@ describe("Régression — routes non couvertes par le registre restent inchangé
       headers: { Cookie: tenant.admin.sessionCookie },
     });
     expect(response.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Phase 2.2 — application immédiate d'un changement de rôle/permission au garde de route proxy
+// lui-même (src/proxy.ts / src/lib/route-guards.ts), pas seulement aux routes API : le cookie
+// de session utilisé est capturé AVANT le changement et jamais renouvelé, pour prouver que ce
+// point d'entrée relit lui aussi la base à chaque requête (comme getSessionUser()/can(), voir
+// leurs commentaires respectifs) plutôt que de faire confiance au rôle figé dans le JWT.
+// ---------------------------------------------------------------------------------------------
+
+describe("Application immédiate d'une révocation au garde de route proxy (phase 2.2, sans reconnexion)", () => {
+  it("le retrait d'une permission individuelle bloque immédiatement une page déjà accessible (404, même cookie)", async () => {
+    const tenant = await setupTenant("proxyrevoke");
+    const member = await createAndLoginMember({
+      tenantId: tenant.admin.tenantId,
+      name: "Proxy Revoke Member",
+      email: `proxy-revoke-${runId}@test.local`,
+      password,
+    });
+    await apiFetch(`/api/users/${member.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: tenant.admin.sessionCookie },
+      body: JSON.stringify({ agencyIds: [tenant.agencyId] }),
+    });
+    // Groupe personnalisé explicitement vide requis ici : sans rattachement à un groupe,
+    // le user retomberait sur les permissions du groupe par défaut MEMBER, qui accorde déjà
+    // agencies.view (src/lib/permissions.ts, DEFAULT_GROUPS) — cela masquerait la révocation
+    // testée ci-dessous derrière ce filet de sécurité, même principe que permissions.test.ts.
+    const emptyGroupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: tenant.admin.sessionCookie },
+      body: JSON.stringify({ name: `ProxyRevokeEmpty-${runId}`, permissions: [] }),
+    });
+    const emptyGroupId = (await emptyGroupResponse.json()).group.id;
+    await apiFetch(`/api/users/${member.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: tenant.admin.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId, individualPermissions: ["agencies.view"] }),
+    });
+
+    const beforeRevoke = await fetchPage(`/dashboard/agencies/${tenant.agencyId}`, member.sessionCookie);
+    expect(beforeRevoke.status).toBe(200);
+
+    await apiFetch(`/api/users/${member.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: tenant.admin.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: emptyGroupId, individualPermissions: [] }),
+    });
+
+    // Même cookie qu'avant le retrait (aucune reconnexion) : le garde proxy doit désormais
+    // refuser, exactement comme la route API sous-jacente (Sprint 14A, users.test.ts).
+    const afterRevoke = await fetchPage(`/dashboard/agencies/${tenant.agencyId}`, member.sessionCookie);
+    expect(afterRevoke.status).toBe(404);
+  });
+
+  it("une rétrogradation ADMIN → MEMBER mi-session bloque immédiatement une page ADMIN-only (redirect, même cookie)", async () => {
+    const tenant = await setupTenant("proxydemote");
+    const target = await createAndLoginMember({
+      tenantId: tenant.admin.tenantId,
+      name: "Proxy Demote Target",
+      email: `proxy-demote-${runId}@test.local`,
+      password,
+    });
+    await apiFetch(`/api/users/${target.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: tenant.admin.sessionCookie },
+      body: JSON.stringify({ role: "ADMIN" }),
+    });
+
+    const asAdmin = await fetchPage("/dashboard/tenants", target.sessionCookie);
+    expect(asAdmin.status).toBe(200);
+
+    await apiFetch(`/api/users/${target.userId}`, {
+      method: "PATCH",
+      headers: { Cookie: tenant.admin.sessionCookie },
+      body: JSON.stringify({ role: "MEMBER" }),
+    });
+
+    // Même cookie qu'avant la rétrogradation : la page ADMIN-only doit désormais rediriger
+    // (redirect() serveur, même comportement que le reste de la matrice /dashboard/tenants).
+    const asMemberNow = await fetchPage("/dashboard/tenants", target.sessionCookie);
+    const body = await asMemberNow.text();
+    expect(body).toMatch(/NEXT_REDIRECT[^"]*\/dashboard/);
   });
 });

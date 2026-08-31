@@ -17,7 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { getMaintenanceEffectiveEnd } from "@/lib/vehicles";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -173,9 +173,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  for (const tenantId of createdTenantIds) {
-    await prisma.auditLog.deleteMany({ where: { tenantId } });
-  }
+  await deleteTestTenants(createdTenantIds);
 });
 
 describe("1-3. Création/modification d'un véhicule — statut jamais manuel", () => {

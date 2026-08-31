@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { generateTotpToken } from "@/lib/mfa";
 import { apiFetch, extractSessionCookie } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 /**
  * Politique MFA (2026-08-30, brief explicite du propriétaire du projet, point 1) : la MFA est
@@ -92,20 +92,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  // Sprint 15 : PATCH /api/tenants/[id] journalise désormais "tenant.updated" (AuditLog),
-  // absent jusqu'ici — sans cette suppression, la contrainte de clé étrangère
-  // AuditLog_tenantId_fkey bloque prisma.tenant.deleteMany() ci-dessous.
-  // Invitation.invitedByUserId bloque prisma.user.deleteMany() ci-dessous (nouveau, ce fichier
-  // crée désormais une vraie invitation — voir "l'administrateur du nouveau tenant peut...").
-  await prisma.invitation.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  // Nouveau (ce fichier crée désormais une vraie agence — voir "l'administrateur du nouveau
-  // tenant peut...") : Agency.tenantId bloque prisma.tenant.deleteMany() ci-dessous.
-  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 

@@ -827,6 +827,263 @@ Le run 2 de `npm test` a montré un échec dans `src/__tests__/reservations.test
 
 Aucune donnée de production concernée à aucun moment — `xrent_test` uniquement, fixtures entièrement recréées par le fichier lui-même (`beforeAll`/`afterAll`), jamais de dépendance à un état préexistant hors du fichier.
 
+## Tests session — stabilisation de l'accumulation de tenants résiduels dans `xrent_test`, INC-29 (2026-08-31)
+
+**Contexte** : mode livraison efficace, phase 1 — stabiliser l'infrastructure de test avant toute suppression ciblée de tenant. 376 tenants / 521 users résiduels constatés en début de tâche dans `xrent_test` (`DATABASE_URL` de `.env.test` vérifiée avant toute requête directe, `xrent_dev` jamais touchée). Détail complet de l'investigation et de la cause racine : INCIDENTS.md INC-29.
+
+**Cause** : chaque fichier de test créant un tenant (48 au total) recopiait sa propre liste manuelle de `deleteMany` en ordre de clés étrangères, jamais resynchronisée avec l'évolution du schéma (Damage/DamageInvoice/LocationUpgrade/SecurityNotification ajoutés depuis n'étaient pas systématiquement couverts) — une table manquante fait échouer un `deleteMany` intermédiaire, interrompant la chaîne `await` séquentielle avant `prisma.tenant.deleteMany()` (toujours en dernier), sans qu'aucun test ne signale cet échec. 4 fichiers (`dashboard-route-guards`, `location-chain-balance`, `location-chains`, `vehicle-status`) avaient même perdu toute suppression réelle du tenant (un seul `deleteMany` partiel avalé par `.catch(() => undefined)`).
+
+**Corrigé** : nouvelle fonction centralisée `deleteTestTenants(tenantIds)` (`src/__tests__/helpers/fixtures.ts`) — un seul ordre de suppression, vérifié un à un contre les contraintes réelles du schéma (`prisma/schema.prisma` et les migrations), couvrant les ~24 modèles rattachés à un tenant. Les 48 fichiers concernés (dont les 4 sans suppression réelle) et `db.test.ts` basculés sur cet appel unique.
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `test-tenant-cleanup.test.ts` + `db.test.ts` isolés (nouveau) | 8 | 8 | 0 | 0 |
+| 4 fichiers auparavant sans suppression réelle + 5 fichiers MFA/rate-limiting isolés | 257 | 257 | 0 | 0 |
+| `npm test` (run 1, post-correctif) | 1570 | 1568 | 2 (voir ci-dessous, corrigé) | 0 |
+| `npm test` (run 2, après correctif `scripts/test-grouped.mjs`) | 1570 | 1570 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+Les 2 échecs du run 1 (`test-grouped-integrity.test.ts`) sont un effet attendu et immédiat du nouveau fichier `test-tenant-cleanup.test.ts` : garde-fou existant (INC-5) détectant à raison son absence de `scripts/test-grouped.mjs` `GROUPS` — corrigé en l'y ajoutant, run 2 intégralement vert.
+
+### Nouveau fichier
+
+`src/__tests__/test-tenant-cleanup.test.ts` — construit un graphe de test couvrant la quasi-totalité des tables rattachées à un tenant (y compris les auto-références `ON DELETE RESTRICT` à risque — `Location.parentLocationId`/`rootLocationId`, `Invoice.originalInvoiceId` — et les tables sans `tenantId` propre) ; vérifie suppression complète, isolation entre tenants et idempotence.
+
+### Preuve empirique de stabilité (objectif explicite de la tâche)
+
+Comptage direct de `xrent_test` (hors suite Vitest, requête Prisma directe) avant et après deux exécutions consécutives de la suite complète : **377 tenants / 523 users, strictement inchangé** — aucune croissance nette. Les tenants historiquement résiduels des 4 fichiers auparavant cassés (ex. `Guard *`) sont confirmés antérieurs au correctif par `createdAt` (dernier : 2026-08-30T21:04, soit ~20h avant cette session) — zéro nouveau résidu créé par les deux runs de cette session.
+
+### Données de test résiduelles
+
+Les ~377 tenants / ~523 users accumulés **avant** ce correctif restent présents dans `xrent_test` — n'ont bloqué aucune validation (suite complète verte malgré leur présence), donc **non supprimés** dans cette tâche, conformément au périmètre explicite de la phase 1 (la suppression ciblée est une phase distincte, sur autorisation explicite du propriétaire du projet).
+
+### Vérification données de production
+
+Aucune donnée de production ni `xrent_dev` concernée à aucun moment — `xrent_test` uniquement, cible vérifiée par lecture de `DATABASE_URL` (`.env.test`) avant toute requête directe hors suite Vitest.
+
+## Tests session — mécanisme de suppression CIBLÉE d'un seul tenant de test, complément INC-29 (2026-08-31, phase 1.2)
+
+**Contexte** : suite immédiate de la phase 1 (INC-29 ci-dessus). Aucun mécanisme existant ne permettait de supprimer un seul tenant précis de `xrent_test` — `scripts/reset-dev-data.js` ne sait purger que l'environnement entier. Implémenté sur brief explicite du propriétaire du projet, avec interdiction stricte de supprimer un tenant réel avant validation.
+
+**Livré** : `scripts/delete-test-tenant.mjs` (CLI, dry-run par défaut) + `scripts/tenant-delete-order.mjs` (ordre de suppression extrait de la phase 1, désormais partagé entre `deleteTestTenants` et ce nouvel outil — élimine toute nouvelle divergence du type INC-29). Garde-fous détaillés : INCIDENTS.md INC-29 (complément phase 1.2).
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `delete-test-tenant.test.ts` isolé (nouveau) | 33 | 33 | 0 | 0 |
+| `npm test` (suite complète) | 1601 | 1601 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+### Nouveaux fichiers
+
+- `scripts/tenant-delete-order.mjs` — `TENANT_MODEL_DELETE_ORDER`, source de vérité unique de l'ordre de suppression (partagée avec `src/__tests__/helpers/fixtures.ts`).
+- `scripts/delete-test-tenant.mjs` — CLI de suppression ciblée, fonctions exportées et testables individuellement (`assertTestDatabaseUrl`, `parseArgs`, `resolveTenant`, `checkProtectedTenant`, `countTenantGraph`, `deleteTenantGraph`).
+- `src/__tests__/delete-test-tenant.test.ts` — 33 tests couvrant garde d'environnement, parsing d'arguments, protection des tenants système (dont une vérification en lecture seule contre le vrai `TEST_XRENT` de cette base), résolution, dry-run et suppression réelle + isolation sur tenants jetables créés par le test.
+
+### Démonstration manuelle (sans suppression réelle)
+
+Tenant jetable créé directement dans `xrent_test` ; CLI exécuté en dry-run contre lui (plan et comptages corrects affichés, tenant confirmé intact après) ; 3 refus démontrés en conditions réelles (cible protégée `test-xrent`, aucune cible fournie, valeur joker `all`). Tenant de démonstration nettoyé par un mécanisme déjà validé (phase 1), jamais via `--yes` de ce nouvel outil. Détail complet : INCIDENTS.md INC-29 (complément phase 1.2).
+
+### Vérification données de production
+
+Aucune — `xrent_dev` non touchée à aucun moment, `xrent_test` uniquement. Comptage direct avant/après toute la session (création + suppression du tenant de démonstration incluses) : **377 tenants / 523 users, inchangé**. Aucun tenant réel supprimé par ce nouvel outil.
+
+## Tests session — finalisation des permissions d'audit (2026-08-31, phase 2.1)
+
+**Contexte** : brief explicite du propriétaire du projet — vérifier la source réelle d'autorisation de `audit.view`/`audit.delete` (lecture/suppression unitaire/masse/purge globale), corriger toute incohérence serveur/UI/documentation, renforcer les tests positifs/négatifs y compris Super Admin plateforme. Aucune donnée réelle modifiée, aucune suppression destructive lancée.
+
+**Résultat de l'audit** : implémentation déjà conforme à CLAUDE.md règle 13/SECURITY.md section 13/DOMAINRULES.md sections 22 et 62 sur tous les points vérifiés — `GET /api/audit` (rôle strict, `audit.view` décorative par décision explicite), les 3 routes de suppression (`DELETE /api/audit/[id]`, `POST /api/audit/bulk-delete`, `GET`/`POST /api/audit/purge`) toutes gardées par `role === "ADMIN" && can(user, "audit.delete")`, toutes strictement tenant-scopées (isolation vérifiée à chaque niveau), `isSuperAdminEmail()` absente de tout le module audit. UI (`AuditLogTable.tsx`/`AuditPurgeCard.tsx`/`Sidebar.tsx`) cohérente avec le serveur. **1 écart trouvé et corrigé** : commentaire de `src/lib/permissions.ts` référençant à tort « PATCH /api/audit/[id]/route.ts » (la route exporte `DELETE`) — corrigé, aucun changement de comportement.
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `audit.test.ts` + `audit-deletion.test.ts` isolés (5 nouveaux tests) | 32 | 32 | 0 | 0 |
+| + `permissions.test.ts`/`tenants.test.ts`/`super-admin.test.ts`/`db.test.ts` (RBAC/isolation) | 83 | 83 | 0 | 0 |
+| `npm test` (suite complète) | 1606 | 1606 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+### Tests ajoutés
+
+- `src/__tests__/audit.test.ts` — `GET /api/audit` refuse un MEMBER même avec `audit.view` accordé via un groupe personnalisé (confirme le caractère décoratif de cette clé, DOMAINRULES.md section 22) ; un Super Admin plateforme ne voit jamais l'audit d'un autre tenant que le sien.
+- `src/__tests__/audit-deletion.test.ts` — nouveau describe « Super Admin plateforme (phase 2.1, aucun droit automatique) » : suppression unitaire (succès sur son propre tenant, 404 sur un autre tenant), suppression en masse (seules les entrées du tenant du Super Admin supprimées, celles d'un autre tenant silencieusement ignorées), purge complète (vide uniquement le journal du Super Admin, jamais celui d'un autre tenant).
+
+### Fichiers modifiés
+
+`src/lib/permissions.ts` (commentaire uniquement, PATCH→DELETE), `src/__tests__/audit.test.ts`, `src/__tests__/audit-deletion.test.ts`.
+
+### Vérification données de production
+
+Aucune — `xrent_dev` non touchée à aucun moment, `xrent_test` uniquement, tenants entièrement jetables créés/nettoyés par les tests eux-mêmes. Comptage direct avant/après session : **377 tenants / 523 users, inchangé**. Aucune suppression destructive lancée manuellement à aucun moment de cette tâche.
+
+## Tests session — application automatique des rôles et permissions (2026-08-31, phase 2.2)
+
+**Contexte** : brief explicite du propriétaire du projet — vérifier session/cache/middleware/guards/API/actions serveur pour garantir qu'un changement de rôle ou de permission s'applique immédiatement à une session déjà émise, et qu'un droit retiré ne reste jamais utilisable, pour MEMBER/ADMIN/COMPTABILITÉ/AGENCE/Super Admin plateforme, avec isolation tenant/agence. Aucune donnée réelle modifiée.
+
+**Résultat de l'audit** : mécanisme déjà conforme, aucun bug de sécurité trouvé. `getSessionUser()` (`src/lib/authz.ts`) relit `role`/`email`/`mfaEnabled` en base à chaque appel ; `can()`/`getEffectivePermissions()`/`getAccessibleAgencyIds()`/`canAccessAgency()` (`src/lib/permissions.ts`/`src/lib/authz.ts`) relisent systématiquement `PermissionGroup`/`GroupPermission`/`UserPermission`/`UserAgency` en base, sans aucune mise en cache. Confirmé point d'entrée quasi universel : 87/91 `route.ts` (les 4 exceptions sont pré-session par nature : auth elle-même, service scheduled-alerts, acceptation d'invitation) et 51/51 `page.tsx` du dashboard. `src/proxy.ts` (middleware, seul point produisant un vrai code HTTP avant `Suspense`) relit lui aussi `getSessionUser()` frais pour son garde de route, jamais le `req.auth` optimiste (réservé à la redirection de connexion). `staleTimes` Next non surchargé (défaut `dynamic: 0`, non caché) ; aucune page dashboard ne déclare `revalidate`/`unstable_cache` ; build revérifié — toutes les routes `/dashboard/*`/`/api/*` restent `ƒ` dynamiques. Aucune trace de `session.user.role` utilisé directement en dehors de `authz.ts`/`auth.ts`/`proxy.ts` (grep exhaustif). **Aucune correction de code** — seul un déficit de couverture de test comblé (voir ci-dessous).
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `dashboard-route-guards.test.ts` + `permissions.test.ts` + `users.test.ts` (5 nouveaux tests) | 137 | 137 | 0 | 0 |
+| + `responsive-layout.test.ts`/`audit.test.ts`/`audit-deletion.test.ts`/`tenants.test.ts`/`mfa-step-up-gating.test.ts` | 91 | 91 | 0 | 0 |
+| `npm test` (suite complète) | 1611 | 1611 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+### Tests ajoutés
+
+- `src/__tests__/dashboard-route-guards.test.ts` — nouveau describe « Application immédiate d'une révocation au garde de route proxy » : retrait d'une permission individuelle bloque immédiatement une page déjà accessible (404, même cookie, sans reconnexion) ; rétrogradation ADMIN→MEMBER mi-session bloque immédiatement une page ADMIN-only (redirect, même cookie).
+- `src/__tests__/permissions.test.ts` — nouveau describe « Révocation immédiate d'un droit déjà en usage » : éditer un groupe personnalisé déjà assigné (retrait d'une clé, sans toucher au rattachement du user) révoque l'accès au prochain appel avec le même cookie ; retirer une permission individuelle déjà accordée la révoque immédiatement.
+- `src/__tests__/users.test.ts` — un MEMBER perd instantanément l'accès aux véhicules d'une agence retirée (`agencyIds: []`), même cookie de session, sans reconnexion.
+
+Ces 5 tests couvrent par construction MEMBER/ADMIN/COMPTABILITÉ/AGENCE (mécanisme unique piloté par clé de permission en base, jamais par nom de rôle codé en dur) ; le Super Admin plateforme est déjà couvert en profondeur par la phase 2.1 (aucun droit additionnel sur aucun tenant, y compris sur l'audit — le seul module où ce rôle a un effet observable).
+
+### Fichiers modifiés
+
+`src/__tests__/dashboard-route-guards.test.ts`, `src/__tests__/permissions.test.ts`, `src/__tests__/users.test.ts` (tests uniquement — aucun fichier de code applicatif modifié, aucune correction nécessaire).
+
+### Vérification données de production
+
+Aucune — `xrent_dev` non touchée à aucun moment (hors une requête `count()` en lecture seule décrite ci-dessous). `xrent_test` uniquement, tenants entièrement jetables créés/nettoyés par les tests eux-mêmes. Comptage direct avant/après session : **377 tenants / 523 users, inchangé**. Aucune suppression destructive lancée manuellement à aucun moment de cette tâche.
+
+**Incident mineur de processus (sans impact données)** : un script Node ad-hoc de vérification, lancé sans `DATABASE_URL` explicite dans l'environnement shell, s'est résolu par défaut sur `.env` (`xrent_dev`) au lieu de `.env.test` (comportement par défaut de Prisma/dotenv, pas un choix explicite) — la requête exécutée était une simple lecture (`count()`), sans aucune écriture, et a révélé que `xrent_dev` ne contient actuellement qu'1 tenant/1 user (cohérent avec l'absence de tout environnement de production à ce jour). Reformulée immédiatement avec `DATABASE_URL` explicite pointant vers `xrent_test` pour la vérification réelle. Point de vigilance noté pour tout script ad-hoc futur.
+
+## Tests session — diagnostic et correction du 409 sur la conversion réservation → contrat (2026-08-31, phase 3, INC-30)
+
+**Contexte** : brief explicite du propriétaire du projet — reproduire le 409 observé sur le parcours réservation → contrat, identifier la route/cause exacte, vérifier atomicité/idempotence/rollback, corriger réellement, afficher un message métier clair si le 409 est volontaire, ajouter des tests de concurrence/répétition/non-duplication. Aucune donnée réelle modifiée.
+
+**Reproduction** : le test de concurrence déjà existant (`reservations.test.ts`, describe « Sprint 26A (Finding A) — conversion atomique et idempotente sous concurrence », test « 1/2/3/4/5 ») a été instrumenté temporairement (`console.log` du corps de réponse du perdant, retiré avant la correction finale) pour capturer le message exact reçu par le perdant d'une course de conversion légitime : `{"error":"Transition de statut invalide : PENDING → CONVERTED."}` — confirmé empiriquement via `npx vitest run src/__tests__/reservations.test.ts -t "1/2/3/4/5" --reporter=verbose`.
+
+**Cause racine** : `claimReservationConversion`/`markReservationConverted` (`src/lib/reservations.ts`) construisaient `InvalidReservationStatusTransitionError` avec le statut lu **avant** la tentative d'écriture conditionnée (`updateMany`), jamais le statut réel après l'échec du CAS (`count === 0`) — message basé sur une valeur déjà obsolète au moment de l'échec, laissant croire à tort que PENDING → CONVERTED est en général une transition invalide.
+
+**Atomicité/idempotence** : déjà garanties (Sprint 26A, Finding A) et non affectées par ce correctif — reconfirmé par les 8 tests de concurrence/rollback/isolation déjà existants du même describe, tous toujours verts après correction : exactement une Location/Invoice/Payment/CashEntry créés sous course concurrente (avec et sans paiement), rollback complet si une étape échoue après le claim (véhicule devenu indisponible, paiement en dépassement de solde), aucun client orphelin, isolation tenant/agence/permission préservée.
+
+**Correction** : `InvalidReservationStatusTransitionError` expose désormais `from`/`to` en propriétés publiques (additif, `PATCH /api/reservations/[id]` non affecté, toujours `error.message` brut) ; `claimReservationConversion`/`markReservationConverted` relisent le statut réel en base avant de construire l'erreur en cas d'échec du CAS ; `POST /api/reservations/[id]/convert` construit un message métier clair (`buildConversionConflictMessage`) selon la cause réelle — utilisé pour le fast-fail non transactionnel et pour le `catch` de la transaction. Modules homonymes non touchés (`locations.ts`/`invoices.ts`/`maintenances.ts`/`alerts.ts`/`vehicle-transfers.ts`/`vehicle-trips.ts`) — hors périmètre.
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `reservations.test.ts` (2 nouveaux tests + 1 assertion enrichie) | 163 | 163 | 0 | 0 |
+| + `locations.test.ts`/`location-chains.test.ts`/`e2e.test.ts`/`e2e-full.test.ts` (régression) | 137 | 137 | 0 | 0 |
+| `npm test` (suite complète) | 1613 | 1613 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+### Tests ajoutés
+
+- `src/__tests__/reservations.test.ts`, test « 1/2/3/4/5 » (existant) — assertion ajoutée sur le message exact reçu par le perdant de la course.
+- `src/__tests__/reservations.test.ts`, test « 12 » (nouveau) — répétition séquentielle (non concurrente) d'une conversion sur une réservation déjà convertie : message métier clair, une seule Location en base, `convertedLocationId` inchangé (idempotence).
+- `src/__tests__/reservations.test.ts`, test « 13 » (nouveau) — conversion d'une réservation `CANCELLED` : message métier clair dédié (fast-fail avant transaction).
+
+### Fichiers modifiés
+
+`src/lib/reservations.ts`, `src/app/api/reservations/[id]/convert/route.ts`, `src/__tests__/reservations.test.ts`.
+
+### Vérification données de production
+
+Aucune — `xrent_dev` non touchée à aucun moment, `xrent_test` uniquement, tenants/réservations entièrement jetables créés/nettoyés par les tests eux-mêmes. Comptage direct avant/après session : **377 tenants / 523 users, inchangé**. Aucune suppression destructive lancée manuellement à aucun moment de cette tâche.
+
+## Tests session — verrouillage de la sélection d'environnement des scripts opérationnels (2026-08-31, phase 4)
+
+**Contexte** : brief explicite du propriétaire du projet — inspecter `.env`/`.env.test`/`.env.qa.local`, tous les scripts Node/npm et la documentation ; identifier toute commande pouvant charger implicitement `.env`/`xrent_dev` ; corriger `.env.qa.local` si elle référence un tenant QA supprimé ; rendre explicite/sûre la sélection d'environnement ; refuser toute opération destructive si l'environnement n'est pas explicitement autorisé ; renforcer les tests de garde. Aucune donnée modifiée dans `xrent_dev`, toute vérification en lecture seule.
+
+**Références d'environnement trouvées** : 5 scripts CommonJS (`backfill-permissions.js`, `bootstrap-superadmin.js`, `reset-dev-data.js`, `resync-vehicle-status.js`, `superadmin-mfa-recovery.js`) exigeant déjà `--env=dev|test` explicite, chacun avec sa propre copie quasi identique du garde-fou de sélection ; `scripts/delete-test-tenant.mjs` (déjà verrouillé, phase 1.2) ; `vitest.global-setup.ts`/`vitest.config.mts` (suite automatisée, déjà verrouillés sur `.env.test`) ; `.env.qa.local` (comptes de campagne QA, référence un tenant `xrent_dev`) ; README.md §4 (documente déjà le chargement implicite `.env` par le CLI Prisma pour les migrations).
+
+**Risques identifiés** :
+1. Les 5 scripts à `--env=` ne vérifiaient jamais le retour de `dotenv.config()` — un fichier d'environnement absent/illisible laissait silencieusement `process.env.DATABASE_URL` retomber sur une valeur déjà présente dans le shell appelant, sans jamais faire échouer le script.
+2. Leur garde-fou de base vérifiait seulement qu'un nom de base *ressemblait* à du dev/test (`/_dev$|_test$/`), jamais une correspondance exacte avec l'environnement demandé par `--env=` — un `.env.test` mal configuré pointant par erreur vers une base `..._dev` aurait été accepté sans alerte.
+3. `.env.qa.local` référence un tenant/13 comptes qui n'existent plus dans `xrent_dev` (vérifié en lecture seule : 0 résultat sur les 13 emails, tenant introuvable par id, `xrent_dev` réduit à 1 seul tenant) — fichier silencieusement obsolète, déjà signalé dans HANDOFF.md depuis le 2026-08-30 sans jamais avoir été corrigé.
+4. Prisma (`@prisma/client`/CLI) charge automatiquement `.env` (jamais `.env.test`) dès qu'aucune `DATABASE_URL` n'est déjà présente dans l'environnement du process — comportement intégré, non désactivable côté code ; un script Node ad-hoc lancé sans `DATABASE_URL` explicite cible silencieusement `xrent_dev` (déjà rencontré sans conséquence en phase 2.2, requête `count()` en lecture seule).
+
+**Corrections** :
+1. Nouveau module partagé `scripts/env-guard.js` (CommonJS, fonctions pures) — `parseEnvFlag` (aucun défaut implicite), `loadEnvFileForEnv` (vérifie l'existence du fichier et le retour de `dotenv.config()`, lève si échec), `assertDatabaseMatchesEnv` (exige un suffixe de nom de base EXACTEMENT `_dev`/`_test` selon l'environnement demandé, sur localhost/127.0.0.1). Consommé par les 5 scripts ci-dessus, éliminant la duplication et les deux failles identifiées.
+2. `.env.qa.local` : bandeau explicite ajouté en tête (daté, détaillant la vérification effectuée), aucune valeur supprimée ni réécrite (fichier non suivi par Git, aucune donnée `xrent_dev` modifiée) — redirige vers `TEST_XRENT` (`xrent_test`) pour toute validation manuelle future.
+3. SECURITY.md section 8 complétée : mécanisme `env-guard.js` documenté, piège du chargement implicite `.env` par Prisma explicitement reconfirmé.
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `env-guard.test.ts` (nouveau) + `test-grouped-integrity.test.ts` + `delete-test-tenant.test.ts` | 52 | 52 | 0 | 0 |
+| `npm test` (suite complète) | 1632 | 1632 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+### Tests ajoutés
+
+- `src/__tests__/env-guard.test.ts` (nouveau, 19 tests) — `parseEnvFlag` (absence de `--env`, valeur hors dev/test, valeur vide, message d'usage propagé) ; `envFileNameFor` ; `loadEnvFileForEnv` (fichier introuvable, chargement réel de `.env.test` du dépôt, override d'une valeur déjà présente) ; `assertDatabaseMatchesEnv` (URL absente/malformée, hôte distant refusé, localhost/127.0.0.1 acceptés, **2 tests dédiés au correctif de cette phase** — `--env=test` sur une base `_dev` refusé et `--env=dev` sur une base `_test` refusé, tous deux acceptés à tort par l'ancien garde-fou dupliqué).
+
+### Fichiers modifiés
+
+`scripts/env-guard.js` (nouveau), `scripts/backfill-permissions.js`, `scripts/bootstrap-superadmin.js`, `scripts/reset-dev-data.js`, `scripts/resync-vehicle-status.js`, `scripts/superadmin-mfa-recovery.js`, `scripts/test-grouped.mjs`, `src/__tests__/env-guard.test.ts` (nouveau), `.env.qa.local` (non suivi par Git — bandeau ajouté, aucune valeur supprimée), `HANDOFF.md`, `TESTREPORT.md`, `SECURITY.md`.
+
+### Vérification données de production
+
+Aucune écriture — `xrent_dev` interrogée en lecture seule uniquement (`count()`/`findMany()` sur les 13 emails QA et le tenant `cmta2y6uy...`, avant/après identique : **1 tenant / 1 user**) ; `xrent_test` inchangée (**377 tenants / 523 users**) ; les 5 scripts refactorés smoke-testés en dry-run (`--env=test`, jamais `--yes`) contre `xrent_test` réel. Aucune suppression destructive lancée manuellement à aucun moment de cette tâche.
+
+## Tests session — audit et correction des headers et protections HTTP (2026-08-31, phase 5)
+
+**Contexte** : brief explicite du propriétaire du projet — inspecter middleware/proxy, configuration Next.js, routes API, réponses serveur, sessions, cookies, uploads/téléchargements de documents ; vérifier/implémenter CSP, HSTS, `X-Content-Type-Options`, `X-Frame-Options`/`frame-ancestors`, `Referrer-Policy`, `Permissions-Policy`, cookies `Secure`/`HttpOnly`/`SameSite`, contrôle serveur des téléchargements, absence de fuite technique. Ne rien casser en dev/tests local.
+
+**Références trouvées** : grep exhaustif sur `next.config.ts`/`src/` — aucun header de sécurité HTTP configuré nulle part avant cette phase (SECURITY.md section 19 marquait ce point **À DÉCIDER** depuis l'origine du document).
+
+**Écarts** :
+1. Aucun en-tête `Content-Security-Policy`/`X-Frame-Options`/`X-Content-Type-Options`/`Referrer-Policy`/`Permissions-Policy`/`Strict-Transport-Security` — seul écart réel trouvé.
+2. Cookies de session, téléchargements de documents et absence de fuite technique (`error.stack`) : **déjà conformes**, vérifiés par lecture de code et grep exhaustif — aucune correction nécessaire sur ces trois points.
+
+**Corrections** :
+1. `next.config.ts` : bloc `headers()` centralisé (`source: "/:path*"`, pages + routes API) — CSP adaptée au projet, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy` intégralement restrictive, `Strict-Transport-Security` uniquement en production.
+2. Incident détecté et corrigé en cours de tâche (avant tout commit) : première version de la CSP sans `'unsafe-inline'` sur `script-src` cassait l'hydratation React en production réelle (vérifié en navigateur, `next build && next start`) — corrigé par l'approche "Without Nonces" documentée par Next.js.
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `security-headers.test.ts` (nouveau) + `test-grouped-integrity.test.ts` + `auth.test.ts` + `invoices.test.ts` | 203 | 203 | 0 | 0 |
+| `npm test` (suite complète) | 1636 | 1636 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+
+### Vérification manuelle en navigateur (Chrome MCP)
+
+- `npm run dev` (NODE_ENV=development réel) : CSP avec `'unsafe-eval'`/`'unsafe-inline'`, page `/login` fonctionnelle, aucune violation CSP en console.
+- `next build && next start` (NODE_ENV=production réel) : CSP stricte (sans `'unsafe-eval'`), `Strict-Transport-Security`/`upgrade-insecure-requests` présents, page `/login` fonctionnelle (capture d'écran du formulaire rendu et stylé), aucune erreur console après correctif.
+
+### Tests ajoutés
+
+- `src/__tests__/security-headers.test.ts` (nouveau, 4 tests) — en-têtes de sécurité présents et corrects sur une page publique ET sur une route API non authentifiée (couverture globale) ; `'unsafe-eval'`/`'unsafe-inline'` conditionnés correctement selon l'environnement réel ; attributs `HttpOnly`/`SameSite=Lax`/absence de `Secure` sous HTTP sur un vrai cookie de connexion ; absence statique de `error.stack`/`err.stack` dans toute route API. Ajouté à `scripts/test-grouped.mjs` (groupe 5).
+
+### Fichiers modifiés
+
+`next.config.ts`, `src/__tests__/security-headers.test.ts` (nouveau), `scripts/test-grouped.mjs`, `HANDOFF.md`, `TESTREPORT.md`, `SECURITY.md`.
+
+### Vérification données de production
+
+Aucune écriture — cette phase n'a modifié que de la configuration et des tests ; serveurs `next dev`/`next start` locaux temporaires utilisés uniquement pour la vérification navigateur, jamais connectés à une donnée `xrent_dev` réelle, arrêtés en fin de vérification. `xrent_test` interrogée uniquement via la suite automatisée (aucune requête ad-hoc hors suite dans cette phase).
+
 ## 4. Format attendu des futurs rapports
 
 Chaque exécution future de la suite de tests devra être consignée dans ce document (ou dans un rapport daté associé) selon le format suivant :

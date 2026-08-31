@@ -42,7 +42,7 @@
 const path = require("path");
 const readline = require("readline");
 const crypto = require("crypto");
-const dotenv = require("dotenv");
+const { parseEnvFlag, loadEnvFileForEnv, assertDatabaseMatchesEnv, EnvironmentGuardError } = require("./env-guard");
 
 function parseArgs(args) {
   const parsed = {};
@@ -58,33 +58,21 @@ function parseArgs(args) {
 const args = process.argv.slice(2);
 const flags = parseArgs(args);
 const confirmed = args.includes("--yes");
-const env = flags.env;
 
-if (env !== "dev" && env !== "test") {
-  console.error("Usage: node scripts/superadmin-mfa-recovery.js --env=dev|test --admin-email=... --reason=... [--yes]");
-  process.exit(1);
-}
-
-const envFile = env === "dev" ? ".env" : ".env.test";
-dotenv.config({ path: path.resolve(__dirname, "..", envFile), override: true });
-
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
-  console.error(`DATABASE_URL introuvable après chargement de ${envFile}.`);
-  process.exit(1);
-}
-
-const parsedUrl = new URL(databaseUrl);
-const dbName = parsedUrl.pathname.slice(1);
-const isLocalHost = parsedUrl.hostname === "localhost" || parsedUrl.hostname === "127.0.0.1";
-const looksLikeDevOrTest = /_dev$|_test$/.test(dbName);
-
-if (!isLocalHost || !looksLikeDevOrTest) {
-  console.error(
-    `Garde-fou : DATABASE_URL (${parsedUrl.hostname}/${dbName}) ne ressemble pas à une base ` +
-      `dev/test locale (attendu : localhost, nom se terminant par _dev ou _test). Abandon.`
+let env, envFile, dbName, hostname;
+try {
+  env = parseEnvFlag(
+    args,
+    "Usage: node scripts/superadmin-mfa-recovery.js --env=dev|test --admin-email=... --reason=... [--yes]"
   );
-  process.exit(1);
+  envFile = loadEnvFileForEnv(env, path.resolve(__dirname, ".."));
+  ({ dbName, hostname } = assertDatabaseMatchesEnv(process.env.DATABASE_URL, env));
+} catch (error) {
+  if (error instanceof EnvironmentGuardError) {
+    console.error(error.message);
+    process.exit(1);
+  }
+  throw error;
 }
 
 const adminEmail = flags["admin-email"];
@@ -126,7 +114,7 @@ const SECURITY_NOTIFICATION_MESSAGE_MFA_RESET =
   "La MFA de votre compte a été réinitialisée par un administrateur. Une reconnexion est nécessaire.";
 
 async function main() {
-  console.log(`Environnement : ${env} (${envFile}) — base : ${dbName}@${parsedUrl.hostname}`);
+  console.log(`Environnement : ${env} (${envFile}) — base : ${dbName}@${hostname}`);
 
   const normalizedEmail = adminEmail.trim().toLowerCase();
 

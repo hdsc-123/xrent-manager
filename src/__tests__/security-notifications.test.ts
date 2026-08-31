@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { generateTotpToken } from "@/lib/mfa";
 import { apiFetch, extractSessionCookie } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 /**
  * Politique MFA (2026-08-30, brief explicite du propriétaire du projet) : notifications de
@@ -18,15 +18,7 @@ const createdTenantIds: string[] = [];
 let counter = 0;
 
 afterAll(async () => {
-  await prisma.securityNotification.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.mfaStepUpProof.deleteMany({});
-  await prisma.mfaRecoveryCode.deleteMany({});
-  await prisma.userAgency.deleteMany({ where: { user: { tenantId: { in: createdTenantIds } } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { apiFetch, extractSessionCookie, findSetCookie } from "./helpers/http";
-import { registerTenantAdmin, createTenantAdmin } from "./helpers/fixtures";
+import { registerTenantAdmin, createTenantAdmin, deleteTestTenants } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const tenantSlug = `auth-test-tenant-${runId}`;
@@ -11,11 +11,7 @@ const password = "Correct-Horse-Battery-Staple9!";
 const createdTenantIds: string[] = [];
 
 afterAll(async () => {
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 

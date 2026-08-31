@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { createAlert } from "@/lib/alerts";
 import { apiFetch } from "./helpers/http";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const password = "Correct-Horse-Battery-Staple9!";
@@ -32,22 +32,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.invitation.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.payment.deleteMany({ where: { invoice: { tenantId: { in: createdTenantIds } } } });
-  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.maintenance.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
-  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 
@@ -113,6 +98,63 @@ describe("Journal d'audit (Sprint 9)", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.logs.every((log: { tenantId: string }) => log.tenantId === adminA.tenantId)).toBe(true);
+  });
+
+  // Phase 2.1 (2026-08-31, finalisation des permissions d'audit) : audit.view est décorative par
+  // décision explicite (DOMAINRULES.md section 22) — GET /api/audit ne consulte jamais can(),
+  // uniquement role === "ADMIN". Un MEMBER qui se voit accorder cette clé via un groupe
+  // personnalisé doit donc rester bloqué, exactement comme un MEMBER sans cette clé.
+  it("GET /api/audit refuse un MEMBER même avec audit.view accordé via un groupe personnalisé (permission décorative, DOMAINRULES.md section 22)", async () => {
+    const groupResponse = await apiFetch("/api/permission-groups", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `AuditViewers-${runId}`, permissions: ["audit.view"] }),
+    });
+    const groupId = (await groupResponse.json()).group.id;
+
+    const member = await createAndLoginMember({
+      tenantId: adminA.tenantId,
+      name: "Would-be Auditor Reader",
+      email: `would-be-auditor-reader-${runId}@test.local`,
+      password,
+    });
+    await apiFetch(`/api/users/${member.userId}/permissions`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ permissionGroupId: groupId }),
+    });
+
+    const response = await apiFetch("/api/audit", { headers: { Cookie: member.sessionCookie } });
+    expect(response.status).toBe(403);
+  });
+
+  // Phase 2.1 : le Super Admin plateforme (SUPER_ADMIN_EMAILS, src/lib/super-admin.ts) est un
+  // mécanisme distinct et non interchangeable avec l'ADMIN d'un tenant (CLAUDE.md règle 13) —
+  // isSuperAdminEmail() n'est référencée nulle part dans le module audit (vérifié par lecture de
+  // src/app/api/audit/**). Ce test le confirme empiriquement : un compte flaggé Super Admin
+  // plateforme ne voit que l'audit de SON PROPRE tenant, jamais celui d'un autre tenant.
+  it("GET /api/audit — un Super Admin plateforme ne voit jamais l'audit d'un autre tenant que le sien (aucun droit automatique, CLAUDE.md règle 13)", async () => {
+    const superAdmin = await registerTenantAdmin({
+      tenantName: "Audit Super Admin Home",
+      tenantSlug: `audit-super-admin-home-${runId}`,
+      name: "Super Admin",
+      email: `audit-super-admin-${runId}@superadmin.test.local`,
+      password,
+    });
+    createdTenantIds.push(superAdmin.tenantId);
+
+    await apiFetch("/api/invitations", {
+      method: "POST",
+      headers: { Cookie: superAdmin.sessionCookie },
+      body: JSON.stringify({ email: `audit-super-admin-invite-${runId}@test.local` }),
+    });
+
+    const response = await apiFetch("/api/audit", { headers: { Cookie: superAdmin.sessionCookie } });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.logs.length).toBeGreaterThan(0);
+    expect(body.logs.every((log: { tenantId: string }) => log.tenantId === superAdmin.tenantId)).toBe(true);
+    expect(body.logs.some((log: { tenantId: string }) => log.tenantId === adminB.tenantId)).toBe(false);
   });
 });
 

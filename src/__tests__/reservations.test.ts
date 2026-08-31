@@ -15,7 +15,7 @@ import { createPayment, PaymentExceedsRemainingBalanceError } from "@/lib/paymen
 import { formatMoney } from "@/lib/format";
 import { apiFetch } from "./helpers/http";
 import { TEST_BASE_URL } from "./helpers/testServer";
-import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser } from "./helpers/fixtures";
+import { registerTenantAdmin, createAndLoginMember, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
@@ -281,25 +281,7 @@ describe("Sprint 23 — statut NO_SHOW et réinitialisation à zéro réservée 
 });
 
 afterAll(async () => {
-  await prisma.reservation.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.cashRegister.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.payment.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.invoice.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  // Campagne QA (2026-08-27) : LocationUpgrade a une contrainte de clé étrangère réelle vers
-  // Location (ON DELETE RESTRICT, comme Payment/Invoice) — doit être supprimée avant, sinon la
-  // suppression de Location ci-dessous échoue.
-  await prisma.locationUpgrade.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.location.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.vehicle.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.client.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.userAgency.deleteMany({ where: { agency: { tenantId: { in: createdTenantIds } } } });
-  await prisma.user.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.agency.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.auditLog.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.alert.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
-  await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
+  await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
 });
 
@@ -4201,6 +4183,13 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
 
     const [jsonA, jsonB] = await Promise.all([responseA.json(), responseB.json()]);
     const winnerJson = responseA.status === 201 ? jsonA : jsonB;
+    const loserJson = responseA.status === 409 ? jsonA : jsonB;
+    // Phase 3 : message métier clair attendu pour le perdant d'une course de conversion
+    // (voir INCIDENTS.md INC-30) — jamais la transition brute lue avant l'échec du CAS
+    // (qui affichait à tort « PENDING → CONVERTED », comme si PENDING → CONVERTED était en
+    // général une transition invalide, alors que la vraie cause est qu'un autre appel a déjà
+    // gagné la course entre-temps).
+    expect(loserJson.error).toBe("Cette réservation vient d'être convertie en contrat par un autre utilisateur — rechargez la page.");
 
     // Vérification en base, pas seulement les codes HTTP.
     const finalReservation = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
@@ -4616,6 +4605,74 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
     const registerAfter = await prisma.cashRegister.findUnique({ where: { tenantId: adminA.tenantId } });
     expect(registerAfter?.currentBalance).toBe(registerBefore?.currentBalance);
     expect(registerAfter?.previousBalance).toBe(registerBefore?.previousBalance);
+  });
+
+  it("12 — INC-30 : une seconde tentative séquentielle (non concurrente) sur une réservation déjà convertie est refusée avec un message métier clair, jamais un second contrat", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "Repetition",
+      clientLastName: `Sequentielle-${runId}`,
+      startDate: "2031-06-01",
+      endDate: "2031-06-03",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const firstResponse = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBody(reservation, { clientFirstName: "Repetition", clientLastName: `Sequentielle-${runId}` })),
+    });
+    expect(firstResponse.status).toBe(201);
+    const firstLocationId = (await firstResponse.json()).location.id;
+
+    // Répétition de la même requête (ex. double-clic manqué par le disabled du bouton
+    // côté UI, onglet dupliqué, ré-essai après un timeout apparent) : refusée avec un
+    // message métier clair, jamais « Transition de statut invalide : CONVERTED →
+    // CONVERTED. » (technique, confus — voir INCIDENTS.md INC-30).
+    const secondResponse = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBody(reservation, { clientFirstName: "Repetition", clientLastName: `Sequentielle-${runId}` })),
+    });
+    expect(secondResponse.status).toBe(409);
+    const secondBody = await secondResponse.json();
+    expect(secondBody.error).toBe("Cette réservation vient d'être convertie en contrat par un autre utilisateur — rechargez la page.");
+
+    // Idempotence réelle, vérifiée en base : une seule Location pour ce véhicule sur cette
+    // période, la réservation toujours rattachée au premier contrat créé.
+    const locationsForThisReservation = await prisma.location.findMany({
+      where: { vehicleId: vehicleAId, startDate: new Date("2031-06-01"), endDate: new Date("2031-06-03") },
+    });
+    expect(locationsForThisReservation).toHaveLength(1);
+    expect(locationsForThisReservation[0].id).toBe(firstLocationId);
+
+    const finalReservation = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
+    expect(finalReservation.convertedLocationId).toBe(firstLocationId);
+  });
+
+  it("13 — INC-30 : convertir une réservation ANNULÉE affiche un message métier clair (fast-fail avant transaction), jamais le message technique brut", async () => {
+    const createResponse = await createReservation(adminA, {
+      clientFirstName: "Annulee",
+      clientLastName: `Message-${runId}`,
+      startDate: "2031-07-01",
+      endDate: "2031-07-03",
+    });
+    const reservation = (await createResponse.json()).reservation;
+
+    const cancelResponse = await apiFetch(`/api/reservations/${reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "CANCELLED" }),
+    });
+    expect(cancelResponse.status).toBe(200);
+
+    const response = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBody(reservation, { clientFirstName: "Annulee", clientLastName: `Message-${runId}` })),
+    });
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).toBe("Cette réservation est annulée, elle ne peut plus être convertie en contrat.");
   });
 });
 
