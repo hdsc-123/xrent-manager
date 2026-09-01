@@ -327,12 +327,51 @@ Détail complet de chaque entrée ci-dessous (fichiers de test, nombre exact, pa
 | 2026-08-29 | Phase 3C MFA — step-up câblé sur 10 routes sensibles, révocation globale de session, récupération/désactivation/reset administrateur |
 | 2026-09-01 | Sprint de sécurisation du dépôt, correction documentaire, clôture QA en lecture seule — découverte d'INC-37 (`generateInvoiceNumber`, ouvert, non corrigé) |
 | 2026-09-01 | Sprint correctif dédié INC-37 — `InvoiceNumberCounter`, allocation atomique du numéro de facture, migration `xrent_test`, correction de 3 nettoyages de test fragiles (INC-29-like) — INC-37 corrigé et vérifié |
+| 2026-09-01 | Diagnostic et résolution INC-38 — désaccord de checksum `_prisma_migrations` sur `20260831231126_add_reservation_number`, `xrent_test` — INC-38 corrigé et vérifié |
 
 ### Rapports récents (détail complet ci-dessous, pas archivés)
 
+## Tests session — diagnostic et résolution INC-38 : désaccord de checksum `_prisma_migrations`, `xrent_test` (2026-09-01)
+
+**Contexte** : brief explicite du propriétaire du projet, sprint correctif dédié exclusivement à INC-38 (voir INCIDENTS.md) — désaccord de checksum sur la migration `20260831231126_add_reservation_number`, découvert pendant le sprint INC-37 et volontairement laissé séparé à l'époque. Portée strictement limitée à ce diagnostic/correction, distincte d'INC-37 (`InvoiceNumberCounter`, déjà corrigé et vérifié séparément — section dédiée ci-dessous) et de toute correction de `generateCreditNoteNumber()`/numérotation des avoirs (traitée par ailleurs, hors périmètre de ce sprint). Déroulé en phases avec approbation explicite du propriétaire du projet avant chaque commande touchant la base (diagnostic en lecture seule, tentative `migrate resolve --applied`, correction SQL ciblée, documentation).
+
+**Phase 1 — diagnostic en lecture seule** (mécanisme officiel `scripts/env-guard.js`, `.env.test` chargé exclusivement, `DATABASE_URL` jamais affichée) :
+- Cible confirmée : `localhost/xrent_test`.
+- `npx prisma migrate status` : *« 38 migrations found... Database schema is up to date! »*.
+- `_prisma_migrations` : une seule ligne pour `20260831231126_add_reservation_number` (`id` `287190a8-231c-4f5f-9fbe-5ac5a9e8747b`, `applied_steps_count: 1`) — aucune ligne dupliquée.
+- Checksum enregistré : `1afd87d6596ce5739f39092e3c926afc8de3610ece8abe1f044adae242afaf98`. Checksum recalculé (`shasum -a 256` du fichier `migration.sql` actuellement versionné) : `84b701d33b61343415df689471b73cae668c6845a12263317dac20ec5467f625` — différents, confirmant l'incident.
+- Historique Git : un seul commit (`ff99d12`) a jamais touché ce fichier, `git diff ff99d12 -- migration.sql` vide — le fichier commité est strictement identique au fichier actuel ; aucune version historique alternative disponible pour restaurer le checksum d'origine.
+- Objets SQL de la migration vérifiés réellement présents en base (colonne `Reservation.reservationNumber`, table `ReservationNumberCounter`, index unique `Reservation_tenantId_reservationNumber_key`, FK `ReservationNumberCounter_tenantId_fkey`) : les 4 présents, à l'identique — preuve que le fichier versionné actuel correspond au contenu réellement appliqué.
+
+**Phase 2 — tentative `migrate resolve --applied`** : `npx prisma migrate resolve --applied 20260831231126_add_reservation_number`, approuvée par le propriétaire du projet comme option la moins invasive. **Échec — erreur P3008** : *« The migration `20260831231126_add_reservation_number` is already recorded as applied in the database. »* — commande réservée aux migrations absentes/en échec dans `_prisma_migrations`, inadaptée à un simple désaccord de checksum sur une ligne déjà finalisée. Revérifié en lecture seule immédiatement après : ligne `_prisma_migrations` strictement inchangée, aucune écriture n'avait eu lieu.
+
+**Phase 3 — correction SQL ciblée** (approuvée séparément, après présentation de la preuve du diagnostic) : transaction unique —
+```sql
+UPDATE "_prisma_migrations"
+SET checksum = '84b701d33b61343415df689471b73cae668c6845a12263317dac20ec5467f625'
+WHERE id = '287190a8-231c-4f5f-9fbe-5ac5a9e8747b'
+  AND migration_name = '20260831231126_add_reservation_number'
+  AND checksum = '1afd87d6596ce5739f39092e3c926afc8de3610ece8abe1f044adae242afaf98';
+```
+Nombre de lignes affectées vérifié programmatiquement égal à 1 avant `COMMIT` (sinon `ROLLBACK` automatique, jamais déclenché). Seule la colonne `checksum` d'une unique ligne de bookkeeping modifiée — aucune table métier touchée.
+
+**Résultats** :
+- Lignes affectées par l'`UPDATE` : **1** (exactement).
+- Checksum avant : `1afd87d6596ce5739f39092e3c926afc8de3610ece8abe1f044adae242afaf98` → après : `84b701d33b61343415df689471b73cae668c6845a12263317dac20ec5467f625`.
+- `npx prisma migrate status` post-correction : *« 38 migrations found... Database schema is up to date! »* (identique à avant correction).
+- Ligne `_prisma_migrations` post-correction : mêmes `started_at`/`finished_at`/`applied_steps_count: 1`, seul `checksum` modifié.
+- `xrent_dev` et la production (qui n'existe pas à ce jour) : non ciblées à aucune étape.
+- `git status` : `working tree clean` à chaque étape.
+
+**Fichiers modifiés par ce sprint (code/schéma/migrations)** : **aucun**. Seule une métadonnée de la base `xrent_test` (`_prisma_migrations.checksum`, 1 ligne) a été modifiée, via des scripts Node temporaires exécutés hors dépôt (scratchpad de session, supprimés après capture de leurs résultats ci-dessus) — aucun de ces scripts n'a été commité ni conservé.
+
+**Distinction avec INC-37/INC-39** : ce sprint ne touche ni `generateInvoiceNumber()`/`InvoiceNumberCounter` (INC-37, déjà corrigé et vérifié séparément, voir section dédiée ci-dessous) ni `generateCreditNoteNumber()`/toute correction de numérotation des avoirs — aucun de ces fichiers de code n'a été modifié par ce sprint.
+
+**Aucun commit créé, aucun push effectué** — en attente de validation explicite du propriétaire du projet.
+
 ## Tests session — sprint correctif dédié INC-37 : compteur atomique `InvoiceNumberCounter`, migration `xrent_test`, correction de nettoyages de test fragiles (2026-09-01)
 
-**Contexte** : brief explicite du propriétaire du projet, sprint correctif dédié exclusivement à INC-37 (voir INCIDENTS.md) — portée strictement limitée à `generateInvoiceNumber()`/`createInvoice`/`createSupplementInvoice`/`createExtensionInvoice` (`src/lib/invoices.ts`), au nouveau modèle `InvoiceNumberCounter` (`prisma/schema.prisma`) et à sa migration, et — une fois la nécessité démontrée en cours de tâche — aux nettoyages de test cassés par la nouvelle contrainte de clé étrangère. Aucune fonctionnalité métier nouvelle, aucune règle de facturation modifiée, `generateCreditNoteNumber()` explicitement non touchée (risque résiduel documenté séparément), `xrent_dev` jamais utilisée. Déroulé en plusieurs phases avec approbation explicite du propriétaire du projet à chaque étape (analyse, implémentation, vérification pré-migration, application de la migration, correction des nettoyages de test, documentation).
+**Contexte** : brief explicite du propriétaire du projet, sprint correctif dédié exclusivement à INC-37 (voir INCIDENTS.md) — portée strictement limitée à `generateInvoiceNumber()`/`createInvoice`/`createSupplementInvoice`/`createExtensionInvoice` (`src/lib/invoices.ts`), au nouveau modèle `InvoiceNumberCounter` (`prisma/schema.prisma`) et à sa migration, et — une fois la nécessité démontrée en cours de tâche — aux nettoyages de test cassés par la nouvelle contrainte de clé étrangère. Aucune fonctionnalité métier nouvelle, aucune règle de facturation modifiée, `generateCreditNoteNumber()` explicitement non touchée par ce sprint (risque résiduel alors documenté séparément, depuis corrigé le même jour par un sprint distinct — commit `f27cfa7d3257ebe816feea7b9b7fe402f13647d0`, INC-39, voir INCIDENTS.md INC-37), `xrent_dev` jamais utilisée. Déroulé en plusieurs phases avec approbation explicite du propriétaire du projet à chaque étape (analyse, implémentation, vérification pré-migration, application de la migration, correction des nettoyages de test, documentation).
 
 **Phase 1 — analyse** : cause confirmée par lecture directe — `generateInvoiceNumber()` calculait `tx.invoice.count({ where: { tenantId, number: { startsWith: prefix } } })` puis `count + 1`, lecture/écriture non atomiques ; les 5 tentatives de retry existantes (`MAX_NUMBER_GENERATION_ATTEMPTS`) répétaient le même calcul non protégé, sans jamais sérialiser les transactions concurrentes. Mécanisme atomique proposé et approuvé : reproduire le patron déjà validé et en production pour `Reservation.reservationNumber` (`ReservationNumberCounter`, Phase 6.1) — compteur dédié par `(tenantId, année)`, une seule instruction SQL `INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING`.
 
@@ -341,7 +380,7 @@ Détail complet de chaque entrée ci-dessous (fichiers de test, nombre exact, pa
 - **Migration** : `prisma/migrations/20260901193933_add_invoice_number_counter/migration.sql` — `CREATE TABLE InvoiceNumberCounter` + `ADD CONSTRAINT ... FOREIGN KEY` vers `Tenant`. Générée via `prisma migrate diff --from-url <xrent_test> --to-schema-datamodel prisma/schema.prisma --script` (lecture seule) plutôt que `migrate dev --create-only`, ce dernier ayant été bloqué par une anomalie de checksum préexistante et sans rapport sur une migration antérieure (`20260831231126_add_reservation_number`) — voir INCIDENTS.md INC-38, documentée séparément, non corrigée, aucun `migrate resolve`/reset lancé.
 - **`generateInvoiceNumber()`** : remplacée par l'instruction atomique décrite en Phase 1, exécutée toujours sur le `tx` reçu.
 - **Garantie transactionnelle top-level** (exigence explicite du propriétaire du projet, vérifiée avant l'implémentation) : `createInvoice`/`createSupplementInvoice`/`createExtensionInvoice` restructurées avec une fonction interne `*Attempt(data, tx)` (allocation + écriture) ; quand un `tx` partagé est fourni (100 % des appels applicatifs réels), comportement inchangé (une seule tentative) ; quand aucun `tx` n'est fourni (top-level), la fonction ouvre elle-même `prisma.$transaction((innerTx) => *Attempt(data, innerTx))` — même patron que `createCreditNote`/`createCreditNoteAttempt`, déjà existant dans le même fichier — garantissant que l'allocation et l'écriture se déroulent toujours dans la même transaction, y compris dans ce cas (défaut réel du code précédent, où ces deux opérations formaient deux transactions implicites distinctes).
-- **`generateCreditNoteNumber()`** : non modifiée, vérifié par diff (aucune ligne touchée) — documentée comme risque résiduel séparé (INCIDENTS.md INC-37).
+- **`generateCreditNoteNumber()`** : non modifiée, vérifié par diff (aucune ligne touchée) — documentée comme risque résiduel séparé (INCIDENTS.md INC-37 ; depuis corrigée séparément, commit `f27cfa7d3257ebe816feea7b9b7fe402f13647d0`, INC-39).
 - **`scripts/tenant-delete-order.mjs`** : nouvelle entrée `invoiceNumberCounter` (FK directe vers `Tenant`), consommée génériquement par `deleteTestTenants`/`delete-test-tenant.mjs`.
 
 **Vérifications pré-migration (lecture seule, avant toute écriture)** : contenu exact du dossier de migration (un seul fichier `migration.sql`) ; statut Git (`??`, nouveau fichier, aucun historique, jamais modifié) ; SQL ne contenant que `CREATE TABLE`/`ADD CONSTRAINT`, aucun `DROP`/`TRUNCATE`/`ALTER` sur une table existante (grep vérifié) ; `DATABASE_URL` confirmée `xrent_test@localhost` via `scripts/env-guard.js` (jamais la valeur affichée) ; ordre de suppression confirmé (`invoiceNumberCounter` purgé avant `tenant.deleteMany`, dans les deux consommateurs) ; inclusion future au commit confirmée (`git check-ignore`/`git add --dry-run`).
@@ -366,7 +405,7 @@ Détail complet de chaque entrée ci-dessous (fichiers de test, nombre exact, pa
 
 **Fichiers modifiés** : `prisma/schema.prisma`, `prisma/migrations/20260901193933_add_invoice_number_counter/migration.sql` (nouveau), `src/lib/invoices.ts`, `src/__tests__/invoices.test.ts`, `scripts/tenant-delete-order.mjs`, `src/__tests__/csv-exports.test.ts`, `src/__tests__/damages.test.ts`, `src/__tests__/location-return.test.ts`. Aucun fichier hors de ce périmètre (documenté ci-dessus) modifié. `xrent_dev` non touchée à aucun moment de ce sprint.
 
-**Risques résiduels documentés, non corrigés dans ce sprint** : `generateCreditNoteNumber()` (même défaut structurel `count()`/`count + 1`, hors périmètre INC-37 — INCIDENTS.md) ; désaccord de checksum de `_prisma_migrations` sur `20260831231126_add_reservation_number` (INCIDENTS.md INC-38, séparé, non corrigé, aucun impact sur `migrate deploy`/`migrate status`).
+**Risques résiduels documentés, non corrigés dans ce sprint** : `generateCreditNoteNumber()` (même défaut structurel `count()`/`count + 1`, hors périmètre INC-37 — INCIDENTS.md ; depuis corrigée séparément, commit `f27cfa7d3257ebe816feea7b9b7fe402f13647d0`, INC-39) ; désaccord de checksum de `_prisma_migrations` sur `20260831231126_add_reservation_number` (INCIDENTS.md INC-38, séparé à l'époque, depuis corrigé et vérifié — voir entrée dédiée ci-dessus).
 
 **Aucun commit créé, aucun push effectué** — en attente de validation explicite du propriétaire du projet.
 
