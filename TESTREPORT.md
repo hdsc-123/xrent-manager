@@ -325,8 +325,41 @@ Détail complet de chaque entrée ci-dessous (fichiers de test, nombre exact, pa
 | 2026-08-29 | Affichage du supplément de surclassement (`LocationUpgrade`) sur la fiche contrat, la fiche facture, le contrat PDF et la facture PDF (unitaires + lots) |
 | 2026-08-29 | Phase 3A/3B MFA — schéma, primitives, intégration authentification/session/step-up (voir HANDOFF.md Partie 17/18) |
 | 2026-08-29 | Phase 3C MFA — step-up câblé sur 10 routes sensibles, révocation globale de session, récupération/désactivation/reset administrateur |
+| 2026-09-01 | Sprint de sécurisation du dépôt, correction documentaire, clôture QA en lecture seule — découverte d'INC-37 (`generateInvoiceNumber`, ouvert, non corrigé) |
 
 ### Rapports récents (détail complet ci-dessous, pas archivés)
+
+## Tests session — sprint de sécurisation du dépôt, correction documentaire et clôture QA en lecture seule (2026-09-01)
+
+**Contexte** : brief explicite du propriétaire du projet, portée strictement limitée à trois volets : sécurisation/vérification du dépôt, correction d'incohérences documentaires mineures, clôture QA en lecture seule — **aucune fonctionnalité métier développée, aucun schéma/migration/donnée métier modifié, aucun fichier de code applicatif modifié** (sauf lecture).
+
+**Phase 0 — inspection** : `HEAD` = `7df88f90fb2bd711b09bd924eb437dcf601e1699`, identique à `origin/main` (0/0 divergence), working tree propre au démarrage. Fichiers `.env*` confirmés non suivis par Git (`git ls-files` ne montre que `.env.example` ; `git check-ignore -v` confirme `.env`/`.env.test`/`.env.test-xrent.local`/`.env.qa.local` tous ignorés). `npx prisma migrate status` → « Database schema is up to date! » sur `xrent_dev` (36 migrations, aucune en attente). Base des tests confirmée par lecture directe de `DATABASE_URL` (jamais affichée) : `.env.test` → hôte `localhost`, base `xrent_test` ; `.env` → hôte `localhost`, base `xrent_dev` — distinctes, comme attendu (`vitest.global-setup.ts` charge `.env.test` en dur pour le serveur `next dev` de test dédié au port 3811, jamais `.env`).
+
+**Observation mineure sans action** : le chargement de `.env`/`.env.test` par le package `dotenv@17.4.2` affiche un « tip » promotionnel aléatoire en console, dont un mentionne un domaine externe (`www.vestauth.com`). Vérifié : chaîne codée en dur dans `node_modules/dotenv/lib/main.js` (tableau `TIPS`), package conforme à l'intégrité `sha512` déclarée dans `package-lock.json` (résolu depuis le registre npm officiel), **aucun appel réseau nulle part dans le package** (grep exhaustif de `fetch`/`http.request`/`https.request` sur tout `node_modules/dotenv/` : aucune occurrence) — auto-promotion du mainteneur dans un message `console.log`, pas une compromission de la chaîne d'approvisionnement. Aucune action nécessaire.
+
+**Phase 1 — sécurisation du dépôt et tests** : `npm run lint` ✅ (aucune erreur), `npx tsc --noEmit` ✅ (aucune erreur), `npm run build` ✅ (build de production réussi, toutes les routes `/dashboard/*`/`/api/*` restent dynamiques `ƒ`, `/login` seule statique `○`, cohérent avec l'audit des headers HTTP déjà documenté).
+
+**Blocage rencontré et résolu, avec autorisation explicite** : `npm run test` a d'abord échoué — le serveur `next dev` de test dédié (port 3811) n'a pas pu démarrer, Next.js 16 empêchant tout second `next dev` dans le même dossier de projet tant qu'une instance existe déjà. Un `next dev` tournait depuis 44 minutes sur le port 3000 (PID 31461/31462), avec de l'activité navigateur récente dans son log. Signalé avant d'agir ; sur autorisation explicite du propriétaire du projet (« Je n'ai actuellement aucun serveur lancé manuellement… Tu es donc autorisé à arrêter uniquement le processus Next.js identifié sur le port 3000, PID 31462/31461 »), vérifié que ces PID correspondaient bien au `next dev` de ce projet (cwd confirmé par `lsof`) avant tout arrêt, comptage `xrent_dev` figé avant (2 tenants/2 users), arrêt par **`SIGTERM` uniquement** (jamais `-9`, arrêt propre confirmé, port 3000 libéré), comptage `xrent_dev` revérifié identique après (2 tenants/2 users, inchangé).
+
+**Résultat réel de la suite (`npm run test`, xrent_test exclusivement)** : **1725 tests réussis / 7 ignorés sur 1732 au total, 1 fichier de test en échec sur 64** (`src/__tests__/invoices.test.ts`) — reproduit à l'identique en exécution isolée du fichier (2/2, déterministe, jamais un flake de timing). **Cause identifiée avec précision, documentée en détail dans un nouvel incident ouvert : voir [INCIDENTS.md](./INCIDENTS.md) INC-37** (`generateInvoiceNumber`, séquence non atomique `count()`/`count + 1`, collision de contrainte unique sous création concurrente de factures pour un même tenant). **Sur instruction explicite du propriétaire du projet, ce défaut n'a pas été corrigé dans ce sprint** (portée strictement documentaire) — voir HANDOFF.md section 0 pour le sprint correctif recommandé. Ce résultat n'est présenté nulle part dans ce document ou HANDOFF.md comme « suite complète verte » : il s'agit du résultat réel et intégral obtenu le 2026-09-01.
+
+**Phase 3 — clôture QA en lecture seule (`xrent_dev`, tenant `XRent Dev QA`)**, toutes les vérifications ci-dessous exécutées par lecture Prisma directe, aucune écriture :
+- Alerte `cmtiu9x110001m4x2209tgdqu` (`MAINTENANCE_DUE`, `TEST-QA Véhicule 001`) : confirmée `RESOLVED`, `resolvedAt` = `2026-09-01T18:12:18.358Z` — conforme.
+- Alerte `cmtiwf4cw0045m4x2l6cdbk8i` (`STOCK_INCONSISTENCY`, même véhicule) : confirmée `RESOLVED`, `resolvedAt` = `2026-09-01T18:12:37.465Z` — conforme.
+- Alerte `MAINTENANCE_DUE` de `RETEST-QA Véhicule 001` (`cmtiwf4cf0043m4x25vg8h5oo`, échéance 05/09/2026) : confirmée toujours `PENDING` — conforme, non touchée.
+- Véhicule `TEST-QA-001` (id `cmtinmasd0005m4039fqwess1`) : statut confirmé `AVAILABLE` — conforme.
+- `AuditLog` des deux résolutions : `cmtizihq00001m49y9sb60tno` (`alert.resolved`, lié à `cmtiu9x110001m4x2209tgdqu`) et `cmtiziwgr0003m49ya8jdtsx1` (`alert.resolved`, lié à `cmtiwf4cw0045m4x2l6cdbk8i`) — les deux existent, correctement typés (`resource: "Alert"`) et liés (`resourceId`) aux alertes attendues.
+- Total `AuditLog` du tenant `XRent Dev QA` : **98**, identique au décompte déjà documenté après la résolution des deux alertes (96 → 98, +2 exactement) — **aucun audit supplémentaire inattendu créé par ce sprint**.
+- `xrent_dev` avant/après l'arrêt du serveur de développement : 2 tenants / 2 users, strictement inchangé — aucun autre tenant/véhicule touché.
+- Données financières : non recomptées séparément dans cette phase (déjà vérifiées identiques — 10 paiements, 8 factures, 14 écritures de caisse, 1 caisse — lors de la session de résolution des alertes du 2026-09-01 documentée en HANDOFF.md section 0 ; aucune écriture n'a eu lieu depuis dans `xrent_dev`, seule une lecture Prisma en lecture seule a été exécutée dans cette phase).
+
+**Phase 2 — correction documentaire** : en-tête de la section 0 de HANDOFF.md corrigé (mentionnait encore `HEAD c51144c`, deux commits derrière le `HEAD` réel de l'époque — anomalie déjà relevée sans correction dans la section « Sprint 1–4 » de ce même document). Nouvelle entrée INC-37 ajoutée à INCIDENTS.md (ouverte, non corrigée). Cette entrée ajoutée à TESTREPORT.md. `README.md`/`SECURITY.md`/`ARCHITECTURE.md`/`DOMAINRULES.md`/`PROJECT_MAP.md` non modifiés — aucune incohérence réelle et vérifiable justifiant une modification n'a été trouvée dans ces documents pendant ce sprint.
+
+**Limite du test mobile 390×844, inchangée** : non exécutée dans ce sprint (aucune session navigateur ouverte) — reste non présentée comme exécutée, conformément à la consigne explicite. Le point reste en observation, comme documenté depuis la Phase 4 du 2026-09-01 (voir HANDOFF.md section 0, « vérification responsive à 500 px, complétée par une analyse DOM ciblée »).
+
+**Fichiers modifiés dans ce sprint** : uniquement documentaires — `HANDOFF.md`, `TESTREPORT.md` (cette entrée), `INCIDENTS.md` (INC-37). Aucun fichier de code, schéma, migration ou donnée métier modifié.
+
+**Aucun commit créé, aucun push effectué** — en attente de validation explicite du propriétaire du projet.
 
 ## Tests session — affichage du supplément de surclassement (`LocationUpgrade`) sur la fiche contrat, la fiche facture et les PDF (2026-08-29)
 
