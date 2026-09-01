@@ -206,6 +206,55 @@ describe("Suppression du journal d'audit — en masse (Sprint 24-1)", () => {
     expect(missingResponse.status).toBe(400);
   });
 
+  it("refuse un tableau contenant une chaîne vide ou blanche", async () => {
+    const response = await apiFetch("/api/audit/bulk-delete", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ ids: ["cly000000000000000000000", "   "] }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse un tableau ids dépassant la limite maximale (revue OWASP Phase 6, 2026-08-31 — même plafond que POST /api/documents/batch-pdf)", async () => {
+    const tooMany = Array.from({ length: 501 }, (_, i) => `cly${String(i).padStart(22, "0")}`);
+    const response = await apiFetch("/api/audit/bulk-delete", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ ids: tooMany }),
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/500/);
+
+    // Aucune suppression partielle : le refus intervient avant tout appel à deleteAuditLogEntries.
+    const remainingCount = await prisma.auditLog.count({ where: { tenantId: adminA.tenantId } });
+    expect(remainingCount).toBeGreaterThan(0);
+  });
+
+  it("accepte exactement la limite maximale (500 ids, dont des doublons) sans erreur de validation", async () => {
+    const agency = await createAgency(adminA, `Agence Bulk Limite ${runId}`);
+    const log = await prisma.auditLog.findFirst({
+      where: { tenantId: adminA.tenantId, resource: "Agency", resourceId: agency.id },
+    });
+    expect(log).not.toBeNull();
+
+    // 499 ids inexistants (mais bien formés) + le même id réel répété deux fois : exactement 500
+    // entrées au total, doublons inclus — la validation de taille porte sur la longueur du
+    // tableau reçu, pas sur le nombre d'ids distincts.
+    const filler = Array.from({ length: 498 }, (_, i) => `cly${String(i).padStart(22, "0")}`);
+    const response = await apiFetch("/api/audit/bulk-delete", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ ids: [...filler, log!.id, log!.id] }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.deleted).toBe(1);
+
+    const remaining = await prisma.auditLog.findUnique({ where: { id: log!.id } });
+    expect(remaining).toBeNull();
+  });
+
   it("supprime plusieurs entrées du tenant appelant et ignore silencieusement les ids d'un autre tenant", async () => {
     const agency1 = await createAgency(adminA, `Agence Bulk 1 ${runId}`);
     const agency2 = await createAgency(adminA, `Agence Bulk 2 ${runId}`);

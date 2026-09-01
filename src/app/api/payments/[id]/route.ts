@@ -3,6 +3,7 @@ import type { PaymentMethod, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency, type SessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getInvoiceById } from "@/lib/invoices";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getPaymentById,
   updatePayment,
@@ -77,6 +78,10 @@ interface UpdatePaymentBody {
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
 
   if (!user) {

@@ -2,11 +2,13 @@ import { NextResponse } from "next/server";
 import { getSessionUser, canAccessLocationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getLocationById } from "@/lib/locations";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getDamageById,
   updateDamage,
   DamageNotEditableError,
   InvalidDamageAmountError,
+  InvalidDamageDescriptionError,
   InvalidDamageNatureError,
 } from "@/lib/damages";
 import { logAction } from "@/lib/audit";
@@ -56,6 +58,10 @@ interface UpdateDamageBody {
  * comblé ici).
  */
 export async function PATCH(request: Request, { params }: RouteParams) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
@@ -123,7 +129,11 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
     return NextResponse.json({ damage: updated });
   } catch (error) {
-    if (error instanceof InvalidDamageNatureError || error instanceof InvalidDamageAmountError) {
+    if (
+      error instanceof InvalidDamageNatureError ||
+      error instanceof InvalidDamageAmountError ||
+      error instanceof InvalidDamageDescriptionError
+    ) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof DamageNotEditableError) {

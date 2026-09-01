@@ -3,6 +3,7 @@ import { getSessionUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { createInvitation, getInvitations } from "@/lib/invitations";
 import { logAction } from "@/lib/audit";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 export async function GET() {
   const user = await getSessionUser();
@@ -23,6 +24,10 @@ interface CreateInvitationBody {
 }
 
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });

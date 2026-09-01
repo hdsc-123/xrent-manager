@@ -740,6 +740,81 @@ describe("Sprint 26C, Finding C — verrou Vehicle contre le double booking conc
   });
 });
 
+describe("Correctif OWASP Phase 6 (2026-08-31) — Location.agencyId dérivé du véhicule fraîchement verrouillé, jamais d'un instantané agencyId obsolète", () => {
+  it("un appelant qui transmet un agencyId obsolète (lu avant un transfert concurrent) obtient une Location rattachée à l'agence RÉELLE et actuelle du véhicule, jamais à l'instantané fourni", async () => {
+    // Reproduit la fenêtre de course trouvée en revue : POST /api/locations et
+    // POST /api/reservations/[id]/convert lisent tous deux `vehicle.agencyId` AVANT d'ouvrir leur
+    // transaction, puis passent cette valeur telle quelle à createLocation() — si un transfert de
+    // véhicule complète entre-temps (Vehicle.agencyId change réellement en base), l'ancien code
+    // écrivait quand même `Location.agencyId` avec l'instantané périmé. Plutôt que d'orchestrer un
+    // vrai timing de course (non déterministe), ce test appelle directement `createLocation()`
+    // (couche métier, même fonction utilisée par les deux appelants réels) avec un `agencyId`
+    // délibérément différent de l'agence réelle et actuelle du véhicule ciblé — exactement ce
+    // qu'un appelant avec un instantané périmé transmettrait sans le savoir.
+    const { createLocation } = await import("@/lib/locations");
+
+    const staleAgencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: `Stale-${runId}`, slug: `stale-${runId}` }),
+    });
+    const staleAgencyId = (await staleAgencyResponse.json()).agency.id;
+    // Préfixe dédié (DOMAINRULES.md section 29) — évite toute collision de numérotation de
+    // contrat avec agencyA1Id/l'agence réelle du véhicule ci-dessous.
+    await apiFetch(`/api/agencies/${staleAgencyId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ contractNumberPrefix: `STALE${runId}` }),
+    });
+
+    // Le véhicule ciblé appartient réellement à agencyA1Id (jamais à staleAgencyId) — c'est cette
+    // valeur, relue fraîchement sous verrou par createLocationLocked, qui doit prévaloir.
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: agencyA1Id,
+        name: "Cible Agence Fraiche",
+        licensePlate: `LOC-STALEAG-${runId}`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 4200,
+        chassisNumber: `VF1STALE${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
+      }),
+    });
+    const raceVehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    const { startDate, endDate } = nextTestDateRange();
+    const location = await createLocation({
+      tenantId: adminA.tenantId,
+      // Instantané volontairement obsolète — jamais l'agence réelle du véhicule.
+      agencyId: staleAgencyId,
+      vehicleId: raceVehicleId,
+      clientId: clientAId,
+      startDate: new Date(startDate),
+      endDate: new Date(endDate),
+    });
+
+    expect(location.agencyId).toBe(agencyA1Id);
+    expect(location.agencyId).not.toBe(staleAgencyId);
+    // La numérotation de contrat doit elle aussi suivre l'agence réelle (même correctif,
+    // generateContractNumber reçoit désormais la même valeur fraîche) — jamais le préfixe
+    // STALE de l'agence obsolète transmise en entrée.
+    expect(location.contractNumber).not.toMatch(/^STALE/);
+
+    const persisted = await prisma.location.findUnique({ where: { id: location.id } });
+    expect(persisted?.agencyId).toBe(agencyA1Id);
+  });
+});
+
 afterAll(async () => {
   await deleteTestTenants(createdTenantIds);
   await prisma.$disconnect();
@@ -757,6 +832,25 @@ describe("POST /api/locations", () => {
   it("refuse une date de fin antérieure ou égale à la date de début", async () => {
     const response = await createLocation(adminA, { startDate: "2028-02-05", endDate: "2028-02-05" });
     expect(response.status).toBe(400);
+  });
+
+  // Risque résiduel B (HANDOFF.md, Phase 6.2) : `notes` est reproduit tel quel dans le contrat
+  // PDF (ContractPdf.tsx) — limite serveur ajoutée (src/lib/locations.ts,
+  // MAX_LOCATION_NOTES_LENGTH), erreur métier explicite plutôt qu'une troncature silencieuse.
+  it("refuse des notes dépassant la limite serveur (erreur métier explicite, pas de troncature)", async () => {
+    const response = await createLocation(adminA, { notes: "x".repeat(5001) });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("5000");
+  });
+
+  it("accepte des notes à exactement la limite serveur (borne inclusive)", async () => {
+    const response = await createLocation(adminA, {
+      startDate: "2028-01-15",
+      endDate: "2028-01-17",
+      notes: "x".repeat(5000),
+    });
+    expect(response.status).toBe(201);
   });
 
   it("refuse un véhicule d'un autre tenant (isolation multi-tenant)", async () => {

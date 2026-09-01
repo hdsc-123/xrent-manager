@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import NextAuth, { type DefaultSession } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
+import { encode as defaultJwtEncode } from "next-auth/jwt";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
@@ -152,6 +153,37 @@ export async function verifyLoginPassword(
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(prisma),
   session: { strategy: "jwt", maxAge: SESSION_MAX_AGE_SECONDS },
+  jwt: {
+    /**
+     * Correctif revue OWASP Phase 6 (2026-08-31) — faille trouvée : le callback `jwt()`
+     * ci-dessous calcule bien un `exp` réduit (`SESSION_SHORT_MAX_AGE_SECONDS`, 1 jour) quand
+     * "Se souvenir de moi" est décoché, mais `@auth/core` l'ignorait entièrement. L'`encode()`
+     * par défaut (`node_modules/@auth/core/jwt.js`) appelle systématiquement
+     * `.setExpirationTime(now() + maxAge)` avec le `maxAge` **statique** de la configuration
+     * (`session.maxAge` ci-dessus, toujours 30 jours — jamais celui, dynamique, calculé dans le
+     * callback `jwt()`), écrasant l'`exp` déjà posé sur le token avant chiffrement. Un
+     * utilisateur décochant "Se souvenir de moi" recevait donc, dans les faits, exactement la
+     * même session 30 jours que s'il l'avait cochée — vérifié par lecture directe du code
+     * `@auth/core` (`lib/actions/callback/index.js`, `jwt.encode({ ...jwt, token, salt })`, où
+     * `jwt` est l'objet de configuration figé, jamais recalculé par requête).
+     *
+     * Corrigé en fournissant un `encode` personnalisé : si le token à chiffrer porte déjà un
+     * `exp` numérique (posé par notre callback `jwt()` selon `rememberMe`), le `maxAge` réel
+     * transmis à l'implémentation par défaut est dérivé de cet `exp` plutôt que d'utiliser la
+     * valeur statique de configuration — restaurant le comportement documenté et voulu. Ne
+     * change rien pour un token qui n'a jamais eu de session courte (`exp` égal à la valeur par
+     * défaut) ni pour aucune autre étape (chiffrement, algorithme, `decode()`), qui restent
+     * intégralement ceux d'`@auth/core`.
+     */
+    async encode(params) {
+      const token = params.token as (typeof params.token & ExtendedToken) | undefined;
+      if (typeof token?.exp === "number") {
+        const maxAge = Math.max(60, token.exp - Math.floor(Date.now() / 1000));
+        return defaultJwtEncode({ ...params, maxAge });
+      }
+      return defaultJwtEncode(params);
+    },
+  },
   pages: {
     signIn: "/login",
   },

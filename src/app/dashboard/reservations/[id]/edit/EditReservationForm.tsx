@@ -23,6 +23,9 @@ const SOURCE_SUGGESTIONS = ["TJS", "DCH", "CT", "DIRECT", "BROKER"];
 interface ReservationDetail {
   id: string;
   voucherNumber: string;
+  // Phase 6.1 — identifiant interne, jamais modifiable ici (lecture seule, voir le champ
+  // désactivé ci-dessous) ; `null` pour une réservation créée avant cette phase.
+  reservationNumber: string | null;
   confirmationNumber: string | null;
   source: string | null;
   clientFirstName: string;
@@ -182,6 +185,14 @@ export function EditReservationForm({
                 onChange={(e) => setConfirmationNumber(e.target.value)}
               />
             </div>
+            {reservation.reservationNumber && (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="reservationNumber">
+                  N° interne <span className="text-muted-foreground">— non modifiable</span>
+                </Label>
+                <Input id="reservationNumber" value={reservation.reservationNumber} disabled readOnly />
+              </div>
+            )}
           </div>
 
           <div className="flex flex-col gap-1.5">

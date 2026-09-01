@@ -252,6 +252,17 @@ describe("GET /api/vehicles/[id]", () => {
 });
 
 describe("PATCH /api/vehicles/[id]", () => {
+  // Risque résiduel A (HANDOFF.md, Phase 6.2) : même garde générique que POST /api/reservations
+  // (voir son commentaire dans reservations.test.ts) — représentatif ici pour une route avec
+  // paramètre dynamique ({ params }), afin de couvrir les deux formes de signature patchées.
+  it("refuse un corps JSON dépassant la limite authentifiée (413) sur une route avec paramètre dynamique", async () => {
+    const response = await apiFetch("/api/vehicles/some-id", {
+      method: "PATCH",
+      body: JSON.stringify({ notes: "x".repeat(4 * 1024 * 1024) }),
+    });
+    expect(response.status).toBe(413);
+  });
+
   it("Sprint technique 5 (audit de sécurité, faille corrigée) : un champ `tenantId` injecté dans le corps de la requête ne rattache jamais le véhicule à un autre tenant", async () => {
     const createResponse = await createVehicle(adminA, agencyA1Id);
     const vehicleId = (await createResponse.json()).vehicle.id;

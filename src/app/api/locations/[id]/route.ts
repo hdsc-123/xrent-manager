@@ -3,12 +3,14 @@ import type { LocationStatus, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency, canAccessLocationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { VehicleDeactivatedError } from "@/lib/vehicle-status";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getLocationById,
   updateLocation,
   deleteLocation,
   canTransition,
   InvalidDateRangeError,
+  InvalidLocationNotesError,
   VehicleNotAvailableError,
   VehicleUnavailableForLocationError,
   VehicleMaintenanceConflictError,
@@ -101,6 +103,10 @@ function requiredPermissionForLocationStatusChange(status: LocationStatus | unde
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
 
   if (!user) {
@@ -246,7 +252,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     ) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
-    if (error instanceof InvalidDateRangeError) {
+    if (error instanceof InvalidDateRangeError || error instanceof InvalidLocationNotesError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof InvalidStatusTransitionError) {

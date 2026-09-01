@@ -5,6 +5,7 @@ import { getAgencyById } from "@/lib/db";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { logAction } from "@/lib/audit";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -51,6 +52,10 @@ interface UpdateAgencyBody {
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
 
   if (!user) {

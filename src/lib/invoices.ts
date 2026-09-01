@@ -173,6 +173,28 @@ function validateAmountInputs(taxRate: number, discountAmount: number): void {
   }
 }
 
+/** Risque résiduel B (HANDOFF.md, Phase 6.2) : `notes` est reproduit tel quel dans la facture PDF
+ * (InvoicePdf.tsx/CreditNotePdf.tsx) — une valeur disproportionnée dégraderait ce rendu sans
+ * qu'aucune limite serveur n'existe jusqu'ici. Refusée explicitement (400), jamais tronquée
+ * silencieusement. Appelée par toutes les fonctions de création/modification de ce fichier qui
+ * acceptent `notes` (createInvoice/createSupplementInvoice/createExtensionInvoice/
+ * createCreditNote/updateInvoice), qu'elles soient ou non atteignables aujourd'hui par un champ
+ * de requête direct — même colonne unique `Invoice.notes` en base, même rendu PDF. */
+export const MAX_INVOICE_NOTES_LENGTH = 5000;
+
+export class InvalidInvoiceNotesError extends Error {
+  constructor() {
+    super(`Les notes ne doivent pas dépasser ${MAX_INVOICE_NOTES_LENGTH} caractères.`);
+    this.name = "InvalidInvoiceNotesError";
+  }
+}
+
+function assertValidInvoiceNotes(notes: string | null | undefined): void {
+  if (notes != null && notes.length > MAX_INVOICE_NOTES_LENGTH) {
+    throw new InvalidInvoiceNotesError();
+  }
+}
+
 /**
  * Génère un numéro de facture unique par tenant, au format INV-{année}-{5 chiffres},
  * ex. INV-2026-00001 — compteur basé sur le nombre de factures déjà émises cette année
@@ -274,6 +296,7 @@ export async function createInvoice(
   const taxRate = data.taxRate ?? 0;
   const discountAmount = data.discountAmount ?? 0;
   validateAmountInputs(taxRate, discountAmount);
+  assertValidInvoiceNotes(data.notes);
 
   const location = await getLocationById(data.tenantId, data.locationId, tx);
   if (!location) {
@@ -522,6 +545,7 @@ export async function createSupplementInvoice(
   const taxRate = data.taxRate ?? 0;
   const discountAmount = data.discountAmount ?? 0;
   validateAmountInputs(taxRate, discountAmount);
+  assertValidInvoiceNotes(data.notes);
 
   const location = await getLocationById(data.tenantId, data.locationId, tx);
   if (!location) {
@@ -702,6 +726,7 @@ export async function createExtensionInvoice(
   const taxRate = data.taxRate ?? 0;
   const discountAmount = data.discountAmount ?? 0;
   validateAmountInputs(taxRate, discountAmount);
+  assertValidInvoiceNotes(data.notes);
 
   const location = await getLocationById(data.tenantId, data.locationId, tx);
   if (!location) {
@@ -973,6 +998,7 @@ export interface CreateCreditNoteInput {
  * fourni (nested), une seule tentative est faite, comme le reste du fichier.
  */
 export async function createCreditNote(data: CreateCreditNoteInput, tx?: Prisma.TransactionClient): Promise<Invoice> {
+  assertValidInvoiceNotes(data.notes);
   if (tx) {
     return createCreditNoteAttempt(data, tx);
   }
@@ -1459,6 +1485,8 @@ export async function updateInvoice(
   data: UpdateInvoiceInput,
   tx: Prisma.TransactionClient = prisma
 ): Promise<Invoice | null> {
+  assertValidInvoiceNotes(data.notes);
+
   const existing = await getInvoiceById(tenantId, invoiceId, tx);
   if (!existing) {
     return null;

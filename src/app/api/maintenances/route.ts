@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { MaintenanceStatus, MaintenanceType } from "@prisma/client";
 import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getMaintenances,
   createMaintenance,
@@ -77,6 +78,10 @@ interface CreateMaintenanceBody {
 }
 
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
 
   if (!user) {

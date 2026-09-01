@@ -165,6 +165,11 @@ export async function getReservations(
         ? {
             OR: [
               { voucherNumber: { contains: filters.search, mode: "insensitive" } },
+              // Phase 6.1 : recherche également par le numéro interne (RES-{année}-{6 chiffres}).
+              // `contains` sur un champ nullable ne retourne jamais les lignes NULL (sémantique
+              // Prisma standard) — aucune régression pour les réservations pré-existantes qui
+              // n'en ont pas encore.
+              { reservationNumber: { contains: filters.search, mode: "insensitive" } },
               { clientFirstName: { contains: filters.search, mode: "insensitive" } },
               { clientLastName: { contains: filters.search, mode: "insensitive" } },
               { flightNumber: { contains: filters.search, mode: "insensitive" } },
@@ -235,6 +240,37 @@ export interface CreateReservationInput extends ReservationInputFields {
  * section 7 : aucun changement de schéma pour ce sprint) : la boucle ci-dessous vérifie
  * explicitement l'absence de collision plutôt que de s'appuyer sur un P2002.
  */
+/**
+ * Phase 6.1 (2026-08-31) : numéro interne unique par tenant, format `RES-{année}-{6 chiffres}`
+ * — distinct de `voucherNumber` (référence externe/broker, non unique par conception, voir le
+ * commentaire du modèle `Reservation` dans `prisma/schema.prisma`). Incrémenté par une seule
+ * instruction SQL atomique (`INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING`) sur
+ * `ReservationNumberCounter`, clé composite `(tenantId, année)` — jamais un `SELECT MAX(...)+1`
+ * ni un `COUNT()` (contrairement à `generateInvoiceNumber`) : Postgres verrouille la ligne
+ * concernée pendant la durée de cette unique instruction, donc deux créations concurrentes pour
+ * le même tenant/année ne peuvent structurellement jamais recevoir le même numéro — aucun
+ * réessai sur collision n'est nécessaire ni possible.
+ *
+ * Doit toujours être appelée à l'intérieur de la même transaction que l'écriture qui l'utilise
+ * (voir `createReservation` ci-dessous) : si cette écriture échoue ensuite, la transaction
+ * entière (compteur inclus) est annulée — le prochain appel réussi obtient alors le même numéro
+ * que celui de la tentative annulée (un « trou » dans la séquence est possible et sans
+ * conséquence, comme pour tout compteur de ce type dans ce projet, ex. `Agency.lastContractNumber`),
+ * jamais une collision.
+ */
+async function generateReservationNumber(tenantId: string, tx: Prisma.TransactionClient): Promise<string> {
+  const year = new Date().getFullYear();
+  const rows = await tx.$queryRaw<{ lastNumber: number }[]>`
+    INSERT INTO "ReservationNumberCounter" ("tenantId", "year", "lastNumber")
+    VALUES (${tenantId}, ${year}, 1)
+    ON CONFLICT ("tenantId", "year")
+    DO UPDATE SET "lastNumber" = "ReservationNumberCounter"."lastNumber" + 1
+    RETURNING "lastNumber"
+  `;
+  const lastNumber = rows[0].lastNumber;
+  return `RES-${year}-${String(lastNumber).padStart(6, "0")}`;
+}
+
 export async function generateDirectVoucherNumber(tenantId: string): Promise<string> {
   const count = await prisma.reservation.count({ where: { tenantId, source: "DIRECT" } });
 
@@ -263,42 +299,51 @@ export async function createReservation(
 
   const lookup = agencyLookup ?? (await buildAgencyLookupMap(data.tenantId));
 
-  return prisma.reservation.create({
-    data: {
-      tenantId: data.tenantId,
-      voucherNumber: data.voucherNumber,
-      confirmationNumber: data.confirmationNumber,
-      receivedAt: data.receivedAt,
-      source: normalizeSource(data.source),
-      clientFirstName: data.clientFirstName,
-      clientLastName: data.clientLastName,
-      startDate: data.startDate,
-      startTime: data.startTime,
-      endDate: data.endDate,
-      endTime: data.endTime,
-      daysCount: data.daysCount,
-      flightNumber: data.flightNumber,
-      currency: data.currency ?? "MAD",
-      totalPrice: data.totalPrice,
-      pricePerDay: data.pricePerDay,
-      vehicleCategory: data.vehicleCategory,
-      pickupAgency: data.pickupAgency,
-      dropoffAgency: data.dropoffAgency,
-      pickupAgencyId: lookupAgencyId(lookup, data.pickupAgency),
-      dropoffAgencyId: lookupAgencyId(lookup, data.dropoffAgency),
-      hasGps: data.hasGps ?? false,
-      gpsPrice: data.gpsPrice,
-      hasBabySeat: data.hasBabySeat ?? false,
-      babySeatPrice: data.babySeatPrice,
-      hasExtraDriver: data.hasExtraDriver ?? false,
-      extraDriverPrice: data.extraDriverPrice,
-      optionsCurrency: data.optionsCurrency ?? "MAD",
-      mileage: data.mileage,
-      includedKm: data.includedKm,
-      clientPhone: data.clientPhone,
-      notes: data.notes,
-      status: data.status ?? "PENDING",
-    },
+  // Phase 6.1 : reservationNumber n'est jamais accepté depuis `data` (absent de
+  // CreateReservationInput/ReservationInputFields par construction — voir ces interfaces
+  // ci-dessus, aucun champ de ce nom n'existe côté entrée) — généré exclusivement ici, à
+  // l'intérieur de la même transaction que l'écriture, pour garantir qu'un échec de création
+  // annule aussi l'incrémentation du compteur (voir generateReservationNumber ci-dessus).
+  return prisma.$transaction(async (tx) => {
+    const reservationNumber = await generateReservationNumber(data.tenantId, tx);
+    return tx.reservation.create({
+      data: {
+        tenantId: data.tenantId,
+        voucherNumber: data.voucherNumber,
+        reservationNumber,
+        confirmationNumber: data.confirmationNumber,
+        receivedAt: data.receivedAt,
+        source: normalizeSource(data.source),
+        clientFirstName: data.clientFirstName,
+        clientLastName: data.clientLastName,
+        startDate: data.startDate,
+        startTime: data.startTime,
+        endDate: data.endDate,
+        endTime: data.endTime,
+        daysCount: data.daysCount,
+        flightNumber: data.flightNumber,
+        currency: data.currency ?? "MAD",
+        totalPrice: data.totalPrice,
+        pricePerDay: data.pricePerDay,
+        vehicleCategory: data.vehicleCategory,
+        pickupAgency: data.pickupAgency,
+        dropoffAgency: data.dropoffAgency,
+        pickupAgencyId: lookupAgencyId(lookup, data.pickupAgency),
+        dropoffAgencyId: lookupAgencyId(lookup, data.dropoffAgency),
+        hasGps: data.hasGps ?? false,
+        gpsPrice: data.gpsPrice,
+        hasBabySeat: data.hasBabySeat ?? false,
+        babySeatPrice: data.babySeatPrice,
+        hasExtraDriver: data.hasExtraDriver ?? false,
+        extraDriverPrice: data.extraDriverPrice,
+        optionsCurrency: data.optionsCurrency ?? "MAD",
+        mileage: data.mileage,
+        includedKm: data.includedKm,
+        clientPhone: data.clientPhone,
+        notes: data.notes,
+        status: data.status ?? "PENDING",
+      },
+    });
   });
 }
 
@@ -788,6 +833,40 @@ export function parseReservationImportRow(
   // ignorée (undefined), d'où le tiret affiché à tort pour ces lignes importées.
   const source = normalizeSource(cellToString(row.source));
 
+  const daysCount = cellToInt(row.daysCount);
+  const totalPrice = cellToMoney(row.totalPrice);
+  const pricePerDay = cellToMoney(row.pricePerDay);
+  const gpsPrice = cellToMoney(row.gpsPrice);
+  const babySeatPrice = cellToMoney(row.babySeatPrice);
+  const extraDriverPrice = cellToMoney(row.extraDriverPrice);
+  const mileage = cellToInt(row.mileage);
+  const includedKm = cellToInt(row.includedKm);
+
+  // Correctif (revue OWASP Phase 6, 2026-08-31) : `POST /api/reservations` (création manuelle,
+  // src/app/api/reservations/route.ts, MONEY_FIELDS/INT_FIELDS) rejette déjà tout montant/entier
+  // négatif — cette validation n'avait jamais été reproduite ici, si bien qu'un fichier importé
+  // pouvait produire une réservation avec, par exemple, un `totalPrice` négatif qu'un utilisateur
+  // ne pouvait jamais créer manuellement via la même API. `NUMERIC_IMPORT_FIELDS` couvre
+  // exactement les mêmes champs, avec le même seuil (`>= 0`) — également plafonné à une valeur
+  // bien en-deçà de la limite `Int` PostgreSQL (2^31-1) pour rejeter proprement une faute de
+  // frappe grossière côté fichier plutôt que de laisser l'écriture échouer sans contrôle.
+  const MAX_PLAUSIBLE_IMPORT_VALUE = 100_000_000_00; // 100 millions (unité courante) en centimes
+  const NUMERIC_IMPORT_FIELDS: [string, number | undefined][] = [
+    ["Jours", daysCount],
+    ["Prix total", totalPrice],
+    ["Prix / jour", pricePerDay],
+    ["Prix GPS", gpsPrice],
+    ["Prix siège bébé", babySeatPrice],
+    ["Prix chauffeur additionnel", extraDriverPrice],
+    ["Kilométrage", mileage],
+    ["Kilométrage inclus", includedKm],
+  ];
+  for (const [column, value] of NUMERIC_IMPORT_FIELDS) {
+    if (value !== undefined && (value < 0 || value > MAX_PLAUSIBLE_IMPORT_VALUE)) {
+      return { error: `Colonne invalide: ${column} (valeur "${value}" hors bornes acceptées)` };
+    }
+  }
+
   return {
     data: {
       voucherNumber,
@@ -800,23 +879,23 @@ export function parseReservationImportRow(
       startTime: cellToTime(row.startTime),
       endDate,
       endTime: cellToTime(row.endTime),
-      daysCount: cellToInt(row.daysCount),
+      daysCount,
       flightNumber: cellToString(row.flightNumber),
       currency: cellToString(row.currency),
-      totalPrice: cellToMoney(row.totalPrice),
-      pricePerDay: cellToMoney(row.pricePerDay),
+      totalPrice,
+      pricePerDay,
       vehicleCategory: cellToString(row.vehicleCategory),
       pickupAgency,
       dropoffAgency,
       hasGps: cellToBoolean(row.hasGps),
-      gpsPrice: cellToMoney(row.gpsPrice),
+      gpsPrice,
       hasBabySeat: cellToBoolean(row.hasBabySeat),
-      babySeatPrice: cellToMoney(row.babySeatPrice),
+      babySeatPrice,
       hasExtraDriver: cellToBoolean(row.hasExtraDriver),
-      extraDriverPrice: cellToMoney(row.extraDriverPrice),
+      extraDriverPrice,
       optionsCurrency: cellToString(row.optionsCurrency),
-      mileage: cellToInt(row.mileage),
-      includedKm: cellToInt(row.includedKm),
+      mileage,
+      includedKm,
       clientPhone: cellToString(row.clientPhone),
       notes: cellToString(row.notes),
     },

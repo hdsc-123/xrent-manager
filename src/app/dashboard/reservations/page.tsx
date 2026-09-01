@@ -94,6 +94,7 @@ export default async function ReservationsPage({ searchParams }: PageProps) {
   const rows: ReservationRow[] = reservations.map((reservation) => ({
     id: reservation.id,
     voucherNumber: reservation.voucherNumber,
+    reservationNumber: reservation.reservationNumber,
     canEditAgency: canEditRow(reservation.pickupAgencyId),
     source: reservation.source,
     optionsCurrency: reservation.optionsCurrency,

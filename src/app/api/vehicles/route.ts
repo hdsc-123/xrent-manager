@@ -4,6 +4,7 @@ import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/a
 import { can } from "@/lib/permissions";
 import { getVehicles, createVehicle, type VehicleFilters } from "@/lib/vehicles";
 import { logAction } from "@/lib/audit";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 const VEHICLE_STATUSES: VehicleStatus[] = ["AVAILABLE", "RENTED", "MAINTENANCE", "TRANSFERRING", "ON_TRIP"];
 const TRANSMISSION_TYPES: TransmissionType[] = ["MANUELLE", "AUTOMATIQUE"];
@@ -120,6 +121,10 @@ const OPTIONAL_DATE_FIELDS = [
 ] as const;
 
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
 
   if (!user) {

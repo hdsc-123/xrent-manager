@@ -66,6 +66,7 @@ export default async function EditReservationPage({ params }: PageProps) {
         reservation={{
           id: reservation.id,
           voucherNumber: reservation.voucherNumber,
+          reservationNumber: reservation.reservationNumber,
           confirmationNumber: reservation.confirmationNumber,
           source: reservation.source,
           clientFirstName: reservation.clientFirstName,

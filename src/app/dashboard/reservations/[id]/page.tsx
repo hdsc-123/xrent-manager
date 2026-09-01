@@ -95,6 +95,9 @@ export default async function ReservationDetailPage({ params }: PageProps) {
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="font-heading text-2xl font-semibold">Réservation {reservation.voucherNumber}</h1>
+          {reservation.reservationNumber && (
+            <p className="text-sm text-muted-foreground">N° interne : {reservation.reservationNumber}</p>
+          )}
           <p className="text-sm text-muted-foreground">
             {reservation.clientFirstName} {reservation.clientLastName}
           </p>

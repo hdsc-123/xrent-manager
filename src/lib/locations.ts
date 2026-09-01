@@ -39,6 +39,24 @@ export class InvalidDateRangeError extends Error {
   }
 }
 
+/** Risque résiduel B (HANDOFF.md, Phase 6.2) : `notes` est reproduit tel quel dans le contrat PDF
+ * (ContractPdf.tsx) — une valeur disproportionnée dégraderait ce rendu sans qu'aucune limite
+ * serveur n'existe jusqu'ici. Refusée explicitement (400), jamais tronquée silencieusement. */
+export const MAX_LOCATION_NOTES_LENGTH = 5000;
+
+export class InvalidLocationNotesError extends Error {
+  constructor() {
+    super(`Les notes ne doivent pas dépasser ${MAX_LOCATION_NOTES_LENGTH} caractères.`);
+    this.name = "InvalidLocationNotesError";
+  }
+}
+
+function assertValidLocationNotes(notes: string | null | undefined): void {
+  if (notes != null && notes.length > MAX_LOCATION_NOTES_LENGTH) {
+    throw new InvalidLocationNotesError();
+  }
+}
+
 export class VehicleNotFoundError extends Error {
   constructor() {
     super("Véhicule introuvable.");
@@ -776,6 +794,7 @@ export async function createLocation(
   if (data.endDate <= data.startDate) {
     throw new InvalidDateRangeError();
   }
+  assertValidLocationNotes(data.notes);
 
   if (tx !== prisma) {
     return createLocationLocked(data, tx);
@@ -797,6 +816,23 @@ async function createLocationLocked(data: CreateLocationInput, tx: Prisma.Transa
     throw new VehicleNotFoundError();
   }
   assertVehicleStatusAllowsLocation(vehicle);
+
+  // Correctif (revue OWASP Phase 6, 2026-08-31) : l'agence du contrat est dérivée du véhicule
+  // fraîchement verrouillé ci-dessus, jamais de l'instantané `data.agencyId` lu par l'appelant
+  // AVANT l'ouverture de cette transaction (POST /api/locations, POST
+  // /api/reservations/[id]/convert lisent tous deux le véhicule et vérifient l'accès à son
+  // agence, PUIS entrent dans cette transaction — un transfert de véhicule concurrent peut avoir
+  // changé Vehicle.agencyId entre ces deux instants). Sans cette correction, `Location.agencyId`
+  // pouvait diverger du `Vehicle.agencyId` réel après commit (numérotation de contrat par
+  // agence ci-dessous, écritures de caisse dérivées de `location.agencyId`, et visibilité
+  // agence-scopée pour un MEMBER restreint devenaient alors incohérentes) — les deux appelants
+  // documentent déjà l'intention ("l'agence du contrat est dérivée du véhicule choisi côté
+  // serveur, jamais d'un champ agencyId fourni par le client") : cette correction la rend
+  // effective même sous concurrence, sans changer la signature ni le comportement d'aucun
+  // appelant (leur propre vérification `canAccessAgency` pré-transaction reste inchangée,
+  // défense en profondeur existante — voir POST /api/locations et
+  // POST /api/reservations/[id]/convert).
+  const agencyId = vehicle.agencyId;
 
   const client = await getClientById(data.tenantId, data.clientId, tx);
   if (!client) {
@@ -858,15 +894,15 @@ async function createLocationLocked(data: CreateLocationInput, tx: Prisma.Transa
   // `ROLLBACK TO SAVEPOINT`, jamais la transaction principale (aucun `COMMIT`/`ROLLBACK`
   // exécuté ici) — comportement des 5 tentatives strictement inchangé pour l'appelant.
   for (let attempt = 0; attempt < MAX_CONTRACT_NUMBER_ATTEMPTS; attempt++) {
-    const contractNumber = await generateContractNumber(data.agencyId, tx);
+    const contractNumber = await generateContractNumber(agencyId, tx);
     const savepoint = CONTRACT_NUMBER_SAVEPOINTS[attempt];
     await tx.$executeRawUnsafe(`SAVEPOINT ${savepoint}`);
     try {
       const location = await tx.location.create({
         data: {
           tenantId: data.tenantId,
-          agencyId: data.agencyId,
-          dropoffAgencyId: data.dropoffAgencyId && data.dropoffAgencyId !== data.agencyId ? data.dropoffAgencyId : null,
+          agencyId,
+          dropoffAgencyId: data.dropoffAgencyId && data.dropoffAgencyId !== agencyId ? data.dropoffAgencyId : null,
           vehicleId: data.vehicleId,
           clientId: data.clientId,
           secondDriverId: data.secondDriverId ?? null,
@@ -1039,6 +1075,8 @@ export async function updateLocation(
   locationId: string,
   data: UpdateLocationInput
 ): Promise<Location | null> {
+  assertValidLocationNotes(data.notes);
+
   const existing = await getLocationById(tenantId, locationId);
   if (!existing) {
     return null;

@@ -7,6 +7,7 @@ import {
 } from "@/lib/invitations";
 import { validatePassword } from "@/lib/password-policy";
 import { logAction } from "@/lib/audit";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_PUBLIC_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -19,6 +20,10 @@ interface AcceptBody {
 
 /** Publique : pas de session possible avant l'acceptation (le user n'existe pas encore). */
 export async function POST(request: Request, { params }: RouteParams) {
+  if (isRequestBodyTooLarge(request, MAX_PUBLIC_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_PUBLIC_JSON_BODY_BYTES);
+  }
+
   const { id } = await params;
 
   let body: AcceptBody;

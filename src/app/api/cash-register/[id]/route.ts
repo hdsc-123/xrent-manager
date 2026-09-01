@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { getSessionUser, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   updateCashEntry,
   deleteCashEntry,
@@ -26,6 +27,10 @@ interface UpdateCashEntryBody {
  * src/lib/cash-register.ts, updateCashEntry) — une écriture issue d'un paiement
  * (contractId renseigné) reste immuable, 409 CashEntryNotEditableError sinon. */
 export async function PATCH(request: Request, { params }: RouteParams) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });

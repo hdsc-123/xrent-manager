@@ -148,6 +148,32 @@ describe("POST /api/damages — authentification, permissions, portée", () => {
     expect(response.status).toBe(401);
   });
 
+  // Risque résiduel B (HANDOFF.md, Phase 6.2) : `description` est reproduit tel quel dans la
+  // facture de dégâts PDF (DamageInvoiceLine.description, snapshot de Damage.description — voir
+  // src/lib/damage-invoices.ts) — limite serveur ajoutée (src/lib/damages.ts,
+  // MAX_DAMAGE_DESCRIPTION_LENGTH), erreur métier explicite plutôt qu'une troncature silencieuse.
+  it("refuse une description dépassant la limite serveur (erreur métier explicite, pas de troncature)", async () => {
+    const locationId = await createLocationA();
+    const response = await apiFetch("/api/damages", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ locationId, nature: "Rayure", description: "x".repeat(2001) }),
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("2000");
+  });
+
+  it("accepte une description à exactement la limite serveur (borne inclusive)", async () => {
+    const locationId = await createLocationA();
+    const response = await apiFetch("/api/damages", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ locationId, nature: "Rayure", description: "x".repeat(2000) }),
+    });
+    expect(response.status).toBe(201);
+  });
+
   it("refuse un MEMBER sans damages.create", async () => {
     const locationId = await createLocationA();
     const member = await createAndLoginMember({

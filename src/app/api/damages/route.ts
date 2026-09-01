@@ -3,7 +3,14 @@ import { getSessionUser, canAccessAgency, canAccessLocationAgency } from "@/lib/
 import { can } from "@/lib/permissions";
 import { getLocationById } from "@/lib/locations";
 import { prisma } from "@/lib/prisma";
-import { createDamage, getDamages, InvalidDamageAmountError, InvalidDamageNatureError } from "@/lib/damages";
+import {
+  createDamage,
+  getDamages,
+  InvalidDamageAmountError,
+  InvalidDamageDescriptionError,
+  InvalidDamageNatureError,
+} from "@/lib/damages";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   createDamageInvoice,
   DamageAlreadyInvoicedError,
@@ -75,6 +82,10 @@ interface CreateDamageBody {
  * POST /api/locations/[id]/return : "le véhicule correspond au contrat" par construction).
  */
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
@@ -179,6 +190,7 @@ export async function POST(request: Request) {
     if (
       error instanceof InvalidDamageNatureError ||
       error instanceof InvalidDamageAmountError ||
+      error instanceof InvalidDamageDescriptionError ||
       error instanceof DamageNotBillableError
     ) {
       return NextResponse.json({ error: error.message }, { status: 400 });

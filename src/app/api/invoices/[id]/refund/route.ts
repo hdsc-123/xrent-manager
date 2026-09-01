@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { PaymentMethod } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getInvoiceById,
   refundCreditNote,
@@ -39,6 +40,10 @@ const VALID_PAYMENT_METHODS = ["CASH", "CARD", "BANK_TRANSFER", "CHECK", "OTHER"
  * dérivés côté serveur depuis l'avoir déjà chargé et vérifié, jamais fournis par le client.
  */
 export async function POST(request: Request, { params }: RouteParams) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });

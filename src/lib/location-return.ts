@@ -12,7 +12,12 @@ import {
   InvalidPaymentAmountError,
   PaymentExceedsRemainingBalanceError,
 } from "@/lib/payments";
-import { createDamage, InvalidDamageAmountError, InvalidDamageNatureError } from "@/lib/damages";
+import {
+  createDamage,
+  InvalidDamageAmountError,
+  InvalidDamageDescriptionError,
+  InvalidDamageNatureError,
+} from "@/lib/damages";
 import {
   createDamageInvoice,
   createDamageInvoicePayments,
@@ -44,6 +49,7 @@ export {
   InvalidDamageInvoicePaymentAmountError,
   DamageInvoicePaymentExceedsBalanceError,
   InvalidDamageAmountError,
+  InvalidDamageDescriptionError,
   InvalidDamageNatureError,
 };
 

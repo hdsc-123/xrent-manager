@@ -35,6 +35,27 @@ export class InvalidDamageAmountError extends Error {
   }
 }
 
+/** Risque résiduel B (HANDOFF.md, Phase 6.2) : `description` est reproduit tel quel dans la
+ * facture de dégâts PDF (snapshot vers `DamageInvoiceLine.description`, voir
+ * src/lib/damage-invoices.ts) — une valeur disproportionnée dégraderait ce rendu sans qu'aucune
+ * limite serveur n'existe jusqu'ici (seule `MAX_AUTHENTICATED_JSON_BODY_BYTES` borne le corps de
+ * la requête entière, pas ce champ précis). Refusée explicitement (400), jamais tronquée
+ * silencieusement. */
+export const MAX_DAMAGE_DESCRIPTION_LENGTH = 2000;
+
+export class InvalidDamageDescriptionError extends Error {
+  constructor() {
+    super(`La description ne doit pas dépasser ${MAX_DAMAGE_DESCRIPTION_LENGTH} caractères.`);
+    this.name = "InvalidDamageDescriptionError";
+  }
+}
+
+function assertValidDamageDescription(description: string | null | undefined): void {
+  if (description != null && description.length > MAX_DAMAGE_DESCRIPTION_LENGTH) {
+    throw new InvalidDamageDescriptionError();
+  }
+}
+
 /** Sprint 33 : un dégât déjà rattaché à une DamageInvoice (Damage.damageInvoiceId renseigné) ne
  * peut plus être corrigé — son contenu facturé est figé sur un snapshot immuable
  * (DamageInvoiceLine, voir prisma/schema.prisma), corriger le Damage vivant ensuite créerait une
@@ -112,6 +133,7 @@ export async function createDamage(data: CreateDamageInput, tx: Prisma.Transacti
   if (!data.nature.trim()) {
     throw new InvalidDamageNatureError();
   }
+  assertValidDamageDescription(data.description);
   if (
     data.billableAmount !== undefined &&
     data.billableAmount !== null &&
@@ -164,6 +186,7 @@ export async function updateDamage(
   if (data.nature !== undefined && !data.nature.trim()) {
     throw new InvalidDamageNatureError();
   }
+  assertValidDamageDescription(data.description);
   if (
     data.billableAmount !== undefined &&
     data.billableAmount !== null &&

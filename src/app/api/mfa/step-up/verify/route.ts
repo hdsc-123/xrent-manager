@@ -6,6 +6,7 @@ import { decryptMfaSecret, MfaDecryptionError } from "@/lib/mfa-encryption";
 import { createOrRefreshStepUpProof } from "@/lib/mfa-session";
 import { getClientIp, ipThrottleKey, isLocked, recordFailedAttempt, resetThrottle } from "@/lib/login-throttle";
 import { logAction } from "@/lib/audit";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 interface StepUpBody {
   code?: string;
@@ -25,6 +26,10 @@ const RATE_LIMITED_MESSAGE = "Trop de tentatives. Réessayez plus tard.";
  * perte de l'appareil TOTP, pas à un step-up de routine).
  */
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });

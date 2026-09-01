@@ -4,6 +4,7 @@ import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/a
 import { can } from "@/lib/permissions";
 import { getInvoiceById } from "@/lib/invoices";
 import { prisma } from "@/lib/prisma";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getPayments,
   createPayment,
@@ -96,6 +97,10 @@ interface CreatePaymentBody {
 }
 
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
 
   if (!user) {

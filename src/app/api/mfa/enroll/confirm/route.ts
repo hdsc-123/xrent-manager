@@ -7,6 +7,7 @@ import { generateMfaSecurityStamp } from "@/lib/mfa-session";
 import { mfaEnrollConfirmThrottleKey, isLocked, recordFailedAttempt, resetThrottle } from "@/lib/login-throttle";
 import { logAction } from "@/lib/audit";
 import { createSecurityNotification } from "@/lib/security-notifications";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 interface ConfirmBody {
   code?: string;
@@ -21,6 +22,10 @@ const RATE_LIMITED_MESSAGE = "Trop de tentatives. Réessayez plus tard.";
  * jamais après (même principe que POST /api/auth/login, SECURITY.md section 33).
  */
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });

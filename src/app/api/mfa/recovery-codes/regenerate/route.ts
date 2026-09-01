@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 import { verifyTotpToken, generateRecoveryCodes, hashRecoveryCode } from "@/lib/mfa";
 import { decryptMfaSecret, MfaDecryptionError } from "@/lib/mfa-encryption";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getClientIp,
   ipThrottleKey,
@@ -37,6 +38,10 @@ const TOTP_CODE_RE = /^\d{6}$/;
  * inchangé — hors périmètre explicite du brief pour cette route précise.
  */
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });

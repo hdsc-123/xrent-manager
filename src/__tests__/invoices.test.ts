@@ -495,6 +495,37 @@ describe("PATCH /api/invoices/[id]", () => {
     expect(response.status).toBe(404);
   });
 
+  // Risque résiduel B (HANDOFF.md, Phase 6.2) : `notes` est reproduit tel quel dans la facture
+  // PDF (InvoicePdf.tsx/CreditNotePdf.tsx) — limite serveur ajoutée (src/lib/invoices.ts,
+  // MAX_INVOICE_NOTES_LENGTH), erreur métier explicite plutôt qu'une troncature silencieuse.
+  // Exercé via PATCH (toujours validé, contrairement à POST sur une facture RENTAL déjà
+  // auto-générée à la création de la Location — idempotent, voir createInvoice ci-dessus).
+  it("refuse des notes dépassant la limite serveur (erreur métier explicite, pas de troncature)", async () => {
+    const createResponse = await createInvoice(adminA);
+    const invoice = (await createResponse.json()).invoice;
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ notes: "x".repeat(5001) }),
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("5000");
+  });
+
+  it("accepte des notes à exactement la limite serveur (borne inclusive)", async () => {
+    const createResponse = await createInvoice(adminA);
+    const invoice = (await createResponse.json()).invoice;
+
+    const response = await apiFetch(`/api/invoices/${invoice.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ notes: "x".repeat(5000) }),
+    });
+    expect(response.status).toBe(200);
+  });
+
   // Finding F (Sprint 26F) : le gate Sprint 26D (InvoiceNotFullyPaidError) rendait SENT
   // structurellement inatteignable — recomputeInvoiceStatus (src/lib/payments.ts, Finding B,
   // inchangée) fait déjà passer une facture directement de DRAFT à PARTIALLY_PAID/PAID dès le

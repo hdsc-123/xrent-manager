@@ -215,6 +215,7 @@ async function AdministrationSection({
     const rows: ReservationRow[] = reservations.map((reservation) => ({
       id: reservation.id,
       voucherNumber: reservation.voucherNumber,
+      reservationNumber: reservation.reservationNumber,
       canEditAgency: false,
       source: reservation.source,
       optionsCurrency: reservation.optionsCurrency,

@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
-import { ipThrottleKey, emailThrottleKey } from "@/lib/login-throttle";
+import { ipThrottleKey, emailThrottleKey, getClientIp } from "@/lib/login-throttle";
 import { apiFetch, extractSessionCookie } from "./helpers/http";
 import { registerTenantAdmin, deleteTestTenants } from "./helpers/fixtures";
 
@@ -160,5 +160,59 @@ describe("Rate limiting d'authentification", () => {
     const response = await loginAttempt(email, ip, password);
     expect(response.status).toBe(200);
     expect(extractSessionCookie(response)).toBeDefined();
+  });
+
+  describe("getClientIp — résistance à la falsification de x-forwarded-for (revue OWASP Phase 6, 2026-08-31)", () => {
+    it("retient la dernière valeur (déposée par le proxy de confiance), jamais la première (fournie par le client)", () => {
+      const request = new Request("http://localhost/api/auth/login", {
+        headers: { "x-forwarded-for": "203.0.113.9, 198.51.100.77" },
+      });
+      // "203.0.113.9" est ce que le client a écrit lui-même dans sa requête ; "198.51.100.77"
+      // est l'adresse que le proxy de confiance a observée et ajoutée en fin de liste — c'est
+      // cette dernière qui doit faire foi, jamais la première (falsifiable à volonté).
+      expect(getClientIp(request)).toBe("198.51.100.77");
+    });
+
+    it("une seule valeur (développement/test local, aucun proxy) reste inchangée", () => {
+      const request = new Request("http://localhost/api/auth/login", {
+        headers: { "x-forwarded-for": "10.1.2.3" },
+      });
+      expect(getClientIp(request)).toBe("10.1.2.3");
+    });
+
+    it("un client qui fait varier la partie falsifiable de x-forwarded-for à chaque tentative reste bloqué par le même verrou IP (le dernier maillon reste constant)", async () => {
+      const trustedHopIp = `198.51.100.${Math.floor(Math.random() * 200) + 1}`;
+      const ipKey = ipThrottleKey(trustedHopIp);
+      usedThrottleKeys.push(ipKey);
+
+      for (let i = 0; i < 5; i++) {
+        // Préfixe client-forgé différent à chaque tentative (ce que ferait un attaquant pour
+        // tenter de contourner le verrou par IP) — le dernier maillon, ajouté par le proxy de
+        // confiance, reste constant et c'est lui seul qui doit déterminer la clé de throttle.
+        const response = await apiFetch("/api/auth/login", {
+          method: "POST",
+          headers: { "x-forwarded-for": `203.0.113.${i}, ${trustedHopIp}` },
+          body: JSON.stringify({
+            email: `throttle-spoof-${runId}-${i}@test.local`,
+            password: "wrong-password-x",
+          }),
+        });
+        expect(response.status).toBe(401);
+      }
+
+      const lockedResponse = await apiFetch("/api/auth/login", {
+        method: "POST",
+        headers: { "x-forwarded-for": `203.0.113.99, ${trustedHopIp}` },
+        body: JSON.stringify({
+          email: `throttle-spoof-${runId}-final@test.local`,
+          password: "wrong-password-x",
+        }),
+      });
+      expect(lockedResponse.status).toBe(429);
+
+      const row = await prisma.loginThrottle.findUnique({ where: { key: ipKey } });
+      expect(row?.failCount).toBeGreaterThanOrEqual(5);
+      expect(row?.lockedUntil).not.toBeNull();
+    });
   });
 });

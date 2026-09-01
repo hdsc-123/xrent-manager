@@ -34,6 +34,11 @@ export const TENANT_MODEL_DELETE_ORDER = [
   { model: "invoice", where: (ids) => ({ tenantId: { in: ids } }) },
   { model: "location", where: (ids) => ({ tenantId: { in: ids } }) },
   { model: "reservation", where: (ids) => ({ tenantId: { in: ids } }) },
+  // Phase 6.1 (2026-08-31) — compteur du numéro de réservation interne, FK directe vers Tenant
+  // (ReservationNumberCounter_tenantId_fkey) : doit être supprimé avant `tenant` lui-même, comme
+  // toute autre table de cette liste (voir INCIDENTS.md INC-29, cause racine déjà documentée —
+  // une entrée manquante ici bloque la suppression du tenant avec une violation de contrainte).
+  { model: "reservationNumberCounter", where: (ids) => ({ tenantId: { in: ids } }) },
   { model: "maintenance", where: (ids) => ({ tenantId: { in: ids } }) },
   { model: "vehicleTransfer", where: (ids) => ({ tenantId: { in: ids } }) },
   { model: "vehicleTrip", where: (ids) => ({ tenantId: { in: ids } }) },

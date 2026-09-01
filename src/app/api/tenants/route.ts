@@ -8,6 +8,7 @@ import { ensureDefaultGroups } from "@/lib/permissions";
 import { BCRYPT_COST } from "@/lib/bcrypt-cost";
 import { logAction } from "@/lib/audit";
 import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 /**
  * Isolation multi-tenant (SECURITY.md section 1) : un ADMIN ne voit jamais que son propre
@@ -70,6 +71,10 @@ function isUniqueConstraintError(error: unknown): boolean {
  * l'ancien `POST /api/auth/register` — seule la garde d'accès change.
  */
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
 
   if (!user) {

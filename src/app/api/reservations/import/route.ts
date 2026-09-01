@@ -158,7 +158,27 @@ export async function POST(request: Request) {
         });
       }
     } else {
-      await createReservation({ tenantId: user.tenantId, ...parsed.data }, agencyLookup);
+      try {
+        await createReservation({ tenantId: user.tenantId, ...parsed.data }, agencyLookup);
+      } catch {
+        // Correctif (revue OWASP Phase 6, 2026-08-31) : une erreur inattendue à l'écriture
+        // (ex. contrainte unique en base sous une course rare entre deux imports concurrents
+        // du même tenant, jamais couverte par `existingVouchers` ci-dessus qui ne verrouille
+        // rien) faisait jusqu'ici planter toute la requête (500 brut, réponse jamais renvoyée
+        // au client, y compris le décompte des lignes déjà importées avec succès avant elle).
+        // Le parcours reste volontairement ligne par ligne, jamais une transaction unique
+        // englobant tout le fichier (comportement documenté en tête de ce fichier : "les
+        // lignes invalides sont rapportées sans bloquer l'import des lignes valides") — seule
+        // la visibilité de l'échec d'UNE ligne manquait. Rapportée ici exactement comme une
+        // ligne invalide (même tableau `errors`), jamais un message technique brut (SECURITY.md
+        // section 18) ; les lignes déjà importées avant elle restent importées (inchangé), les
+        // suivantes continuent d'être traitées.
+        errors.push({
+          row: rowNumber,
+          error: "Cette ligne n'a pas pu être importée (erreur inattendue lors de l'enregistrement).",
+        });
+        continue;
+      }
     }
     existingVouchers.add(parsed.data.voucherNumber);
     imported += 1;

@@ -1084,6 +1084,130 @@ Aucune écriture — `xrent_dev` interrogée en lecture seule uniquement (`count
 
 Aucune écriture — cette phase n'a modifié que de la configuration et des tests ; serveurs `next dev`/`next start` locaux temporaires utilisés uniquement pour la vérification navigateur, jamais connectés à une donnée `xrent_dev` réelle, arrêtés en fin de vérification. `xrent_test` interrogée uniquement via la suite automatisée (aucune requête ad-hoc hors suite dans cette phase).
 
+## Tests session — revue OWASP complète, phase 6 (2026-08-31, mode livraison efficace)
+
+**Contexte** : brief explicite du propriétaire du projet — revue OWASP complète des 12 points (authentification/MFA/reset/comptes désactivés, sessions/cookies/révocation, RBAC/permissions, IDOR/isolation tenant-agence, import Excel, uploads/PDF/exports, reset/suppression/confirmations, paiements/caisse, conversion réservation→contrat, logs/erreurs, validation/rate limiting/abus, audit/traçabilité), avec reproduction et correction réelle de chaque faille trouvée (pas seulement documentation). Session reprise une fois après une interruption de contexte — état repris, vérifié cohérent (`git status`/`git diff`), aucun travail perdu, aucune duplication introduite.
+
+**Méthode** : cinq agents en lecture seule (aucune modification de code), chacun chargé de 2-3 des 12 points avec instruction explicite de ne signaler que ce que les audits précédents (sections 4/23-30/32/36-46 de SECURITY.md) auraient pu manquer. Chaque finding rapporté ensuite vérifié personnellement par lecture directe du code avant toute correction — un finding proposé (course entre deux imports concurrents visant le même `voucherNumber`) a été investigué, confirmé comme un risque résiduel réel mais non corrigible sans migration de schéma (CLAUDE.md règle 6), documenté plutôt que « corrigé » à tort.
+
+**Six failles réelles trouvées et corrigées** — voir SECURITY.md section 47 et INCIDENTS.md INC-31 à INC-36 pour le détail complet de chacune.
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `auth.test.ts` (dont 3 nouveaux — durée de session selon rememberMe) | 14 | 14 | 0 | 0 |
+| `login-throttle.test.ts` (dont 3 nouveaux — résistance à la falsification de x-forwarded-for) | 14 | 14 | 0 | 0 |
+| `reservations.test.ts` (dont 3 nouveaux — bornes numériques import) | 166 | 166 | 0 | 0 |
+| `locations.test.ts` (dont 1 nouveau — agencyId dérivé du véhicule verrouillé) | 108 | 108 | 0 | 0 |
+| `vehicle-transfers.test.ts` (régression) | 33 | 33 | 0 | 0 |
+| `audit-deletion.test.ts` (dont 3 nouveaux — plafond bulk-delete) | 18 | 18 | 0 | 0 |
+| `invitations.test.ts` (dont 1 nouveau — 413 corps disproportionné) | — | toujours vert | 0 | 0 |
+| `mfa-routes.test.ts` (régression) | — | toujours vert | 0 | 0 |
+| `request-guards.test.ts` (nouveau, pur) | 7 | 7 | 0 | 0 |
+| `npm run test` (suite complète) | 1657 | 1657 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+| Scan de secrets sur le diff (heuristique) | — | vert (aucun secret réel, seuls des mots de passe de fixture de test) | — | — |
+
+Suite complète passée de **1636/1636** (checkpoint `c51144c`) à **1657/1657** (+21 — 24 tests nouveaux répartis sur 7 fichiers, 3 tests retirés : 1 test de course sur `voucherNumber` écrit puis retiré après avoir confirmé qu'il ne validait aucun comportement corrigible sans migration, voir INC-33 ; le décompte net exact des ajouts/retraits par fichier est détaillé ci-dessus).
+
+### Tests ajoutés (détail)
+
+- `src/__tests__/auth.test.ts` — describe « Durée de session selon 'Se souvenir de moi' » (3 tests, décodage réel du JWT émis avec le vrai secret de session).
+- `src/__tests__/login-throttle.test.ts` — describe « getClientIp — résistance à la falsification de x-forwarded-for » (3 tests, dont un test d'intégration HTTP complet démontrant la résistance au contournement).
+- `src/__tests__/reservations.test.ts` — describe « bornes numériques et robustesse de l'écriture » (4 tests : prix négatif, kilométrage négatif sans bloquer les lignes voisines, valeur disproportionnée).
+- `src/__tests__/locations.test.ts` — describe « Correctif OWASP Phase 6 — Location.agencyId dérivé du véhicule fraîchement verrouillé » (1 test, appel direct de `createLocation()` avec un `agencyId` volontairement obsolète).
+- `src/__tests__/audit-deletion.test.ts` — 3 tests nouveaux (chaîne vide/blanche refusée, 501 ids refusés sans suppression partielle, exactement 500 ids dont doublons acceptés).
+- `src/__tests__/invitations.test.ts` — 1 test (413 sur un corps de 2 Mo, avant toute recherche en base).
+- `src/__tests__/auth.test.ts` — 1 test additionnel (413 sur `POST /api/auth/login`).
+- `src/__tests__/request-guards.test.ts` (nouveau fichier, 7 tests purs — sans serveur `next dev`) — `isRequestBodyTooLarge`/`requestBodyTooLargeResponse`.
+
+`scripts/test-grouped.mjs` mis à jour (`request-guards` ajouté au groupe 2) — garde-fou `test-grouped-integrity.test.ts` (INC-5) ayant détecté à raison son absence initiale avant correction.
+
+### Fichiers modifiés
+
+`src/lib/auth.ts`, `src/lib/login-throttle.ts`, `src/lib/reservations.ts`, `src/lib/locations.ts`, `src/lib/request-guards.ts` (nouveau), `src/app/api/reservations/import/route.ts`, `src/app/api/audit/bulk-delete/route.ts`, `src/app/api/auth/login/route.ts`, `src/app/api/auth/mfa/verify/route.ts`, `src/app/api/invitations/[id]/accept/route.ts`, `scripts/test-grouped.mjs`, `src/__tests__/{auth,login-throttle,reservations,locations,audit-deletion,invitations,request-guards}.test.ts`, `SECURITY.md`, `INCIDENTS.md`, `TESTREPORT.md`, `HANDOFF.md`.
+
+### Vérification données de production
+
+Aucune écriture — `DATABASE_URL` de `.env.test` (`xrent_test@localhost`) vérifiée avant toute exécution, `xrent_dev` jamais ciblée, aucun script destructeur lancé, aucun compte réel (`saadscott123@gmail.com`) impliqué. Toutes les fixtures créées par les tests sont jetables et nettoyées par le mécanisme centralisé `deleteTestTenants` (INC-29) déjà en place.
+
+## Tests session — `reservationNumber`, identifiant interne unique par tenant (Phase 6.1, 2026-08-31)
+
+**Contexte** : brief explicite du propriétaire du projet, suite à l'analyse ciblée de la Phase 6 (`voucherNumber` confirmé référence externe non unique par conception) — conception puis implémentation complète de `reservationNumber`, format `RES-{année}-{6 chiffres}`, unique par tenant, généré exclusivement côté serveur. Détail métier complet : DOMAINRULES.md section 73. Détail sécurité/robustesse : SECURITY.md section 48.
+
+**Migration** : `20260831231126_add_reservation_number` (additive — colonne nullable + table `ReservationNumberCounter` + index unique + FK), générée en mode non interactif (`prisma migrate diff --from-url ... --to-schema-datamodel ... --script`, revue avant application), appliquée exclusivement à `xrent_test` (`prisma migrate deploy`) — `xrent_dev` jamais ciblée par aucune commande de cette session (chaque commande Prisma a explicitement chargé `.env.test` avant exécution, confirmé par le `Datasource "db"` affiché par chaque commande).
+
+**Incident détecté et corrigé en cours de tâche** : la première exécution de la suite complète sur `reservations.test.ts` a fait échouer le nettoyage `afterAll` (`deleteTestTenants`) avec une violation de contrainte de clé étrangère (`ReservationNumberCounter_tenantId_fkey`) — `scripts/tenant-delete-order.mjs` (source de vérité unique depuis INC-29) ne connaissait pas la nouvelle table. Corrigé en y ajoutant `reservationNumberCounter` (suppression avant `tenant`, comme toute autre table de cette liste) — exactement la classe de bug qu'INC-29 visait à prévenir structurellement, détectée immédiatement par la suite elle-même plutôt que de s'accumuler silencieusement.
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `reservations.test.ts` (dont 13 nouveaux, describe `reservationNumber`) | 179 | 179 | 0 | 0 |
+| `locations.test.ts` / `delete-test-tenant.test.ts` / `test-tenant-cleanup.test.ts` / `db.test.ts` (régression, tenant-delete-order.mjs) | 147 | 147 | 0 | 0 |
+| `npm run test` (suite complète) | 1670 | 1670 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+| Scan de secrets sur le diff (heuristique) | — | vert | — | — |
+
+Suite complète passée de **1657/1657** (fin Phase 6) à **1670/1670** (+13, tous dans `reservations.test.ts`).
+
+### Tests ajoutés (describe `reservationNumber — identifiant interne unique par tenant`, 13 tests)
+
+Génération automatique à la création manuelle (avec tentative d'injection cliente explicitement ignorée) ; génération pour une réservation `DIRECT` (orthogonale à l'auto-génération de `voucherNumber`) ; tentative de modification via `PATCH` silencieusement sans effet ; deux créations successives reçoivent des numéros distincts et séquentiels ; 8 créations concurrentes (`Promise.all`) reçoivent chacune un numéro distinct, sans collision ; isolation tenant démontrée en forçant la même valeur exacte sur deux tenants différents (succès, contrainte composite jamais globale) ; collision réelle au sein du même tenant rejetée par la contrainte `@@unique` (vérifiée en base, pas seulement applicative) ; séquence scopée par année (compteur d'une année antérieure préchargé à 42, sans aucune influence sur l'année courante) ; rollback atomique sur échec d'écriture (`totalPrice` hors plage `Int32`, compteur non incrémenté, aucune réservation orpheline) ; génération automatique via import Excel ; préservation exacte après conversion en contrat ; compatibilité avec une ligne `reservationNumber: null` pré-existante (coexistence sans erreur, recherche sans plantage) ; recherche par numéro (partielle, insensible à la casse).
+
+### Fichiers modifiés
+
+`prisma/schema.prisma`, `prisma/migrations/20260831231126_add_reservation_number/` (nouveau), `src/lib/reservations.ts`, `src/app/api/reservations/route.ts`, `src/app/dashboard/reservations/{page.tsx,ReservationsTable.tsx,[id]/page.tsx,[id]/edit/{page.tsx,EditReservationForm.tsx}}`, `src/app/dashboard/administration/page.tsx`, `scripts/backfill-reservation-numbers.js` (nouveau), `scripts/tenant-delete-order.mjs`, `src/__tests__/reservations.test.ts`, `DOMAINRULES.md`, `SECURITY.md`, `TESTREPORT.md`, `HANDOFF.md`.
+
+### Vérification données de production
+
+Aucune écriture sur `xrent_dev`/production — migration et backfill (dry-run uniquement, jamais `--yes`) exclusivement vérifiés contre `xrent_test`, `DATABASE_URL` explicitement chargée depuis `.env.test` avant chaque commande Prisma. Aucun compte réel impliqué.
+
+## Tests session — contrôle, nettoyage `xrent_test` et risques résiduels (Phase 6.2, 2026-09-01)
+
+**Contexte** : contrôle ciblé post-Phase 6.1 (état Git/migration/backfill/ordre de suppression vérifié conforme), nettoyage des tenants de test résiduels de `xrent_test`, et traitement des trois risques résiduels documentés en SECURITY.md section 47 (garde de taille JSON limité aux routes publiques, longueur de champ texte libre non plafonnée sur les champs rendus en PDF, message de conflit de conversion trompeur en cas de réponse HTTP perdue). Détail sécurité complet : SECURITY.md section 49.
+
+### Tests réellement exécutés et verts
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| `request-guards.test.ts` / `reservations.test.ts` / `vehicles.test.ts` (ciblés, point A) | 275 | 275 | 0 | 0 |
+| `damages-route.test.ts` / `locations.test.ts` / `invoices.test.ts` (ciblés, point B) | 319 | 319 | 0 | 0 |
+| `reservations.test.ts` (ciblé, point C — messages INC-30 mis à jour) | 180 | 180 | 0 | 0 |
+| `npm run test` (suite complète) | 1678 | 1678 | 0 | 0 |
+| `npx tsc --noEmit` | — | vert | — | — |
+| `npm run lint` | — | vert | — | — |
+| `npm run build` | — | vert | — | — |
+| `git diff --check` | — | vert | — | — |
+| Scan de secrets sur le diff + fichiers non suivis (heuristique) | — | vert | — | — |
+
+Suite complète passée de **1670/1670** (fin Phase 6.1) à **1678/1678** (+8).
+
+### Tests ajoutés/modifiés (détail)
+
+- **Point A** (2 tests représentatifs, pas un par route — le mécanisme lui-même est déjà couvert intégralement par `request-guards.test.ts`) : `reservations.test.ts` (413 sur `POST /api/reservations`, route sans paramètre dynamique, avant même la vérification de session) ; `vehicles.test.ts` (413 sur `PATCH /api/vehicles/[id]`, route avec `{ params }`).
+- **Point B** (2 tests par champ — borne incluse acceptée, borne dépassée refusée avec message métier explicite) : `damages-route.test.ts` (`description`, 2000/2001 caractères) ; `locations.test.ts` (`notes`, 5000/5001 caractères) ; `invoices.test.ts` (`notes`, exercé via `PATCH` — `POST` sur une facture RENTAL est idempotent une fois la facture auto-générée à la création de la `Location`, donc pas systématiquement traversé).
+- **Point C** (2 tests existants mis à jour, pas de nouveau test — même scénarios INC-30 déjà couverts) : `reservations.test.ts`, describe « conversion atomique et idempotente sous concurrence » — le test de course concurrente et le test de répétition séquentielle vérifient désormais le nouveau texte (neutre, sans supposer « un autre utilisateur ») et la présence de `convertedLocationId` dans le corps de la réponse 409.
+
+### Nettoyage `xrent_test`
+
+`scripts/cleanup-stale-test-tenants.js` (nouveau, dry-run par défaut) exécuté avec confirmation explicite du propriétaire du projet (`--min-age-hours=24 --yes`) : 375 tenants résiduels supprimés sur 380 (5 restants : `test-xrent` protégé + 4 tenants créés dans l'heure précédente, exclus par construction). Comptages avant/après vérifiés à zéro sur les 24 tables du graphe tenant, aucune ligne orpheline, `test-xrent` intact. Détail complet : SECURITY.md section 49.
+
+### Fichiers modifiés
+
+`src/lib/request-guards.ts`, `src/lib/locations.ts`, `src/lib/invoices.ts`, `src/lib/damages.ts`, `src/lib/location-return.ts`, `src/app/api/reservations/[id]/convert/route.ts`, `src/app/api/damages/route.ts`, `src/app/api/damages/[id]/route.ts`, `src/app/api/locations/route.ts`, `src/app/api/locations/[id]/route.ts`, `src/app/api/invoices/route.ts`, `src/app/api/invoices/[id]/route.ts`, `src/app/api/invoices/[id]/credit-notes/route.ts`, `src/app/api/locations/[id]/return/route.ts`, 52 routes `src/app/api/**/route.ts` (garde de taille JSON, point A), `scripts/cleanup-stale-test-tenants.js` (nouveau), `src/__tests__/{damages-route,locations,invoices,reservations,vehicles}.test.ts`, `SECURITY.md`, `TESTREPORT.md`, `HANDOFF.md`.
+
+### Vérification données de production
+
+Aucune écriture sur `xrent_dev`/production — toutes les commandes (tests, dry-run, suppression confirmée) exclusivement contre `xrent_test`, `DATABASE_URL` vérifiée avant chaque exécution. Aucun compte réel (`saadscott123@gmail.com`) impliqué, ni dans les tenants supprimés ni ailleurs.
+
 ## 4. Format attendu des futurs rapports
 
 Chaque exécution future de la suite de tests devra être consignée dans ce document (ou dans un rapport daté associé) selon le format suivant :

@@ -4,6 +4,7 @@ import { getSessionUser, canAccessLocationAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getLocationById } from "@/lib/locations";
 import { PAYMENT_METHODS } from "@/lib/location-payment";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   returnLocation,
   type ReturnDamageInput,
@@ -33,6 +34,7 @@ import {
   InvalidDamageInvoicePaymentAmountError,
   DamageInvoicePaymentExceedsBalanceError,
   InvalidDamageAmountError,
+  InvalidDamageDescriptionError,
   InvalidDamageNatureError,
 } from "@/lib/location-return";
 import { logAction } from "@/lib/audit";
@@ -139,6 +141,10 @@ function parseDamages(raw: unknown): ParseResult<ReturnDamageInput[]> {
  * d'un identifiant fourni par le client.
  */
 export async function POST(request: Request, { params }: RouteParams) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
@@ -351,6 +357,7 @@ export async function POST(request: Request, { params }: RouteParams) {
       error instanceof InvalidReturnTimeError ||
       error instanceof InvalidPaymentAmountError ||
       error instanceof InvalidDamageAmountError ||
+      error instanceof InvalidDamageDescriptionError ||
       error instanceof InvalidDamageNatureError ||
       error instanceof InvalidDamageInvoicePaymentAmountError
     ) {

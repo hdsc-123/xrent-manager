@@ -14,6 +14,7 @@ import {
   resetThrottle,
 } from "@/lib/login-throttle";
 import { logAction } from "@/lib/audit";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_PUBLIC_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 interface MfaVerifyBody {
   email?: string;
@@ -37,6 +38,10 @@ const TOTP_CODE_RE = /^\d{6}$/;
  * principe que le 401 générique de /api/auth/login, SECURITY.md section 3).
  */
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_PUBLIC_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_PUBLIC_JSON_BODY_BYTES);
+  }
+
   let body: MfaVerifyBody;
   try {
     body = await request.json();

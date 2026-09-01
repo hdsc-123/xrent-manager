@@ -4,6 +4,7 @@ import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { getAuditLogCount, purgeAuditLog, logAction } from "@/lib/audit";
 import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 /**
  * Sprint 24-1 : purge complète du journal d'audit du tenant courant — la suppression la plus
@@ -47,6 +48,10 @@ interface PurgeAuditLogBody {
 }
 
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const access = await requireAuditDeleteAccess();
   if (access instanceof NextResponse) return access;
   const user = access;

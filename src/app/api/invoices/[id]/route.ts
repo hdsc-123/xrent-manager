@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { InvoiceStatus, Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getInvoiceById,
   updateInvoice,
@@ -10,6 +11,7 @@ import {
   getCreditNoteRefundableAmount,
   getCreditNotesForSource,
   InvalidInvoiceAmountError,
+  InvalidInvoiceNotesError,
   InvoiceNotEditableError,
   InvalidInvoiceStatusTransitionError,
   InvoiceNotDeletableError,
@@ -95,6 +97,10 @@ interface UpdateInvoiceBody {
 }
 
 export async function PATCH(request: Request, { params }: RouteParams) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
 
   if (!user) {
@@ -150,7 +156,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     });
     return NextResponse.json({ invoice: updated });
   } catch (error) {
-    if (error instanceof InvalidInvoiceAmountError) {
+    if (error instanceof InvalidInvoiceAmountError || error instanceof InvalidInvoiceNotesError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof InvoiceNotEditableError || error instanceof InvalidInvoiceStatusTransitionError) {

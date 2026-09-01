@@ -45,6 +45,8 @@ model Tenant {
   locationUpgrades      LocationUpgrade[]
   // Politique MFA (2026-08-30) : voir modèle SecurityNotification ci-dessous.
   securityNotifications SecurityNotification[]
+  // Phase 6.1 (2026-08-31) : voir modèle ReservationNumberCounter ci-dessous.
+  reservationNumberCounters ReservationNumberCounter[]
 }
 
 model Agency {
@@ -1185,6 +1187,17 @@ model Reservation {
   id                  String            @id @default(cuid())
   tenantId            String
   voucherNumber       String
+  // Phase 6.1 (2026-08-31) : identifiant métier INTERNE, unique par tenant, généré
+  // exclusivement côté serveur (RES-{année}-{6 chiffres} — voir generateReservationNumber,
+  // src/lib/reservations.ts), jamais fourni ni modifiable par le client. Distinct de
+  // voucherNumber ci-dessus (référence EXTERNE au broker — texte libre, saisie manuelle
+  // possible, jamais unique par conception : deux brokers différents, ou un même broker
+  // réémettant un numéro après annulation, peuvent légitimement produire la même valeur —
+  // voir SECURITY.md section 47/INCIDENTS.md INC-33, une contrainte unique sur voucherNumber
+  // romprait cette sémantique). Nullable : les réservations déjà créées avant cette migration
+  // n'en ont pas encore (jamais backfillées automatiquement — voir
+  // scripts/backfill-reservation-numbers.js, dry-run par défaut, jamais exécuté seul).
+  reservationNumber   String?
   confirmationNumber  String?
   receivedAt          DateTime?
   source              String?
@@ -1232,11 +1245,32 @@ model Reservation {
   dropoffAgencyRef Agency?           @relation("ReservationDropoffAgency", fields: [dropoffAgencyId], references: [id])
   upgrades         LocationUpgrade[]
 
+  @@unique([tenantId, reservationNumber])
   @@index([tenantId])
   @@index([status])
   @@index([voucherNumber])
   @@index([pickupAgencyId])
   @@index([dropoffAgencyId])
+}
+
+// Compteur atomique du numéro de réservation interne (Phase 6.1), par tenant ET par année
+// (RES-{année}-{6 chiffres}) — table dédiée plutôt qu'un champ unique sur Tenant (comme
+// Agency.lastContractNumber) : une ligne par (tenantId, année), jamais réutilisée d'une année
+// sur l'autre, ce qui évite toute logique explicite de remise à zéro au changement d'année.
+// Clé primaire composite (pas de cuid séparé nécessaire, cette table n'est jamais référencée
+// depuis ailleurs). Incrémentée par une seule instruction SQL atomique (INSERT ... ON CONFLICT
+// ... DO UPDATE ... RETURNING, voir generateReservationNumber, src/lib/reservations.ts) —
+// jamais un SELECT MAX(...)+1 ni un COUNT() (contrairement à Invoice.number) : aucune fenêtre
+// de collision possible, même sous forte concurrence, sans dépendre d'un réessai après échec de
+// contrainte.
+model ReservationNumberCounter {
+  tenantId   String
+  year       Int
+  lastNumber Int    @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@id([tenantId, year])
 }
 
 // Système de permissions granulaires (Sprint 12C), en complément — pas en remplacement —

@@ -97,16 +97,27 @@ export function mfaAdminResetThrottleKey(actorUserId: string): string {
 
 /**
  * Adresse IP du client. `x-forwarded-for` peut contenir plusieurs adresses séparées par des
- * virgules (proxys successifs) — seule la première (la plus proche du client) est retenue.
- * En développement local (aucun proxy), ces en-têtes sont absents : toutes les requêtes sans
- * en-tête partagent alors la même clé — limite connue, sans impact en local (un seul poste),
- * à revisiter si un déploiement réel derrière un load balancer ne les fournit pas non plus.
+ * virgules (proxys successifs, ex. `client, proxy1, proxy2`). **Correctif revue OWASP Phase 6
+ * (2026-08-31)** : la première valeur (la plus à gauche) est entièrement fournie par le client
+ * lui-même — un client peut y écrire n'importe quoi, y compris une valeur différente à chaque
+ * requête, ce qui rendait le verrou par IP totalement contournable (chaque tentative retombant
+ * sur une clé `ip:` différente). Un proxy de confiance placé devant l'application **ajoute**
+ * toujours sa propre observation en fin de liste plutôt que de réécrire les valeurs déjà
+ * présentes ; c'est donc la **dernière** valeur (la plus proche du serveur, déposée par le
+ * dernier saut réseau réellement traversé) qui reflète l'adresse effectivement connectée,
+ * jamais falsifiable par le client (il ne peut qu'ajouter des valeurs *avant* celle-ci, jamais
+ * après). Hypothèse : au plus un proxy de confiance en amont (conforme à l'hébergement PaaS
+ * visé, ARCHITECTURE.md section 16 — Render/Railway placent tous deux l'application derrière un
+ * unique proxy d'edge qui ajoute l'IP réelle du client). En développement/test local (aucun
+ * proxy, un seul poste), l'en-tête ne contient jamais qu'une seule valeur : ce correctif n'y
+ * change donc rien (dernière valeur === première valeur).
  */
 export function getClientIp(request: Request): string {
   const forwardedFor = request.headers.get("x-forwarded-for");
   if (forwardedFor) {
-    const first = forwardedFor.split(",")[0]?.trim();
-    if (first) return first;
+    const parts = forwardedFor.split(",").map((part) => part.trim()).filter(Boolean);
+    const last = parts[parts.length - 1];
+    if (last) return last;
   }
   const realIp = request.headers.get("x-real-ip");
   if (realIp) return realIp.trim();

@@ -29,6 +29,10 @@ import {
 export interface ReservationRow {
   id: string;
   voucherNumber: string;
+  // Phase 6.1 — identifiant interne unique par tenant, généré serveur (RES-{année}-{6
+  // chiffres}) ; `null` pour les réservations créées avant cette phase (jamais backfillé
+  // automatiquement).
+  reservationNumber: string | null;
   source: string | null;
   flightNumber: string | null;
   clientFirstName: string;
@@ -291,6 +295,12 @@ export function ReservationsTable({
           ]
         : []),
       { accessorKey: "voucherNumber", header: "Voucher" },
+      {
+        id: "reservationNumber",
+        header: "N° réservation",
+        accessorFn: (row) => row.reservationNumber ?? "",
+        cell: ({ row }) => row.original.reservationNumber ?? "—",
+      },
       {
         id: "source",
         header: "Source",

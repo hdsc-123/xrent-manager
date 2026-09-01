@@ -6,6 +6,7 @@ import { verifyTotpToken, verifyRecoveryCode } from "@/lib/mfa";
 import { decryptMfaSecret, MfaDecryptionError } from "@/lib/mfa-encryption";
 import { purgeMfaAndRevokeSessions } from "@/lib/mfa-session";
 import { isSuperAdminEmail } from "@/lib/super-admin";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getClientIp,
   ipThrottleKey,
@@ -38,6 +39,10 @@ const TOTP_CODE_RE = /^\d{6}$/;
  * comportement voulu (force une reconnexion propre après tout changement MFA sensible).
  */
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });

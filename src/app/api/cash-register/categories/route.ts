@@ -3,6 +3,7 @@ import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getExpenseCategories, createExpenseCategory, ExpenseCategoryNameInUseError } from "@/lib/cash-register";
 import { logAction } from "@/lib/audit";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 /**
  * CRUD minimal (GET/POST uniquement) — ajouté au-delà de la liste de fichiers du sprint :
@@ -31,6 +32,10 @@ interface CreateExpenseCategoryBody {
 }
 
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
 
   if (!user) {

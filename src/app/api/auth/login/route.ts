@@ -10,6 +10,7 @@ import {
   recordFailedAttempt,
   resetThrottle,
 } from "@/lib/login-throttle";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_PUBLIC_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 interface LoginBody {
   email?: string;
@@ -33,6 +34,10 @@ const RATE_LIMITED_MESSAGE = "Trop de tentatives. Réessayez plus tard.";
  * email verrouillé (même principe que le 401 générique déjà en place, SECURITY.md section 3).
  */
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_PUBLIC_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_PUBLIC_JSON_BODY_BYTES);
+  }
+
   let body: LoginBody;
   try {
     body = await request.json();

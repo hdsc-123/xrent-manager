@@ -7,6 +7,7 @@ import { isSuperAdminEmail } from "@/lib/super-admin";
 import { mfaAdminResetThrottleKey, isLocked, recordFailedAttempt, resetThrottle } from "@/lib/login-throttle";
 import { logAction } from "@/lib/audit";
 import { createSecurityNotification } from "@/lib/security-notifications";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 interface AdminResetBody {
   targetUserId?: string;
@@ -36,6 +37,10 @@ const RATE_LIMITED_MESSAGE = "Trop de tentatives. Réessayez plus tard.";
  * sessionRevokedAt renseigné — toutes les sessions de la cible sont invalidées au prochain appel.
  */
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const actor = await getSessionUser();
   if (!actor) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });

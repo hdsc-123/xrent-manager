@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getInvoiceById,
   createCreditNote,
@@ -11,6 +12,7 @@ import {
   CreditNoteSourceStatusNotEligibleError,
   CreditNoteExceedsRemainingCreditError,
   InvalidInvoiceAmountError,
+  InvalidInvoiceNotesError,
 } from "@/lib/invoices";
 import { logAction } from "@/lib/audit";
 
@@ -33,6 +35,10 @@ interface CreateCreditNoteBody {
  * jamais fourni par le client.
  */
 export async function POST(request: Request, { params }: RouteParams) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
@@ -100,7 +106,11 @@ export async function POST(request: Request, { params }: RouteParams) {
 
     return NextResponse.json({ invoice: creditNote }, { status: 201 });
   } catch (error) {
-    if (error instanceof InvalidInvoiceAmountError || error instanceof CreditNoteReasonRequiredError) {
+    if (
+      error instanceof InvalidInvoiceAmountError ||
+      error instanceof InvalidInvoiceNotesError ||
+      error instanceof CreditNoteReasonRequiredError
+    ) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof CreditNoteSourceNotFoundError) {

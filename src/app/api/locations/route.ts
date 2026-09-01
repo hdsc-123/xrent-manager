@@ -4,11 +4,13 @@ import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/a
 import { can } from "@/lib/permissions";
 import { getVehicleById } from "@/lib/vehicles";
 import { VehicleDeactivatedError } from "@/lib/vehicle-status";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getLocations,
   createLocation,
   type LocationFilters,
   InvalidDateRangeError,
+  InvalidLocationNotesError,
   VehicleNotFoundError,
   ClientNotFoundError,
   VehicleNotAvailableError,
@@ -95,6 +97,10 @@ interface CreateLocationBody {
 }
 
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
 
   if (!user) {
@@ -233,7 +239,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ location, invoice, payments, paymentError: paymentSaveError }, { status: 201 });
   } catch (error) {
-    if (error instanceof InvalidDateRangeError) {
+    if (error instanceof InvalidDateRangeError || error instanceof InvalidLocationNotesError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof VehicleNotFoundError || error instanceof ClientNotFoundError) {

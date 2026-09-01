@@ -5,6 +5,7 @@ import { getSessionUser, canAccessAgency, canAccessReservationAgencies, canEditR
 import { can } from "@/lib/permissions";
 import { getVehicleById } from "@/lib/vehicles";
 import { VehicleDeactivatedError } from "@/lib/vehicle-status";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getClientById,
   createClient,
@@ -25,6 +26,7 @@ import {
 import {
   createLocation,
   InvalidDateRangeError,
+  InvalidLocationNotesError,
   VehicleNotFoundError,
   ClientNotFoundError,
   VehicleNotAvailableError,
@@ -170,13 +172,23 @@ class ConversionPaymentError extends Error {}
  * est en général interdite). `error.from` reflète désormais le statut réellement observé au
  * moment du refus (voir claimReservationConversion/markReservationConverted,
  * src/lib/reservations.ts) — jamais une valeur potentiellement obsolète lue avant l'échec du
- * CAS, ce qui distingue correctement une course perdue (from === "CONVERTED", quelqu'un
- * d'autre vient de gagner) d'un statut réellement terminal (CANCELLED/NO_SHOW).
+ * CAS.
+ *
+ * Risque résiduel C (HANDOFF.md, Phase 6.2) : `from === "CONVERTED"` recouvre deux scénarios
+ * indiscernables ici (aucune régression à corriger, la garantie anti-doublon elle-même —
+ * `claimReservationConversion`, CAS sous verrou de ligne — reste inchangée et suffisante) : soit
+ * un autre utilisateur a réellement gagné une course de conversion concurrente, soit c'est ce
+ * même appelant qui retente après avoir perdu la réponse HTTP d'une première conversion déjà
+ * committée (timeout réseau, onglet fermé...) — dans les deux cas, un contrat existe déjà et
+ * plus aucune conversion ne peut réussir. Le message ne suppose donc plus « un autre
+ * utilisateur » (trompeur dans le second cas) et oriente vers le contrat existant plutôt que
+ * vers un rechargement de page ; la route ci-dessous joint `convertedLocationId` quand
+ * disponible pour permettre au client de le retrouver directement sans nouvelle recherche.
  */
 function buildConversionConflictMessage(from: string): string {
   switch (from) {
     case "CONVERTED":
-      return "Cette réservation vient d'être convertie en contrat par un autre utilisateur — rechargez la page.";
+      return "Cette réservation est déjà convertie en contrat — consultez le contrat existant plutôt que de reconvertir.";
     case "CANCELLED":
       return "Cette réservation est annulée, elle ne peut plus être convertie en contrat.";
     case "NO_SHOW":
@@ -207,6 +219,10 @@ function buildConversionConflictMessage(from: string): string {
  * déjà réclamée. Comportement inchangé pour POST /api/locations (non touché par ce sprint).
  */
 export async function POST(request: Request, { params }: RouteParams) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
@@ -232,7 +248,16 @@ export async function POST(request: Request, { params }: RouteParams) {
   // transaction et de valider tout le corps de requête pour une réservation déjà
   // manifestement CONVERTED/CANCELLED/NO_SHOW.
   if (!canTransition(reservation.status, "CONVERTED")) {
-    return NextResponse.json({ error: buildConversionConflictMessage(reservation.status) }, { status: 409 });
+    // Risque résiduel C : même enrichissement que le 409 transactionnel plus bas (voir son
+    // commentaire) — `reservation` est déjà l'état à jour lu en tout début de route, aucune
+    // requête supplémentaire nécessaire ici.
+    return NextResponse.json(
+      {
+        error: buildConversionConflictMessage(reservation.status),
+        convertedLocationId: reservation.status === "CONVERTED" ? reservation.convertedLocationId : null,
+      },
+      { status: 409 }
+    );
   }
 
   let body: ConvertBody;
@@ -735,7 +760,7 @@ export async function POST(request: Request, { params }: RouteParams) {
         { status: 409 }
       );
     }
-    if (error instanceof InvalidDateRangeError) {
+    if (error instanceof InvalidDateRangeError || error instanceof InvalidLocationNotesError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof VehicleNotFoundError || error instanceof ClientNotFoundError) {
@@ -765,7 +790,17 @@ export async function POST(request: Request, { params }: RouteParams) {
       );
     }
     if (error instanceof InvalidReservationStatusTransitionError) {
-      return NextResponse.json({ error: buildConversionConflictMessage(error.from) }, { status: 409 });
+      // Risque résiduel C : reservation.convertedLocationId (déjà écrit par markReservationConverted
+      // avant le commit de la conversion gagnante) permet au client de retrouver directement le
+      // contrat existant, y compris quand ce 409 vient de sa propre requête retentée après une
+      // réponse perdue — relu hors transaction (celle de la tentative en cours a déjà échoué/
+      // roll-back), jamais depuis une valeur potentiellement obsolète lue plus haut dans cette route.
+      const convertedLocationId =
+        error.from === "CONVERTED" ? (await getReservationById(user.tenantId, id))?.convertedLocationId ?? null : null;
+      return NextResponse.json(
+        { error: buildConversionConflictMessage(error.from), convertedLocationId },
+        { status: 409 }
+      );
     }
     if (error instanceof ReservationNotFoundError) {
       return NextResponse.json({ error: error.message }, { status: 404 });

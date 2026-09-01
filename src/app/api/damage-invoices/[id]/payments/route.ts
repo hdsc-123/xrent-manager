@@ -3,6 +3,7 @@ import type { PaymentMethod } from "@prisma/client";
 import { getSessionUser, canAccessAgency } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { PAYMENT_METHODS } from "@/lib/location-payment";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getDamageInvoiceById,
   createDamageInvoicePayments,
@@ -60,6 +61,10 @@ function parseLines(raw: unknown): { value: DamagePaymentLine[] } | { error: str
  * (Sprint 32, retirée) — un paiement de dégât n'est plus jamais possible sans DamageInvoice.
  */
 export async function POST(request: Request, { params }: RouteParams) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });

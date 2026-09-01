@@ -7,6 +7,10 @@ import {
   claimReservationConversion,
   markReservationConverted,
   parseReservationImportRow,
+  // Alias : ce fichier définit déjà un helper local `createReservation` (POST HTTP, voir
+  // plus bas) — celui-ci est la fonction de la couche métier, utilisée uniquement pour les
+  // tests Phase 6.1 qui doivent contrôler directement la transaction (rollback, compteur).
+  createReservation as createReservationDirect,
 } from "@/lib/reservations";
 import { createClient } from "@/lib/clients";
 import { createLocation } from "@/lib/locations";
@@ -289,6 +293,20 @@ describe("POST /api/reservations", () => {
   it("refuse une requête non authentifiée", async () => {
     const response = await apiFetch("/api/reservations", { method: "POST", body: JSON.stringify({}) });
     expect(response.status).toBe(401);
+  });
+
+  // Risque résiduel A (HANDOFF.md, Phase 6.2) : garde de taille générique (src/lib/request-guards.ts)
+  // étendu aux routes JSON authentifiées. Représentatif de toutes les routes patchées (même
+  // mécanisme, entièrement unitaire par ailleurs sur `isRequestBodyTooLarge`/
+  // `requestBodyTooLargeResponse`, voir request-guards.test.ts) — pas un test par route. Le garde
+  // s'exécute avant `getSessionUser()` (aucun octet du corps n'a besoin d'être lu pour rejeter),
+  // donc une requête non authentifiée est déjà suffisante pour l'exercer.
+  it("refuse un corps JSON dépassant la limite authentifiée (413), avant même la vérification de session", async () => {
+    const response = await apiFetch("/api/reservations", {
+      method: "POST",
+      body: JSON.stringify({ notes: "x".repeat(4 * 1024 * 1024) }),
+    });
+    expect(response.status).toBe(413);
   });
 
   it("refuse les champs requis manquants", async () => {
@@ -2027,6 +2045,112 @@ describe("POST /api/reservations/import", () => {
       });
     });
   });
+
+  describe("bornes numériques et robustesse de l'écriture (revue OWASP Phase 6, 2026-08-31)", () => {
+    it("rejette un Prix total négatif — cohérence avec la création manuelle (POST /api/reservations rejette déjà ce cas)", async () => {
+      const rows = [
+        importRow({
+          voucherNumber: `V-NEGPRICE-${runId}`,
+          clientFirstName: "Prix",
+          clientLastName: "Negatif",
+          startDate: new Date("2030-09-01"),
+          endDate: new Date("2030-09-03"),
+          totalPrice: -500,
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.imported).toBe(0);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].error).toContain("Colonne invalide: Prix total");
+
+      const persisted = await prisma.reservation.findFirst({
+        where: { tenantId: adminA.tenantId, clientFirstName: "Prix", clientLastName: "Negatif" },
+      });
+      expect(persisted).toBeNull();
+    });
+
+    it("rejette un kilométrage négatif tout en continuant d'importer les lignes valides voisines", async () => {
+      const voucherBefore = `V-NEGKM-BEFORE-${runId}`;
+      const voucherAfter = `V-NEGKM-AFTER-${runId}`;
+      const rows = [
+        importRow({
+          voucherNumber: voucherBefore,
+          clientFirstName: "Km",
+          clientLastName: "Avant",
+          startDate: new Date("2030-09-05"),
+          endDate: new Date("2030-09-06"),
+        }),
+        importRow({
+          voucherNumber: `V-NEGKM-${runId}`,
+          clientFirstName: "Km",
+          clientLastName: "Negatif",
+          startDate: new Date("2030-09-07"),
+          endDate: new Date("2030-09-08"),
+          mileage: -100,
+        }),
+        importRow({
+          voucherNumber: voucherAfter,
+          clientFirstName: "Km",
+          clientLastName: "Apres",
+          startDate: new Date("2030-09-09"),
+          endDate: new Date("2030-09-10"),
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.imported).toBe(2);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].error).toContain("Colonne invalide: Kilométrage");
+
+      const before = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber: voucherBefore } });
+      const after = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber: voucherAfter } });
+      expect(before).not.toBeNull();
+      expect(after).not.toBeNull();
+    });
+
+    it("rejette une valeur disproportionnée (au-delà de la borne de plausibilité) plutôt que de risquer un débordement d'entier PostgreSQL", async () => {
+      const rows = [
+        importRow({
+          voucherNumber: `V-HUGEPRICE-${runId}`,
+          clientFirstName: "Prix",
+          clientLastName: "Disproportionne",
+          startDate: new Date("2030-09-11"),
+          endDate: new Date("2030-09-12"),
+          totalPrice: 999_999_999_999,
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.imported).toBe(0);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].error).toContain("Colonne invalide: Prix total");
+    });
+
+    // Note (revue OWASP Phase 6, 2026-08-31) : un test de course entre deux imports concurrents
+    // visant le même voucherNumber a été envisagé ici pour couvrir le `try/catch` ajouté autour
+    // de `createReservation()` dans la route (ligne perdante rapportée comme erreur plutôt que de
+    // faire planter toute la requête). Retiré après vérification empirique : `Reservation` n'a
+    // aucune contrainte unique en base sur `voucherNumber` (`prisma/schema.prisma`, seul un index
+    // existe — voir le commentaire de `generateDirectVoucherNumber` ci-dessus, "Pas de contrainte
+    // unique en base sur voucherNumber (CLAUDE.md section 7 : aucun changement de schéma pour ce
+    // sprint)", décision déjà actée et documentée avant cette revue). Les deux requêtes
+    // concurrentes réussissent donc toutes les deux (aucune exception ne se produit), créant deux
+    // réservations avec le même voucherNumber pour le même tenant — un risque de doublon
+    // pré-existant, distinct de la faille de bornes numériques corrigée ci-dessus, et qui
+    // nécessiterait une migration de schéma (contrainte unique) pour être fermé : hors périmètre
+    // de cette tâche sans validation explicite du propriétaire du projet (CLAUDE.md règle 6).
+    // Signalé comme risque résiduel dans le rapport de cette revue plutôt que corrigé
+    // unilatéralement. Le `try/catch` lui-même reste en place (défense en profondeur pour toute
+    // autre cause d'échec inattendu à l'écriture, ex. panne de connexion base) — vérifié qu'il ne
+    // modifie aucun comportement existant (166 tests de ce fichier inchangés, tous verts).
+  });
 });
 
 /** Corps minimal valide (véhicule + dates + identité client) — Sprint 13D, nouveau contrat de
@@ -2070,6 +2194,240 @@ function convertBody(
     ...overrides,
   };
 }
+
+/**
+ * Phase 6.1 (2026-08-31) : `reservationNumber` — identifiant métier interne, unique par tenant,
+ * généré exclusivement côté serveur (`RES-{année}-{6 chiffres}`), distinct de `voucherNumber`
+ * (référence externe/broker, inchangée, voir SECURITY.md section 47/INCIDENTS.md INC-33 pour la
+ * raison de ne jamais lui imposer d'unicité). Voir generateReservationNumber/createReservation,
+ * src/lib/reservations.ts, et le modèle ReservationNumberCounter, prisma/schema.prisma.
+ */
+describe("reservationNumber — identifiant interne unique par tenant (Phase 6.1, 2026-08-31)", () => {
+  it("généré automatiquement à la création manuelle ; toute valeur fournie par le client est totalement ignorée", async () => {
+    const response = await createReservation(adminA, {
+      voucherNumber: `V-RESNUM-CREATE-${runId}`,
+      // Tentative d'injection explicite — CreateReservationInput/ReservationInputFields
+      // n'exposent aucun champ de ce nom (src/lib/reservations.ts) : ce champ du corps JSON
+      // n'est jamais lu par la route, quelle que soit sa valeur.
+      reservationNumber: "RES-9999-999999",
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.reservation.reservationNumber).toMatch(/^RES-\d{4}-\d{6}$/);
+    expect(body.reservation.reservationNumber).not.toBe("RES-9999-999999");
+    // voucherNumber reste entièrement inchangé par ce correctif (aucun impact croisé).
+    expect(body.reservation.voucherNumber).toBe(`V-RESNUM-CREATE-${runId}`);
+  });
+
+  it("généré aussi pour une réservation DIRECT (voucherNumber auto-généré séparément, Dir-XXXX) — les deux numérotations sont indépendantes", async () => {
+    const response = await createReservation(adminA, { source: "DIRECT", voucherNumber: undefined });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.reservation.voucherNumber).toMatch(/^Dir-\d{4}$/);
+    expect(body.reservation.reservationNumber).toMatch(/^RES-\d{4}-\d{6}$/);
+  });
+
+  it("une tentative de modification via PATCH est silencieusement ignorée — reservationNumber ne change jamais après création", async () => {
+    const createResp = await createReservation(adminA);
+    const created = (await createResp.json()).reservation;
+    expect(created.reservationNumber).toMatch(/^RES-\d{4}-\d{6}$/);
+
+    const patchResp = await apiFetch(`/api/reservations/${created.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ reservationNumber: "RES-0000-000001", notes: "tentative d'injection" }),
+    });
+    expect(patchResp.status).toBe(200);
+    const patched = (await patchResp.json()).reservation;
+    expect(patched.reservationNumber).toBe(created.reservationNumber);
+    expect(patched.reservationNumber).not.toBe("RES-0000-000001");
+
+    const persisted = await prisma.reservation.findUnique({ where: { id: created.id } });
+    expect(persisted?.reservationNumber).toBe(created.reservationNumber);
+  });
+
+  it("deux créations successives dans le même tenant reçoivent des numéros distincts et séquentiels (même année)", async () => {
+    const r1 = await createReservation(adminA);
+    const r2 = await createReservation(adminA);
+    const n1 = (await r1.json()).reservation.reservationNumber as string;
+    const n2 = (await r2.json()).reservation.reservationNumber as string;
+    expect(n1).not.toBe(n2);
+    const num1 = parseInt(n1.split("-")[2], 10);
+    const num2 = parseInt(n2.split("-")[2], 10);
+    expect(num2).toBe(num1 + 1);
+  });
+
+  it("créations concurrentes pour le même tenant : chaque réservation reçoit un numéro distinct, aucune collision sous concurrence", async () => {
+    const responses = await Promise.all(Array.from({ length: 8 }, () => createReservation(adminA)));
+    for (const response of responses) {
+      expect(response.status).toBe(201);
+    }
+    const numbers = await Promise.all(responses.map(async (r) => (await r.json()).reservation.reservationNumber));
+    expect(new Set(numbers).size).toBe(numbers.length);
+    for (const number of numbers) {
+      expect(number).toMatch(/^RES-\d{4}-\d{6}$/);
+    }
+  });
+
+  it("isolation tenant : la contrainte d'unicité est composite (tenantId, reservationNumber), jamais globale — le même numéro peut coexister sur deux tenants différents", async () => {
+    const rA = await createReservation(adminA);
+    const rB = await createReservation(adminB);
+    const idA = (await rA.json()).reservation.id;
+    const idB = (await rB.json()).reservation.id;
+
+    const forcedNumber = `RES-COLLISION-${runId}`;
+    await prisma.reservation.update({ where: { id: idA }, data: { reservationNumber: forcedNumber } });
+    // Même valeur exacte, tenant différent : doit réussir sans violation de contrainte —
+    // preuve directe que l'unicité n'est jamais globale.
+    const updatedB = await prisma.reservation.update({
+      where: { id: idB },
+      data: { reservationNumber: forcedNumber },
+    });
+    expect(updatedB.reservationNumber).toBe(forcedNumber);
+  });
+
+  it("rejette une collision réelle de reservationNumber au sein du MÊME tenant (contrainte @@unique effectivement appliquée en base)", async () => {
+    const r1 = await createReservation(adminA);
+    const r2 = await createReservation(adminA);
+    const number1 = (await r1.json()).reservation.reservationNumber as string;
+    const id2 = (await r2.json()).reservation.id;
+
+    await expect(
+      prisma.reservation.update({ where: { id: id2 }, data: { reservationNumber: number1 } })
+    ).rejects.toThrow();
+  });
+
+  it("la séquence est scopée par année : un compteur déjà avancé sur une année précédente n'a aucune influence sur l'année courante", async () => {
+    const currentYear = new Date().getFullYear();
+    // Simule qu'une année précédente a déjà eu 42 réservations pour ce tenant.
+    await prisma.$executeRaw`
+      INSERT INTO "ReservationNumberCounter" ("tenantId", "year", "lastNumber")
+      VALUES (${adminA.tenantId}, ${currentYear - 1}, 42)
+      ON CONFLICT ("tenantId", "year") DO UPDATE SET "lastNumber" = 42
+    `;
+
+    const response = await createReservation(adminA);
+    const number = (await response.json()).reservation.reservationNumber as string;
+    expect(number.startsWith(`RES-${currentYear}-`)).toBe(true);
+  });
+
+  it("rollback : si l'écriture échoue après génération du numéro (même transaction), le compteur n'est jamais incrémenté et aucune réservation orpheline n'est créée", async () => {
+    const year = new Date().getFullYear();
+    const before = await prisma.reservationNumberCounter.findUnique({
+      where: { tenantId_year: { tenantId: adminA.tenantId, year } },
+    });
+    const beforeCount = before?.lastNumber ?? 0;
+
+    const voucherNumber = `V-ROLLBACK-${runId}`;
+    // totalPrice hors de la plage Int32 PostgreSQL — force un échec réel de l'INSERT, à
+    // l'intérieur de la même transaction que l'incrément du compteur (createReservationDirect →
+    // generateReservationNumber, src/lib/reservations.ts) : si le rollback n'était pas
+    // réellement atomique, le compteur resterait incrémenté malgré l'absence de réservation.
+    await expect(
+      createReservationDirect({
+        tenantId: adminA.tenantId,
+        voucherNumber,
+        clientFirstName: "Rollback",
+        clientLastName: "Test",
+        startDate: new Date("2034-02-01"),
+        endDate: new Date("2034-02-03"),
+        totalPrice: 99_999_999_999,
+      })
+    ).rejects.toThrow();
+
+    const after = await prisma.reservationNumberCounter.findUnique({
+      where: { tenantId_year: { tenantId: adminA.tenantId, year } },
+    });
+    expect(after?.lastNumber ?? 0).toBe(beforeCount);
+
+    const orphan = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber } });
+    expect(orphan).toBeNull();
+  });
+
+  it("import Excel : chaque ligne importée reçoit automatiquement un reservationNumber, exactement comme la création manuelle", async () => {
+    const voucherNumber = `V-RESNUM-IMPORT-${runId}`;
+    const rows = [
+      importRow({
+        voucherNumber,
+        clientFirstName: "Import",
+        clientLastName: "ResNum",
+        startDate: new Date("2030-09-20"),
+        endDate: new Date("2030-09-21"),
+      }),
+    ];
+
+    const response = await importReservationsFile(adminA, rows, "commit");
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.imported).toBe(1);
+
+    const persisted = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber } });
+    expect(persisted?.reservationNumber).toMatch(/^RES-\d{4}-\d{6}$/);
+  });
+
+  it("la conversion en contrat préserve reservationNumber tel quel — jamais modifié, jamais effacé", async () => {
+    const created = await createReservation(adminA, { startDate: "2034-03-01", endDate: "2034-03-03" });
+    const reservation = (await created.json()).reservation;
+    expect(reservation.reservationNumber).toMatch(/^RES-\d{4}-\d{6}$/);
+
+    const convertResponse = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify(convertBody(reservation)),
+    });
+    expect(convertResponse.status).toBe(201);
+
+    const after = await prisma.reservation.findUnique({ where: { id: reservation.id } });
+    expect(after?.status).toBe("CONVERTED");
+    expect(after?.reservationNumber).toBe(reservation.reservationNumber);
+  });
+
+  it("compatibilité avec les réservations existantes : une réservation avec reservationNumber=null (état pré-Phase 6.1) coexiste sans erreur avec des réservations numérotées du même tenant", async () => {
+    const legacy = await prisma.reservation.create({
+      data: {
+        tenantId: adminA.tenantId,
+        voucherNumber: `V-LEGACY-${runId}`,
+        reservationNumber: null,
+        clientFirstName: "Legacy",
+        clientLastName: "SansNumero",
+        startDate: new Date("2030-01-01"),
+        endDate: new Date("2030-01-02"),
+      },
+    });
+    expect(legacy.reservationNumber).toBeNull();
+
+    // Une nouvelle création dans le même tenant réussit normalement, sans jamais entrer en
+    // conflit avec la ligne legacy (NULL n'est jamais égal à NULL pour une contrainte unique
+    // Postgres — plusieurs lignes NULL coexistent librement).
+    const response = await createReservation(adminA);
+    expect(response.status).toBe(201);
+
+    // La recherche (GET /api/reservations?search=) ne plante jamais sur une ligne à
+    // reservationNumber NULL — `contains` sur un champ NULL ne matche simplement jamais.
+    const searchResponse = await apiFetch(
+      `/api/reservations?search=${encodeURIComponent(`V-LEGACY-${runId}`)}`,
+      { headers: { Cookie: adminA.sessionCookie } }
+    );
+    expect(searchResponse.status).toBe(200);
+    const searchBody = await searchResponse.json();
+    expect(searchBody.reservations.some((r: { id: string }) => r.id === legacy.id)).toBe(true);
+  });
+
+  it("la recherche par reservationNumber fonctionne (recherche partielle, insensible à la casse)", async () => {
+    const response = await createReservation(adminA);
+    const reservationNumber = (await response.json()).reservation.reservationNumber as string;
+
+    const searchResponse = await apiFetch(
+      `/api/reservations?search=${encodeURIComponent(reservationNumber.toLowerCase())}`,
+      { headers: { Cookie: adminA.sessionCookie } }
+    );
+    expect(searchResponse.status).toBe(200);
+    const searchBody = await searchResponse.json();
+    expect(searchBody.reservations.some((r: { reservationNumber: string }) => r.reservationNumber === reservationNumber)).toBe(
+      true
+    );
+  });
+});
 
 describe("POST /api/reservations/[id]/convert", () => {
 
@@ -4189,7 +4547,14 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
     // (qui affichait à tort « PENDING → CONVERTED », comme si PENDING → CONVERTED était en
     // général une transition invalide, alors que la vraie cause est qu'un autre appel a déjà
     // gagné la course entre-temps).
-    expect(loserJson.error).toBe("Cette réservation vient d'être convertie en contrat par un autre utilisateur — rechargez la page.");
+    // Risque résiduel C (HANDOFF.md, Phase 6.2) : message qui ne suppose plus « un autre
+    // utilisateur » (indiscernable d'une propre requête retentée après une réponse HTTP perdue,
+    // voir le commentaire de buildConversionConflictMessage) et oriente vers le contrat
+    // existant — convertedLocationId joint dans la réponse pour le retrouver directement.
+    expect(loserJson.error).toBe(
+      "Cette réservation est déjà convertie en contrat — consultez le contrat existant plutôt que de reconvertir."
+    );
+    expect(loserJson.convertedLocationId).toBe(winnerJson.location.id);
 
     // Vérification en base, pas seulement les codes HTTP.
     const finalReservation = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
@@ -4625,9 +4990,12 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
     const firstLocationId = (await firstResponse.json()).location.id;
 
     // Répétition de la même requête (ex. double-clic manqué par le disabled du bouton
-    // côté UI, onglet dupliqué, ré-essai après un timeout apparent) : refusée avec un
-    // message métier clair, jamais « Transition de statut invalide : CONVERTED →
-    // CONVERTED. » (technique, confus — voir INCIDENTS.md INC-30).
+    // côté UI, onglet dupliqué, ré-essai après un timeout apparent — le scénario exact du
+    // risque résiduel C, HANDOFF.md Phase 6.2 : la première conversion a bien été committée,
+    // seule sa réponse HTTP a été perdue par cet appelant) : refusée avec un message métier
+    // clair, jamais « Transition de statut invalide : CONVERTED → CONVERTED. » (technique,
+    // confus — voir INCIDENTS.md INC-30), et le contrat existant reste consultable directement
+    // via convertedLocationId plutôt que de laisser l'appelant sans piste.
     const secondResponse = await apiFetch(`/api/reservations/${reservation.id}/convert`, {
       method: "POST",
       headers: { Cookie: adminA.sessionCookie },
@@ -4635,7 +5003,10 @@ describe("Sprint 26A (Finding A) — conversion atomique et idempotente sous con
     });
     expect(secondResponse.status).toBe(409);
     const secondBody = await secondResponse.json();
-    expect(secondBody.error).toBe("Cette réservation vient d'être convertie en contrat par un autre utilisateur — rechargez la page.");
+    expect(secondBody.error).toBe(
+      "Cette réservation est déjà convertie en contrat — consultez le contrat existant plutôt que de reconvertir."
+    );
+    expect(secondBody.convertedLocationId).toBe(firstLocationId);
 
     // Idempotence réelle, vérifiée en base : une seule Location pour ce véhicule sur cette
     // période, la réservation toujours rattachée au premier contrat créé.

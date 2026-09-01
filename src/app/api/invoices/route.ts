@@ -3,6 +3,7 @@ import type { InvoiceStatus } from "@prisma/client";
 import { getSessionUser, canAccessAgency, getAccessibleAgencyIds } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { getLocationById } from "@/lib/locations";
+import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 import {
   getInvoices,
   getOrCreateMainInvoice,
@@ -11,6 +12,7 @@ import {
   type InvoiceFilters,
   InvoiceLocationNotFoundError,
   InvalidInvoiceAmountError,
+  InvalidInvoiceNotesError,
   InvalidSupplementKeyError,
   InvalidExtensionEndDateError,
 } from "@/lib/invoices";
@@ -105,6 +107,7 @@ function mapInvoiceCreationError(error: unknown): NextResponse {
   }
   if (
     error instanceof InvalidInvoiceAmountError ||
+    error instanceof InvalidInvoiceNotesError ||
     error instanceof InvalidSupplementKeyError ||
     error instanceof InvalidExtensionEndDateError
   ) {
@@ -116,6 +119,10 @@ function mapInvoiceCreationError(error: unknown): NextResponse {
 }
 
 export async function POST(request: Request) {
+  if (isRequestBodyTooLarge(request, MAX_AUTHENTICATED_JSON_BODY_BYTES)) {
+    return requestBodyTooLargeResponse(MAX_AUTHENTICATED_JSON_BODY_BYTES);
+  }
+
   const user = await getSessionUser();
 
   if (!user) {

@@ -90,6 +90,17 @@ describe("GET /api/invitations/[id]", () => {
 });
 
 describe("POST /api/invitations/[id]/accept", () => {
+  it("refuse un corps de requête disproportionné avant toute lecture (413, revue OWASP Phase 6, 2026-08-31)", async () => {
+    // Route publique (aucune session) — un corps disproportionné était jusqu'ici intégralement
+    // bufferisé par request.json() avant toute autre vérification. Id d'invitation arbitraire :
+    // le refus intervient avant toute recherche en base (src/lib/request-guards.ts).
+    const response = await apiFetch("/api/invitations/does-not-exist/accept", {
+      method: "POST",
+      body: JSON.stringify({ name: "X", password: "A".repeat(2 * 1024 * 1024) }),
+    });
+    expect(response.status).toBe(413);
+  });
+
   it("crée le user avec l'email et le rôle de l'invitation, ignore l'email fourni par le client", async () => {
     const email = `accept-${runId}@test.local`;
     const createResponse = await apiFetch("/api/invitations", {
