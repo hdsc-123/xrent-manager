@@ -11,6 +11,50 @@ interface RouteParams {
   params: Promise<{ id: string }>;
 }
 
+/**
+ * Correction QA 2026-09-01 (anomalie confirmée en Phase 4) : la contrainte FK violée en base
+ * (P2003) peut provenir de n'importe quel modèle rattaché à une agence (voir prisma/schema.prisma
+ * — Vehicle, Location, Invoice, DamageInvoice, Maintenance, VehicleTransfer, VehicleTrip, Alert,
+ * CashEntry, Reservation, UserAgency), pas seulement des utilisateurs — le message générique
+ * précédent ("utilisateurs rattachés") affichait donc systématiquement une cause incorrecte dès
+ * qu'un véhicule, une location ou toute autre donnée bloquait la suppression. Le nom de la
+ * contrainte Postgres générée par Prisma suit la convention `<Table>_<colonne>_fkey` : on en
+ * extrait le nom de table pour donner un message fidèle à la cause réelle, sans changer la règle
+ * de sécurité elle-même (la suppression reste refusée dans tous les cas).
+ */
+const AGENCY_FK_BLOCKER_LABELS: Record<string, string> = {
+  UserAgency: "un ou plusieurs utilisateurs sont rattachés à cette agence",
+  Vehicle: "un ou plusieurs véhicules sont rattachés à cette agence",
+  Location: "des contrats de location existent pour cette agence",
+  Invoice: "des factures existent pour cette agence",
+  DamageInvoice: "des factures de dégâts existent pour cette agence",
+  Maintenance: "des maintenances existent pour cette agence",
+  VehicleTransfer: "des transferts de véhicule existent pour cette agence",
+  VehicleTrip: "des bons de déplacement existent pour cette agence",
+  Alert: "des alertes existent pour cette agence",
+  CashEntry: "des écritures de caisse existent pour cette agence",
+  Reservation: "des réservations existent pour cette agence",
+};
+
+function describeAgencyDeletionBlocker(error: unknown): string {
+  // Vérifié empiriquement (2026-09-01) contre le driver Postgres de Prisma : le nom de
+  // constraint se trouve dans `error.meta.constraint` (ex. "Vehicle_agencyId_fkey"), pas
+  // `field_name` — corrigé après un premier essai qui retombait systématiquement sur le message
+  // de repli générique ci-dessous.
+  const constraintName =
+    typeof error === "object" && error !== null && "meta" in error
+      ? (error as { meta?: { constraint?: unknown } }).meta?.constraint
+      : undefined;
+  if (typeof constraintName === "string") {
+    const tableName = constraintName.split("_")[0];
+    const label = AGENCY_FK_BLOCKER_LABELS[tableName];
+    if (label) {
+      return `Impossible de supprimer cette agence : ${label}.`;
+    }
+  }
+  return "Impossible de supprimer cette agence : des données y sont encore rattachées.";
+}
+
 export async function GET(_request: Request, { params }: RouteParams) {
   const user = await getSessionUser();
 
@@ -181,10 +225,7 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
       "code" in error &&
       (error as { code?: unknown }).code === "P2003"
     ) {
-      return NextResponse.json(
-        { error: "Impossible de supprimer une agence ayant des utilisateurs rattachés." },
-        { status: 409 }
-      );
+      return NextResponse.json({ error: describeAgencyDeletionBlocker(error) }, { status: 409 });
     }
     throw error;
   }

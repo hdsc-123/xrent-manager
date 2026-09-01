@@ -600,3 +600,268 @@ describe("returnLocation — contrat sans facture (défensif, jamais atteint en 
     ).rejects.toThrow(LocationHasNoInvoiceError);
   });
 });
+
+/** Revue durée de réservation/retour véhicule (2026-09-01) : jusqu'ici Vehicle.currentOdometer/
+ * currentFuelLevel restaient figés à leur valeur de création (Sprint 24, "purement informatifs")
+ * — returnLocation ne les synchronisait jamais avec le kilométrage/carburant réellement
+ * enregistrés sur le contrat au retour. */
+describe("returnLocation — synchronisation Vehicle.currentOdometer/currentFuelLevel", () => {
+  it("met à jour le véhicule avec le kilométrage/carburant de retour", async () => {
+    const { vehicle, location } = await createActiveLocationWithInvoice();
+
+    const result = await returnLocation({
+      tenantId,
+      userId,
+      locationId: location.id,
+      endOdometer: 4200,
+      endFuelLevel: 65,
+      canOverrideReturnTime: false,
+    });
+
+    expect(result.vehicle.currentOdometer).toBe(4200);
+    expect(result.vehicle.currentFuelLevel).toBe(65);
+
+    const dbVehicle = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } });
+    expect(dbVehicle.currentOdometer).toBe(4200);
+    expect(dbVehicle.currentFuelLevel).toBe(65);
+  });
+
+  it("ne régresse jamais le kilométrage : un retour ultérieur à un kilométrage inférieur ne diminue pas Vehicle.currentOdometer", async () => {
+    counter += 1;
+    const vehicle = await prisma.vehicle.create({
+      data: {
+        tenantId,
+        agencyId,
+        name: `Véhicule régression ${counter}`,
+        licensePlate: `RET-NOREGRESS-${runId}-${counter}`,
+        make: "Dacia",
+        model: "Logan",
+        year: 2022,
+        category: "ECONOMY",
+        status: "RENTED",
+        currency: "MAD",
+      },
+    });
+
+    async function createLocationForVehicle(startOdometer: number) {
+      const start = new Date(Date.UTC(2031, 2, 1));
+      const end = new Date(start.getTime() + 3 * 24 * 60 * 60 * 1000);
+      const location = await prisma.location.create({
+        data: {
+          tenantId,
+          agencyId,
+          vehicleId: vehicle.id,
+          clientId,
+          startDate: start,
+          endDate: end,
+          status: "ACTIVE",
+          pricePerDay: 5000,
+          totalPrice: 15000,
+          currency: "MAD",
+          startOdometer,
+          startFuelLevel: 50,
+          contractNumber: `RET-NOREGRESS-${runId}-${counter}-${startOdometer}`,
+        },
+      });
+      const invoice = await createInvoice({ tenantId, locationId: location.id });
+      await updateInvoice(tenantId, invoice.id, { status: "ISSUED" });
+      return location;
+    }
+
+    // Premier retour (traité en premier) porte le véhicule à 5000 km.
+    const higherKmLocation = await createLocationForVehicle(4000);
+    const firstResult = await returnLocation({
+      tenantId,
+      userId,
+      locationId: higherKmLocation.id,
+      endOdometer: 5000,
+      endFuelLevel: 50,
+      canOverrideReturnTime: false,
+    });
+    expect(firstResult.vehicle.currentOdometer).toBe(5000);
+
+    // Second retour (contrat distinct, kilométrage de retour inférieur — ex. un retour tardif
+    // traité après un retour plus récent déjà appliqué) ne doit jamais faire régresser le
+    // véhicule déjà à 5000 km.
+    const lowerKmLocation = await createLocationForVehicle(2500);
+    const secondResult = await returnLocation({
+      tenantId,
+      userId,
+      locationId: lowerKmLocation.id,
+      endOdometer: 3000,
+      endFuelLevel: 90,
+      canOverrideReturnTime: false,
+    });
+
+    expect(secondResult.vehicle.currentOdometer).toBe(5000);
+    // Depuis la correction du 2026-09-01, le carburant suit la même règle de non-régression que
+    // le kilométrage — ici la valeur du second retour (90) est bien supérieure à celle du premier
+    // (50), elle progresse donc normalement. Voir le test dédié ci-dessous pour le cas régressif.
+    expect(secondResult.vehicle.currentFuelLevel).toBe(90);
+
+    const dbVehicle = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } });
+    expect(dbVehicle.currentOdometer).toBe(5000);
+  });
+
+  it("ne régresse jamais le niveau de carburant : un retour ultérieur à un niveau inférieur ne diminue pas Vehicle.currentFuelLevel (correction 2026-09-01)", async () => {
+    counter += 1;
+    const vehicle = await prisma.vehicle.create({
+      data: {
+        tenantId,
+        agencyId,
+        name: `Véhicule régression carburant ${counter}`,
+        licensePlate: `RET-NOREGRESS-FUEL-${runId}-${counter}`,
+        make: "Dacia",
+        model: "Logan",
+        year: 2022,
+        category: "ECONOMY",
+        status: "RENTED",
+        currency: "MAD",
+      },
+    });
+
+    async function createLocationForVehicle(startFuelLevel: number) {
+      const start = new Date(Date.UTC(2031, 3, 1));
+      const end = new Date(start.getTime() + 3 * 24 * 60 * 60 * 1000);
+      const location = await prisma.location.create({
+        data: {
+          tenantId,
+          agencyId,
+          vehicleId: vehicle.id,
+          clientId,
+          startDate: start,
+          endDate: end,
+          status: "ACTIVE",
+          pricePerDay: 5000,
+          totalPrice: 15000,
+          currency: "MAD",
+          startOdometer: 1000,
+          startFuelLevel,
+          contractNumber: `RET-NOREGRESS-FUEL-${runId}-${counter}-${startFuelLevel}`,
+        },
+      });
+      const invoice = await createInvoice({ tenantId, locationId: location.id });
+      await updateInvoice(tenantId, invoice.id, { status: "ISSUED" });
+      return location;
+    }
+
+    // Premier retour porte le véhicule à un niveau de carburant élevé (75%).
+    const higherFuelLocation = await createLocationForVehicle(50);
+    const firstResult = await returnLocation({
+      tenantId,
+      userId,
+      locationId: higherFuelLocation.id,
+      endOdometer: 2000,
+      endFuelLevel: 75,
+      canOverrideReturnTime: false,
+    });
+    expect(firstResult.vehicle.currentFuelLevel).toBe(75);
+
+    // Second retour (contrat distinct, niveau de carburant inférieur) ne doit jamais faire
+    // régresser le véhicule déjà à 75% — même règle que le kilométrage. Départ à 40% (distinct de
+    // 50% ci-dessus, pour un contractNumber garanti unique).
+    const lowerFuelLocation = await createLocationForVehicle(40);
+    const secondResult = await returnLocation({
+      tenantId,
+      userId,
+      locationId: lowerFuelLocation.id,
+      endOdometer: 2500,
+      endFuelLevel: 25,
+      canOverrideReturnTime: false,
+    });
+    expect(secondResult.vehicle.currentFuelLevel).toBe(75);
+    // Le kilométrage progresse normalement (valeur strictement supérieure fournie).
+    expect(secondResult.vehicle.currentOdometer).toBe(2500);
+
+    const dbVehicle = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } });
+    expect(dbVehicle.currentFuelLevel).toBe(75);
+  });
+
+  it("isole strictement par tenant : le retour d'un contrat d'un autre tenant ne modifie jamais ce véhicule", async () => {
+    const { vehicle, location } = await createActiveLocationWithInvoice();
+
+    const otherRunId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
+    const otherTenant = await prisma.tenant.create({
+      data: { name: "Autre Tenant Isolation", slug: `other-tenant-isolation-${otherRunId}` },
+    });
+    try {
+      const otherAgency = await prisma.agency.create({
+        data: { tenantId: otherTenant.id, name: "Autre Agence", slug: "autre-agence" },
+      });
+      const otherClient = await prisma.client.create({
+        data: { tenantId: otherTenant.id, name: "Autre Client" },
+      });
+      const otherVehicle = await prisma.vehicle.create({
+        data: {
+          tenantId: otherTenant.id,
+          agencyId: otherAgency.id,
+          name: "Autre Véhicule",
+          licensePlate: `RET-OTHER-${otherRunId}`,
+          make: "Dacia",
+          model: "Logan",
+          year: 2022,
+          category: "ECONOMY",
+          status: "RENTED",
+          currency: "MAD",
+        },
+      });
+      const start = new Date(Date.UTC(2031, 3, 1));
+      const end = new Date(start.getTime() + 3 * 24 * 60 * 60 * 1000);
+      const otherLocation = await prisma.location.create({
+        data: {
+          tenantId: otherTenant.id,
+          agencyId: otherAgency.id,
+          vehicleId: otherVehicle.id,
+          clientId: otherClient.id,
+          startDate: start,
+          endDate: end,
+          status: "ACTIVE",
+          pricePerDay: 5000,
+          totalPrice: 15000,
+          currency: "MAD",
+          startOdometer: 1000,
+          startFuelLevel: 50,
+          contractNumber: `RET-OTHER-${otherRunId}`,
+        },
+      });
+      const otherInvoice = await createInvoice({ tenantId: otherTenant.id, locationId: otherLocation.id });
+      await updateInvoice(otherTenant.id, otherInvoice.id, { status: "ISSUED" });
+
+      await returnLocation({
+        tenantId: otherTenant.id,
+        userId,
+        locationId: otherLocation.id,
+        endOdometer: 99000,
+        endFuelLevel: 10,
+        canOverrideReturnTime: false,
+      });
+
+      // Le véhicule du tenant courant (créé avant, jamais touché par le retour ci-dessus) doit
+      // rester inchangé.
+      const dbVehicle = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } });
+      expect(dbVehicle.currentOdometer).not.toBe(99000);
+
+      // Sanity check inverse : le retour de CE tenant ne modifie pas non plus le véhicule de
+      // l'autre tenant.
+      await returnLocation({
+        tenantId,
+        userId,
+        locationId: location.id,
+        endOdometer: 1200,
+        endFuelLevel: 80,
+        canOverrideReturnTime: false,
+      });
+      const dbOtherVehicle = await prisma.vehicle.findUniqueOrThrow({ where: { id: otherVehicle.id } });
+      expect(dbOtherVehicle.currentOdometer).toBe(99000);
+    } finally {
+      await prisma.payment.deleteMany({ where: { tenantId: otherTenant.id } });
+      await prisma.invoice.deleteMany({ where: { tenantId: otherTenant.id } });
+      await prisma.location.deleteMany({ where: { tenantId: otherTenant.id } });
+      await prisma.vehicle.deleteMany({ where: { tenantId: otherTenant.id } });
+      await prisma.client.deleteMany({ where: { tenantId: otherTenant.id } });
+      await prisma.agency.deleteMany({ where: { tenantId: otherTenant.id } });
+      await prisma.auditLog.deleteMany({ where: { tenantId: otherTenant.id } });
+      await prisma.tenant.delete({ where: { id: otherTenant.id } });
+    }
+  });
+});

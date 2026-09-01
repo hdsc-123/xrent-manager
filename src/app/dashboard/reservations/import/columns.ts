@@ -37,11 +37,15 @@ export const RESERVATION_IMPORT_COLUMNS_CLIENT = [
   "Remarques",
 ] as const;
 
-/** Colonnes obligatoires (l'import échoue ligne par ligne, pas globalement, si absentes). */
+/** Colonnes obligatoires (l'import échoue ligne par ligne, pas globalement, si absentes).
+ * Heure de départ/retour ajoutées (revue durée de réservation, 2026-09-01) — jusqu'ici
+ * optionnelles, une heure absente ou invalide bloque désormais la ligne concernée. */
 export const REQUIRED_IMPORT_COLUMNS_CLIENT = [
   "Numéro voucher",
   "Prénom",
   "Nom",
   "Date de départ",
+  "Heure de départ",
   "Date de retour",
+  "Heure de retour",
 ] as const;

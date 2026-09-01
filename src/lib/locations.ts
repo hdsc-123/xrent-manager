@@ -1,7 +1,8 @@
 import type { Client, Location, LocationStatus, Maintenance, PaymentMethod, Prisma, Vehicle, VehicleStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { checkAvailability, lockVehicleForUpdate, findConflictingMaintenances } from "@/lib/vehicles";
-import { assertVehicleNotDeactivated, syncVehicleStatus } from "@/lib/vehicle-status";
+import { assertVehicleNotDeactivated, syncVehicleStatus, syncVehicleOdometerAndFuel } from "@/lib/vehicle-status";
+import { calculateDaysCount } from "@/lib/format";
 import { getClientById } from "@/lib/clients";
 import { createCorrectionCashEntry, CorrectionReasonRequiredError } from "@/lib/cash-register";
 
@@ -523,14 +524,6 @@ const ALLOWED_TRANSITIONS: Record<LocationStatus, LocationStatus[]> = {
 
 export function canTransition(from: LocationStatus, to: LocationStatus): boolean {
   return ALLOWED_TRANSITIONS[from].includes(to);
-}
-
-/** Nombre de jours arrondi au jour supérieur, minimum 1 jour — extrait de calculateTotalPrice
- * (campagne QA, 2026-08-27) pour être réutilisé tel quel par le calcul du supplément de
- * surclassement (src/lib/location-upgrades.ts), qui doit appliquer exactement la même règle de
- * durée facturée que le prix de base, sans dupliquer la formule. */
-export function calculateDaysCount(start: Date, end: Date): number {
-  return Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)));
 }
 
 export function calculateTotalPrice(pricePerDay: number, start: Date, end: Date): number {
@@ -1352,6 +1345,19 @@ export async function updateLocation(
       // toujours un recalcul tenant compte d'une éventuelle autre opération déjà active.
       if (statusChanging) {
         await syncVehicleStatus(existing.vehicleId, tx);
+
+        // Revue durée de réservation/retour véhicule (2026-09-01) : ce chemin (transition de
+        // statut générique, PATCH /api/locations/[id]) est l'un des deux points d'entrée qui
+        // peuvent clore un contrat par COMPLETED — l'autre étant returnLocation
+        // (src/lib/location-return.ts, POST .../return). Les deux doivent synchroniser
+        // Vehicle.currentOdometer/currentFuelLevel de la même façon, jamais un seul.
+        if (data.status === "COMPLETED") {
+          await syncVehicleOdometerAndFuel(
+            existing.vehicleId,
+            { odometer: updatedLocation.endOdometer, fuelLevel: updatedLocation.endFuelLevel },
+            tx
+          );
+        }
       }
 
       return updatedLocation;

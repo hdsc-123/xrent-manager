@@ -30,6 +30,11 @@ let agencyA1Id: string;
 let vehicleAId: string; // pricePerDay = 5000 (50,00 MAD), status AVAILABLE
 let clientAPhone: string;
 
+// Revue durée de réservation (2026-09-01) : startTime/endTime sont désormais obligatoires côté
+// serveur (voir describe dédié plus bas) — ce helper leur fournit une valeur par défaut pour que
+// les nombreux tests existants qui ne s'intéressent pas à l'heure n'aient pas à être modifiés un
+// par un ; un test qui veut spécifiquement exercer l'absence/l'invalidité d'une heure passe
+// `startTime`/`endTime` en overrides (y compris `null`/chaîne vide) pour écraser ce défaut.
 async function createReservation(admin: AuthenticatedTestUser, overrides: Record<string, unknown> = {}) {
   return apiFetch("/api/reservations", {
     method: "POST",
@@ -39,7 +44,9 @@ async function createReservation(admin: AuthenticatedTestUser, overrides: Record
       clientFirstName: "Jean",
       clientLastName: "Testeur",
       startDate: "2030-06-01",
+      startTime: "10:00",
       endDate: "2030-06-03",
+      endTime: "10:00",
       ...overrides,
     }),
   });
@@ -71,11 +78,22 @@ async function importReservationsFile(
 
 /** Construit une ligne d'import (en-têtes français, RESERVATION_IMPORT_COLUMNS) à partir de
  * valeurs indexées par nom de CHAMP interne (ex. "voucherNumber") — plus lisible dans les
- * tests que l'en-tête français exact. */
+ * tests que l'en-tête français exact.
+ *
+ * Revue durée de réservation (2026-09-01) : startTime/endTime par défaut à "10:00" — désormais
+ * obligatoires à l'import (voir describe dédié plus bas) — pour que les nombreux tests d'import
+ * existants qui ne s'intéressent pas à l'heure n'aient pas à être modifiés un par un ; un test
+ * qui veut exercer l'absence/l'invalidité d'une heure passe explicitement
+ * `startTime`/`endTime` (y compris `null`) pour écraser ce défaut. */
 function importRow(values: Partial<Record<string, unknown>>): unknown[] {
+  // `importRow({})` (aucune clé) reste le sentinel "ligne Excel entièrement vide" utilisé par
+  // les tests dédiés (voir "ignore une ligne Excel entièrement vide") — les défauts heure ne
+  // s'appliquent donc qu'à une ligne décrivant réellement des données.
+  const merged: Partial<Record<string, unknown>> =
+    Object.keys(values).length === 0 ? values : { startTime: "10:00", endTime: "10:00", ...values };
   return RESERVATION_IMPORT_COLUMNS.map((column) => {
     const field = (RESERVATION_IMPORT_COLUMN_MAP as Record<string, string>)[column];
-    return values[field] ?? null;
+    return merged[field] ?? null;
   });
 }
 
@@ -440,7 +458,9 @@ describe("POST /api/reservations", () => {
         clientFirstName: "Jean",
         clientLastName: "Testeur",
         startDate: "2030-06-01",
+        startTime: "10:00",
         endDate: "2030-06-03",
+        endTime: "10:00",
       }),
     });
     expect(first.status).toBe(201);
@@ -455,7 +475,9 @@ describe("POST /api/reservations", () => {
         clientFirstName: "Paul",
         clientLastName: "Testeur",
         startDate: "2030-06-01",
+        startTime: "10:00",
         endDate: "2030-06-03",
+        endTime: "10:00",
       }),
     });
     expect(second.status).toBe(201);
@@ -493,6 +515,97 @@ describe("POST /api/reservations", () => {
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toContain("Ville de retour inconnue");
+  });
+});
+
+/** Revue durée de réservation (2026-09-01) : startTime/endTime deviennent obligatoires pour
+ * toute création manuelle, la durée réelle (règle du jour entamé) est recalculée côté serveur
+ * à partir des instants combinés — jamais une valeur cliente (voir resolveReservationDuration,
+ * src/lib/reservations.ts). Ce comportement est distinct de l'import Excel (Sprint 13B, decribe
+ * dédié plus bas), qui préserve la valeur brute `daysCount` du fichier. */
+describe("POST /api/reservations — durée (heures obligatoires, instant strict, recalcul serveur)", () => {
+  it("refuse une création sans heure de départ", async () => {
+    const response = await createReservation(adminA, { startTime: null });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/startTime|heure de départ/i);
+  });
+
+  it("refuse une création sans heure de retour", async () => {
+    const response = await createReservation(adminA, { endTime: null });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/endTime|heure de retour/i);
+  });
+
+  it("refuse une heure mal formée (hors HH:mm)", async () => {
+    const response = await createReservation(adminA, { startTime: "not-a-time" });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse un retour non strictement postérieur au départ, même jour, heure antérieure", async () => {
+    const response = await createReservation(adminA, {
+      startDate: "2030-06-05",
+      startTime: "10:00",
+      endDate: "2030-06-05",
+      endTime: "09:00",
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse un retour au même instant exact que le départ (même jour, même heure)", async () => {
+    const response = await createReservation(adminA, {
+      startDate: "2030-06-05",
+      startTime: "10:00",
+      endDate: "2030-06-05",
+      endTime: "10:00",
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("accepte un retour le même jour calendaire si l'heure est strictement postérieure", async () => {
+    const response = await createReservation(adminA, {
+      startDate: "2030-06-05",
+      startTime: "09:00",
+      endDate: "2030-06-05",
+      endTime: "18:00",
+    });
+    expect(response.status).toBe(201);
+  });
+
+  it("recalcule daysCount côté serveur à partir des instants réels (jamais une valeur cliente)", async () => {
+    // 10:00 → J+2 09:59 = 2 jours (règle du jour entamé, aucun dépassement) ; le formulaire de
+    // création manuelle n'envoie jamais daysCount (voir NewReservationForm.tsx) — un éventuel
+    // envoi malgré tout ne doit jamais être pris en compte.
+    const response = await createReservation(adminA, {
+      startDate: "2030-07-01",
+      startTime: "10:00",
+      endDate: "2030-07-03",
+      endTime: "09:59",
+      daysCount: 99, // valeur cliente aberrante, jamais fiable niée
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.reservation.daysCount).toBe(2);
+  });
+
+  it("applique exactement les 3 exemples de durée fournis", async () => {
+    const cases: [string, string, number][] = [
+      ["10:00", "10:00", 2], // 10/08 10:00 → 12/08 10:00
+      ["10:00", "09:59", 2], // 10/08 10:00 → 12/08 09:59
+      ["10:00", "11:00", 3], // 10/08 10:00 → 12/08 11:00
+    ];
+    for (const [startTime, endTime, expectedDays] of cases) {
+      const response = await createReservation(adminA, {
+        startDate: "2030-08-10",
+        startTime,
+        endDate: "2030-08-12",
+        endTime,
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.reservation.daysCount).toBe(expectedDays);
+    }
   });
 });
 
@@ -771,6 +884,83 @@ describe("PATCH /api/reservations/[id]", () => {
     const body = await response.json();
     expect(body.reservation.hasGps).toBe(false);
     expect(body.reservation.gpsPrice).toBeNull();
+  });
+});
+
+/** Revue durée de réservation (2026-09-01) : la validation/le recalcul de durée ne s'applique
+ * que si la modification touche réellement une date ou une heure (voir touchesDateOrTime,
+ * src/lib/reservations.ts) — un PATCH qui ne porte que sur des champs sans rapport ne doit
+ * jamais être bloqué ni recalculer daysCount. */
+describe("PATCH /api/reservations/[id] — durée (heures obligatoires, instant strict, recalcul serveur)", () => {
+  it("ne recalcule pas daysCount et n'exige aucune heure quand la modification ne touche ni date ni heure", async () => {
+    const createResponse = await createReservation(adminA, {
+      startDate: "2030-09-01",
+      startTime: "10:00",
+      endDate: "2030-09-03",
+      endTime: "10:00",
+    });
+    const created = await createResponse.json();
+    expect(created.reservation.daysCount).toBe(2);
+
+    const response = await apiFetch(`/api/reservations/${created.reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ notes: "Simple note, aucune date/heure touchée" }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.reservation.daysCount).toBe(2);
+    expect(body.reservation.notes).toBe("Simple note, aucune date/heure touchée");
+  });
+
+  it("refuse de vider l'heure de départ quand la modification touche les dates/heures", async () => {
+    const createResponse = await createReservation(adminA);
+    const id = (await createResponse.json()).reservation.id;
+
+    const response = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ startTime: "" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuse un retour non strictement postérieur au départ après modification", async () => {
+    const createResponse = await createReservation(adminA, {
+      startDate: "2030-09-10",
+      startTime: "10:00",
+      endDate: "2030-09-12",
+      endTime: "10:00",
+    });
+    const id = (await createResponse.json()).reservation.id;
+
+    const response = await apiFetch(`/api/reservations/${id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ endDate: "2030-09-10", endTime: "09:00" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("recalcule daysCount côté serveur quand les dates/heures changent (jamais une valeur cliente)", async () => {
+    const createResponse = await createReservation(adminA, {
+      startDate: "2030-09-15",
+      startTime: "10:00",
+      endDate: "2030-09-17",
+      endTime: "10:00",
+    });
+    const created = await createResponse.json();
+    expect(created.reservation.daysCount).toBe(2);
+
+    // Prolonge le retour d'une heure au-delà de la durée exacte → 3 jours facturés.
+    const response = await apiFetch(`/api/reservations/${created.reservation.id}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ endTime: "11:00", daysCount: 42 }), // 42 : valeur cliente aberrante, jamais fiable
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.reservation.daysCount).toBe(3);
   });
 });
 
@@ -2150,6 +2340,186 @@ describe("POST /api/reservations/import", () => {
     // unilatéralement. Le `try/catch` lui-même reste en place (défense en profondeur pour toute
     // autre cause d'échec inattendu à l'écriture, ex. panne de connexion base) — vérifié qu'il ne
     // modifie aucun comportement existant (166 tests de ce fichier inchangés, tous verts).
+  });
+
+  /** Revue durée de réservation (2026-09-01, option C validée) : heure de départ/retour
+   * désormais obligatoires à l'import (jusqu'ici optionnelles, silencieusement ignorées) ; la
+   * durée réelle (règle du jour entamé) est toujours calculée pour contrôle, mais `daysCount`
+   * brut du fichier (Sprint 13B) n'est jamais recalculé/écrasé — une divergence est seulement
+   * signalée dans le rapport, sans bloquer la ligne. */
+  describe("heures obligatoires et divergence de durée (revue durée de réservation, 2026-09-01)", () => {
+    it("bloque une ligne sans heure de départ, avec le numéro de ligne et le nom de colonne", async () => {
+      const rows = [
+        importRow({
+          voucherNumber: `V-NOSTARTTIME-${runId}`,
+          clientFirstName: "Sans",
+          clientLastName: "HeureDepart",
+          startDate: new Date("2030-10-01"),
+          endDate: new Date("2030-10-03"),
+          startTime: null,
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.imported).toBe(0);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].row).toBe(2);
+      expect(body.errors[0].error).toContain("Colonne obligatoire manquante: Heure de départ");
+    });
+
+    it("bloque une ligne sans heure de retour, avec le numéro de ligne et le nom de colonne", async () => {
+      const rows = [
+        importRow({
+          voucherNumber: `V-NOENDTIME-${runId}`,
+          clientFirstName: "Sans",
+          clientLastName: "HeureRetour",
+          startDate: new Date("2030-10-04"),
+          endDate: new Date("2030-10-06"),
+          endTime: null,
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.imported).toBe(0);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].row).toBe(2);
+      expect(body.errors[0].error).toContain("Colonne obligatoire manquante: Heure de retour");
+    });
+
+    it("bloque une ligne avec une heure mal formée (texte non reconnu)", async () => {
+      const rows = [
+        importRow({
+          voucherNumber: `V-BADTIME-${runId}`,
+          clientFirstName: "Heure",
+          clientLastName: "Invalide",
+          startDate: new Date("2030-10-07"),
+          endDate: new Date("2030-10-09"),
+          startTime: "pas une heure",
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.imported).toBe(0);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].error).toContain("Colonne invalide: Heure de départ");
+    });
+
+    it("bloque une ligne avec une valeur numérique aberrante en colonne heure (≥ 1, ex. un sérial de date complet)", async () => {
+      const rows = [
+        importRow({
+          voucherNumber: `V-ABERRANTTIME-${runId}`,
+          clientFirstName: "Heure",
+          clientLastName: "Aberrante",
+          startDate: new Date("2030-10-10"),
+          endDate: new Date("2030-10-12"),
+          startTime: 46400, // sérial de date complet, jamais une fraction de journée valide
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.imported).toBe(0);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].error).toContain("Colonne invalide: Heure de départ");
+    });
+
+    it("bloque un retour non strictement postérieur au départ (même jour, heure antérieure)", async () => {
+      const rows = [
+        importRow({
+          voucherNumber: `V-BADORDER-${runId}`,
+          clientFirstName: "Retour",
+          clientLastName: "AvantDepart",
+          startDate: new Date("2030-10-13"),
+          startTime: "18:00",
+          endDate: new Date("2030-10-13"),
+          endTime: "09:00",
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.imported).toBe(0);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].row).toBe(2);
+    });
+
+    it("préserve daysCount brut du fichier (Sprint 13B) et n'écrase jamais avec la durée réelle", async () => {
+      const voucherNumber = `V-RAWDAYSCOUNT-${runId}`;
+      const rows = [
+        importRow({
+          voucherNumber,
+          clientFirstName: "Jours",
+          clientLastName: "BrutPreserve",
+          startDate: new Date("2030-10-14"),
+          startTime: "10:00",
+          endDate: new Date("2030-10-16"),
+          endTime: "10:00", // durée réelle = 2 jours
+          daysCount: 5, // forfait broker volontairement différent, jamais écrasé
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.imported).toBe(1);
+      expect(body.warnings).toHaveLength(1);
+      expect(body.warnings[0].row).toBe(2);
+      expect(body.warnings[0].warning).toContain("5");
+      expect(body.warnings[0].warning).toContain("2");
+
+      const persisted = await prisma.reservation.findFirst({ where: { tenantId: adminA.tenantId, voucherNumber } });
+      expect(persisted?.daysCount).toBe(5);
+    });
+
+    it("n'émet aucune divergence quand daysCount brut correspond à la durée réelle", async () => {
+      const voucherNumber = `V-MATCHINGDAYSCOUNT-${runId}`;
+      const rows = [
+        importRow({
+          voucherNumber,
+          clientFirstName: "Jours",
+          clientLastName: "Coherent",
+          startDate: new Date("2030-10-17"),
+          startTime: "10:00",
+          endDate: new Date("2030-10-19"),
+          endTime: "10:00", // durée réelle = 2 jours
+          daysCount: 2,
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "commit");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.imported).toBe(1);
+      expect(body.warnings).toHaveLength(0);
+    });
+
+    it("calcule et affiche la durée réelle en aperçu (preview), sans jamais toucher daysCount stocké", async () => {
+      const rows = [
+        importRow({
+          voucherNumber: `V-PREVIEWDAYS-${runId}`,
+          clientFirstName: "Apercu",
+          clientLastName: "Jours",
+          startDate: new Date("2030-10-20"),
+          startTime: "10:00",
+          endDate: new Date("2030-10-22"),
+          endTime: "11:00", // durée réelle = 3 jours (dépassement d'1h)
+        }),
+      ];
+
+      const response = await importReservationsFile(adminA, rows, "preview");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.preview).toHaveLength(1);
+      expect(body.preview[0].realDaysCount).toBe(3);
+    });
   });
 });
 

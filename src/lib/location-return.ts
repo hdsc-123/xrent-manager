@@ -1,7 +1,7 @@
 import type { Damage, DamageInvoice, Location, Payment, PaymentMethod, Prisma, Vehicle } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { lockVehicleForUpdate } from "@/lib/vehicles";
-import { syncVehicleStatus } from "@/lib/vehicle-status";
+import { syncVehicleStatus, syncVehicleOdometerAndFuel } from "@/lib/vehicle-status";
 import { updateInvoice } from "@/lib/invoices";
 import {
   createPayment,
@@ -461,6 +461,17 @@ export async function returnLocation(input: ReturnLocationInput): Promise<Return
     // aveugle à AVAILABLE — le véhicule retourné peut déjà avoir une autre opération bloquante
     // active en parallèle (ex. une maintenance planifiée démarrant le jour même du retour).
     await syncVehicleStatus(vehicle.id, tx);
+
+    // Revue durée de réservation/retour véhicule (2026-09-01) : même synchronisation que le
+    // chemin PATCH /api/locations/[id] (updateLocation, src/lib/locations.ts) — les deux
+    // points d'entrée qui peuvent clore un contrat par COMPLETED doivent tenir
+    // Vehicle.currentOdometer/currentFuelLevel à jour de façon identique.
+    await syncVehicleOdometerAndFuel(
+      vehicle.id,
+      { odometer: updatedLocation.endOdometer, fuelLevel: updatedLocation.endFuelLevel },
+      tx
+    );
+
     const updatedVehicle = await tx.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } });
 
     return {

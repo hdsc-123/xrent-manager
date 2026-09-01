@@ -1,6 +1,6 @@
 import type { LocationUpgrade, LocationUpgradeType, Prisma, Vehicle } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { calculateDaysCount } from "@/lib/locations";
+import { calculateDaysCount } from "@/lib/format";
 import { checkAvailability } from "@/lib/vehicles";
 
 /**

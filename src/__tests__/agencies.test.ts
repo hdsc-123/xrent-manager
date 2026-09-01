@@ -389,12 +389,62 @@ describe("DELETE /api/agencies/[id]", () => {
     expect(response.status).toBe(404);
   });
 
-  it("refuse la suppression d'une agence ayant des utilisateurs rattachés", async () => {
+  it("refuse la suppression d'une agence ayant des utilisateurs rattachés, avec un message indiquant la cause réelle", async () => {
     const response = await apiFetch(`/api/agencies/${agencyA1Id}`, {
       method: "DELETE",
       headers: { Cookie: adminA.sessionCookie },
     });
     expect(response.status).toBe(409);
+    // Correction QA 2026-09-01 (anomalie confirmée en Phase 4) : le message générique précédent
+    // ("utilisateurs rattachés" toujours, quelle que soit la cause réelle en base) est remplacé
+    // par un message dérivé de la contrainte FK effectivement violée — ici bien les utilisateurs
+    // (UserAgency créé plus haut dans "autorise un MEMBER une fois explicitement rattaché..."),
+    // donc le message reste correct pour ce cas précis, mais n'est plus codé en dur.
+    const body = await response.json();
+    expect(body.error).toMatch(/utilisateurs sont rattachés/);
+  });
+
+  it("refuse la suppression d'une agence ayant un véhicule rattaché, avec un message indiquant cette cause (pas les utilisateurs)", async () => {
+    const createAgencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ name: "Agence véhicule bloquant", slug: `agence-vehicule-bloquant-${Date.now()}` }),
+    });
+    const blockedAgencyId = (await createAgencyResponse.json()).agency.id;
+
+    const createVehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: blockedAgencyId,
+        name: "Véhicule bloquant",
+        licensePlate: `AG-DEL-${Math.floor(Math.random() * 1_000_000)}`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 4500,
+        chassisNumber: `VF1TESTAGDEL${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
+      }),
+    });
+    expect(createVehicleResponse.status).toBe(201);
+
+    const response = await apiFetch(`/api/agencies/${blockedAgencyId}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    // Avant la correction, ce message aurait incorrectement mentionné des utilisateurs alors
+    // que la cause réelle est un véhicule rattaché — c'est précisément l'anomalie corrigée.
+    expect(body.error).toMatch(/véhicules sont rattachés/);
+    expect(body.error).not.toMatch(/utilisateurs/);
   });
 
   it("supprime une agence sans utilisateur rattaché", async () => {

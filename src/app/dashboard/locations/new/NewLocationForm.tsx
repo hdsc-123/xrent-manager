@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { apiGet, apiPost, ApiError } from "@/lib/api";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, combineDateAndTime, calculateDaysCount } from "@/lib/format";
 import {
   Button,
   Card,
@@ -155,27 +155,29 @@ export function NewLocationForm() {
     return Number.isFinite(value) && value > 0 ? Math.round(value * 100) : null;
   }, [pricePerDay]);
 
+  // Revue durée de réservation (2026-09-01) : combinaison via combineDateAndTime (UTC), jamais
+  // `new Date(\`${date}T${time}\`)` (interprété en fuseau local du navigateur) — convention déjà
+  // utilisée par le reste du projet (src/lib/format.ts), pour que l'instant réellement soumis au
+  // serveur ne dépende jamais du fuseau du poste de l'utilisateur.
   const startDateTime = useMemo(() => {
     if (!startDate || !startTime) return null;
-    const value = new Date(`${startDate}T${startTime}`);
+    const value = combineDateAndTime(new Date(startDate), startTime);
     return Number.isNaN(value.getTime()) ? null : value;
   }, [startDate, startTime]);
 
   const endDateTime = useMemo(() => {
     if (!endDate || !endTime) return null;
-    const value = new Date(`${endDate}T${endTime}`);
+    const value = combineDateAndTime(new Date(endDate), endTime);
     return Number.isNaN(value.getTime()) ? null : value;
   }, [endDate, endTime]);
 
   /** Même règle que calculateTotalPrice (src/lib/locations.ts) : jours arrondis au jour
    * supérieur, minimum 1 jour — tout dépassement, même d'une minute, compte comme un jour
-   * supplémentaire. */
+   * supplémentaire. Fonction canonique unique (src/lib/format.ts), jamais réimplémentée
+   * localement. */
   const days = useMemo(() => {
     if (!startDateTime || !endDateTime || endDateTime <= startDateTime) return 0;
-    return Math.max(
-      1,
-      Math.ceil((endDateTime.getTime() - startDateTime.getTime()) / (24 * 60 * 60 * 1000))
-    );
+    return calculateDaysCount(startDateTime, endDateTime);
   }, [startDateTime, endDateTime]);
 
   const estimatedTotal = pricePerDayCentimes && days > 0 ? pricePerDayCentimes * days : 0;

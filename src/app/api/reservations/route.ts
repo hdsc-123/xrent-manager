@@ -10,6 +10,7 @@ import {
   getKnownAgencyNames,
   type ReservationFilters,
   InvalidReservationDateRangeError,
+  MissingReservationTimeError,
 } from "@/lib/reservations";
 import { logAction } from "@/lib/audit";
 
@@ -120,6 +121,17 @@ export async function POST(request: Request) {
     );
   }
 
+  // Revue durée de réservation (2026-09-01) : startTime/endTime obligatoires pour toute
+  // création manuelle — la validation de format/plausibilité (heure strictement postérieure)
+  // reste faite par createReservation (resolveReservationDuration, seule source de vérité),
+  // ce contrôle-ci n'est qu'une vérification de présence, cohérente avec le style de ce bloc.
+  if (!body.startTime?.trim() || !body.endTime?.trim()) {
+    return NextResponse.json(
+      { error: "startTime et endTime sont requis." },
+      { status: 400 }
+    );
+  }
+
   // voucherNumber est saisi manuellement pour une réservation BROKER, mais généré
   // automatiquement (Dir-0001, Dir-0002...) pour une réservation DIRECT (Sprint 13C).
   // Une chaîne composée uniquement d'espaces est traitée comme absente (même principe que
@@ -205,7 +217,11 @@ export async function POST(request: Request) {
       startTime: body.startTime,
       endDate: end,
       endTime: body.endTime,
-      daysCount: body.daysCount,
+      // Revue durée de réservation (2026-09-01) : `daysCount` n'est jamais accepté depuis le
+      // corps de requête pour une création manuelle (ce champ n'existe même pas dans le
+      // formulaire, voir NewReservationForm.tsx) — toujours recalculé côté serveur
+      // (resolveReservationDuration, src/lib/reservations.ts). Seul l'import Excel (Sprint 13B,
+      // POST /api/reservations/import) transmet une valeur brute explicite à createReservation.
       flightNumber: body.flightNumber,
       currency: body.currency,
       totalPrice: body.totalPrice,
@@ -242,7 +258,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ reservation }, { status: 201 });
   } catch (error) {
-    if (error instanceof InvalidReservationDateRangeError) {
+    if (error instanceof InvalidReservationDateRangeError || error instanceof MissingReservationTimeError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     console.error("Erreur lors de la création de la réservation :", error);

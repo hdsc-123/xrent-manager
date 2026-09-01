@@ -110,8 +110,16 @@ export function EditReservationForm({
     event.preventDefault();
     setError(null);
 
-    if (!voucherNumber.trim() || !clientFirstName.trim() || !clientLastName.trim() || !startDate || !endDate) {
-      setError("Voucher, prénom, nom et dates de départ/retour sont requis.");
+    if (
+      !voucherNumber.trim() ||
+      !clientFirstName.trim() ||
+      !clientLastName.trim() ||
+      !startDate ||
+      !endDate ||
+      !startTime ||
+      !endTime
+    ) {
+      setError("Voucher, prénom, nom, dates et heures de départ/retour sont requis.");
       return;
     }
 
@@ -239,16 +247,16 @@ export function EditReservationForm({
               <Input id="startDate" type="date" required value={startDate} onChange={(e) => setStartDate(e.target.value)} />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="startTime">Heure</Label>
-              <Input id="startTime" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+              <Label htmlFor="startTime" required>Heure</Label>
+              <Input id="startTime" type="time" required value={startTime} onChange={(e) => setStartTime(e.target.value)} />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="endDate" required>Date de retour</Label>
               <Input id="endDate" type="date" required value={endDate} onChange={(e) => setEndDate(e.target.value)} />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="endTime">Heure</Label>
-              <Input id="endTime" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+              <Label htmlFor="endTime" required>Heure</Label>
+              <Input id="endTime" type="time" required value={endTime} onChange={(e) => setEndTime(e.target.value)} />
             </div>
           </div>
 

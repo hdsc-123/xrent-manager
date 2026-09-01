@@ -1778,6 +1778,217 @@ describe("PATCH /api/locations/[id]", () => {
   });
 });
 
+/** Revue durée de réservation/retour véhicule (2026-09-01) : ce chemin (PATCH /api/locations/[id],
+ * transition de statut générique via updateLocation) est l'un des deux points d'entrée qui
+ * peuvent clore un contrat par COMPLETED — l'autre étant returnLocation (POST .../return, voir
+ * les tests équivalents dans location-return.test.ts). Jusqu'ici Vehicle.currentOdometer/
+ * currentFuelLevel restaient figés à leur valeur de création, jamais synchronisés ici non plus. */
+describe("PATCH /api/locations/[id] — synchronisation Vehicle.currentOdometer/currentFuelLevel au retour", () => {
+  it("met à jour le véhicule quand le statut passe à COMPLETED avec endOdometer/endFuelLevel", async () => {
+    const createResponse = await createLocation(adminA, {
+      startDate: "2029-06-01",
+      endDate: "2029-06-04",
+    });
+    const locationId = (await createResponse.json()).location.id;
+
+    const response = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED", endOdometer: 61234, endFuelLevel: 75 }),
+    });
+    expect(response.status).toBe(200);
+
+    const vehicle = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleAId } });
+    expect(vehicle.currentOdometer).toBe(61234);
+    expect(vehicle.currentFuelLevel).toBe(75);
+  });
+
+  it("ne régresse jamais le kilométrage du véhicule", async () => {
+    // Premier contrat, retour à un kilométrage plus élevé.
+    const higherResponse = await createLocation(adminA, {
+      startDate: "2029-07-01",
+      endDate: "2029-07-04",
+    });
+    const higherLocationId = (await higherResponse.json()).location.id;
+    await apiFetch(`/api/locations/${higherLocationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED", endOdometer: 80000, endFuelLevel: 40 }),
+    });
+    const afterFirst = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleAId } });
+    expect(afterFirst.currentOdometer).toBe(80000);
+
+    // Second contrat distinct sur le même véhicule, retour à un kilométrage inférieur (ex. un
+    // retour tardif traité après un retour plus récent déjà appliqué) : ne doit jamais faire
+    // régresser Vehicle.currentOdometer.
+    const lowerResponse = await createLocation(adminA, {
+      startDate: "2029-07-10",
+      endDate: "2029-07-13",
+    });
+    const lowerLocationId = (await lowerResponse.json()).location.id;
+    await apiFetch(`/api/locations/${lowerLocationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED", endOdometer: 60000, endFuelLevel: 95 }),
+    });
+
+    const afterSecond = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleAId } });
+    expect(afterSecond.currentOdometer).toBe(80000);
+    // Depuis la correction du 2026-09-01 (Phase 4 QA), le carburant suit la même règle de
+    // non-régression que le kilométrage — voir le test dédié ci-dessous.
+    expect(afterSecond.currentFuelLevel).toBe(95);
+  });
+
+  it("ne régresse jamais le niveau de carburant du véhicule (correction 2026-09-01)", async () => {
+    // Véhicule dédié (plutôt que le vehicleAId partagé par les autres tests de ce describe) pour
+    // ne dépendre d'aucun état de carburant laissé par un test précédent.
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({
+        agencyId: agencyA1Id,
+        name: "Véhicule régression carburant",
+        licensePlate: `LOC-FUEL-${runId}`,
+        make: "Renault",
+        model: "Clio",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 5000,
+        chassisNumber: `VF1TESTFUEL${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
+      }),
+    });
+    const fuelVehicleId = (await vehicleResponse.json()).vehicle.id;
+
+    // Premier contrat, retour à un niveau de carburant élevé.
+    const higherResponse = await createLocation(adminA, {
+      vehicleId: fuelVehicleId,
+      startDate: "2029-07-20",
+      endDate: "2029-07-23",
+    });
+    const higherLocationId = (await higherResponse.json()).location.id;
+    await apiFetch(`/api/locations/${higherLocationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED", endOdometer: 90000, endFuelLevel: 75 }),
+    });
+    const afterFirst = await prisma.vehicle.findUniqueOrThrow({ where: { id: fuelVehicleId } });
+    expect(afterFirst.currentFuelLevel).toBe(75);
+
+    // Second contrat distinct, retour à un niveau de carburant inférieur : ne doit jamais faire
+    // régresser Vehicle.currentFuelLevel (même règle que le kilométrage).
+    const lowerResponse = await createLocation(adminA, {
+      vehicleId: fuelVehicleId,
+      startDate: "2029-07-25",
+      endDate: "2029-07-28",
+    });
+    const lowerLocationId = (await lowerResponse.json()).location.id;
+    await apiFetch(`/api/locations/${lowerLocationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED", endOdometer: 95000, endFuelLevel: 25 }),
+    });
+    const afterSecond = await prisma.vehicle.findUniqueOrThrow({ where: { id: fuelVehicleId } });
+    expect(afterSecond.currentFuelLevel).toBe(75);
+    // Le kilométrage, lui, progresse normalement (valeur strictement supérieure fournie).
+    expect(afterSecond.currentOdometer).toBe(95000);
+
+    // Troisième contrat, retour à un niveau de carburant identique au maximum déjà atteint : ne
+    // doit provoquer aucun changement (ni erreur, ni écriture inutile détectable côté valeur).
+    const equalResponse = await createLocation(adminA, {
+      vehicleId: fuelVehicleId,
+      startDate: "2029-07-29",
+      endDate: "2029-08-01",
+    });
+    const equalLocationId = (await equalResponse.json()).location.id;
+    const equalPatchResponse = await apiFetch(`/api/locations/${equalLocationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED", endOdometer: 96000, endFuelLevel: 75 }),
+    });
+    expect(equalPatchResponse.status).toBe(200);
+    const afterThird = await prisma.vehicle.findUniqueOrThrow({ where: { id: fuelVehicleId } });
+    expect(afterThird.currentFuelLevel).toBe(75);
+
+    // Un retour ultérieur à un niveau réellement supérieur (plein) doit, lui, bien faire
+    // progresser la valeur — la protection n'est pas une simple valeur figée après le premier
+    // retour, elle suit toujours le maximum réellement observé.
+    const refillResponse = await createLocation(adminA, {
+      vehicleId: fuelVehicleId,
+      startDate: "2029-08-02",
+      endDate: "2029-08-05",
+    });
+    const refillLocationId = (await refillResponse.json()).location.id;
+    await apiFetch(`/api/locations/${refillLocationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED", endOdometer: 97000, endFuelLevel: 100 }),
+    });
+    const afterRefill = await prisma.vehicle.findUniqueOrThrow({ where: { id: fuelVehicleId } });
+    expect(afterRefill.currentFuelLevel).toBe(100);
+  });
+
+  it("ne touche pas le véhicule si endOdometer/endFuelLevel ne sont pas fournis au passage à COMPLETED", async () => {
+    const createResponse = await createLocation(adminA, {
+      startDate: "2029-08-01",
+      endDate: "2029-08-04",
+    });
+    const locationId = (await createResponse.json()).location.id;
+
+    const before = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleAId } });
+
+    const response = await apiFetch(`/api/locations/${locationId}`, {
+      method: "PATCH",
+      headers: { Cookie: adminA.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED" }),
+    });
+    expect(response.status).toBe(200);
+
+    const after = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleAId } });
+    expect(after.currentOdometer).toBe(before.currentOdometer);
+    expect(after.currentFuelLevel).toBe(before.currentFuelLevel);
+  });
+
+  // Isolation multi-tenant (vehicleAId/vehicleBId appartiennent à deux tenants distincts, voir
+  // "refuse un véhicule d'un autre tenant" plus haut) : un retour effectué par adminB sur son
+  // propre véhicule (tenant B) ne doit jamais affecter le véhicule du tenant A, et vice-versa.
+  it("isole strictement par tenant : un retour du tenant B ne modifie jamais le véhicule du tenant A", async () => {
+    const beforeA = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleAId } });
+
+    const createResponseB = await apiFetch("/api/locations", {
+      method: "POST",
+      headers: { Cookie: adminB.sessionCookie },
+      body: JSON.stringify({
+        vehicleId: vehicleBId,
+        clientId: clientBId,
+        startDate: "2029-09-01",
+        endDate: "2029-09-04",
+      }),
+    });
+    const locationIdB = (await createResponseB.json()).location.id;
+
+    const responseB = await apiFetch(`/api/locations/${locationIdB}`, {
+      method: "PATCH",
+      headers: { Cookie: adminB.sessionCookie },
+      body: JSON.stringify({ status: "COMPLETED", endOdometer: 123456, endFuelLevel: 30 }),
+    });
+    expect(responseB.status).toBe(200);
+
+    const vehicleB = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleBId } });
+    expect(vehicleB.currentOdometer).toBe(123456);
+    expect(vehicleB.currentFuelLevel).toBe(30);
+
+    const afterA = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleAId } });
+    expect(afterA.currentOdometer).toBe(beforeA.currentOdometer);
+    expect(afterA.currentFuelLevel).toBe(beforeA.currentFuelLevel);
+  });
+});
+
 describe("DELETE /api/locations/[id]", () => {
   it("supprime une location PENDING", async () => {
     const createResponse = await createLocation(adminA, {

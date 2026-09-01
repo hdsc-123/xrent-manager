@@ -177,6 +177,8 @@ async function createBilledDamageInvoice(tenant: Tenant, locationId: string) {
   return body.damageInvoice.id as string;
 }
 
+// Revue durée de réservation (2026-09-01) : startTime/endTime obligatoires côté serveur — voir
+// le même défaut appliqué au helper homonyme de reservations.test.ts.
 async function createReservation(tenant: Tenant, overrides: Record<string, unknown> = {}) {
   const response = await apiFetch("/api/reservations", {
     method: "POST",
@@ -186,7 +188,9 @@ async function createReservation(tenant: Tenant, overrides: Record<string, unkno
       clientFirstName: "Jean",
       clientLastName: "Testeur",
       startDate: "2030-06-01",
+      startTime: "10:00",
       endDate: "2030-06-03",
+      endTime: "10:00",
       ...overrides,
     }),
   });

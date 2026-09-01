@@ -1,4 +1,5 @@
 import { Document, Page, View, Text, StyleSheet } from "@react-pdf/renderer";
+import { calculateDaysCount } from "@/lib/format";
 
 /** pricePerDay/subtotal/etc. sont en plus petite unité monétaire (centimes) — voir src/lib/format.ts. */
 function formatMoneyPdf(amountInSmallestUnit: number, currency: string): string {
@@ -97,10 +98,7 @@ export interface InvoicePdfProps {
  * <InvoicePdfPage> partageant un seul <Document>, voir /api/documents/batch-pdf).
  */
 export function InvoicePdfPage(props: InvoicePdfProps) {
-  const days = Math.max(
-    1,
-    Math.ceil((props.locationEnd.getTime() - props.locationStart.getTime()) / (24 * 60 * 60 * 1000))
-  );
+  const days = calculateDaysCount(props.locationStart, props.locationEnd);
   const remainingBalance = props.totalAmount - props.amountPaid;
 
   return (

@@ -27,6 +27,10 @@ interface PreviewRow {
   clientLastName: string;
   startDate: string;
   endDate: string;
+  /** Durée réelle recalculée à partir des dates/heures (règle du jour entamé) — à des fins de
+   * contrôle uniquement, jamais la valeur brute éventuellement importée (revue durée de
+   * réservation, 2026-09-01, Sprint 13B). */
+  realDaysCount: number;
 }
 
 interface RowError {
@@ -39,10 +43,16 @@ interface RowDuplicate {
   voucherNumber: string;
 }
 
+interface RowWarning {
+  row: number;
+  warning: string;
+}
+
 interface ImportReport {
   imported: number;
   errors: RowError[];
   duplicates: RowDuplicate[];
+  warnings: RowWarning[];
   preview?: PreviewRow[];
 }
 
@@ -116,6 +126,13 @@ export function ImportReservationsForm() {
               Le format américain MM/JJ/AAAA n&apos;est jamais reconnu — une date invalide dans ce format (ex. mois
               supérieur à 12, jour inexistant dans le mois) sera rejetée avec le numéro de ligne concerné.
             </span>
+            <span>
+              Heures (« Heure de départ », « Heure de retour ») : format <strong>HH:mm</strong>, toutes deux
+              obligatoires — une heure absente ou non reconnue bloque la ligne concernée (numéro de ligne indiqué).
+              La durée réelle (nombre de jours facturés) est toujours recalculée à partir des dates/heures ; si la
+              colonne « Nombre de jours (facturés) » est renseignée, sa valeur brute est conservée telle quelle mais
+              toute divergence avec la durée réelle est signalée sans bloquer l&apos;import.
+            </span>
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -157,7 +174,8 @@ export function ImportReservationsForm() {
             <CardTitle>Aperçu</CardTitle>
             <CardDescription>
               {preview.imported} ligne(s) valide(s) prête(s) à être importées, {preview.errors.length} erreur(s),{" "}
-              {preview.duplicates.length} doublon(s) ignoré(s) (voucher déjà existant).
+              {preview.duplicates.length} doublon(s) ignoré(s) (voucher déjà existant)
+              {preview.warnings.length > 0 ? `, ${preview.warnings.length} divergence(s) de durée signalée(s)` : ""}.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
@@ -171,6 +189,7 @@ export function ImportReservationsForm() {
                       <TableHead>Client</TableHead>
                       <TableHead>Départ</TableHead>
                       <TableHead>Retour</TableHead>
+                      <TableHead>Jours (réel)</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -183,6 +202,7 @@ export function ImportReservationsForm() {
                         </TableCell>
                         <TableCell>{new Date(row.startDate).toLocaleDateString("fr-FR")}</TableCell>
                         <TableCell>{new Date(row.endDate).toLocaleDateString("fr-FR")}</TableCell>
+                        <TableCell>{row.realDaysCount}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -195,6 +215,16 @@ export function ImportReservationsForm() {
                 {preview.errors.map((e) => (
                   <p key={e.row}>
                     Ligne {e.row} : {e.error}
+                  </p>
+                ))}
+              </div>
+            )}
+
+            {preview.warnings.length > 0 && (
+              <div className="flex flex-col gap-1 text-sm text-amber-600">
+                {preview.warnings.map((w) => (
+                  <p key={w.row}>
+                    Ligne {w.row} : {w.warning}
                   </p>
                 ))}
               </div>
@@ -213,7 +243,8 @@ export function ImportReservationsForm() {
             <CardTitle>Rapport d&apos;import</CardTitle>
             <CardDescription>
               {result.imported} réservation(s) importée(s), {result.errors.length} erreur(s), {result.duplicates.length}{" "}
-              doublon(s) ignoré(s).
+              doublon(s) ignoré(s)
+              {result.warnings.length > 0 ? `, ${result.warnings.length} divergence(s) de durée signalée(s)` : ""}.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
@@ -222,6 +253,15 @@ export function ImportReservationsForm() {
                 {result.errors.map((e) => (
                   <p key={e.row}>
                     Ligne {e.row} : {e.error}
+                  </p>
+                ))}
+              </div>
+            )}
+            {result.warnings.length > 0 && (
+              <div className="flex flex-col gap-1 text-sm text-amber-600">
+                {result.warnings.map((w) => (
+                  <p key={w.row}>
+                    Ligne {w.row} : {w.warning}
                   </p>
                 ))}
               </div>

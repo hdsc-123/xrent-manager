@@ -116,7 +116,20 @@ export async function POST(request: Request) {
 
   const errors: { row: number; error: string }[] = [];
   const duplicates: { row: number; voucherNumber: string }[] = [];
-  const preview: { row: number; voucherNumber: string; clientFirstName: string; clientLastName: string; startDate: string; endDate: string }[] = [];
+  const preview: {
+    row: number;
+    voucherNumber: string;
+    clientFirstName: string;
+    clientLastName: string;
+    startDate: string;
+    endDate: string;
+    realDaysCount: number;
+  }[] = [];
+  // Revue durée de réservation (2026-09-01, option C) : `daysCount` brut du fichier (Sprint
+  // 13B) n'est jamais recalculé/écrasé — une divergence avec la durée réelle calculée à partir
+  // des dates/heures est seulement signalée ici, ligne par ligne, sans jamais bloquer l'import
+  // pour ce seul motif.
+  const warnings: { row: number; warning: string }[] = [];
   let imported = 0;
   const PREVIEW_LIMIT = 50;
 
@@ -141,6 +154,10 @@ export async function POST(request: Request) {
       continue;
     }
 
+    if (parsed.daysCountWarning) {
+      warnings.push({ row: rowNumber, warning: parsed.daysCountWarning });
+    }
+
     if (existingVouchers.has(parsed.data.voucherNumber)) {
       duplicates.push({ row: rowNumber, voucherNumber: parsed.data.voucherNumber });
       continue;
@@ -155,6 +172,7 @@ export async function POST(request: Request) {
           clientLastName: parsed.data.clientLastName,
           startDate: parsed.data.startDate.toISOString(),
           endDate: parsed.data.endDate.toISOString(),
+          realDaysCount: parsed.realDaysCount,
         });
       }
     } else {
@@ -194,5 +212,5 @@ export async function POST(request: Request) {
     });
   }
 
-  return NextResponse.json({ imported, errors, duplicates, preview: isPreview ? preview : undefined });
+  return NextResponse.json({ imported, errors, duplicates, warnings, preview: isPreview ? preview : undefined });
 }

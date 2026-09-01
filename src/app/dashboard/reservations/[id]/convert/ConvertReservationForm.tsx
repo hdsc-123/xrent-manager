@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { apiGet, apiPost, ApiError } from "@/lib/api";
-import { calculateDaysCount } from "@/lib/format";
+import { calculateDaysCount, combineDateAndTime } from "@/lib/format";
 import { formatMoney } from "@/lib/format";
 import {
   Button,
@@ -267,15 +267,18 @@ export function ConvertReservationForm({ reservation, agencies, canCommercialGes
     };
   }, [vehicleId]);
 
+  // Revue durée de réservation (2026-09-01) : combinaison via combineDateAndTime (UTC), jamais
+  // `new Date(\`${date}T${time}\`)` (fuseau local du navigateur) — même convention que le reste
+  // du projet (src/lib/format.ts).
   const startDateTime = useMemo(() => {
     if (!startDate || !startTime) return null;
-    const value = new Date(`${startDate}T${startTime}`);
+    const value = combineDateAndTime(new Date(startDate), startTime);
     return Number.isNaN(value.getTime()) ? null : value;
   }, [startDate, startTime]);
 
   const endDateTime = useMemo(() => {
     if (!endDate || !endTime) return null;
-    const value = new Date(`${endDate}T${endTime}`);
+    const value = combineDateAndTime(new Date(endDate), endTime);
     return Number.isNaN(value.getTime()) ? null : value;
   }, [endDate, endTime]);
 

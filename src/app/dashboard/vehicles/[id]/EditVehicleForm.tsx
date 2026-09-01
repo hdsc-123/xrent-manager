@@ -174,10 +174,19 @@ export function EditVehicleForm({
     // pas de rejet serveur strict sur un effacement (PATCH /api/vehicles/[id]/route.ts) — ces
     // champs restent nullables à l'API par design (Sprint 12A, DOMAINRULES.md section 5,
     // rétrocompatibilité), requis seulement au niveau de ce formulaire.
-    if (!chassisNumber || !color || !doors || !seats || !horsepower || !powerKW || !engineSize) {
-      setError(
-        "Numéro de châssis, couleur, portes, places, chevaux, kW et cylindrée sont requis."
-      );
+    // Revue message de validation véhicule (2026-09-01) : n'indique que les champs
+    // effectivement manquants — jusqu'ici un message statique listait toujours les 7 champs,
+    // même quand un seul était vide.
+    const missingFields: string[] = [];
+    if (!chassisNumber) missingFields.push("Numéro de châssis");
+    if (!color) missingFields.push("Couleur");
+    if (!doors) missingFields.push("Portes");
+    if (!seats) missingFields.push("Places");
+    if (!horsepower) missingFields.push("Chevaux fiscaux");
+    if (!powerKW) missingFields.push("Puissance (kW)");
+    if (!engineSize) missingFields.push("Cylindrée");
+    if (missingFields.length > 0) {
+      setError(`Champ${missingFields.length > 1 ? "s" : ""} requis manquant${missingFields.length > 1 ? "s" : ""} : ${missingFields.join(", ")}.`);
       return;
     }
 

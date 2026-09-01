@@ -265,6 +265,68 @@ describe("DELETE /api/maintenances/[id]", () => {
     });
     expect(response.status).toBe(409);
   });
+
+  /** Correction QA 2026-09-01 (anomalie confirmée en Phase 4) : deleteMaintenance ne rappelait
+   * jamais syncVehicleStatus, contrairement à createMaintenance/updateMaintenance — un véhicule
+   * dont la seule maintenance bloquante était supprimée restait donc affiché en statut
+   * MAINTENANCE indéfiniment. */
+  it("resynchronise le statut du véhicule après suppression d'une maintenance bloquante", async () => {
+    const vehicleId = (await (await createVehicle(adminA, agencyA1Id)).json()).vehicle.id;
+
+    const createResponse = await createMaintenance(adminA, vehicleId, {
+      scheduledDate: new Date().toISOString(),
+    });
+    expect(createResponse.status).toBe(201);
+    const maintenanceId = (await createResponse.json()).maintenance.id;
+
+    const beforeDelete = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleId } });
+    expect(beforeDelete.status).toBe("MAINTENANCE");
+
+    const deleteResponse = await apiFetch(`/api/maintenances/${maintenanceId}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(200);
+
+    const afterDelete = await prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleId } });
+    expect(afterDelete.status).toBe("AVAILABLE");
+  });
+
+  /** Correction QA 2026-09-01 (anomalie confirmée en Phase 4) : Alert référence sa ressource par
+   * entityType/entityId (pas de vraie clé étrangère, voir prisma/schema.prisma) — une alerte
+   * MAINTENANCE_DUE encore PENDING pointait indéfiniment vers une maintenance supprimée. */
+  it("résout automatiquement une alerte MAINTENANCE_DUE encore ouverte quand sa maintenance est supprimée", async () => {
+    const vehicleId = (await (await createVehicle(adminA, agencyA1Id)).json()).vehicle.id;
+
+    const createResponse = await createMaintenance(adminA, vehicleId, {
+      scheduledDate: new Date().toISOString(),
+    });
+    const maintenanceId = (await createResponse.json()).maintenance.id;
+
+    await prisma.alert.deleteMany({
+      where: { tenantId: adminA.tenantId, entityType: "Maintenance", entityId: maintenanceId },
+    });
+    const checkAlertsResponse = await apiFetch("/api/tasks/check-alerts", {
+      method: "POST",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(checkAlertsResponse.status).toBe(200);
+
+    const alertBeforeDelete = await prisma.alert.findFirstOrThrow({
+      where: { tenantId: adminA.tenantId, entityType: "Maintenance", entityId: maintenanceId },
+    });
+    expect(alertBeforeDelete.status).toBe("PENDING");
+
+    const deleteResponse = await apiFetch(`/api/maintenances/${maintenanceId}`, {
+      method: "DELETE",
+      headers: { Cookie: adminA.sessionCookie },
+    });
+    expect(deleteResponse.status).toBe(200);
+
+    const alertAfterDelete = await prisma.alert.findUniqueOrThrow({ where: { id: alertBeforeDelete.id } });
+    expect(alertAfterDelete.status).toBe("RESOLVED");
+    expect(alertAfterDelete.resolvedAt).not.toBeNull();
+  });
 });
 
 describe("POST /api/tasks/check-alerts (génération d'alertes de maintenance)", () => {

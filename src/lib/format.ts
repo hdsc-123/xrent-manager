@@ -26,7 +26,21 @@ export function combineDateAndTime(date: Date, time?: string | null): Date {
 
 /** Nombre de jours arrondi au jour supérieur, minimum 1 jour — même règle que
  * calculateTotalPrice (src/lib/locations.ts) : tout dépassement, même d'une minute, compte
- * comme un jour supplémentaire. */
+ * comme un jour supplémentaire. Unique implémentation (source canonique) — réutilisée par
+ * réservations/locations/contrats/factures/prolongations/import Excel, jamais réimplémentée
+ * localement (revue durée de réservation, 2026-09-01). */
 export function calculateDaysCount(start: Date, end: Date): number {
   return Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)));
+}
+
+const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+/** Vérifie strictement qu'une valeur est une heure "HH:mm" valide (00:00 à 23:59) — plus
+ * strict que combineDateAndTime ci-dessus, qui reste volontairement permissif (usage
+ * historique en affichage : une heure absente/non reconnue renvoie la date inchangée plutôt
+ * que d'échouer). À utiliser à l'écriture (création/modification de réservation, import
+ * Excel) pour rejeter explicitement une heure absente ou mal formée plutôt que de la laisser
+ * silencieusement ignorée (revue durée de réservation, 2026-09-01). */
+export function isValidTimeString(value: unknown): value is string {
+  return typeof value === "string" && TIME_PATTERN.test(value.trim());
 }

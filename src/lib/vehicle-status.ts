@@ -102,6 +102,58 @@ export async function syncVehicleStatus(
 }
 
 /**
+ * Synchronise `Vehicle.currentOdometer`/`currentFuelLevel` avec le kilométrage/carburant de
+ * retour d'un contrat qui vient de passer à `COMPLETED` (revue durée de réservation/retour
+ * véhicule, 2026-09-01) — jusqu'ici ces deux champs restaient figés à leur valeur de création
+ * (Sprint 24, "purement informatifs, jamais mis à jour après création"), la fiche véhicule ne
+ * reflétait donc jamais un retour réel alors que `getVehicleLastKnownState` (src/lib/vehicles.ts)
+ * dérivait déjà correctement le bon kilométrage/carburant de départ du contrat suivant à partir
+ * de `Location.endOdometer`/`endFuelLevel`. Cette fonction ne remplace pas
+ * `getVehicleLastKnownState` (qui reste la source de vérité pour tout calcul dérivé, un mouvement
+ * plus récent y prime toujours) — elle tient seulement `Vehicle.currentOdometer`/
+ * `currentFuelLevel` à jour pour l'affichage de la fiche véhicule et comme repli initial.
+ *
+ * À appeler dans la même transaction que la validation du retour (jamais après coup) — deux
+ * points d'entrée existent aujourd'hui pour clore un contrat (PATCH /api/locations/[id],
+ * transition de statut générique ; POST /api/locations/[id]/return, retour orchestré complet),
+ * tous deux doivent appeler cette fonction pour rester cohérents.
+ *
+ * Kilométrage et carburant : mise à jour atomique via `GREATEST` (une seule instruction SQL,
+ * jamais un `SELECT` puis `UPDATE` séparés) pour les deux champs — ni l'un ni l'autre ne régresse
+ * jamais, y compris sous course entre deux retours concurrents sur le même véhicule (ex. un
+ * retour tardif traité après un retour plus récent déjà appliqué). Revue QA du 2026-09-01 :
+ * corrige la version initiale de cette fonction, qui n'appliquait la protection anti-régression
+ * qu'au kilométrage et écrasait aveuglément le carburant — un retour renseignant un niveau plus
+ * bas qu'un retour déjà traité pouvait donc faire reculer la jauge affichée sur la fiche véhicule.
+ *
+ * `odometer`/`fuelLevel` à `null` = valeur non fournie sur ce retour (les deux sont optionnels
+ * sur `Location`, voir prisma/schema.prisma) : le champ correspondant du véhicule n'est alors pas
+ * touché, jamais réinitialisé à `null`. L'historique et les valeurs propres au contrat
+ * (`Location.endOdometer`/`endFuelLevel`) ne sont jamais modifiés par cette fonction — seul le
+ * repli affiché sur la fiche véhicule (`Vehicle.currentOdometer`/`currentFuelLevel`) l'est.
+ */
+export async function syncVehicleOdometerAndFuel(
+  vehicleId: string,
+  values: { odometer: number | null; fuelLevel: number | null },
+  tx: Prisma.TransactionClient
+): Promise<void> {
+  if (values.odometer !== null) {
+    await tx.$executeRaw`
+      UPDATE "Vehicle"
+      SET "currentOdometer" = GREATEST(COALESCE("currentOdometer", 0), ${values.odometer})
+      WHERE id = ${vehicleId}
+    `;
+  }
+  if (values.fuelLevel !== null) {
+    await tx.$executeRaw`
+      UPDATE "Vehicle"
+      SET "currentFuelLevel" = GREATEST(COALESCE("currentFuelLevel", 0), ${values.fuelLevel})
+      WHERE id = ${vehicleId}
+    `;
+  }
+}
+
+/**
  * État administratif (`Vehicle.deactivatedAt`, sprint "statut opérationnel automatique",
  * 2026-08-28 — remplace l'ancien `VehicleStatus.INACTIVE`) : décision réservée ADMIN,
  * orthogonale au statut opérationnel calculé ci-dessus. Bloque, sans exception, toute nouvelle

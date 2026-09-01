@@ -85,10 +85,19 @@ export function NewVehicleForm() {
     // serveur (POST /api/vehicles ne requiert que agencyId/name/licensePlate/make/model/
     // year/category) ne les vérifiaient réellement : un véhicule pouvait être créé sans
     // aucune fiche technique malgré l'UI qui présentait ces 7 champs comme requis.
-    if (!chassisNumber || !color || !doors || !seats || !horsepower || !powerKW || !engineSize) {
-      setError(
-        "Numéro de châssis, couleur, portes, places, chevaux, kW et cylindrée sont requis."
-      );
+    // Revue message de validation véhicule (2026-09-01) : n'indique que les champs
+    // effectivement manquants — jusqu'ici un message statique listait toujours les 7 champs,
+    // même quand un seul était vide.
+    const missingFields: string[] = [];
+    if (!chassisNumber) missingFields.push("Numéro de châssis");
+    if (!color) missingFields.push("Couleur");
+    if (!doors) missingFields.push("Portes");
+    if (!seats) missingFields.push("Places");
+    if (!horsepower) missingFields.push("Chevaux fiscaux");
+    if (!powerKW) missingFields.push("Puissance (kW)");
+    if (!engineSize) missingFields.push("Cylindrée");
+    if (missingFields.length > 0) {
+      setError(`Champ${missingFields.length > 1 ? "s" : ""} requis manquant${missingFields.length > 1 ? "s" : ""} : ${missingFields.join(", ")}.`);
       return;
     }
 

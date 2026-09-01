@@ -14,7 +14,8 @@ function normalizeSource(value: string | undefined | null): string | undefined {
   return trimmed === "" ? undefined : trimmed.slice(0, MAX_SOURCE_LENGTH);
 }
 
-export { combineDateAndTime, calculateDaysCount } from "@/lib/format";
+export { combineDateAndTime, calculateDaysCount, isValidTimeString } from "@/lib/format";
+import { combineDateAndTime, calculateDaysCount, isValidTimeString } from "@/lib/format";
 
 /**
  * Réservation (Sprint 12C) : étape en amont d'un contrat (Location), importée en masse
@@ -31,10 +32,33 @@ export class ReservationNotFoundError extends Error {
   }
 }
 
+/** Revue durée de réservation (2026-09-01) : comparaison désormais sur l'instant complet
+ * (date + heure combinées via combineDateAndTime, jamais la date seule) — un retour le même
+ * jour calendaire à une heure antérieure ou égale au départ est refusé, ce que l'ancienne
+ * comparaison sur la seule date ne détectait jamais. */
 export class InvalidReservationDateRangeError extends Error {
   constructor() {
-    super("endDate doit être postérieure ou égale à startDate.");
+    super(
+      "La date et l'heure de retour doivent être strictement postérieures à la date et l'heure de départ."
+    );
     this.name = "InvalidReservationDateRangeError";
+  }
+}
+
+/** Revue durée de réservation (2026-09-01) : startTime/endTime deviennent obligatoires pour
+ * toute création ou modification manuelle, ainsi que pour l'import Excel — jusqu'ici tous deux
+ * optionnels (`String?` en base), une heure absente/invalide était silencieusement ignorée par
+ * combineDateAndTime (qui renvoie alors la date seule, minuit). */
+export class MissingReservationTimeError extends Error {
+  readonly field: "startTime" | "endTime";
+  constructor(field: "startTime" | "endTime") {
+    super(
+      field === "startTime"
+        ? "L'heure de départ est obligatoire et doit être au format HH:mm."
+        : "L'heure de retour est obligatoire et doit être au format HH:mm."
+    );
+    this.name = "MissingReservationTimeError";
+    this.field = field;
   }
 }
 
@@ -284,18 +308,59 @@ export async function generateDirectVoucherNumber(tenantId: string): Promise<str
 }
 
 /**
+ * Combine et valide startDate/startTime/endDate/endTime, et calcule la durée réelle (règle du
+ * jour entamé) — unique source de vérité (revue durée de réservation, 2026-09-01) réutilisée
+ * par la création/modification manuelle ET par l'import Excel (aperçu et écriture), pour ne
+ * jamais dupliquer cette logique : heure absente/mal formée → MissingReservationTimeError ;
+ * instant de retour non strictement postérieur à l'instant de départ →
+ * InvalidReservationDateRangeError. `realDaysCount` est la durée réelle recalculée : jamais la
+ * valeur brute `daysCount` éventuellement fournie par l'appelant (voir Sprint 13B, préservée
+ * telle quelle pour l'import — cette fonction ne fait que la comparer, jamais l'écraser).
+ */
+export function resolveReservationDuration(
+  startDate: Date,
+  startTime: unknown,
+  endDate: Date,
+  endTime: unknown
+): { startInstant: Date; endInstant: Date; realDaysCount: number } {
+  if (!isValidTimeString(startTime)) {
+    throw new MissingReservationTimeError("startTime");
+  }
+  if (!isValidTimeString(endTime)) {
+    throw new MissingReservationTimeError("endTime");
+  }
+  const startInstant = combineDateAndTime(startDate, startTime);
+  const endInstant = combineDateAndTime(endDate, endTime);
+  if (endInstant <= startInstant) {
+    throw new InvalidReservationDateRangeError();
+  }
+  return { startInstant, endInstant, realDaysCount: calculateDaysCount(startInstant, endInstant) };
+}
+
+/**
  * `agencyLookup` (Sprint 19) : optionnel — permet à l'appelant (import Excel en boucle,
  * voir POST /api/reservations/import) de résoudre la carte ville/agence une seule fois pour
  * tout le fichier plutôt qu'à chaque ligne ; une création manuelle isolée (POST
  * /api/reservations) la laisse se reconstruire ici, coût négligeable pour un seul appel.
+ *
+ * Revue durée de réservation (2026-09-01) : `daysCount` stocké est désormais toujours calculé
+ * côté serveur à partir de la durée réelle (resolveReservationDuration) pour une création
+ * manuelle (qui n'en fournit jamais, voir NewReservationForm.tsx) — SAUF si l'appelant fournit
+ * explicitement une valeur (import Excel, Sprint 13B : la valeur brute du fichier broker est
+ * préservée telle quelle, jamais recalculée/écrasée ici ; parseReservationImportRow signale déjà
+ * toute divergence avec la durée réelle dans le rapport d'import, sans jamais la corriger
+ * silencieusement).
  */
 export async function createReservation(
   data: CreateReservationInput,
   agencyLookup?: AgencyLookupMap
 ): Promise<Reservation> {
-  if (data.endDate < data.startDate) {
-    throw new InvalidReservationDateRangeError();
-  }
+  const { realDaysCount } = resolveReservationDuration(
+    data.startDate,
+    data.startTime,
+    data.endDate,
+    data.endTime
+  );
 
   const lookup = agencyLookup ?? (await buildAgencyLookupMap(data.tenantId));
 
@@ -320,7 +385,7 @@ export async function createReservation(
         startTime: data.startTime,
         endDate: data.endDate,
         endTime: data.endTime,
-        daysCount: data.daysCount,
+        daysCount: data.daysCount ?? realDaysCount,
         flightNumber: data.flightNumber,
         currency: data.currency ?? "MAD",
         totalPrice: data.totalPrice,
@@ -376,10 +441,27 @@ export async function updateReservation(
     }
   }
 
+  // Revue durée de réservation (2026-09-01) : la validation/le recalcul de durée ne s'applique
+  // que si cette modification touche réellement une date ou une heure — un PATCH qui ne porte
+  // que sur des champs sans rapport (ex. notes, clientPhone) ne doit jamais être bloqué par une
+  // réservation existante dont l'heure serait encore absente (données antérieures à cette
+  // règle, jamais backfillées). Dès que l'appelant touche l'un de ces quatre champs, le résultat
+  // complet (date+heure de départ/retour, en tenant compte des valeurs déjà en base pour les
+  // champs non fournis) doit être valide dans son ensemble.
+  const touchesDateOrTime =
+    data.startDate !== undefined ||
+    data.startTime !== undefined ||
+    data.endDate !== undefined ||
+    data.endTime !== undefined;
   const nextStart = data.startDate ?? existing.startDate;
+  const nextStartTime = data.startTime !== undefined ? data.startTime : existing.startTime;
   const nextEnd = data.endDate ?? existing.endDate;
-  if (nextEnd < nextStart) {
-    throw new InvalidReservationDateRangeError();
+  const nextEndTime = data.endTime !== undefined ? data.endTime : existing.endTime;
+
+  let recalculatedDaysCount: number | undefined;
+  if (touchesDateOrTime) {
+    const { realDaysCount } = resolveReservationDuration(nextStart, nextStartTime, nextEnd, nextEndTime);
+    recalculatedDaysCount = realDaysCount;
   }
 
   if (data.status && data.status !== existing.status && !canTransition(existing.status, data.status)) {
@@ -420,7 +502,15 @@ export async function updateReservation(
       ...(data.startTime !== undefined ? { startTime: data.startTime } : {}),
       ...(data.endDate !== undefined ? { endDate: data.endDate } : {}),
       ...(data.endTime !== undefined ? { endTime: data.endTime } : {}),
-      ...(data.daysCount !== undefined ? { daysCount: data.daysCount } : {}),
+      // Revue durée de réservation (2026-09-01) : une valeur explicitement fournie par
+      // l'appelant prime toujours (import Excel — Sprint 13B, valeur brute préservée) ; sinon,
+      // dès que la date/l'heure change, la durée recalculée remplace l'ancienne valeur
+      // potentiellement périmée — jamais laissée telle quelle après un changement de dates.
+      ...(data.daysCount !== undefined
+        ? { daysCount: data.daysCount }
+        : touchesDateOrTime
+          ? { daysCount: recalculatedDaysCount }
+          : {}),
       ...(data.flightNumber !== undefined ? { flightNumber: data.flightNumber } : {}),
       ...(data.currency !== undefined ? { currency: data.currency } : {}),
       ...(data.totalPrice !== undefined ? { totalPrice: data.totalPrice } : {}),
@@ -563,12 +653,17 @@ export const RESERVATION_IMPORT_COLUMNS = Object.keys(
 
 /** Champs internes requis (voucherNumber, clientFirstName, clientLastName, startDate,
  * endDate) + leur en-tête français, pour rapporter une erreur précise par ligne/colonne. */
+// Revue durée de réservation (2026-09-01) : Heure de départ/retour ajoutées aux colonnes
+// obligatoires — jusqu'ici seules les dates l'étaient, l'heure restait optionnelle et une
+// cellule vide/invalide était silencieusement ignorée (voir cellToTime/combineDateAndTime).
 export const REQUIRED_IMPORT_FIELDS: { field: string; column: string }[] = [
   { field: "voucherNumber", column: "Numéro voucher" },
   { field: "clientFirstName", column: "Prénom" },
   { field: "clientLastName", column: "Nom" },
   { field: "startDate", column: "Date de départ" },
   { field: "endDate", column: "Date de retour" },
+  { field: "startTime", column: "Heure de départ" },
+  { field: "endTime", column: "Heure de retour" },
 ];
 
 function cellToString(value: unknown): string | undefined {
@@ -728,6 +823,16 @@ function cellToTime(value: unknown): string | undefined {
     return `${hours}:${minutes}`;
   }
   if (typeof value === "number" && Number.isFinite(value)) {
+    // Revue durée de réservation (2026-09-01, point 9) : une heure Excel valide est une
+    // fraction de journée dans [0, 1) — une valeur ≥ 1 (ou négative) signale une cellule mal
+    // formatée pour une colonne heure (ex. un numéro de série de date complet copié depuis une
+    // autre colonne) plutôt qu'une heure réelle. Rejetée explicitement ici (undefined, traité
+    // comme une heure manquante par l'appelant) au lieu d'être tronquée silencieusement via
+    // `value % 1`, qui produirait une heure plausible mais fausse (ex. minuit pour n'importe
+    // quel nombre entier).
+    if (value < 0 || value >= 1) {
+      return undefined;
+    }
     const totalMinutes = Math.round((value % 1) * 24 * 60);
     const hours = String(Math.floor(totalMinutes / 60) % 24).padStart(2, "0");
     const minutes = String(totalMinutes % 60).padStart(2, "0");
@@ -742,11 +847,22 @@ function cellToTime(value: unknown): string | undefined {
 }
 
 export type ParsedReservationRow =
-  | { data: Omit<CreateReservationInput, "tenantId"> }
+  | {
+      data: Omit<CreateReservationInput, "tenantId">;
+      /** Durée réelle recalculée à partir des instants date+heure combinés (règle du jour
+       * entamé, resolveReservationDuration) — jamais la valeur brute `daysCount` du fichier
+       * (revue durée de réservation, 2026-09-01). Affichée à des fins de contrôle par l'aperçu
+       * d'import, indépendamment de ce qui est effectivement stocké. */
+      realDaysCount: number;
+      /** Non vide uniquement si la colonne "Jours" du fichier était renseignée ET diverge de
+       * realDaysCount — signalée dans le rapport d'import, jamais utilisée pour écraser la
+       * valeur brute importée (Sprint 13B, préservée telle quelle dans `data.daysCount`). */
+      daysCountWarning?: string;
+    }
   | { error: string };
 
 const REQUIRED_STRING_IMPORT_FIELDS = REQUIRED_IMPORT_FIELDS.filter(
-  ({ field }) => field !== "startDate" && field !== "endDate"
+  ({ field }) => field !== "startDate" && field !== "endDate" && field !== "startTime" && field !== "endTime"
 );
 
 function isCellEmpty(value: unknown): boolean {
@@ -780,6 +896,27 @@ function parseRequiredDate(
   return { date };
 }
 
+/** Valide une heure obligatoire (startTime/endTime) — même distinction que parseRequiredDate
+ * ci-dessus (cellule vide vs cellule renseignée mais imparsable), même message précis avec la
+ * valeur brute reçue (revue durée de réservation, 2026-09-01). */
+function parseRequiredTime(
+  row: Record<string, unknown>,
+  field: "startTime" | "endTime",
+  column: string
+): { time: string } | { error: string } {
+  const raw = row[field];
+  if (isCellEmpty(raw)) {
+    return { error: `Colonne obligatoire manquante: ${column}` };
+  }
+  const time = cellToTime(raw);
+  if (!isValidTimeString(time)) {
+    return {
+      error: `Colonne invalide: ${column} (valeur "${cellToString(raw) ?? raw}" non reconnue comme une heure valide, format attendu HH:mm)`,
+    };
+  }
+  return { time };
+}
+
 export function parseReservationImportRow(
   row: Record<string, unknown>,
   knownAgencyNames?: Set<string>
@@ -798,15 +935,39 @@ export function parseReservationImportRow(
   if ("error" in endDateResult) {
     return endDateResult;
   }
+  // Revue durée de réservation (2026-09-01, point 8) : heure de départ/retour désormais
+  // obligatoires à l'import, même distinction cellule vide/imparsable que les dates ci-dessus,
+  // message précis avec le numéro de ligne ajouté par l'appelant (POST /api/reservations/import).
+  const startTimeResult = parseRequiredTime(row, "startTime", "Heure de départ");
+  if ("error" in startTimeResult) {
+    return startTimeResult;
+  }
+  const endTimeResult = parseRequiredTime(row, "endTime", "Heure de retour");
+  if ("error" in endTimeResult) {
+    return endTimeResult;
+  }
 
   const voucherNumber = cellToString(row.voucherNumber) as string;
   const clientFirstName = cellToString(row.clientFirstName) as string;
   const clientLastName = cellToString(row.clientLastName) as string;
   const startDate = startDateResult.date;
   const endDate = endDateResult.date;
+  const startTime = startTimeResult.time;
+  const endTime = endTimeResult.time;
 
-  if (endDate < startDate) {
-    return { error: "endDate doit être postérieure ou égale à startDate." };
+  // Revue durée de réservation (2026-09-01, point 4/5) : comparaison sur l'instant complet
+  // date+heure (jamais la date seule) — un retour le même jour à une heure antérieure ou égale
+  // au départ est désormais rejeté ici aussi, avec le numéro de ligne. `realDaysCount` (règle du
+  // jour entamé) sert uniquement au contrôle ci-dessous, jamais à écraser `daysCount` (Sprint
+  // 13B, valeur brute du fichier préservée telle quelle).
+  let realDaysCount: number;
+  try {
+    ({ realDaysCount } = resolveReservationDuration(startDate, startTime, endDate, endTime));
+  } catch (error) {
+    if (error instanceof InvalidReservationDateRangeError) {
+      return { error: "La date/l'heure de retour doit être strictement postérieure à la date/l'heure de départ." };
+    }
+    throw error;
   }
 
   const pickupAgency = cellToString(row.pickupAgency);
@@ -867,6 +1028,15 @@ export function parseReservationImportRow(
     }
   }
 
+  // Revue durée de réservation (2026-09-01) : `daysCount` brut (colonne "Jours (facturés)")
+  // n'est jamais recalculé/écrasé ici (Sprint 13B) — seulement comparé à `realDaysCount` pour
+  // signaler une divergence dans le rapport d'import, sans jamais bloquer la ligne pour ce seul
+  // motif (un écart peut légitimement exister, ex. un forfait broker à durée fixe).
+  const daysCountWarning =
+    daysCount !== undefined && daysCount !== realDaysCount
+      ? `Jours importés (${daysCount}) différent(s) de la durée réelle calculée à partir des dates/heures (${realDaysCount}).`
+      : undefined;
+
   return {
     data: {
       voucherNumber,
@@ -876,9 +1046,9 @@ export function parseReservationImportRow(
       clientFirstName,
       clientLastName,
       startDate,
-      startTime: cellToTime(row.startTime),
+      startTime,
       endDate,
-      endTime: cellToTime(row.endTime),
+      endTime,
       daysCount,
       flightNumber: cellToString(row.flightNumber),
       currency: cellToString(row.currency),
@@ -899,6 +1069,8 @@ export function parseReservationImportRow(
       clientPhone: cellToString(row.clientPhone),
       notes: cellToString(row.notes),
     },
+    realDaysCount,
+    ...(daysCountWarning ? { daysCountWarning } : {}),
   };
 }
 

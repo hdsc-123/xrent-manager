@@ -137,6 +137,8 @@ export function LocationActions({
   const [isSavingAdminDates, setIsSavingAdminDates] = useState(false);
   const [showAdminCancelDialog, setShowAdminCancelDialog] = useState(false);
   const [isAdminCancelling, setIsAdminCancelling] = useState(false);
+  const [adminCancelReason, setAdminCancelReason] = useState("");
+  const trimmedAdminCancelReason = adminCancelReason.trim();
 
   async function handleTransition(next: LocationStatus) {
     setIsChangingStatus(true);
@@ -207,11 +209,21 @@ export function LocationActions({
   // normale (toujours refusée pour un contrat validé, voir LocationCancellationRequiresAdminError,
   // src/lib/locations.ts).
   async function handleAdminCancel() {
+    // Correction QA 2026-09-01 (INCIDENTS.md) — la route exige un motif non vide
+    // (voir POST /api/locations/[id]/admin-cancel) ; ce bouton envoyait jusqu'ici un corps vide
+    // et échouait systématiquement avec « Un motif est obligatoire... ». Le motif est désormais
+    // saisi explicitement par l'utilisateur et validé côté client avant l'appel, en plus de la
+    // validation serveur existante (conservée telle quelle, jamais contournée).
+    if (!trimmedAdminCancelReason) {
+      toast.error("Un motif est obligatoire pour annuler ce contrat.");
+      return;
+    }
     setIsAdminCancelling(true);
     try {
-      await apiPost(`/api/locations/${id}/admin-cancel`, {});
+      await apiPost(`/api/locations/${id}/admin-cancel`, { reason: trimmedAdminCancelReason });
       toast.success("Contrat annulé (factures et caisse mises à jour).");
       setShowAdminCancelDialog(false);
+      setAdminCancelReason("");
       router.refresh();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Erreur lors de l'annulation.");
@@ -563,7 +575,15 @@ export function LocationActions({
         </div>
       </CardContent>
 
-      <Dialog open={showAdminCancelDialog} onOpenChange={setShowAdminCancelDialog}>
+      <Dialog
+        open={showAdminCancelDialog}
+        onOpenChange={(open) => {
+          setShowAdminCancelDialog(open);
+          if (!open) {
+            setAdminCancelReason("");
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Annuler ce contrat ?</DialogTitle>
@@ -573,11 +593,26 @@ export function LocationActions({
               l&apos;historique des paiements existants. Cette action est irréversible.
             </DialogDescription>
           </DialogHeader>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="adminCancelReason" required>
+              Motif de l&apos;annulation
+            </Label>
+            <Input
+              id="adminCancelReason"
+              value={adminCancelReason}
+              onChange={(e) => setAdminCancelReason(e.target.value)}
+              placeholder="Ex. : erreur de saisie, demande client, doublon..."
+            />
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowAdminCancelDialog(false)}>
               Retour
             </Button>
-            <Button variant="destructive" onClick={handleAdminCancel} disabled={isAdminCancelling}>
+            <Button
+              variant="destructive"
+              onClick={handleAdminCancel}
+              disabled={isAdminCancelling || !trimmedAdminCancelReason}
+            >
               {isAdminCancelling ? "Annulation..." : "Annuler ce contrat"}
             </Button>
           </DialogFooter>

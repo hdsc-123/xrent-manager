@@ -319,7 +319,43 @@ export async function deleteMaintenance(tenantId: string, maintenanceId: string)
     throw new MaintenanceNotDeletableError();
   }
 
-  await prisma.maintenance.delete({ where: { id: maintenanceId } });
+  // Correction QA 2026-09-01 (anomalie confirmée en Phase 4) : contrairement à
+  // createMaintenance/updateMaintenance ci-dessus, cette fonction ne rappelait jamais
+  // syncVehicleStatus après suppression — un véhicule dont la seule maintenance bloquante
+  // était supprimée restait donc affiché en statut MAINTENANCE indéfiniment, alors qu'aucune
+  // opération ne le justifiait plus. Même primitive de verrouillage transactionnel que
+  // createMaintenance/updateMaintenance pour éviter toute course avec une autre écriture
+  // concurrente sur ce véhicule.
+  //
+  // Anomalie distincte, également corrigée ici : `Alert` référence sa ressource par
+  // entityType/entityId (String simples, voir prisma/schema.prisma) plutôt que par une vraie
+  // clé étrangère — un choix délibéré (une alerte doit pouvoir survivre à la ressource qu'elle
+  // décrit, à des fins d'historique), mais qui laissait jusqu'ici une alerte MAINTENANCE_DUE
+  // encore PENDING/ACKNOWLEDGED pointer indéfiniment vers une maintenance supprimée (aucune
+  // cascade possible en base, et aucun code ne la résolvait). On la résout donc explicitement
+  // ici (jamais supprimée : elle reste consultable, marquée résolue automatiquement) — n'affecte
+  // que les alertes encore ouvertes, jamais une alerte déjà résolue ou l'historique existant.
+  await prisma.$transaction(async (tx) => {
+    const vehicle = await lockVehicleForUpdate(tenantId, existing.vehicleId, tx);
+    if (!vehicle) {
+      throw new MaintenanceVehicleNotFoundError();
+    }
+    await tx.maintenance.delete({ where: { id: maintenanceId } });
+    await tx.alert.updateMany({
+      where: {
+        tenantId,
+        entityType: "Maintenance",
+        entityId: maintenanceId,
+        status: { in: ["PENDING", "ACKNOWLEDGED"] },
+      },
+      data: {
+        status: "RESOLVED",
+        resolvedAt: new Date(),
+        resolutionAction: "Résolue automatiquement : la maintenance associée a été supprimée.",
+      },
+    });
+    await syncVehicleStatus(vehicle.id, tx);
+  });
   return true;
 }
 

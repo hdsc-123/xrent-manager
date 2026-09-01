@@ -250,7 +250,9 @@ describe("Révocation immédiate d'un droit déjà en usage, sans reconnexion (p
         clientFirstName: "Test",
         clientLastName: "AvantRevocation",
         startDate: "2030-01-01",
+        startTime: "10:00",
         endDate: "2030-01-02",
+        endTime: "10:00",
       }),
     });
     expect(beforeRevoke.status).toBe(201);
@@ -376,7 +378,9 @@ describe("GET/PATCH /api/users/[id]/permissions", () => {
         clientFirstName: "Test",
         clientLastName: "ParDefaut",
         startDate: "2030-01-01",
+        startTime: "10:00",
         endDate: "2030-01-02",
+        endTime: "10:00",
       }),
     });
     expect(response.status).toBe(201);
@@ -408,7 +412,9 @@ describe("GET/PATCH /api/users/[id]/permissions", () => {
         clientFirstName: "Test",
         clientLastName: "Grouped",
         startDate: "2030-01-01",
+        startTime: "10:00",
         endDate: "2030-01-02",
+        endTime: "10:00",
       }),
     });
     expect(createResponse.status).toBe(201);
@@ -497,7 +503,9 @@ describe("GET/PATCH /api/users/[id]/permissions", () => {
         clientFirstName: "Test",
         clientLastName: "Admin",
         startDate: "2030-01-01",
+        startTime: "10:00",
         endDate: "2030-01-02",
+        endTime: "10:00",
       }),
     });
     expect(response.status).toBe(201);

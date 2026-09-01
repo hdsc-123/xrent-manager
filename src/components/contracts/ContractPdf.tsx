@@ -1,4 +1,5 @@
 import { Document, Page, View, Text, StyleSheet } from "@react-pdf/renderer";
+import { calculateDaysCount } from "@/lib/format";
 
 /** pricePerDay/totalPrice/deposit sont en plus petite unité monétaire (centimes) — voir src/lib/format.ts. */
 function formatMoneyPdf(amountInSmallestUnit: number, currency: string): string {
@@ -93,10 +94,7 @@ export interface ContractPdfProps {
  * GET /api/locations/[id]/pdf, qui refuse la génération sinon).
  */
 export function ContractPdfPage(props: ContractPdfProps) {
-  const days = Math.max(
-    1,
-    Math.ceil((props.locationEnd.getTime() - props.locationStart.getTime()) / (24 * 60 * 60 * 1000))
-  );
+  const days = calculateDaysCount(props.locationStart, props.locationEnd);
 
   return (
     <Page size="A4" style={styles.page}>

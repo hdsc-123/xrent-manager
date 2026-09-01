@@ -10,6 +10,7 @@ import {
   getKnownAgencyNames,
   InvalidReservationDateRangeError,
   InvalidReservationStatusTransitionError,
+  MissingReservationTimeError,
   ReservationLockedError,
   ReservationNotDeletableError,
 } from "@/lib/reservations";
@@ -208,7 +209,11 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       startTime: body.startTime,
       endDate,
       endTime: body.endTime,
-      daysCount: body.daysCount,
+      // Revue durée de réservation (2026-09-01) : `daysCount` n'est jamais accepté depuis le
+      // corps de requête pour une modification manuelle (ce champ n'existe même pas dans
+      // EditReservationForm.tsx) — recalculé côté serveur dès que date/heure change
+      // (resolveReservationDuration, src/lib/reservations.ts). Seul l'import Excel préserve une
+      // valeur brute explicite (Sprint 13B).
       flightNumber: body.flightNumber,
       currency: body.currency,
       totalPrice: body.totalPrice,
@@ -245,7 +250,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
     return NextResponse.json({ reservation });
   } catch (error) {
-    if (error instanceof InvalidReservationDateRangeError) {
+    if (error instanceof InvalidReservationDateRangeError || error instanceof MissingReservationTimeError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof InvalidReservationStatusTransitionError) {

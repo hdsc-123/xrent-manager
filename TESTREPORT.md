@@ -1230,3 +1230,86 @@ Actions de suivi : <description ou "aucune">
 ```
 
 Ce format sera ajusté une fois les outils de test choisis (**À DÉCIDER**).
+
+## 5. Rapport du 2026-09-01 — Clôture campagne QA (durée de réservation, synchronisation véhicule, annulation, maintenance)
+
+Environnement : `xrent_dev` (checkpoint fonctionnel manuel, tenant `XRent Dev QA`) puis `xrent_test` (suite automatisée) — jamais de production (aucune n'existe à ce jour).
+Commande exécutée : `npx tsc --noEmit`, `npm run lint`, `npm test`, `npm run build`.
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| Unitaires/intégration (`npm test`) | 1732 | 1732 | 0 | 0 |
+| Fonctionnels manuels (`xrent_dev`, tenant QA dédié) | voir détail ci-dessous | — | — | — |
+
+Échecs notables : aucun.
+Actions de suivi : aucune anomalie confirmée restante à corriger — voir « Anomalies restantes » ci-dessous (hors périmètre de cette campagne).
+
+### Contexte
+
+Cette campagne couvre deux volets liés, menés successivement sur `xrent_dev` (tenant de test dédié `XRent Dev QA`, jamais `XRent Platform` ni un compte réel) puis vérifiés par la suite automatisée (`xrent_test`) :
+
+1. **Revue durée de réservation / retour véhicule** : heures de départ/retour obligatoires (création, modification, import Excel), comparaison sur l'instant complet date+heure (jamais la date seule), calcul canonique unique de la durée facturée (`calculateDaysCount`, règle du jour entamé), préservation de la valeur brute `daysCount` importée (Sprint 13B) avec signalement (jamais correction silencieuse) d'une divergence avec la durée réelle, message de validation véhicule précisant uniquement les champs réellement manquants.
+2. **5 anomalies confirmées lors des tests fonctionnels du volet 1, corrigées et revérifiées (Phase 4 QA, 2026-09-01)** :
+   - **A.** Le niveau de carburant du véhicule (`Vehicle.currentFuelLevel`) pouvait régresser lors d'un retour renseignant une valeur inférieure à celle déjà enregistrée — seul le kilométrage bénéficiait jusque-là de la protection anti-régression (`GREATEST`).
+   - **B.** Le bouton « Annuler ce contrat » envoyait un motif vide à `POST /api/locations/[id]/admin-cancel`, qui l'exige non vide — échec systématique.
+   - **C.** La suppression d'une maintenance (`deleteMaintenance`) ne resynchronisait jamais le statut opérationnel du véhicule, contrairement à sa création/modification.
+   - **D.** Le message d'erreur de suppression d'agence bloquée par une contrainte en base indiquait toujours « utilisateurs rattachés », quelle que soit la cause réelle (véhicule, location, facture...).
+   - **E.** Une alerte `MAINTENANCE_DUE` encore ouverte pouvait rester indéfiniment orpheline après suppression de la maintenance qu'elle décrivait (`Alert` référence sa ressource par `entityType`/`entityId`, sans clé étrangère — choix délibéré pour préserver l'historique, mais rien ne la résolvait).
+
+### Corrections apportées (anomalies A à E)
+
+| # | Fichier(s) | Correction |
+|---|---|---|
+| A | `src/lib/vehicle-status.ts` (`syncVehicleOdometerAndFuel`) | `GREATEST` atomique appliqué au carburant, symétrique au kilométrage — une valeur supérieure met à jour, une valeur égale ou inférieure n'a aucun effet. |
+| B | `src/app/dashboard/locations/[id]/LocationActions.tsx` | Champ « Motif de l'annulation » obligatoire ajouté à la boîte de dialogue, validé côté client (bouton désactivé si vide), transmis dans le corps de la requête vers la route officielle `adminCancelValidatedLocation` (jamais contournée). |
+| C | `src/lib/maintenances.ts` (`deleteMaintenance`) | Suppression désormais effectuée dans une transaction verrouillant le véhicule (même primitive que `createMaintenance`/`updateMaintenance`), suivie de `syncVehicleStatus`. |
+| D | `src/app/api/agencies/[id]/route.ts` | Le nom de la contrainte Postgres violée (`error.meta.constraint`, format `<Table>_<colonne>_fkey`) est analysé pour produire un message reflétant la cause réelle (véhicule, location, facture, maintenance, transfert, bon de déplacement, utilisateur...). Règle de sécurité inchangée — la suppression reste refusée dans tous les cas. |
+| E | `src/lib/maintenances.ts` (`deleteMaintenance`, même transaction que C) | Toute `Alert` `entityType="Maintenance"` encore `PENDING`/`ACKNOWLEDGED` référençant la maintenance supprimée est marquée `RESOLVED` (jamais supprimée), motif automatique. N'affecte que les alertes encore ouvertes — l'historique déjà résolu, ou une alerte antérieure à ce correctif, n'est jamais modifié. |
+
+### Tests automatisés ajoutés/modifiés
+
+- `src/__tests__/format.test.ts` (nouveau) : tests unitaires directs de `calculateDaysCount`/`combineDateAndTime`/`isValidTimeString`, y compris les 3 cas de durée de référence (2/2/3 jours).
+- `src/__tests__/reservations.test.ts` : durée obligatoire/instant strict/recalcul serveur (création et modification manuelles), heures obligatoires et divergence de durée à l'import Excel (heure absente/invalide/aberrante avec ligne+colonne, préservation de `daysCount` brut avec avertissement).
+- `src/__tests__/locations.test.ts`, `src/__tests__/location-return.test.ts` : non-régression du carburant (valeur supérieure/égale/inférieure/plein) sur les deux points d'entrée de clôture d'un contrat (`PATCH /api/locations/[id]` et `POST /api/locations/[id]/return`), en plus des tests de non-régression du kilométrage déjà existants.
+- `src/__tests__/maintenances.test.ts` : resynchronisation du statut véhicule après suppression d'une maintenance bloquante ; résolution automatique d'une alerte `MAINTENANCE_DUE` encore ouverte à la suppression de sa maintenance.
+- `src/__tests__/agencies.test.ts` : message de suppression reflétant la cause réelle, y compris un cas où l'ancien message aurait été incorrect (véhicule rattaché, pas utilisateur).
+- `src/__tests__/dashboard-route-guards.test.ts`, `src/__tests__/permissions.test.ts` : fixtures mises à jour (`startTime`/`endTime` désormais obligatoires).
+
+Suite complète passée de **1727/1727** à **1732/1732** (+5).
+
+### Résultats de validation
+
+`npx tsc --noEmit` : aucune erreur. `npm run lint` : aucune erreur. `npm test` : 64 fichiers / 1732 tests passés. `npm run build` : réussi.
+
+### Tests fonctionnels réalisés (`xrent_dev`, tenant `XRent Dev QA`)
+
+Checkpoint fonctionnel manuel complet mené en deux temps (avant puis après corrections), avec des données de test dédiées et clairement préfixées (`RETEST-QA` puis `RETEST2-QA` pour les retests post-correction, sans jamais réutiliser un contrat déjà payé/terminé pour un test destructif) :
+- Calcul de durée (3 cas de référence 2/2/3 jours), heures obligatoires (création, modification), rejet d'un retour non strictement postérieur au départ.
+- Import Excel : ligne valide acceptée ; heure absente/invalide/aberrante rejetée avec ligne+colonne précises.
+- Conversion réservation → contrat, génération contrat/facture, paiement simple et paiement mixte, solde nul confirmé.
+- Retour de véhicule, synchronisation kilométrage/carburant (supérieur, égal, inférieur — non-régression confirmée en direct pour les deux, avant et après correction A).
+- Maintenance : création (planifiée, jour J, jour futur) et son effet sur le statut/la disponibilité du véhicule ; suppression et resynchronisation du statut + de l'alerte associée (correctifs C et E confirmés en direct, via l'audit et la fiche véhicule).
+- Annulation de contrat via le bouton officiel : motif vide bloqué côté client, motif valide accepté, remboursement généré, action journalisée (`location.admin_cancelled`, vérifié dans le journal d'audit).
+- Suppression d'agence : message reflétant la cause réelle (véhicule) plutôt que le message générique précédent.
+- Isolation tenant/agence : seul `XRent Dev QA` visible sur `/dashboard/tenants` (aucune trace de `XRent Platform`) ; agences filtrées correctement par tenant.
+- Affichage mobile (390×844) : tableau de bord, détail de contrat, fiche/formulaire véhicule, boîte de dialogue d'annulation — aucun débordement, champs/boutons utilisables.
+
+**Limite connue du test mobile** : uniquement vérifié via redimensionnement de fenêtre de navigateur desktop (Chrome, outil d'automatisation) — aucun test sur appareil physique ni émulateur mobile natif, aucune vérification tactile (gestes, zoom, clavier virtuel).
+
+### Anomalies restantes (backlog, non corrigées — hors périmètre de cette campagne)
+
+- Défilement horizontal de toute la page sur les tableaux de données en affichage mobile (ex. liste des réservations), plutôt qu'un conteneur dédié `overflow-x`. Ergonomique uniquement, aucune donnée masquée.
+- **Alerte historique conservée** : une alerte `MAINTENANCE_DUE` sur `TEST-QA Véhicule 001`, créée avant le correctif E (maintenance supprimée lors d'une phase de nettoyage antérieure à cette campagne), reste `En attente` — laissée intacte intentionnellement (le correctif E n'agit que sur les suppressions futures, jamais sur l'historique existant).
+- Alerte `STOCK_INCONSISTENCY` associée au même véhicule (même origine historique) — se résorbera au prochain contrôle de cohérence une fois le statut réel confirmé stable.
+
+### Exception temporaire `p2003-debug-*`
+
+Pour identifier la forme exacte de `error.meta` renvoyée par Prisma (nécessaire à la correction D), un tenant, une agence et un véhicule de diagnostic temporaires (préfixe `p2003-debug-*`) ont été créés directement dans `xrent_dev` via un script ponctuel, sans aucune donnée métier (pas de client, réservation, contrat, facture, paiement), puis **supprimés immédiatement** après l'investigation. Confirmé absent en base par requête de vérification (0 résultat). Aucune donnée de `XRent Platform` ou d'un autre tenant réel n'a été consultée, modifiée ou supprimée à aucun moment de la campagne.
+
+### Vérification base de données
+
+Aucune migration appliquée (36 migrations, schéma inchangé). Aucune donnée financière supprimée : contrats, factures, paiements, `CashEntry`, `CashRegister` et `AuditLog` du tenant `XRent Dev QA` tous vérifiés présents après la campagne (10 paiements, 8 factures, 14 écritures de caisse, 1 caisse, 96 entrées d'audit). Les données `RETEST-QA` (contrats 00003–00005) et `RETEST2-QA` (contrats 00006–00008, créées pour les retests post-correction) restent identifiables sans ambiguïté par leur préfixe.
+
+### Fichiers modifiés (code + tests, cette campagne complète, périmètre du commit associé)
+
+`src/lib/format.ts`, `src/lib/reservations.ts`, `src/lib/locations.ts`, `src/lib/location-return.ts`, `src/lib/location-upgrades.ts`, `src/lib/vehicle-status.ts`, `src/lib/maintenances.ts`, `src/app/api/reservations/route.ts`, `src/app/api/reservations/[id]/route.ts`, `src/app/api/reservations/import/route.ts`, `src/app/api/agencies/[id]/route.ts`, `src/app/dashboard/reservations/new/NewReservationForm.tsx`, `src/app/dashboard/reservations/[id]/edit/EditReservationForm.tsx`, `src/app/dashboard/reservations/[id]/convert/ConvertReservationForm.tsx`, `src/app/dashboard/reservations/import/{ImportReservationsForm.tsx,columns.ts}`, `src/app/dashboard/locations/new/NewLocationForm.tsx`, `src/app/dashboard/locations/[id]/{LocationActions.tsx,CreateExtensionButton.tsx}`, `src/app/dashboard/vehicles/new/NewVehicleForm.tsx`, `src/app/dashboard/vehicles/[id]/EditVehicleForm.tsx`, `src/components/contracts/ContractPdf.tsx`, `src/components/invoices/InvoicePdf.tsx`, `scripts/test-grouped.mjs`, et les fichiers de tests listés ci-dessus.

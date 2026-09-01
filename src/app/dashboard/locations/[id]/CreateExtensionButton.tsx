@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { apiPost, ApiError } from "@/lib/api";
+import { combineDateAndTime } from "@/lib/format";
 import {
   Button,
   Dialog,
@@ -35,10 +36,22 @@ function safeErrorMessage(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
 
+// Revue durée de réservation (2026-09-01) : lecture/écriture en UTC (getUTCFullYear, etc.),
+// jamais les accesseurs locaux (getFullYear...) — même convention que combineDateAndTime
+// (src/lib/format.ts). L'input `datetime-local` affiche donc l'heure UTC déjà stockée, pas une
+// heure recalculée dans le fuseau du navigateur, pour rester cohérent quel que soit le poste.
 function toDatetimeLocalValue(iso: string): string {
   const date = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}T${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
+}
+
+/** Convertit la valeur `datetime-local` ("YYYY-MM-DDTHH:mm") en instant UTC via
+ * combineDateAndTime — jamais `new Date(string)` directement (interprété en fuseau local du
+ * navigateur pour une chaîne sans décalage explicite). */
+function parseDatetimeLocalValue(value: string): Date {
+  const [datePart, timePart] = value.split("T");
+  return combineDateAndTime(new Date(datePart), timePart);
 }
 
 interface CreateExtensionButtonProps {
@@ -55,7 +68,7 @@ export function CreateExtensionButton({ parentLocationId, parentEndDate }: Creat
   const [error, setError] = useState<string | null>(null);
 
   const parentEnd = new Date(parentEndDate);
-  const parsedEndDate = new Date(endDate);
+  const parsedEndDate = endDate.includes("T") ? parseDatetimeLocalValue(endDate) : new Date(NaN);
   const isValidDate = endDate.length > 0 && !Number.isNaN(parsedEndDate.getTime());
   const isStrictlyLater = isValidDate && parsedEndDate.getTime() > parentEnd.getTime();
 
