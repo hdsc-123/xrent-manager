@@ -214,10 +214,10 @@ function assertValidInvoiceNotes(notes: string | null | undefined): void {
  * séquence est possible et sans conséquence (comme pour reservationNumber/contractNumber),
  * jamais une collision.
  *
- * generateCreditNoteNumber (AV-{année}-{5 chiffres}, plus bas dans ce fichier) garde
- * volontairement l'ancien calcul count()/count+1 — même défaut structurel que ci-dessus,
- * explicitement hors périmètre d'INC-37, documenté comme risque résiduel séparé
- * (INCIDENTS.md).
+ * generateCreditNoteNumber (AV-{année}-{5 chiffres}, plus bas dans ce fichier) avait
+ * initialement le même défaut structurel, explicitement laissé hors périmètre d'INC-37 comme
+ * risque résiduel documenté — corrigé séparément selon le même patron (CreditNoteNumberCounter,
+ * INCIDENTS.md INC-39).
  */
 async function generateInvoiceNumber(tenantId: string, year: number, tx: Prisma.TransactionClient): Promise<string> {
   const prefix = `INV-${year}-`;
@@ -989,7 +989,24 @@ export function isCreditNoteEligibleSource(invoice: Pick<Invoice, "type" | "stat
  * distinct de INV-{année}-{5 chiffres} (generateInvoiceNumber) et du suffixe -AV{n} du
  * versionnement (Sprint 26E, qui désigne une "version", pas un "avoir" — même sigle, sens
  * différent, jamais réutilisé ici pour éviter toute ambiguïté). Compteur dédié, jamais partagé
- * avec la numérotation RENTAL.
+ * avec la numérotation RENTAL/SUPPLEMENT/EXTENSION.
+ *
+ * INC-39 (correctif dédié, même défaut qu'INC-37) : remplace l'ancien calcul
+ * count()/count+1 — non atomique, lecture et écriture séparées sans verrou, collision
+ * reproductible sur @@unique([tenantId, number]) sous création concurrente d'avoirs pour un
+ * même tenant. Repose désormais sur CreditNoteNumberCounter (prisma/schema.prisma), compteur
+ * dédié par (tenantId, année), incrémenté par une seule instruction SQL atomique
+ * (INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING, jamais un COUNT()) — même patron que
+ * generateInvoiceNumber/generateReservationNumber. Postgres verrouille la ligne du compteur
+ * pendant la durée de cette unique instruction : deux appels concurrents pour le même
+ * tenant/année ne peuvent structurellement plus recevoir le même numéro.
+ *
+ * Doit toujours être appelée à l'intérieur de la même transaction que l'écriture qui l'utilise
+ * (déjà garanti ici : createCreditNoteAttempt effectue verrou + calcul + insertion dans une
+ * seule transaction, y compris pour un appel top-level sans tx partagé — voir createCreditNote
+ * ci-dessous) : si cette écriture échoue ensuite, la transaction entière (compteur inclus) est
+ * annulée par PostgreSQL — un « trou » dans la séquence est possible et sans conséquence, jamais
+ * une collision.
  */
 async function generateCreditNoteNumber(
   tenantId: string,
@@ -997,10 +1014,14 @@ async function generateCreditNoteNumber(
   tx: Prisma.TransactionClient
 ): Promise<string> {
   const prefix = `AV-${year}-`;
-  const count = await tx.invoice.count({
-    where: { tenantId, number: { startsWith: prefix } },
-  });
-  return `${prefix}${String(count + 1).padStart(5, "0")}`;
+  const rows = await tx.$queryRaw<{ lastNumber: number }[]>`
+    INSERT INTO "CreditNoteNumberCounter" ("tenantId", "year", "lastNumber")
+    VALUES (${tenantId}, ${year}, 1)
+    ON CONFLICT ("tenantId", "year")
+    DO UPDATE SET "lastNumber" = "CreditNoteNumberCounter"."lastNumber" + 1
+    RETURNING "lastNumber"
+  `;
+  return `${prefix}${String(rows[0].lastNumber).padStart(5, "0")}`;
 }
 
 /**
@@ -1044,9 +1065,13 @@ export interface CreateCreditNoteInput {
  * verrou — sans effet réel dans leurs propres chemins verrouillés, puisque PostgreSQL invalide
  * le reste d'une transaction après une violation de contrainte), createCreditNote réessaie ici
  * la transaction ENTIÈRE (verrou + calcul + insertion) quand aucune transaction partagée n'est
- * fournie par l'appelant — seule façon de retenter effectivement après une collision de numéro
- * (deux sources différentes, non sérialisées entre elles par le verrou de l'une) tout en gardant
- * le verrou tenu jusqu'à l'insertion à l'intérieur de chaque tentative. Si un `tx` partagé est
+ * fournie par l'appelant. Depuis INC-39, CreditNoteNumberCounter élimine structurellement toute
+ * collision de numéro sous concurrence (deux sources différentes, avant non sérialisées entre
+ * elles que par le verrou de l'une, le sont désormais aussi par ce compteur atomique) — ce
+ * réessai n'est donc plus conservé que comme filet de sécurité résiduel (même statut que
+ * MAX_NUMBER_GENERATION_ATTEMPTS pour createInvoice depuis INC-37), plus jamais le mécanisme
+ * principal d'évitement de collision, tout en gardant le verrou tenu jusqu'à l'insertion à
+ * l'intérieur de chaque tentative. Si un `tx` partagé est
  * fourni (nested), une seule tentative est faite, comme le reste du fichier.
  */
 export async function createCreditNote(data: CreateCreditNoteInput, tx?: Prisma.TransactionClient): Promise<Invoice> {

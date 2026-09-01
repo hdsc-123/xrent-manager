@@ -2764,7 +2764,7 @@ describe("POST /api/invoices/[id]/credit-notes — avoir (Sprint 13E tâche 3, s
       expect(total).toBe(7000);
     });
 
-    it("numéro AV : collision entre sources différentes absorbée par réessai de la transaction entière (concurrence réelle)", async () => {
+    it("numéro AV : créations concurrentes pour des sources différentes — numéros distincts, sans collision (INC-39, CreditNoteNumberCounter)", async () => {
       const sources = await Promise.all(
         Array.from({ length: 5 }, () => createRentalSourceWithStatus("ISSUED"))
       );
@@ -2786,6 +2786,275 @@ describe("POST /api/invoices/[id]/credit-notes — avoir (Sprint 13E tâche 3, s
         expect(number).toMatch(/^AV-\d{4}-\d{5}$/);
       }
     });
+  });
+});
+
+/** INC-39 : crée une Location fraîche pour `admin` (auto-génère déjà sa facture RENTAL DRAFT via
+ * getOrCreateMainInvoice, Sprint 12B), puis la finalise (ISSUED) pour servir de source éligible à
+ * un avoir — contrairement à createRentalSourceWithStatus ci-dessus (toujours adminA), accepte
+ * n'importe quel admin/véhicule/client, nécessaire pour les tests multi-tenant ci-dessous. */
+async function createIssuedSourceFor(admin: AuthenticatedTestUser, vehicleId: string, clientId: string) {
+  const locationId = await createFreshLocation(admin, vehicleId, clientId);
+  const createResponse = await createInvoice(admin, { locationId });
+  const created = (await createResponse.json()).invoice;
+  await finalizeInvoice(admin, created.id);
+  return prisma.invoice.findUniqueOrThrow({ where: { id: created.id } });
+}
+
+/**
+ * INC-39 (2026-09-01, même défaut structurel qu'INC-37) : generateCreditNoteNumber() calculait
+ * count()/count+1, non atomique — sous création concurrente d'avoirs pour un même tenant,
+ * plusieurs appels pouvaient lire le même count et entrer en collision sur
+ * @@unique([tenantId, number]) (P2002), même classe de défaut que celle reproduite pour les
+ * factures par le describe INC-37 ci-dessus. Signalé comme risque résiduel séparé lors du
+ * correctif INC-37 (INCIDENTS.md), corrigé ici par CreditNoteNumberCounter (prisma/schema.prisma),
+ * compteur dédié par (tenantId, année), incrémenté par une seule instruction SQL atomique
+ * (INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING) — même patron que
+ * InvoiceNumberCounter/ReservationNumberCounter. createCreditNoteAttempt effectuait déjà verrou +
+ * calcul + insertion dans une seule transaction (contrairement à l'ancien createInvoice avant
+ * INC-37) : aucune restructuration transactionnelle n'était nécessaire ici, seule l'allocation du
+ * numéro elle-même a changé.
+ */
+describe("INC-39 — allocation atomique du numéro d'avoir (CreditNoteNumberCounter)", () => {
+  const creditNoteNumberPattern = (year: number) => new RegExp(`^AV-${year}-\\d{5}$`);
+
+  it("création simple : un avoir obtient un numéro AV bien formé", async () => {
+    const currentYear = new Date().getFullYear();
+    const source = await createRentalSourceWithStatus("ISSUED");
+    const creditNote = await createCreditNote({
+      tenantId: adminA.tenantId,
+      locationId: source.locationId,
+      originalInvoiceId: source.id,
+      amount: 1000,
+      reason: "INC-39 création simple",
+    });
+    expect(creditNote.number).toMatch(creditNoteNumberPattern(currentYear));
+  });
+
+  it("4 créations concurrentes pour le même tenant (4 sources fraîches distinctes) — 4 numéros distincts, aucun échec", async () => {
+    const currentYear = new Date().getFullYear();
+    const sources = await Promise.all(
+      Array.from({ length: 4 }, () => createRentalSourceWithStatus("ISSUED"))
+    );
+    const results = await Promise.all(
+      sources.map((source, i) =>
+        createCreditNote({
+          tenantId: adminA.tenantId,
+          locationId: source.locationId,
+          originalInvoiceId: source.id,
+          amount: 1000,
+          reason: `INC-39 concurrence tenant A ${i}`,
+        })
+      )
+    );
+    expect(results).toHaveLength(4);
+    const numbers = results.map((r) => r.number);
+    expect(new Set(numbers).size).toBe(4);
+    for (const number of numbers) {
+      expect(number).toMatch(creditNoteNumberPattern(currentYear));
+    }
+  });
+
+  it("unicité (tenantId, number) réellement appliquée en base — aucun doublon parmi les avoirs AV du tenant pour l'année courante", async () => {
+    const currentYear = new Date().getFullYear();
+    const creditNotes = await prisma.invoice.findMany({
+      where: { tenantId: adminA.tenantId, type: "CREDIT_NOTE", number: { startsWith: `AV-${currentYear}-` } },
+      select: { number: true },
+    });
+    const numbers = creditNotes.map((c) => c.number);
+    expect(numbers.length).toBeGreaterThan(0);
+    expect(new Set(numbers).size).toBe(numbers.length);
+  });
+
+  it("créations concurrentes sur deux tenants distincts — compteurs indépendants, jamais de collision croisée (isolation multi-tenant)", async () => {
+    const currentYear = new Date().getFullYear();
+    const [sourceA1, sourceA2, sourceB1, sourceB2] = await Promise.all([
+      createIssuedSourceFor(adminA, vehicleAId, clientAId),
+      createIssuedSourceFor(adminA, vehicleAId, clientAId),
+      createIssuedSourceFor(adminB, vehicleBId, clientBId),
+      createIssuedSourceFor(adminB, vehicleBId, clientBId),
+    ]);
+    const [r1, r2, r3, r4] = await Promise.all([
+      createCreditNote({ tenantId: adminA.tenantId, locationId: sourceA1.locationId, originalInvoiceId: sourceA1.id, amount: 1000, reason: "INC-39 tenant A 1" }),
+      createCreditNote({ tenantId: adminA.tenantId, locationId: sourceA2.locationId, originalInvoiceId: sourceA2.id, amount: 1000, reason: "INC-39 tenant A 2" }),
+      createCreditNote({ tenantId: adminB.tenantId, locationId: sourceB1.locationId, originalInvoiceId: sourceB1.id, amount: 1000, reason: "INC-39 tenant B 1" }),
+      createCreditNote({ tenantId: adminB.tenantId, locationId: sourceB2.locationId, originalInvoiceId: sourceB2.id, amount: 1000, reason: "INC-39 tenant B 2" }),
+    ]);
+    expect(r1.number).not.toBe(r2.number);
+    expect(r3.number).not.toBe(r4.number);
+    for (const n of [r1.number, r2.number, r3.number, r4.number]) {
+      expect(n).toMatch(creditNoteNumberPattern(currentYear));
+    }
+    // isolation réelle des compteurs : les deux tenants ne partagent jamais la même ligne
+    // CreditNoteNumberCounter (clé primaire composite (tenantId, année)).
+    const counterA = await prisma.creditNoteNumberCounter.findUnique({
+      where: { tenantId_year: { tenantId: adminA.tenantId, year: currentYear } },
+    });
+    const counterB = await prisma.creditNoteNumberCounter.findUnique({
+      where: { tenantId_year: { tenantId: adminB.tenantId, year: currentYear } },
+    });
+    expect(counterA).not.toBeNull();
+    expect(counterB).not.toBeNull();
+  });
+
+  it("compteur isolé par année : une ligne CreditNoteNumberCounter préexistante pour une autre année n'est jamais touchée par une création pour l'année courante (changement d'année)", async () => {
+    const currentYear = new Date().getFullYear();
+    const otherYear = currentYear + 7; // année arbitraire distincte, jamais la courante
+    await prisma.creditNoteNumberCounter.create({
+      data: { tenantId: adminA.tenantId, year: otherYear, lastNumber: 42 },
+    });
+
+    const source = await createRentalSourceWithStatus("ISSUED");
+    const creditNote = await createCreditNote({
+      tenantId: adminA.tenantId,
+      locationId: source.locationId,
+      originalInvoiceId: source.id,
+      amount: 1000,
+      reason: "INC-39 changement d'année",
+    });
+    expect(creditNote.number).toMatch(creditNoteNumberPattern(currentYear));
+
+    const otherYearCounter = await prisma.creditNoteNumberCounter.findUniqueOrThrow({
+      where: { tenantId_year: { tenantId: adminA.tenantId, year: otherYear } },
+    });
+    expect(otherYearCounter.lastNumber).toBe(42); // strictement inchangé, jamais partagé entre années
+  });
+
+  it("séquence strictement croissante en usage séquentiel (non concurrent) pour le même tenant", async () => {
+    const source1 = await createRentalSourceWithStatus("ISSUED");
+    const source2 = await createRentalSourceWithStatus("ISSUED");
+    const source3 = await createRentalSourceWithStatus("ISSUED");
+    const first = await createCreditNote({ tenantId: adminA.tenantId, locationId: source1.locationId, originalInvoiceId: source1.id, amount: 1000, reason: "Séquence 1" });
+    const second = await createCreditNote({ tenantId: adminA.tenantId, locationId: source2.locationId, originalInvoiceId: source2.id, amount: 1000, reason: "Séquence 2" });
+    const third = await createCreditNote({ tenantId: adminA.tenantId, locationId: source3.locationId, originalInvoiceId: source3.id, amount: 1000, reason: "Séquence 3" });
+    const suffixes = [first, second, third].map((cn) => Number(cn.number.match(/-(\d{5})$/)?.[1]));
+    expect(suffixes[0]).toBeLessThan(suffixes[1]);
+    expect(suffixes[1]).toBeLessThan(suffixes[2]);
+  });
+
+  it("rollback transactionnel réel : un échec après l'allocation du numéro (violation de @@unique([tenantId, number])) annule aussi l'incrément du compteur — aucune progression entre tentatives, jamais de saut permanent", async () => {
+    // Tenant jetable dédié : CreditNoteNumberCounter n'existe encore pour aucune année sur ce
+    // tenant, point de départ déterministe (contrairement à adminA, déjà utilisé par les tests
+    // précédents de ce describe).
+    const throwaway = await registerTenantAdmin({
+      tenantName: `INC39 Rollback ${runId}`,
+      tenantSlug: `inc39-rollback-${runId}`,
+      name: "Admin",
+      email: `admin-inc39-rollback-${runId}@example.com`,
+      password: "Password123!",
+    });
+    createdTenantIds.push(throwaway.tenantId);
+
+    const agencyResponse = await apiFetch("/api/agencies", {
+      method: "POST",
+      headers: { Cookie: throwaway.sessionCookie },
+      body: JSON.stringify({ name: "Agence INC39", slug: `agence-inc39-${runId}` }),
+    });
+    const agencyId = (await agencyResponse.json()).agency.id as string;
+
+    const vehicleResponse = await apiFetch("/api/vehicles", {
+      method: "POST",
+      headers: { Cookie: throwaway.sessionCookie },
+      body: JSON.stringify({
+        agencyId,
+        name: "Rollback",
+        licensePlate: `INC39-${runId}`,
+        make: "Test",
+        model: "Rollback",
+        year: 2022,
+        category: "Citadine",
+        pricePerDay: 5000,
+        chassisNumber: `VF1TEST${Math.floor(Math.random() * 1_000_000)}`,
+        color: "Blanc",
+        doors: 5,
+        seats: 5,
+        horsepower: 6,
+        powerKW: 75,
+        engineSize: 1.5,
+      }),
+    });
+    const vehicleId = (await vehicleResponse.json()).vehicle.id as string;
+    const clientResponse = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { Cookie: throwaway.sessionCookie },
+      body: JSON.stringify({ name: "Client INC39", email: `client-inc39-${runId}@test.local`, licenseExpiryDate: "2099-12-31", birthDate: "1990-01-01" }),
+    });
+    const clientId = (await clientResponse.json()).client.id as string;
+
+    const source = await createIssuedSourceFor(throwaway, vehicleId, clientId);
+
+    // Bloque à l'avance le tout premier numéro que le compteur atomique produira pour ce
+    // tenant/cette année (compteur inexistant → première incrémentation → 1 → AV-{année}-00001) :
+    // une ligne CREDIT_NOTE insérée directement par Prisma, hors compteur, avec exactement ce
+    // numéro. N'affecte pas l'éligibilité de source (getTotalCreditedAmount somme bien cette ligne,
+    // mais 100 << remainingCredit pour un avoir de 1000 sur une source de 15000).
+    const year = new Date().getFullYear();
+    const blockedNumber = `AV-${year}-00001`;
+    await prisma.invoice.create({
+      data: {
+        tenantId: throwaway.tenantId,
+        agencyId: source.agencyId,
+        locationId: source.locationId,
+        clientId: source.clientId,
+        number: blockedNumber,
+        type: "CREDIT_NOTE",
+        status: "CREDIT_NOTE",
+        originalInvoiceId: source.id,
+        reason: "Ligne de blocage (test rollback INC-39)",
+        subtotal: 100,
+        totalAmount: 100,
+        currency: source.currency,
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await createCreditNote({
+        tenantId: throwaway.tenantId,
+        locationId: source.locationId,
+        originalInvoiceId: source.id,
+        amount: 1000,
+        reason: "INC-39 tentative bloquée",
+      });
+      throw new Error("attendu : rejet P2002 (tenantId, number) après épuisement des réessais");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({ code: "P2002" });
+    const target = (caught as { meta?: { target?: unknown } }).meta?.target;
+    const targetArray = Array.isArray(target) ? target : [target];
+    expect(targetArray).toContain("number");
+
+    // Preuve du rollback : si l'incrément du compteur avait survécu à un échec, au moins une des
+    // MAX_NUMBER_GENERATION_ATTEMPTS (5) tentatives aurait fini par calculer 2, 3, 4 ou 5 — un
+    // numéro non bloqué — et aurait donc réussi. Comme les 5 tentatives échouent identiquement
+    // sur le même numéro AV-00001 (jamais AV-00002+), le compteur revient bien à son état
+    // précédent (absent) après chaque échec — jamais d'incrément permanent.
+    const counter = await prisma.creditNoteNumberCounter.findUnique({
+      where: { tenantId_year: { tenantId: throwaway.tenantId, year } },
+    });
+    expect(counter).toBeNull();
+  });
+
+  it("nettoyage : deleteTestTenants supprime CreditNoteNumberCounter avec son tenant (FK ajoutée à tenant-delete-order.mjs)", async () => {
+    const throwaway = await registerTenantAdmin({
+      tenantName: `INC39 Cleanup ${runId}`,
+      tenantSlug: `inc39-cleanup-${runId}`,
+      name: "Admin",
+      email: `admin-inc39-cleanup-${runId}@example.com`,
+      password: "Password123!",
+    });
+    createdTenantIds.push(throwaway.tenantId);
+
+    await prisma.creditNoteNumberCounter.create({
+      data: { tenantId: throwaway.tenantId, year: 2099, lastNumber: 1 },
+    });
+    expect(await prisma.creditNoteNumberCounter.count({ where: { tenantId: throwaway.tenantId } })).toBe(1);
+
+    await deleteTestTenants([throwaway.tenantId]);
+
+    expect(await prisma.creditNoteNumberCounter.count({ where: { tenantId: throwaway.tenantId } })).toBe(0);
+    expect(await prisma.tenant.count({ where: { id: throwaway.tenantId } })).toBe(0);
   });
 });
 

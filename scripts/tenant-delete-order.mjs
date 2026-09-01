@@ -36,6 +36,10 @@ export const TENANT_MODEL_DELETE_ORDER = [
   // (InvoiceNumberCounter_tenantId_fkey) : même raisonnement que reservationNumberCounter
   // ci-dessous (voir son commentaire, INCIDENTS.md INC-29) — doit être supprimé avant `tenant`.
   { model: "invoiceNumberCounter", where: (ids) => ({ tenantId: { in: ids } }) },
+  // INC-39 (2026-09-01) — compteur du numéro d'avoir, FK directe vers Tenant
+  // (CreditNoteNumberCounter_tenantId_fkey) : même raisonnement qu'invoiceNumberCounter
+  // ci-dessus — doit être supprimé avant `tenant`.
+  { model: "creditNoteNumberCounter", where: (ids) => ({ tenantId: { in: ids } }) },
   { model: "location", where: (ids) => ({ tenantId: { in: ids } }) },
   { model: "reservation", where: (ids) => ({ tenantId: { in: ids } }) },
   // Phase 6.1 (2026-08-31) — compteur du numéro de réservation interne, FK directe vers Tenant

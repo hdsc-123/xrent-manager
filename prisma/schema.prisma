@@ -49,6 +49,8 @@ model Tenant {
   reservationNumberCounters ReservationNumberCounter[]
   // INC-37 (correctif dédié) : voir modèle InvoiceNumberCounter ci-dessous.
   invoiceNumberCounters InvoiceNumberCounter[]
+  // INC-39 (correctif dédié) : voir modèle CreditNoteNumberCounter ci-dessous.
+  creditNoteNumberCounters CreditNoteNumberCounter[]
 }
 
 model Agency {
@@ -1282,9 +1284,28 @@ model ReservationNumberCounter {
 // d'une collision reproductible sous création concurrente (INCIDENTS.md INC-37). Incrémenté par
 // une seule instruction SQL atomique (INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING) —
 // aucune fenêtre de collision possible, même sous forte concurrence. Ne couvre PAS
-// generateCreditNoteNumber (AV-{année}-{5 chiffres}) : même défaut structurel, explicitement
-// hors périmètre d'INC-37, documenté comme risque résiduel séparé (INCIDENTS.md).
+// generateCreditNoteNumber (AV-{année}-{5 chiffres}) : même défaut structurel qu'INC-37,
+// corrigé séparément par CreditNoteNumberCounter ci-dessous (INCIDENTS.md INC-39).
 model InvoiceNumberCounter {
+  tenantId   String
+  year       Int
+  lastNumber Int    @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@id([tenantId, year])
+}
+
+// Compteur atomique du numéro d'avoir (INC-39, correctif dédié), par tenant ET par année
+// (AV-{année}-{5 chiffres}) — même forme et même principe que ReservationNumberCounter/
+// InvoiceNumberCounter ci-dessus (jamais partagé avec eux, compteur indépendant). Remplace
+// l'ancien calcul count()/count+1 de generateCreditNoteNumber (src/lib/invoices.ts), même défaut
+// structurel qu'INC-37 (non atomique, collision reproductible sous création concurrente
+// d'avoirs pour un même tenant), signalé comme risque résiduel séparé lors du correctif INC-37
+// puis corrigé ici selon le même patron (INCIDENTS.md INC-39). Incrémenté par une seule
+// instruction SQL atomique (INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING) — aucune fenêtre
+// de collision possible, même sous forte concurrence.
+model CreditNoteNumberCounter {
   tenantId   String
   year       Int
   lastNumber Int    @default(0)
