@@ -1313,3 +1313,58 @@ Aucune migration appliquée (36 migrations, schéma inchangé). Aucune donnée f
 ### Fichiers modifiés (code + tests, cette campagne complète, périmètre du commit associé)
 
 `src/lib/format.ts`, `src/lib/reservations.ts`, `src/lib/locations.ts`, `src/lib/location-return.ts`, `src/lib/location-upgrades.ts`, `src/lib/vehicle-status.ts`, `src/lib/maintenances.ts`, `src/app/api/reservations/route.ts`, `src/app/api/reservations/[id]/route.ts`, `src/app/api/reservations/import/route.ts`, `src/app/api/agencies/[id]/route.ts`, `src/app/dashboard/reservations/new/NewReservationForm.tsx`, `src/app/dashboard/reservations/[id]/edit/EditReservationForm.tsx`, `src/app/dashboard/reservations/[id]/convert/ConvertReservationForm.tsx`, `src/app/dashboard/reservations/import/{ImportReservationsForm.tsx,columns.ts}`, `src/app/dashboard/locations/new/NewLocationForm.tsx`, `src/app/dashboard/locations/[id]/{LocationActions.tsx,CreateExtensionButton.tsx}`, `src/app/dashboard/vehicles/new/NewVehicleForm.tsx`, `src/app/dashboard/vehicles/[id]/EditVehicleForm.tsx`, `src/components/contracts/ContractPdf.tsx`, `src/components/invoices/InvoicePdf.tsx`, `scripts/test-grouped.mjs`, et les fichiers de tests listés ci-dessus.
+
+## 6. Rapport du 2026-09-01 — Sprint 1–4 : vérification d'intégration, résolution de deux alertes historiques, vérification responsive mobile
+
+Environnement : `xrent_dev`, tenant `XRent Dev QA` exclusivement, compte `xrent-dev-admin@localhost.invalid`. Les opérations documentées ont été limitées à ce tenant ; `XRent Platform` a été contrôlé comme inchangé. Jamais `xrent_test`, jamais production (aucune n'existe à ce jour).
+Commande exécutée : aucune commande de test automatisé (`npx tsc --noEmit`/`npm run lint`/`npm test`/`npm run build`) — sans objet, aucun fichier source modifié depuis le commit `52ab6d3`. Vérifications effectuées par lecture directe de l'état Git/Prisma/base de données et par navigation réelle dans l'application (session authentifiée par le propriétaire du projet).
+
+| Type de test | Nombre exécuté | Réussis | Échoués | Ignorés |
+|---|---|---|---|---|
+| Unitaires/intégration | — (aucun code modifié) | — | — | — |
+| Vérification manuelle (navigateur réel + lecture base en lecture seule) | voir détail ci-dessous | — | — | — |
+
+Échecs notables : aucun.
+Actions de suivi : aucune anomalie confirmée — voir « Anomalies observées » (Phase 4) ci-dessous ; ancien point de backlog non reproduit dans les conditions disponibles, laissé en observation (voir Phase 4).
+
+### Contexte
+
+Session en 4 phases, chacune validée explicitement par le propriétaire du projet avant la suivante.
+
+### Phase 1-2 — Vérification d'intégration et sauvegarde
+
+Vérifié directement dans cette session : `HEAD` = `52ab6d3ffdc873ebb1bb43a31ad283823d41e73e` (`git rev-parse HEAD`), identique à `git rev-parse origin/main` ; `git status` → working tree propre, branche synchronisée. 34 fichiers du commit `52ab6d3` confirmés par comptage exact (`git diff-tree --no-commit-id --name-only -r 52ab6d3 | wc -l`), cohérent avec le total annoncé par `git show --stat`. `npx prisma migrate status` → « Database schema is up to date! » (aucune migration en attente). `.env*` confirmés ignorés par Git (`git ls-files` ne montre que `.env.example`). Contenu réel de `xrent_dev` lu directement (requêtes en lecture seule) : exactement 2 tenants — `XRent Platform` (1 user, 0 agence) et `XRent Dev QA` (1 user `xrent-dev-admin@localhost.invalid`, 3 agences).
+
+Sauvegarde retrouvée : `/Users/sh/xrent_backups/xrent_dev_pre_reservationNumber_20260901_125438.dump`, horodatée 2026-09-01 12h54. Lisibilité confirmée via `pg_restore --list` (en-tête cohérent : `dbname: xrent_dev`, format `CUSTOM`, 329 entrées de TOC) — ceci confirme que l'archive est lisible et structurée, pas qu'une restauration complète a été testée. D'après son horodatage (12h54), cette sauvegarde est antérieure au commit `52ab6d3` (18h38) et aux données `RETEST-QA`/`RETEST2-QA` créées dans l'intervalle — elle ne les couvre donc probablement pas.
+
+Anomalie mineure de documentation relevée sans correction (hors périmètre de cette tâche) : l'en-tête de la section 0 de HANDOFF.md mentionne encore `HEAD c51144c`, deux commits derrière le `HEAD` réel `52ab6d3`.
+
+### Phase 3 — Résolution de deux alertes historiques
+
+Les deux alertes ouvertes depuis la clôture de la campagne QA du 2026-09-01 (section 5 ci-dessus) ont été résolues, sur validation explicite préalable du propriétaire du projet pour chacune, exclusivement via le parcours officiel de l'application (`POST /api/alerts/[id]/resolve`), en session authentifiée par le propriétaire du projet lui-même dans son propre navigateur.
+
+**Alerte 1 — `MAINTENANCE_DUE` orpheline** (id `cmtiu9x110001m4x2209tgdqu`, véhicule `TEST-QA Véhicule 001` / `TEST-QA-001`) : maintenance sous-jacente référencée (id `cmtinzkos0025m403ayvvo424`) confirmée absente en base par requête directe (`findUnique` → `null`). Résolue avec le motif « Alerte orpheline — maintenance sous-jacente supprimée avant l'existence du correctif de resynchronisation automatique (QA Phase 4, commit 52ab6d3). » Statut `PENDING` → `RESOLVED`, `resolvedAt` = `2026-09-01T18:12:18.358Z`, `resolvedByUserId` = compte `xrent-dev-admin@localhost.invalid`. Entrée `AuditLog` associée : id `cmtizihq00001m49y9sb60tno` (`action: alert.resolved`, `resource: Alert`, `createdAt` = `2026-09-01T18:12:18.361Z`).
+
+**Alerte 2 — `STOCK_INCONSISTENCY`** (id `cmtiwf4cw0045m4x2l6cdbk8i`, même véhicule) : statut enregistré `MAINTENANCE` vs statut réel calculé `AVAILABLE`. Résolue après resynchronisation du véhicule (voir ci-dessous), avec le motif « Statut véhicule resynchronisé — incohérence historique confirmée résorbée après recalcul officiel du statut. » Statut `PENDING` → `RESOLVED`, `resolvedAt` = `2026-09-01T18:12:37.465Z`, même utilisateur. Entrée `AuditLog` associée : id `cmtiziwgr0003m49ya8jdtsx1` (`createdAt` = `2026-09-01T18:12:37.467Z`).
+
+Total `AuditLog` de `xrent_dev` passé de 96 à 98 (+2 exactement, comptage avant/après). La 3ᵉ alerte `MAINTENANCE_DUE` du tenant (échéance à venir le 05/09/2026, `RETEST-QA Véhicule 001`) confirmée non touchée, restée `PENDING`.
+
+### Resynchronisation du statut véhicule — limitée à `TEST-QA-001`
+
+Dry-run préalable (`node scripts/resync-vehicle-status.js --env=dev`, sans `--yes`) : 3 véhicules examinés (totalité du tenant `XRent Dev QA` — `XRent Platform` ne possède aucun véhicule), 1 seul écart trouvé : `TEST-QA Véhicule 001` (`TEST-QA-001`), enregistré `MAINTENANCE`, calculé `AVAILABLE`. Vérifié avant écriture par requête directe : véhicule du tenant `XRent Dev QA`, aucune location `ACTIVE` sur ce véhicule, aucune maintenance `SCHEDULED`/`IN_PROGRESS` le concernant. Écriture réelle exécutée (`--yes`) ; re-dry-run immédiat confirmant 0 écart restant sur les 3 véhicules. Vérification post-écriture par lecture directe : seuls `status` (`MAINTENANCE` → `AVAILABLE`) et `updatedAt` modifiés sur ce véhicule ; `RETEST-QA Véhicule 001` et `RETEST2-QA Véhicule Bloquant` strictement inchangés.
+
+### Isolation tenant et non-régression financière
+
+Les opérations documentées ont été limitées au tenant `XRent Dev QA` ; `XRent Platform` a été contrôlé comme inchangé (1 user, 0 agence, comptage identique avant/après). `XRent Dev QA` structurellement inchangé (1 user, 3 agences). Comptages financiers de `xrent_dev` strictement identiques avant/après (requêtes directes) : 10 paiements, 8 factures, 14 écritures de caisse, 1 caisse. Aucune migration lancée, aucun fichier de code modifié, aucun commit ni push effectué (`git status` vérifié propre après la session).
+
+### Phase 4 — Vérification responsive mobile
+
+Vérification responsive à 500 px, complétée par une analyse DOM ciblée pour le comportement attendu à 390 px. 500 px correspond au plancher réel de la fenêtre du navigateur contrôlé par l'outil d'automatisation utilisé pour cette session (essais répétés à 390 et 320 px tous ramenés à 500×667 par l'outil) — contrainte de l'outil/OS, pas de l'application. Analyse DOM utilisée : comparaison programmatique `document.documentElement.scrollWidth` vs `window.innerWidth` sur chaque page, puis détection de tout élément dont la largeur dépasse le viewport sans qu'un conteneur ancêtre ne porte `overflow-x: auto`/`scroll` avec un `scrollWidth` réellement supérieur à son `clientWidth`. Limite explicite de cette méthode : les paliers responsive Tailwind de l'application étant identiques entre 390 et 640 px (aucun palier intermédiaire), un débordement affectant spécifiquement une largeur entre 390 et 500 px sans se manifester à 500 px ne serait pas détecté par cette combinaison — seul un test sur un appareil réel ou un émulateur natif à 390 px lèverait ce doute résiduel.
+
+Pages vérifiées (6/6) : Tableau de bord, Réservations, Contrats, Véhicules, Factures, Maintenances — `scrollWidth` = `innerWidth` = 500 sur les 6 pages (aucun débordement horizontal global). Table Réservations vérifiée en détail : conteneur scrollable propre (`clientWidth` 466 px / `scrollWidth` 1891 px, `overflow-x: auto`), `<main>` parent en `overflow-x: hidden` — la page elle-même ne défile jamais horizontalement.
+
+Formulaires/dialogues vérifiés : formulaire pleine page « Planifier une maintenance » (`/dashboard/maintenances/new`) ; dialogue modal « Résoudre l'alerte » (Phase 3) ; dialogue modal « Désactiver le véhicule ? » (fermé via Annuler, statut véhicule confirmé inchangé après fermeture par lecture de la page).
+
+**Anomalies observées** : aucune anomalie bloquante confirmée sur les 6 pages et 3 dialogues/formulaires testés avec cette méthode. Ancien point de backlog (« défilement horizontal de toute la page sur les tableaux de données en mobile », section 5) : non reproduit dans les conditions disponibles et laissé en observation ; la résolution définitive reste à confirmer par un test réel à 390 px. Point ergonomique non bloquant, non corrigé (aucune autorisation demandée ni donnée pour une correction de code dans cette Phase 4) : sur `/dashboard/vehicles`, le menu d'actions (⋯) d'une ligne de table nécessite un défilement horizontal interne à la table pour être atteint — action non masquée (accessible après défilement, clic déclenchant un scroll automatique vers l'élément).
+
+**Aucune correction de code, migration, suppression de données/alerte/journal, commit ni push effectué pendant la Phase 4.**
