@@ -11,6 +11,11 @@ import {
   getOrCreateMainInvoice,
   getOrCreateSupplementInvoice,
   getOrCreateExtensionInvoice,
+  // INC-37 : aliasé pour ne jamais entrer en collision avec le helper de test local du même nom
+  // (createInvoice ci-dessous, qui passe par l'API HTTP) — celui-ci appelle directement la
+  // fonction lib, hors de toute route/getOrCreateMainInvoice, uniquement pour les tests
+  // d'atomicité/rollback du compteur (voir describe INC-37 plus bas).
+  createInvoice as createInvoiceDirect,
   validateSupplementaryAmount,
   createCreditNote,
   getTotalCreditedAmount,
@@ -69,6 +74,38 @@ async function createFreshLocation(actor: AuthenticatedTestUser, vehicleId: stri
     throw new Error(`Échec de création de la location de test (${response.status}) : ${await response.text()}`);
   }
   return (await response.json()).location.id as string;
+}
+
+let bareLocationDateOffset = 0; // plage 2035+, dédiée, jamais celle de createFreshLocation (2029+)
+
+/**
+ * INC-37 : contrairement à createFreshLocation ci-dessus (POST /api/locations, qui auto-génère
+ * déjà sa facture RENTAL DRAFT via getOrCreateMainInvoice — Sprint 12B), crée une Location
+ * directement via Prisma, sans passer par la route — aucune facture n'existe encore pour elle.
+ * Utilisée uniquement par le test de rollback ci-dessous (describe INC-37), qui a besoin d'un
+ * point de départ à zéro facture pour observer un premier appel direct à createInvoice() réussir
+ * distinctement d'un second qui échoue. Aucune validation métier de chevauchement n'est appliquée
+ * ici (bypass volontaire de la route) — sans conséquence, cette Location n'est jamais utilisée
+ * pour autre chose que ce test.
+ */
+async function createBareLocationForA(): Promise<string> {
+  bareLocationDateOffset += 5;
+  const base = new Date(Date.UTC(2035, 0, 1));
+  const start = new Date(base.getTime() + bareLocationDateOffset * 24 * 60 * 60 * 1000);
+  const end = new Date(start.getTime() + 3 * 24 * 60 * 60 * 1000);
+  const location = await prisma.location.create({
+    data: {
+      tenantId: adminA.tenantId,
+      agencyId: agencyAId,
+      vehicleId: vehicleAId,
+      clientId: clientAId,
+      startDate: start,
+      endDate: end,
+      pricePerDay: 5000,
+      totalPrice: 15000,
+    },
+  });
+  return location.id;
 }
 
 /** Sprint 13E tâche 3 : crée par défaut sa propre Location fraîche (jamais locationAId) —
@@ -346,6 +383,214 @@ describe("POST /api/invoices", () => {
     const firstNumber = (await first.json()).invoice.number;
     const secondNumber = (await second.json()).invoice.number;
     expect(firstNumber).not.toBe(secondNumber);
+  });
+});
+
+/**
+ * INC-37 (2026-09-01) : generateInvoiceNumber() calculait count()/count+1, non atomique — sous
+ * création concurrente de factures pour un même tenant, plusieurs appels pouvaient lire le même
+ * count et entrer en collision sur @@unique([tenantId, number]) (P2002), reproduit
+ * déterministement par le describe INC-22 ci-dessus (4 createInvoice concurrents). Corrigé par
+ * InvoiceNumberCounter (prisma/schema.prisma), compteur atomique par (tenantId, année) — même
+ * patron que ReservationNumberCounter/generateReservationNumber (Phase 6.1, src/lib/reservations.ts).
+ * generateCreditNoteNumber (AV-{année}-{5 chiffres}) garde volontairement l'ancien calcul —
+ * risque résiduel documenté séparément, hors périmètre de ce correctif.
+ */
+describe("INC-37 — allocation atomique du numéro de facture (InvoiceNumberCounter)", () => {
+  const invoiceNumberPattern = (year: number) => new RegExp(`^INV-${year}-\\d{5}$`);
+
+  it("4 créations concurrentes pour le même tenant (4 Locations fraîches distinctes) — 4 numéros distincts, aucun échec, format préservé", async () => {
+    const currentYear = new Date().getFullYear();
+    const responses = await Promise.all([
+      createInvoice(adminA),
+      createInvoice(adminA),
+      createInvoice(adminA),
+      createInvoice(adminA),
+    ]);
+    // Sprint 13E tâche 3 : createInvoice() (helper de test) crée une Location fraîche, qui
+    // auto-génère déjà sa facture RENTAL DRAFT (POST /api/locations) — la race sur le compteur
+    // se joue donc réellement pendant les 4 créations de Location concurrentes ci-dessus ; le
+    // POST /api/invoices qui suit, ici, est idempotent (200, facture déjà existante), jamais 201
+    // (même comportement déjà établi ligne ~296 ci-dessus).
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+    }
+    const bodies = await Promise.all(responses.map((r) => r.json()));
+    const numbers = bodies.map((b) => b.invoice.number as string);
+    for (const number of numbers) {
+      expect(number).toMatch(invoiceNumberPattern(currentYear));
+    }
+    expect(new Set(numbers).size).toBe(4);
+  });
+
+  it("unicité (tenantId, number) réellement appliquée en base — aucun doublon parmi les factures INV du tenant pour l'année courante", async () => {
+    const currentYear = new Date().getFullYear();
+    const invoices = await prisma.invoice.findMany({
+      where: { tenantId: adminA.tenantId, number: { startsWith: `INV-${currentYear}-` } },
+      select: { number: true },
+    });
+    const numbers = invoices.map((i) => i.number);
+    expect(numbers.length).toBeGreaterThan(0);
+    expect(new Set(numbers).size).toBe(numbers.length);
+  });
+
+  it("créations concurrentes sur deux tenants distincts — compteurs indépendants, jamais de collision croisée", async () => {
+    const currentYear = new Date().getFullYear();
+    const [locA1, locA2, locB1, locB2] = await Promise.all([
+      createFreshLocation(adminA, vehicleAId, clientAId),
+      createFreshLocation(adminA, vehicleAId, clientAId),
+      createFreshLocation(adminB, vehicleBId, clientBId),
+      createFreshLocation(adminB, vehicleBId, clientBId),
+    ]);
+    // Les 4 Locations ci-dessus (créées concurremment) ont chacune déjà auto-généré leur propre
+    // facture RENTAL DRAFT — la race sur les compteurs (indépendants par tenant) se joue déjà à
+    // cette étape. Les 4 appels ci-dessous ne font que relire chaque facture existante (200,
+    // idempotent), jamais 201 — même raison que le test précédent.
+    const responses = await Promise.all([
+      createInvoice(adminA, { locationId: locA1 }),
+      createInvoice(adminA, { locationId: locA2 }),
+      createInvoice(adminB, { locationId: locB1 }),
+      createInvoice(adminB, { locationId: locB2 }),
+    ]);
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+    }
+    const bodies = await Promise.all(responses.map((r) => r.json()));
+    const numbersA = [bodies[0].invoice.number as string, bodies[1].invoice.number as string];
+    const numbersB = [bodies[2].invoice.number as string, bodies[3].invoice.number as string];
+    expect(numbersA[0]).not.toBe(numbersA[1]);
+    expect(numbersB[0]).not.toBe(numbersB[1]);
+    for (const n of [...numbersA, ...numbersB]) {
+      expect(n).toMatch(invoiceNumberPattern(currentYear));
+    }
+  });
+
+  it("séquence strictement croissante en usage séquentiel (non concurrent) pour le même tenant", async () => {
+    const first = await createInvoice(adminA);
+    const second = await createInvoice(adminA);
+    const third = await createInvoice(adminA);
+    const numbers = await Promise.all(
+      [first, second, third].map(async (r) => (await r.json()).invoice.number as string)
+    );
+    const suffixes = numbers.map((n) => Number(n.match(/-(\d{5})$/)?.[1]));
+    expect(suffixes[0]).toBeLessThan(suffixes[1]);
+    expect(suffixes[1]).toBeLessThan(suffixes[2]);
+  });
+
+  it("rollback transactionnel réel : un échec après l'allocation du numéro (violation de Invoice_one_active_rental_per_location) annule aussi l'incrément du compteur — aucun saut permanent", async () => {
+    // createBareLocationForA (pas createFreshLocation) : cette Location ne doit encore avoir
+    // aucune facture, pour que le premier appel direct ci-dessous soit une création réelle,
+    // distincte du second qui doit, lui, entrer en collision.
+    const firstLocationId = await createBareLocationForA();
+
+    const first = await createInvoiceDirect({ tenantId: adminA.tenantId, locationId: firstLocationId });
+    const firstMatch = first.number.match(/^INV-(\d{4})-(\d{5})$/);
+    expect(firstMatch).not.toBeNull();
+    const [, year, firstSuffix] = firstMatch as RegExpMatchArray;
+
+    // Appel direct (lib, hors getOrCreateMainInvoice — sans son verrou ni son idempotence) pour
+    // la MÊME Location : heurte réellement Invoice_one_active_rental_per_location (P2002 réel,
+    // pas simulé) après avoir déjà alloué un numéro dans chacune de ses 5 tentatives — sert
+    // uniquement à vérifier que l'échec annule bien tout, compteur inclus (le comportement de cet
+    // index en lui-même est déjà couvert ailleurs, via getOrCreateMainInvoice).
+    let caught: unknown;
+    try {
+      await createInvoiceDirect({ tenantId: adminA.tenantId, locationId: firstLocationId });
+      throw new Error("attendu : rejet P2002 (Invoice_one_active_rental_per_location)");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({ code: "P2002" });
+    const target = (caught as { meta?: { target?: unknown } }).meta?.target;
+    expect(Array.isArray(target) ? target : [target]).toEqual(["locationId"]);
+
+    // Une troisième facture, sur une Location fraîche différente, doit obtenir firstSuffix + 1 —
+    // jamais firstSuffix + 6 : preuve que les 5 tentatives échouées ci-dessus (compteur + écriture,
+    // chacune dans sa propre transaction) ont bien été intégralement annulées par PostgreSQL, pas
+    // seulement leur écriture.
+    const thirdLocationId = await createBareLocationForA();
+    const third = await createInvoiceDirect({ tenantId: adminA.tenantId, locationId: thirdLocationId });
+    const thirdMatch = third.number.match(/^INV-(\d{4})-(\d{5})$/);
+    expect(thirdMatch).not.toBeNull();
+    const [, thirdYear, thirdSuffix] = thirdMatch as RegExpMatchArray;
+    expect(thirdYear).toBe(year);
+    expect(Number(thirdSuffix)).toBe(Number(firstSuffix) + 1);
+  });
+
+  it("non-régression SUPPLEMENT : créations concurrentes (clés distinctes, même tenant) — numéros distincts, format préservé", async () => {
+    const currentYear = new Date().getFullYear();
+    const locations = await Promise.all([
+      createFreshLocation(adminA, vehicleAId, clientAId),
+      createFreshLocation(adminA, vehicleAId, clientAId),
+      createFreshLocation(adminA, vehicleAId, clientAId),
+    ]);
+    const responses = await Promise.all(
+      locations.map((locationId) =>
+        apiFetch("/api/invoices", {
+          method: "POST",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify({ locationId, type: "SUPPLEMENT", supplementKey: "INC37_CONCURRENT", amount: 1000 }),
+        })
+      )
+    );
+    for (const response of responses) {
+      expect(response.status).toBe(201);
+    }
+    const bodies = await Promise.all(responses.map((r) => r.json()));
+    const numbers = bodies.map((b) => b.invoice.number as string);
+    expect(new Set(numbers).size).toBe(3);
+    for (const n of numbers) {
+      expect(n).toMatch(invoiceNumberPattern(currentYear));
+    }
+  });
+
+  it("non-régression EXTENSION : créations concurrentes (dates cibles distinctes, même tenant) — numéros distincts, format préservé", async () => {
+    const currentYear = new Date().getFullYear();
+    const locationId = await createFreshLocation(adminA, vehicleAId, clientAId);
+    const dates = [
+      new Date("2033-01-01T00:00:00.000Z").toISOString(),
+      new Date("2033-01-02T00:00:00.000Z").toISOString(),
+      new Date("2033-01-03T00:00:00.000Z").toISOString(),
+    ];
+    const responses = await Promise.all(
+      dates.map((extensionEndDate) =>
+        apiFetch("/api/invoices", {
+          method: "POST",
+          headers: { Cookie: adminA.sessionCookie },
+          body: JSON.stringify({ locationId, type: "EXTENSION", extensionEndDate, amount: 1000 }),
+        })
+      )
+    );
+    for (const response of responses) {
+      expect(response.status).toBe(201);
+    }
+    const bodies = await Promise.all(responses.map((r) => r.json()));
+    const numbers = bodies.map((b) => b.invoice.number as string);
+    expect(new Set(numbers).size).toBe(3);
+    for (const n of numbers) {
+      expect(n).toMatch(invoiceNumberPattern(currentYear));
+    }
+  });
+
+  it("nettoyage : deleteTestTenants supprime InvoiceNumberCounter avec son tenant (nouvelle FK ajoutée à tenant-delete-order.mjs)", async () => {
+    const throwaway = await registerTenantAdmin({
+      tenantName: `INC37 Cleanup ${runId}`,
+      tenantSlug: `inc37-cleanup-${runId}`,
+      name: "Admin",
+      email: `admin-inc37-cleanup-${runId}@example.com`,
+      password: "Password123!",
+    });
+    createdTenantIds.push(throwaway.tenantId);
+
+    await prisma.invoiceNumberCounter.create({
+      data: { tenantId: throwaway.tenantId, year: 2099, lastNumber: 1 },
+    });
+    expect(await prisma.invoiceNumberCounter.count({ where: { tenantId: throwaway.tenantId } })).toBe(1);
+
+    await deleteTestTenants([throwaway.tenantId]);
+
+    expect(await prisma.invoiceNumberCounter.count({ where: { tenantId: throwaway.tenantId } })).toBe(0);
+    expect(await prisma.tenant.count({ where: { id: throwaway.tenantId } })).toBe(0);
   });
 });
 

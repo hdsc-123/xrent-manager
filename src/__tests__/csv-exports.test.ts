@@ -635,15 +635,12 @@ describe("GET /api/exports/vehicles — audit de l'export", () => {
 describe("GET /api/exports/vehicles — plafond MAX_EXPORT_ROWS", () => {
   const overCapTenantIds: string[] = [];
 
+  // INC-37 : nettoyage local manuel (jamais resynchronisé avec le schéma) — ne créait pas encore
+  // de facture jusqu'ici, donc jamais pris en défaut par InvoiceNumberCounter, mais tout aussi
+  // fragile que les deux nettoyages ci-dessous (même classe de risque, INC-29) ; remplacé par
+  // prudence par le mécanisme centralisé.
   afterAll(async () => {
-    await prisma.vehicle.deleteMany({ where: { tenantId: { in: overCapTenantIds } } });
-    await prisma.auditLog.deleteMany({ where: { tenantId: { in: overCapTenantIds } } });
-    await prisma.alert.deleteMany({ where: { tenantId: { in: overCapTenantIds } } });
-    await prisma.agency.deleteMany({ where: { tenantId: { in: overCapTenantIds } } });
-    await prisma.groupPermission.deleteMany({ where: { group: { tenantId: { in: overCapTenantIds } } } });
-    await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: overCapTenantIds } } });
-    await prisma.user.deleteMany({ where: { tenantId: { in: overCapTenantIds } } });
-    await prisma.tenant.deleteMany({ where: { id: { in: overCapTenantIds } } });
+    await deleteTestTenants(overCapTenantIds);
   });
 
   it(`refuse explicitement (400) au-delà de ${MAX_EXPORT_ROWS} lignes, sans troncature silencieuse`, async () => {
@@ -1170,19 +1167,13 @@ describe("Facture automatique à la création d'une location, puis facture princ
     });
   });
 
+  // INC-37 : ce nettoyage local (manuel, jamais resynchronisé avec le schéma) ignorait
+  // InvoiceNumberCounter — FK bloquante sur tenant.deleteMany dès qu'une facture existe (ce
+  // describe en crée systématiquement, via POST /api/locations). Remplacé par le mécanisme
+  // centralisé (INC-29), seule source de vérité de l'ordre de suppression réel
+  // (scripts/tenant-delete-order.mjs).
   afterAll(async () => {
-    await prisma.payment.deleteMany({ where: { tenantId: { in: tenantIds } } });
-    await prisma.invoice.deleteMany({ where: { tenantId: { in: tenantIds } } });
-    await prisma.location.deleteMany({ where: { tenantId: { in: tenantIds } } });
-    await prisma.vehicle.deleteMany({ where: { tenantId: { in: tenantIds } } });
-    await prisma.client.deleteMany({ where: { tenantId: { in: tenantIds } } });
-    await prisma.agency.deleteMany({ where: { tenantId: { in: tenantIds } } });
-    await prisma.groupPermission.deleteMany({ where: { group: { tenantId: { in: tenantIds } } } });
-    await prisma.permissionGroup.deleteMany({ where: { tenantId: { in: tenantIds } } });
-    await prisma.user.deleteMany({ where: { tenantId: { in: tenantIds } } });
-    await prisma.alert.deleteMany({ where: { tenantId: { in: tenantIds } } });
-    await prisma.auditLog.deleteMany({ where: { tenantId: { in: tenantIds } } });
-    await prisma.tenant.deleteMany({ where: { id: { in: tenantIds } } });
+    await deleteTestTenants(tenantIds);
   });
 
   it("POST /api/locations génère automatiquement exactement une facture DRAFT", async () => {

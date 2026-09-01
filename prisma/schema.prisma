@@ -47,6 +47,8 @@ model Tenant {
   securityNotifications SecurityNotification[]
   // Phase 6.1 (2026-08-31) : voir modèle ReservationNumberCounter ci-dessous.
   reservationNumberCounters ReservationNumberCounter[]
+  // INC-37 (correctif dédié) : voir modèle InvoiceNumberCounter ci-dessous.
+  invoiceNumberCounters InvoiceNumberCounter[]
 }
 
 model Agency {
@@ -1264,6 +1266,25 @@ model Reservation {
 // de collision possible, même sous forte concurrence, sans dépendre d'un réessai après échec de
 // contrainte.
 model ReservationNumberCounter {
+  tenantId   String
+  year       Int
+  lastNumber Int    @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@id([tenantId, year])
+}
+
+// Compteur atomique du numéro de facture (INC-37, correctif dédié), par tenant ET par année
+// (INV-{année}-{5 chiffres}) — même forme et même principe que ReservationNumberCounter
+// ci-dessus (jamais partagée avec elle, compteurs indépendants). Remplace l'ancien calcul
+// count()/count+1 de generateInvoiceNumber (src/lib/invoices.ts), non atomique et à l'origine
+// d'une collision reproductible sous création concurrente (INCIDENTS.md INC-37). Incrémenté par
+// une seule instruction SQL atomique (INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING) —
+// aucune fenêtre de collision possible, même sous forte concurrence. Ne couvre PAS
+// generateCreditNoteNumber (AV-{année}-{5 chiffres}) : même défaut structurel, explicitement
+// hors périmètre d'INC-37, documenté comme risque résiduel séparé (INCIDENTS.md).
+model InvoiceNumberCounter {
   tenantId   String
   year       Int
   lastNumber Int    @default(0)

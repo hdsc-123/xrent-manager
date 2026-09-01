@@ -326,8 +326,49 @@ Détail complet de chaque entrée ci-dessous (fichiers de test, nombre exact, pa
 | 2026-08-29 | Phase 3A/3B MFA — schéma, primitives, intégration authentification/session/step-up (voir HANDOFF.md Partie 17/18) |
 | 2026-08-29 | Phase 3C MFA — step-up câblé sur 10 routes sensibles, révocation globale de session, récupération/désactivation/reset administrateur |
 | 2026-09-01 | Sprint de sécurisation du dépôt, correction documentaire, clôture QA en lecture seule — découverte d'INC-37 (`generateInvoiceNumber`, ouvert, non corrigé) |
+| 2026-09-01 | Sprint correctif dédié INC-37 — `InvoiceNumberCounter`, allocation atomique du numéro de facture, migration `xrent_test`, correction de 3 nettoyages de test fragiles (INC-29-like) — INC-37 corrigé et vérifié |
 
 ### Rapports récents (détail complet ci-dessous, pas archivés)
+
+## Tests session — sprint correctif dédié INC-37 : compteur atomique `InvoiceNumberCounter`, migration `xrent_test`, correction de nettoyages de test fragiles (2026-09-01)
+
+**Contexte** : brief explicite du propriétaire du projet, sprint correctif dédié exclusivement à INC-37 (voir INCIDENTS.md) — portée strictement limitée à `generateInvoiceNumber()`/`createInvoice`/`createSupplementInvoice`/`createExtensionInvoice` (`src/lib/invoices.ts`), au nouveau modèle `InvoiceNumberCounter` (`prisma/schema.prisma`) et à sa migration, et — une fois la nécessité démontrée en cours de tâche — aux nettoyages de test cassés par la nouvelle contrainte de clé étrangère. Aucune fonctionnalité métier nouvelle, aucune règle de facturation modifiée, `generateCreditNoteNumber()` explicitement non touchée (risque résiduel documenté séparément), `xrent_dev` jamais utilisée. Déroulé en plusieurs phases avec approbation explicite du propriétaire du projet à chaque étape (analyse, implémentation, vérification pré-migration, application de la migration, correction des nettoyages de test, documentation).
+
+**Phase 1 — analyse** : cause confirmée par lecture directe — `generateInvoiceNumber()` calculait `tx.invoice.count({ where: { tenantId, number: { startsWith: prefix } } })` puis `count + 1`, lecture/écriture non atomiques ; les 5 tentatives de retry existantes (`MAX_NUMBER_GENERATION_ATTEMPTS`) répétaient le même calcul non protégé, sans jamais sérialiser les transactions concurrentes. Mécanisme atomique proposé et approuvé : reproduire le patron déjà validé et en production pour `Reservation.reservationNumber` (`ReservationNumberCounter`, Phase 6.1) — compteur dédié par `(tenantId, année)`, une seule instruction SQL `INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING`.
+
+**Phase 2 — implémentation** :
+- **Schéma** : nouveau modèle `InvoiceNumberCounter` (`tenantId`, `year`, `lastNumber`, clé composite `(tenantId, year)`, FK vers `Tenant`) — additif uniquement, aucune table existante modifiée.
+- **Migration** : `prisma/migrations/20260901193933_add_invoice_number_counter/migration.sql` — `CREATE TABLE InvoiceNumberCounter` + `ADD CONSTRAINT ... FOREIGN KEY` vers `Tenant`. Générée via `prisma migrate diff --from-url <xrent_test> --to-schema-datamodel prisma/schema.prisma --script` (lecture seule) plutôt que `migrate dev --create-only`, ce dernier ayant été bloqué par une anomalie de checksum préexistante et sans rapport sur une migration antérieure (`20260831231126_add_reservation_number`) — voir INCIDENTS.md INC-38, documentée séparément, non corrigée, aucun `migrate resolve`/reset lancé.
+- **`generateInvoiceNumber()`** : remplacée par l'instruction atomique décrite en Phase 1, exécutée toujours sur le `tx` reçu.
+- **Garantie transactionnelle top-level** (exigence explicite du propriétaire du projet, vérifiée avant l'implémentation) : `createInvoice`/`createSupplementInvoice`/`createExtensionInvoice` restructurées avec une fonction interne `*Attempt(data, tx)` (allocation + écriture) ; quand un `tx` partagé est fourni (100 % des appels applicatifs réels), comportement inchangé (une seule tentative) ; quand aucun `tx` n'est fourni (top-level), la fonction ouvre elle-même `prisma.$transaction((innerTx) => *Attempt(data, innerTx))` — même patron que `createCreditNote`/`createCreditNoteAttempt`, déjà existant dans le même fichier — garantissant que l'allocation et l'écriture se déroulent toujours dans la même transaction, y compris dans ce cas (défaut réel du code précédent, où ces deux opérations formaient deux transactions implicites distinctes).
+- **`generateCreditNoteNumber()`** : non modifiée, vérifié par diff (aucune ligne touchée) — documentée comme risque résiduel séparé (INCIDENTS.md INC-37).
+- **`scripts/tenant-delete-order.mjs`** : nouvelle entrée `invoiceNumberCounter` (FK directe vers `Tenant`), consommée génériquement par `deleteTestTenants`/`delete-test-tenant.mjs`.
+
+**Vérifications pré-migration (lecture seule, avant toute écriture)** : contenu exact du dossier de migration (un seul fichier `migration.sql`) ; statut Git (`??`, nouveau fichier, aucun historique, jamais modifié) ; SQL ne contenant que `CREATE TABLE`/`ADD CONSTRAINT`, aucun `DROP`/`TRUNCATE`/`ALTER` sur une table existante (grep vérifié) ; `DATABASE_URL` confirmée `xrent_test@localhost` via `scripts/env-guard.js` (jamais la valeur affichée) ; ordre de suppression confirmé (`invoiceNumberCounter` purgé avant `tenant.deleteMany`, dans les deux consommateurs) ; inclusion future au commit confirmée (`git check-ignore`/`git add --dry-run`).
+
+**Application de la migration** : `npx prisma migrate deploy` (`.env.test` exclusivement, via `env-guard.js`) — *« All migrations have been successfully applied »*. `npx prisma migrate status` ensuite : *« 37 migrations found... Database schema is up to date! »*. Table vérifiée interrogeable (`prisma.invoiceNumberCounter.count()` → 0 ligne au départ). Aucun reset, aucun `migrate resolve`, `xrent_dev` jamais ciblée.
+
+**Tests ajoutés** : `src/__tests__/invoices.test.ts`, describe « INC-37 — allocation atomique du numéro de facture (InvoiceNumberCounter) », 8 tests : 4 créations concurrentes même tenant (4 numéros distincts, format `INV-{année}-{5 chiffres}`, aucun échec) ; unicité `(tenantId, number)` vérifiée en base ; concurrence croisée sur 2 tenants (compteurs indépendants) ; séquence strictement croissante en usage séquentiel ; rollback transactionnel réel (violation authentique de l'index partiel `Invoice_one_active_rental_per_location` après allocation du numéro — `P2002`/`meta.target: ["locationId"]` vérifiés précisément — puis preuve qu'un appel suivant obtient `firstSuffix + 1`, jamais `+ 6`, malgré 5 tentatives échouées : le compteur n'avance jamais au-delà de la dernière allocation réellement commitée) ; non-régression SUPPLEMENT et EXTENSION sous concurrence ; nettoyage (`deleteTestTenants` supprime bien `InvoiceNumberCounter` avec son tenant).
+
+**Anomalie découverte et corrigée en cours de tâche (suite complète)** : 3 fichiers de test (`csv-exports.test.ts` — describe « Facture automatique... » et describe « plafond MAX_EXPORT_ROWS » à titre préventif —, `damages.test.ts`, `location-return.test.ts` — y compris un bloc `finally` inline pour un tenant secondaire) avaient chacun un nettoyage `afterAll`/`finally` **local et manuel**, jamais migré vers le mécanisme centralisé `deleteTestTenants` introduit par INC-29 — la nouvelle FK `InvoiceNumberCounter_tenantId_fkey` les a fait échouer (`Foreign key constraint violated`) dès qu'une facture existait pour leur tenant de test (très fréquent, toute Location en auto-génère une). Corrigé en remplaçant ces 4 blocs par `deleteTestTenants([...])` — exactement le remède déjà prescrit par INC-29, sur des fichiers que ce correctif n'avait apparemment pas couverts.
+
+**Résultats détaillés (tous exclusivement contre `xrent_test`)** :
+- `invoices.test.ts > INC-37` isolé : **8/8 réussis**
+- `invoices.test.ts` complet : **199/199 réussis**
+- `csv-exports.test.ts` isolé (après correctif de nettoyage) : **64/64 réussis**
+- `damages.test.ts` isolé (après correctif de nettoyage) : **29/29 réussis**
+- `location-return.test.ts` isolé (après correctif de nettoyage) : **25/25 réussis**
+- Suite complète `npm run test` : **64/64 fichiers réussis, 1740/1740 tests réussis, 0 échec** (+8 tests vs la baseline 1732 du sprint précédent, correspondant exactement au nouveau describe INC-37)
+- `npm run lint` : ✅ aucune violation
+- `npx tsc --noEmit` : ✅ aucune erreur
+- `npm run build` : ✅ compilation réussie, 88 pages générées
+- `git diff --check` : exit 0, aucune sortie
+
+**Fichiers modifiés** : `prisma/schema.prisma`, `prisma/migrations/20260901193933_add_invoice_number_counter/migration.sql` (nouveau), `src/lib/invoices.ts`, `src/__tests__/invoices.test.ts`, `scripts/tenant-delete-order.mjs`, `src/__tests__/csv-exports.test.ts`, `src/__tests__/damages.test.ts`, `src/__tests__/location-return.test.ts`. Aucun fichier hors de ce périmètre (documenté ci-dessus) modifié. `xrent_dev` non touchée à aucun moment de ce sprint.
+
+**Risques résiduels documentés, non corrigés dans ce sprint** : `generateCreditNoteNumber()` (même défaut structurel `count()`/`count + 1`, hors périmètre INC-37 — INCIDENTS.md) ; désaccord de checksum de `_prisma_migrations` sur `20260831231126_add_reservation_number` (INCIDENTS.md INC-38, séparé, non corrigé, aucun impact sur `migrate deploy`/`migrate status`).
+
+**Aucun commit créé, aucun push effectué** — en attente de validation explicite du propriétaire du projet.
 
 ## Tests session — sprint de sécurisation du dépôt, correction documentaire et clôture QA en lecture seule (2026-09-01)
 

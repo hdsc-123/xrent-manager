@@ -197,20 +197,38 @@ function assertValidInvoiceNotes(notes: string | null | undefined): void {
 
 /**
  * Génère un numéro de facture unique par tenant, au format INV-{année}-{5 chiffres},
- * ex. INV-2026-00001 — compteur basé sur le nombre de factures déjà émises cette année
- * pour ce tenant. Pas de table de séquence dédiée (À DÉCIDER si le volume l'exige) :
- * en cas de collision sous forte concurrence, createInvoice réessaie (voir plus bas).
+ * ex. INV-2026-00001. INC-37 (2026-09-01) : remplace l'ancien calcul count()/count+1, non
+ * atomique et à l'origine d'une collision reproductible sous création concurrente
+ * (INCIDENTS.md INC-37). Repose désormais sur InvoiceNumberCounter (prisma/schema.prisma),
+ * compteur dédié par (tenantId, année), incrémenté par une seule instruction SQL atomique
+ * (INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING, jamais un SELECT MAX(...)+1 ni un
+ * COUNT()) — même patron que generateReservationNumber (src/lib/reservations.ts). Postgres
+ * verrouille la ligne du compteur pendant la durée de cette unique instruction : deux appels
+ * concurrents pour le même tenant/année ne peuvent structurellement jamais recevoir le même
+ * numéro.
+ *
+ * Doit toujours être appelée à l'intérieur de la même transaction que l'écriture qui l'utilise
+ * (voir createInvoice/createSupplementInvoice/createExtensionInvoice ci-dessous, désormais
+ * garanti même pour un appel top-level sans tx partagé) : si cette écriture échoue ensuite, la
+ * transaction entière (compteur inclus) est annulée par PostgreSQL — un « trou » dans la
+ * séquence est possible et sans conséquence (comme pour reservationNumber/contractNumber),
+ * jamais une collision.
+ *
+ * generateCreditNoteNumber (AV-{année}-{5 chiffres}, plus bas dans ce fichier) garde
+ * volontairement l'ancien calcul count()/count+1 — même défaut structurel que ci-dessus,
+ * explicitement hors périmètre d'INC-37, documenté comme risque résiduel séparé
+ * (INCIDENTS.md).
  */
-async function generateInvoiceNumber(
-  tenantId: string,
-  year: number,
-  tx: Prisma.TransactionClient = prisma
-): Promise<string> {
+async function generateInvoiceNumber(tenantId: string, year: number, tx: Prisma.TransactionClient): Promise<string> {
   const prefix = `INV-${year}-`;
-  const count = await tx.invoice.count({
-    where: { tenantId, number: { startsWith: prefix } },
-  });
-  return `${prefix}${String(count + 1).padStart(5, "0")}`;
+  const rows = await tx.$queryRaw<{ lastNumber: number }[]>`
+    INSERT INTO "InvoiceNumberCounter" ("tenantId", "year", "lastNumber")
+    VALUES (${tenantId}, ${year}, 1)
+    ON CONFLICT ("tenantId", "year")
+    DO UPDATE SET "lastNumber" = "InvoiceNumberCounter"."lastNumber" + 1
+    RETURNING "lastNumber"
+  `;
+  return `${prefix}${String(rows[0].lastNumber).padStart(5, "0")}`;
 }
 
 function isUniqueConstraintError(error: unknown): boolean {
@@ -283,16 +301,7 @@ export interface CreateInvoiceInput {
 
 const MAX_NUMBER_GENERATION_ATTEMPTS = 5;
 
-/**
- * `tx` optionnel (Sprint 26A, Finding A) — défaut au client Prisma global, comportement
- * inchangé pour tout appel sans transaction partagée (ex. POST /api/locations). Même limite
- * documentée que `createLocation` (src/lib/locations.ts) sur le réessai de numérotation :
- * désactivé à l'intérieur d'une transaction partagée explicite (une seule tentative).
- */
-export async function createInvoice(
-  data: CreateInvoiceInput,
-  tx: Prisma.TransactionClient = prisma
-): Promise<Invoice> {
+async function createInvoiceAttempt(data: CreateInvoiceInput, tx: Prisma.TransactionClient): Promise<Invoice> {
   const taxRate = data.taxRate ?? 0;
   const discountAmount = data.discountAmount ?? 0;
   validateAmountInputs(taxRate, discountAmount);
@@ -306,31 +315,53 @@ export async function createInvoice(
   const subtotal = location.totalPrice;
   const { taxAmount, totalAmount } = computeInvoiceTotals(subtotal, taxRate, discountAmount);
   const year = new Date().getFullYear();
+  const number = await generateInvoiceNumber(data.tenantId, year, tx);
 
-  const allowRetry = tx === prisma;
-  const maxAttempts = allowRetry ? MAX_NUMBER_GENERATION_ATTEMPTS : 1;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const number = await generateInvoiceNumber(data.tenantId, year, tx);
+  return tx.invoice.create({
+    data: {
+      tenantId: data.tenantId,
+      agencyId: location.agencyId,
+      locationId: location.id,
+      clientId: location.clientId,
+      number,
+      subtotal,
+      taxRate,
+      taxAmount,
+      discountAmount,
+      totalAmount,
+      currency: location.currency,
+      dueDate: data.dueDate,
+      notes: data.notes,
+    },
+  });
+}
+
+/**
+ * `tx` optionnel (Sprint 26A, Finding A) — comportement inchangé pour tout appelant qui fournit
+ * déjà une transaction partagée : une seule tentative, `createInvoiceAttempt` directement
+ * (jamais de transaction imbriquée, Prisma ne le permet pas).
+ *
+ * INC-37 (2026-09-01) : quand aucun `tx` n'est fourni (appel top-level), l'allocation atomique
+ * du numéro et l'écriture de la facture sont désormais garanties dans une seule et même
+ * transaction Prisma (`prisma.$transaction`, même patron que createCreditNote/
+ * createCreditNoteAttempt plus bas dans ce fichier) — un échec de l'écriture annule alors
+ * réellement l'incrément du compteur de cette tentative précise, jamais seulement en apparence
+ * (contrairement au code précédent, où `generateInvoiceNumber` et `tx.invoice.create` étaient
+ * deux transactions implicites distinctes dans ce cas). Chaque tentative de réessai (jusqu'à
+ * MAX_NUMBER_GENERATION_ATTEMPTS) ouvre donc sa propre transaction complète — conservé
+ * uniquement comme filet de sécurité résiduel : avec un compteur atomique, une collision de
+ * numérotation ne devrait plus jamais se produire, seul un P2002 imprévu la déclencherait
+ * encore.
+ */
+export async function createInvoice(data: CreateInvoiceInput, tx?: Prisma.TransactionClient): Promise<Invoice> {
+  if (tx) {
+    return createInvoiceAttempt(data, tx);
+  }
+  for (let attempt = 0; attempt < MAX_NUMBER_GENERATION_ATTEMPTS; attempt++) {
     try {
-      return await tx.invoice.create({
-        data: {
-          tenantId: data.tenantId,
-          agencyId: location.agencyId,
-          locationId: location.id,
-          clientId: location.clientId,
-          number,
-          subtotal,
-          taxRate,
-          taxAmount,
-          discountAmount,
-          totalAmount,
-          currency: location.currency,
-          dueDate: data.dueDate,
-          notes: data.notes,
-        },
-      });
+      return await prisma.$transaction((innerTx) => createInvoiceAttempt(data, innerTx));
     } catch (error) {
-      if (isUniqueConstraintError(error) && attempt < maxAttempts - 1) {
+      if (isUniqueConstraintError(error) && attempt < MAX_NUMBER_GENERATION_ATTEMPTS - 1) {
         continue;
       }
       throw error;
@@ -526,16 +557,9 @@ export interface CreateSupplementInvoiceInput {
   notes?: string;
 }
 
-/**
- * Création directe (non idempotente) d'une facture SUPPLEMENT — jamais appelée directement par
- * une route, toujours via getOrCreateSupplementInvoice ci-dessous (même division des
- * responsabilités que createInvoice/getOrCreateMainInvoice). Duplique volontairement la boucle
- * de réessai de numérotation de createInvoice plutôt que d'y toucher : CreateInvoiceInput et
- * createInvoice restent strictement inchangées, comportement RENTAL non affecté.
- */
-export async function createSupplementInvoice(
+async function createSupplementInvoiceAttempt(
   data: CreateSupplementInvoiceInput,
-  tx: Prisma.TransactionClient = prisma
+  tx: Prisma.TransactionClient
 ): Promise<Invoice> {
   validateSupplementaryAmount(data.amount);
   const supplementKey = normalizeSupplementKey(data.supplementKey);
@@ -555,33 +579,51 @@ export async function createSupplementInvoice(
   const subtotal = data.amount;
   const { taxAmount, totalAmount } = computeInvoiceTotals(subtotal, taxRate, discountAmount);
   const year = new Date().getFullYear();
+  const number = await generateInvoiceNumber(data.tenantId, year, tx);
 
-  const allowRetry = tx === prisma;
-  const maxAttempts = allowRetry ? MAX_NUMBER_GENERATION_ATTEMPTS : 1;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const number = await generateInvoiceNumber(data.tenantId, year, tx);
+  return tx.invoice.create({
+    data: {
+      tenantId: data.tenantId,
+      agencyId: location.agencyId,
+      locationId: location.id,
+      clientId: location.clientId,
+      number,
+      type: "SUPPLEMENT",
+      supplementKey,
+      subtotal,
+      taxRate,
+      taxAmount,
+      discountAmount,
+      totalAmount,
+      currency: location.currency,
+      dueDate: data.dueDate,
+      notes: data.notes,
+    },
+  });
+}
+
+/**
+ * Création directe (non idempotente) d'une facture SUPPLEMENT — jamais appelée directement par
+ * une route, toujours via getOrCreateSupplementInvoice ci-dessous (même division des
+ * responsabilités que createInvoice/getOrCreateMainInvoice). Duplique volontairement la
+ * structure de createInvoice plutôt que d'y toucher : CreateInvoiceInput et createInvoice
+ * restent strictement inchangées, comportement RENTAL non affecté. INC-37 (2026-09-01) : même
+ * garantie transactionnelle top-level que createInvoice ci-dessus (voir son commentaire) —
+ * allocation du numéro et écriture toujours dans la même transaction, y compris sans `tx`
+ * partagé.
+ */
+export async function createSupplementInvoice(
+  data: CreateSupplementInvoiceInput,
+  tx?: Prisma.TransactionClient
+): Promise<Invoice> {
+  if (tx) {
+    return createSupplementInvoiceAttempt(data, tx);
+  }
+  for (let attempt = 0; attempt < MAX_NUMBER_GENERATION_ATTEMPTS; attempt++) {
     try {
-      return await tx.invoice.create({
-        data: {
-          tenantId: data.tenantId,
-          agencyId: location.agencyId,
-          locationId: location.id,
-          clientId: location.clientId,
-          number,
-          type: "SUPPLEMENT",
-          supplementKey,
-          subtotal,
-          taxRate,
-          taxAmount,
-          discountAmount,
-          totalAmount,
-          currency: location.currency,
-          dueDate: data.dueDate,
-          notes: data.notes,
-        },
-      });
+      return await prisma.$transaction((innerTx) => createSupplementInvoiceAttempt(data, innerTx));
     } catch (error) {
-      if (isUniqueConstraintError(error) && attempt < maxAttempts - 1) {
+      if (isUniqueConstraintError(error) && attempt < MAX_NUMBER_GENERATION_ATTEMPTS - 1) {
         continue;
       }
       throw error;
@@ -713,11 +755,9 @@ export interface CreateExtensionInvoiceInput {
   notes?: string;
 }
 
-/** Voir createSupplementInvoice ci-dessus — même structure, jamais partagée avec elle ni avec
- * createInvoice (fonctions dédiées, comme demandé). */
-export async function createExtensionInvoice(
+async function createExtensionInvoiceAttempt(
   data: CreateExtensionInvoiceInput,
-  tx: Prisma.TransactionClient = prisma
+  tx: Prisma.TransactionClient
 ): Promise<Invoice> {
   validateSupplementaryAmount(data.amount);
   if (!(data.extensionEndDate instanceof Date) || Number.isNaN(data.extensionEndDate.getTime())) {
@@ -736,33 +776,45 @@ export async function createExtensionInvoice(
   const subtotal = data.amount;
   const { taxAmount, totalAmount } = computeInvoiceTotals(subtotal, taxRate, discountAmount);
   const year = new Date().getFullYear();
+  const number = await generateInvoiceNumber(data.tenantId, year, tx);
 
-  const allowRetry = tx === prisma;
-  const maxAttempts = allowRetry ? MAX_NUMBER_GENERATION_ATTEMPTS : 1;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const number = await generateInvoiceNumber(data.tenantId, year, tx);
+  return tx.invoice.create({
+    data: {
+      tenantId: data.tenantId,
+      agencyId: location.agencyId,
+      locationId: location.id,
+      clientId: location.clientId,
+      number,
+      type: "EXTENSION",
+      extensionEndDate: data.extensionEndDate,
+      subtotal,
+      taxRate,
+      taxAmount,
+      discountAmount,
+      totalAmount,
+      currency: location.currency,
+      dueDate: data.dueDate,
+      notes: data.notes,
+    },
+  });
+}
+
+/** Voir createSupplementInvoice ci-dessus — même structure, jamais partagée avec elle ni avec
+ * createInvoice (fonctions dédiées, comme demandé). INC-37 (2026-09-01) : même garantie
+ * transactionnelle top-level que createInvoice (voir son commentaire) — allocation du numéro et
+ * écriture toujours dans la même transaction, y compris sans `tx` partagé. */
+export async function createExtensionInvoice(
+  data: CreateExtensionInvoiceInput,
+  tx?: Prisma.TransactionClient
+): Promise<Invoice> {
+  if (tx) {
+    return createExtensionInvoiceAttempt(data, tx);
+  }
+  for (let attempt = 0; attempt < MAX_NUMBER_GENERATION_ATTEMPTS; attempt++) {
     try {
-      return await tx.invoice.create({
-        data: {
-          tenantId: data.tenantId,
-          agencyId: location.agencyId,
-          locationId: location.id,
-          clientId: location.clientId,
-          number,
-          type: "EXTENSION",
-          extensionEndDate: data.extensionEndDate,
-          subtotal,
-          taxRate,
-          taxAmount,
-          discountAmount,
-          totalAmount,
-          currency: location.currency,
-          dueDate: data.dueDate,
-          notes: data.notes,
-        },
-      });
+      return await prisma.$transaction((innerTx) => createExtensionInvoiceAttempt(data, innerTx));
     } catch (error) {
-      if (isUniqueConstraintError(error) && attempt < maxAttempts - 1) {
+      if (isUniqueConstraintError(error) && attempt < MAX_NUMBER_GENERATION_ATTEMPTS - 1) {
         continue;
       }
       throw error;

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
+import { deleteTestTenants } from "./helpers/fixtures";
 import { createInvoice, updateInvoice } from "@/lib/invoices";
 import {
   returnLocation,
@@ -50,22 +51,13 @@ beforeAll(async () => {
   userId = user.id;
 });
 
+// INC-37 : ce nettoyage local (manuel, jamais resynchronisé avec le schéma) ignorait
+// InvoiceNumberCounter (comme il ignorait déjà ReservationNumberCounter, jamais pris en défaut
+// jusqu'ici faute de réservation créée par ce fichier) — FK bloquante sur tenant.delete dès
+// qu'une facture existe. Remplacé par le mécanisme centralisé (INC-29), seule source de vérité
+// de l'ordre de suppression réel (scripts/tenant-delete-order.mjs).
 afterAll(async () => {
-  await prisma.payment.deleteMany({ where: { tenantId } });
-  await prisma.damageInvoiceLine.deleteMany({ where: { damageInvoice: { tenantId } } });
-  await prisma.damage.deleteMany({ where: { tenantId } });
-  await prisma.damageInvoice.deleteMany({ where: { tenantId } });
-  await prisma.invoice.deleteMany({ where: { tenantId } });
-  await prisma.location.deleteMany({ where: { tenantId } });
-  await prisma.vehicle.deleteMany({ where: { tenantId } });
-  await prisma.client.deleteMany({ where: { tenantId } });
-  await prisma.user.deleteMany({ where: { tenantId } });
-  await prisma.cashEntry.deleteMany({ where: { tenantId } });
-  await prisma.cashRegister.deleteMany({ where: { tenantId } });
-  await prisma.agency.deleteMany({ where: { tenantId } });
-  await prisma.auditLog.deleteMany({ where: { tenantId } });
-  await prisma.alert.deleteMany({ where: { tenantId } });
-  await prisma.tenant.delete({ where: { id: tenantId } });
+  await deleteTestTenants([tenantId]);
 });
 
 interface FixtureOptions {
@@ -854,14 +846,9 @@ describe("returnLocation — synchronisation Vehicle.currentOdometer/currentFuel
       const dbOtherVehicle = await prisma.vehicle.findUniqueOrThrow({ where: { id: otherVehicle.id } });
       expect(dbOtherVehicle.currentOdometer).toBe(99000);
     } finally {
-      await prisma.payment.deleteMany({ where: { tenantId: otherTenant.id } });
-      await prisma.invoice.deleteMany({ where: { tenantId: otherTenant.id } });
-      await prisma.location.deleteMany({ where: { tenantId: otherTenant.id } });
-      await prisma.vehicle.deleteMany({ where: { tenantId: otherTenant.id } });
-      await prisma.client.deleteMany({ where: { tenantId: otherTenant.id } });
-      await prisma.agency.deleteMany({ where: { tenantId: otherTenant.id } });
-      await prisma.auditLog.deleteMany({ where: { tenantId: otherTenant.id } });
-      await prisma.tenant.delete({ where: { id: otherTenant.id } });
+      // INC-37 : même remplacement que le afterAll ci-dessus (nettoyage local manuel, ignorait
+      // InvoiceNumberCounter).
+      await deleteTestTenants([otherTenant.id]);
     }
   });
 });
