@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Lint, typecheck, build, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Conteneur PostgreSQL éphémère, propre à ce job : détruit avec le runner à la fin de
+    # l'exécution, jamais accessible depuis l'extérieur de ce job, jamais partagé avec xrent_dev
+    # ou un environnement de production (qui n'existe d'ailleurs pas encore — CLAUDE.md section 1).
+    # Base nommée "xrent_test" par convention avec ARCHITECTURE.md/scripts/env-guard.js.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: xrent_ci
+          POSTGRES_PASSWORD: xrent_ci
+          POSTGRES_DB: xrent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U xrent_ci"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies (lockfile-exact)
+        run: npm ci
+
+      # .env.test généré ici, jamais commité (comme en local : ce fichier n'est pas suivi par
+      # git). Toutes les valeurs sont générées aléatoirement pour la durée de ce job uniquement
+      # et ne servent qu'à faire démarrer l'application contre la base Postgres éphémère du
+      # service ci-dessus — aucun secret réel, aucune valeur issue de GitHub Secrets. Elles ne
+      # protègent rien de sensible : la base et le process qui les utilise n'existent plus une
+      # fois le job terminé.
+      - name: Create ephemeral .env.test
+        run: |
+          AUTH_SECRET_VALUE="$(openssl rand -base64 32)"
+          CRON_SECRET_VALUE="$(openssl rand -base64 32)"
+          MFA_KEY_VALUE="$(openssl rand -base64 32)"
+          echo "::add-mask::$AUTH_SECRET_VALUE"
+          echo "::add-mask::$CRON_SECRET_VALUE"
+          echo "::add-mask::$MFA_KEY_VALUE"
+          cat > .env.test <<EOF
+          DATABASE_URL="postgresql://xrent_ci:xrent_ci@localhost:5432/xrent_test?schema=public"
+          AUTH_SECRET="${AUTH_SECRET_VALUE}"
+          CRON_SECRET="${CRON_SECRET_VALUE}"
+          MFA_ENCRYPTION_KEY="${MFA_KEY_VALUE}"
+          EOF
+
+      # Garde-fou strict : extrait uniquement l'hôte et le nom de base de DATABASE_URL (jamais
+      # les identifiants, jamais l'URL complète) et exige une correspondance EXACTE — hôte
+      # localhost/127.0.0.1 et base nommée exactement "xrent_test", pas un préfixe ni un motif
+      # approché. Même exigence de correspondance exacte que
+      # scripts/env-guard.js:assertDatabaseMatchesEnv. Le job échoue immédiatement si la cible
+      # ne correspond pas.
+      - name: "Guard: DATABASE_URL must target localhost/xrent_test exactly"
+        run: |
+          set -a; source .env.test; set +a
+          if [[ "$DATABASE_URL" =~ ^postgresql://[^@]+@([^:/]+):([0-9]+)/([^?]+)(\?.*)?$ ]]; then
+            db_host="${BASH_REMATCH[1]}"
+            db_name="${BASH_REMATCH[3]}"
+          else
+            echo "Garde-fou : DATABASE_URL malformée (motif inattendu). Abandon." >&2
+            exit 1
+          fi
+          if [[ "$db_host" != "localhost" && "$db_host" != "127.0.0.1" ]]; then
+            echo "Garde-fou : hôte '$db_host' non autorisé (localhost/127.0.0.1 uniquement). Abandon." >&2
+            exit 1
+          fi
+          if [[ "$db_name" != "xrent_test" ]]; then
+            echo "Garde-fou : base '$db_name' non autorisée (exactement 'xrent_test' attendu). Abandon." >&2
+            exit 1
+          fi
+          echo "Garde-fou OK : hôte '$db_host', base '$db_name' — aucune autre donnée affichée."
+
+      # `npm run test` (vitest run) charge .env.test lui-même via le mécanisme officiel du
+      # projet (vitest.config.mts: loadEnv(mode, cwd, "") ; vitest.global-setup.ts:
+      # loadDotenv({ path: ".env.test" })) — aucune variable n'a besoin d'être exportée pour cette
+      # étape. `prisma generate`, `prisma migrate deploy` et `next build`, en revanche, n'utilisent
+      # pas ce mécanisme Vitest : cette étape leur rend disponibles les MÊMES valeurs, lues depuis
+      # le même fichier .env.test généré ci-dessus (source unique).
+      - name: Export .env.test to job environment (for generate/migrate/build only)
+        run: |
+          set -a; source .env.test; set +a
+          {
+            echo "DATABASE_URL=${DATABASE_URL}"
+            echo "AUTH_SECRET=${AUTH_SECRET}"
+            echo "CRON_SECRET=${CRON_SECRET}"
+            echo "MFA_ENCRYPTION_KEY=${MFA_ENCRYPTION_KEY}"
+          } >> "$GITHUB_ENV"
+
+      # Placée après la création/export de .env.test : DATABASE_URL est donc déjà résolue et
+      # validée par le garde-fou ci-dessus au moment où Prisma lit le schéma.
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      # Applique uniquement les migrations déjà versionnées dans prisma/migrations/ (vérifié :
+      # aucune ne contient DROP/TRUNCATE). Jamais `migrate reset`, jamais `db push --force-reset`.
+      - name: Apply database migrations (xrent_test only)
+        run: npx prisma migrate deploy
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm run test
