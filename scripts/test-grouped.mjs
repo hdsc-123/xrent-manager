@@ -329,6 +329,11 @@ async function main() {
       console.log(
         `\n--- Groupe ${i + 1} : ${summary.passed}/${summary.total} (échecs ${summary.failed}, timeouts ${timeouts}, watchdog ${watchdogRestarts}, recyclage ${recyclingRestarts}, ${(result.durationMs / 1000).toFixed(1)}s, résiduel ${residual.length}) ---\n`,
       );
+      if (summary.failed > 0 && (watchdogRestarts > 0 || recyclingRestarts > 0)) {
+        console.error(
+          `SUSPICION : ${summary.failed} échec(s) dans le groupe ${i + 1} coïncident avec un redémarrage serveur (watchdog ${watchdogRestarts}, recyclage ${recyclingRestarts}) — probable collatéral d'infrastructure, pas nécessairement un défaut de test.`,
+        );
+      }
       if (residual.length > 0) {
         console.error(`ATTENTION : processus résiduel après le groupe ${i + 1} : ${residual.join(",")}`);
       }
