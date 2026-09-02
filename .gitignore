@@ -33,6 +33,9 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# heartbeat d'observabilité CI (scripts/test-grouped.mjs), généré à l'exécution
+test-grouped-heartbeat.log
+
 # vercel
 .vercel
 

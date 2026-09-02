@@ -132,3 +132,18 @@ jobs:
 
       - name: Test
         run: node scripts/test-grouped.mjs
+
+      # `always()` : documenté par GitHub Actions comme s'exécutant même après annulation du job
+      # (timeout-minutes inclus). Non garanti si le runner devient totalement injoignable pendant
+      # la fenêtre de grâce d'annulation (déjà observé une fois : logs natifs eux-mêmes non
+      # persistés dans ce cas) — cette étape réduit ce risque sans l'éliminer. N'exige aucune
+      # permission supplémentaire au-delà de `contents: read` déjà déclaré (upload-artifact
+      # utilise le jeton d'exécution fourni par le runner, pas les scopes GITHUB_TOKEN classiques).
+      - name: Upload test heartbeat log (best-effort, even if Test is cancelled)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-grouped-heartbeat-log
+          path: test-grouped-heartbeat.log
+          if-no-files-found: ignore
+          retention-days: 5

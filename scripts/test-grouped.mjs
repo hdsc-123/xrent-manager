@@ -12,7 +12,9 @@
  * Usage : node scripts/test-grouped.mjs [--no-file-parallelism]
  */
 import { spawn } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { readdirSync, appendFileSync, writeFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const GROUPS = [
   ["reservations", "permissions", "vehicle-mobility-alerts", "invoice-status-alerts", "reports", "db", "password-policy", "super-admin", "scheduled-alerts-cron", "responsive-layout", "mfa-encryption", "mfa", "mfa-lifecycle", "format"],
@@ -108,6 +110,71 @@ async function handleSignal(signal) {
 process.on("SIGINT", () => handleSignal("SIGINT"));
 process.on("SIGTERM", () => handleSignal("SIGTERM"));
 
+// Observabilité minimale (voir analyse post-run CI, timeout à répétition sans logs GitHub
+// exploitables) — chemin ancré explicitement à la racine du dépôt, indépendant du répertoire
+// courant d'exécution. `fileURLToPath`/`dirname` plutôt que `import.meta.dirname` : portable
+// sur toute version Node, pas seulement celles où cette propriété est disponible.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const HEARTBEAT_FILE = join(__dirname, "..", "test-grouped-heartbeat.log");
+const HEARTBEAT_INTERVAL_MS = 30_000;
+// Garde-fou de taille : le volume attendu (un tick/30s + 2 lignes par groupe + une ligne par
+// fichier réellement exécuté) reste de l'ordre de quelques dizaines de Ko sur une suite
+// complète ; 5 Mo est une marge large contre toute croissance imprévue, jamais une limite
+// susceptible d'être atteinte en usage normal.
+const HEARTBEAT_MAX_BYTES = 5 * 1024 * 1024;
+let currentGroupLabel = "aucun (avant démarrage)";
+
+// Best-effort strict : une erreur d'écriture (disque plein, permissions...) ne doit jamais
+// interrompre la suite de tests elle-même, seule la visibilité en pâtirait.
+function heartbeat(line) {
+  const stamped = `[${new Date().toISOString()}] ${line}\n`;
+  try {
+    let size = 0;
+    try {
+      size = statSync(HEARTBEAT_FILE).size;
+    } catch {
+      size = 0; // fichier pas encore créé
+    }
+    if (size < HEARTBEAT_MAX_BYTES) {
+      appendFileSync(HEARTBEAT_FILE, stamped);
+    }
+  } catch {
+    // best-effort : jamais fatal pour la suite
+  }
+  process.stdout.write(stamped);
+}
+
+// Compte les process par motif — jamais leur ligne de commande complète, jamais une variable
+// d'environnement. `pgrep -f` (sans `-c`, absent du pgrep BSD/macOS, vérifié empiriquement) +
+// comptage de lignes côté Node, même méthode que `residualPids()` ci-dessus.
+function countProcesses(pattern) {
+  return new Promise((resolve) => {
+    const proc = spawn("pgrep", ["-f", pattern]);
+    let out = "";
+    proc.stdout.on("data", (c) => (out += c));
+    proc.on("error", () => resolve(0)); // ex. binaire introuvable — ne doit jamais planter le process
+    proc.on("exit", () => resolve(out.trim().split("\n").filter(Boolean).length));
+  });
+}
+
+// Empêche tout chevauchement : sous charge/gel (précisément ce qu'on cherche à observer), un
+// sondage encore en cours ne doit jamais en déclencher un second en parallèle.
+let samplingInFlight = false;
+async function sampleProcesses() {
+  if (samplingInFlight) return "échantillon précédent encore en cours (ignoré)";
+  samplingInFlight = true;
+  try {
+    const [nextDev, jestWorker, nextServer] = await Promise.all([
+      countProcesses("next dev"),
+      countProcesses("jest-worker"),
+      countProcesses("next-server"),
+    ]);
+    return `next_dev=${nextDev} jest_worker=${jestWorker} next_server=${nextServer}`;
+  } finally {
+    samplingInFlight = false;
+  }
+}
+
 function runGroup(files) {
   return new Promise((resolve) => {
     const args = ["vitest", "run", ...files, ...(sequential ? ["--no-file-parallelism"] : [])];
@@ -116,9 +183,23 @@ function runGroup(files) {
     let stderr = "";
     const proc = spawn("npx", args, { stdio: ["ignore", "pipe", "pipe"] });
     currentProc = proc;
+    // Buffer ligne par ligne : un chunk `data` ne correspond jamais forcément à une ligne
+    // complète (coupure possible en plein milieu, ou plusieurs lignes dans un seul chunk).
+    // Best-effort uniquement — n'affecte jamais `parseSummary()` plus bas, qui continue
+    // d'opérer sur `stdout` accumulé en entier après la fin du process.
+    let lineBuffer = "";
     proc.stdout.on("data", (c) => {
       stdout += c;
       process.stdout.write(c);
+      lineBuffer += c.toString();
+      const lines = lineBuffer.split("\n");
+      lineBuffer = lines.pop() ?? "";
+      for (const raw of lines) {
+        const clean = raw.replace(/\x1b\[[0-9;]*m/g, ""); // retire les codes ANSI de couleur
+        if (/src\/__tests__\/\S+\.test\.tsx?\s*\(\s*\d+ tests?\)/.test(clean)) {
+          heartbeat(`fichier: ${clean.trim()}`);
+        }
+      }
     });
     proc.stderr.on("data", (c) => {
       stderr += c;
@@ -160,6 +241,18 @@ async function residualPids() {
 async function main() {
   verifyGroupsMatchDirectory();
 
+  try {
+    writeFileSync(HEARTBEAT_FILE, "");
+  } catch {
+    // best-effort : jamais fatal pour la suite
+  }
+  const heartbeatTimer = setInterval(() => {
+    sampleProcesses().then((info) => {
+      heartbeat(`heartbeat | groupe en cours: ${currentGroupLabel} | ${info}`);
+    });
+  }, HEARTBEAT_INTERVAL_MS);
+  heartbeatTimer.unref();
+
   const overallStart = Date.now();
   let totalPassed = 0;
   let totalFailed = 0;
@@ -171,75 +264,87 @@ async function main() {
   let anyGroupExitNonZero = false;
   const groupResults = [];
 
-  for (let i = 0; i < GROUPS.length; i++) {
-    if (shuttingDown) {
-      // Un signal a été reçu pendant/après le groupe précédent : ne pas démarrer de
-      // nouveau groupe (donc pas de nouveau serveur) pendant que handleSignal() nettoie
-      // encore — c'est exactement le scénario qui causait un EADDRINUSE (le groupe suivant
-      // tentait de démarrer un serveur avant la fin du nettoyage du précédent).
+  try {
+    for (let i = 0; i < GROUPS.length; i++) {
+      if (shuttingDown) {
+        // Un signal a été reçu pendant/après le groupe précédent : ne pas démarrer de
+        // nouveau groupe (donc pas de nouveau serveur) pendant que handleSignal() nettoie
+        // encore — c'est exactement le scénario qui causait un EADDRINUSE (le groupe suivant
+        // tentait de démarrer un serveur avant la fin du nettoyage du précédent).
+        console.log(
+          `\n[test-grouped] Arrêt demandé — ${GROUPS.length - i} groupe(s) restant(s) non lancé(s).\n`,
+        );
+        return;
+      }
+      const files = GROUPS[i].map(filePathFor);
+      currentGroupLabel = `Groupe ${i + 1}/${GROUPS.length} (${files.length} fichiers)`;
+      heartbeat(`=== DÉBUT ${currentGroupLabel} ===`);
+      console.log(`\n=== Groupe ${i + 1}/${GROUPS.length} (${files.length} fichiers) — serveur neuf ===\n`);
+      const result = await runGroup(files);
+      heartbeat(`=== FIN ${currentGroupLabel} — ${(result.durationMs / 1000).toFixed(1)}s, code sortie ${result.code} ===`);
+      const summary = parseSummary(result.stdout);
+      const timeouts = (result.stdout.match(/Test timed out|Hook timed out/g) || []).length;
+      // INC-27 (INCIDENTS.md) : `redémarrage contrôlé n°` est désormais émis pour deux raisons
+      // distinctes par vitest.global-setup.ts — une panne réelle détectée par le contrôle de
+      // vivacité INC-3 ("INC-3 : serveur de test injoignable...") et un recyclage préventif
+      // bénin/attendu tous les 10 fichiers de test (`FILES_PER_RESTART`,
+      // src/__tests__/helpers/testServerRecycling.ts), possible dans tout groupe d'au moins 10
+      // fichiers. Comptées séparément pour ne jamais faire paraître un recyclage préventif normal
+      // comme une panne watchdog réelle dans ce résumé.
+      const watchdogRestarts = (result.stderr.match(/INC-3 : .*redémarrage contrôlé n°/g) || []).length;
+      const recyclingRestarts = (result.stderr.match(/INC-27 : .*redémarrage contrôlé n°/g) || []).length;
+
+      // Le code de sortie du process est la source de vérité : un crash à la collecte
+      // (erreur de syntaxe, exception hors test, "Tests  no tests") ne produit aucune
+      // ligne de résumé exploitable par parseSummary — s'appuyer uniquement sur
+      // summary.failed masquerait un échec réel dans le code de sortie agrégé.
+      if (result.code !== 0) anyGroupExitNonZero = true;
+
+      totalPassed += summary.passed;
+      totalFailed += summary.failed;
+      totalTests += summary.total;
+      totalTimeouts += timeouts;
+      totalWatchdogRestarts += watchdogRestarts;
+      totalRecyclingRestarts += recyclingRestarts;
+
+      // Le teardown de vitest.global-setup.ts attend déjà la sortie du process serveur
+      // (SIGTERM puis SIGKILL après 5s de grâce) avant que `vitest run` ne se termine —
+      // cette pause + vérification est une confirmation indépendante, pas le mécanisme
+      // d'arrêt lui-même.
+      await new Promise((r) => setTimeout(r, 1000));
+      const residual = await residualPids();
+      totalResidual += residual.length;
+
+      groupResults.push({
+        group: i + 1,
+        exitCode: result.code,
+        ...summary,
+        timeouts,
+        watchdogRestarts,
+        recyclingRestarts,
+        durationMs: result.durationMs,
+        residual: residual.length,
+      });
+
       console.log(
-        `\n[test-grouped] Arrêt demandé — ${GROUPS.length - i} groupe(s) restant(s) non lancé(s).\n`,
+        `\n--- Groupe ${i + 1} : ${summary.passed}/${summary.total} (échecs ${summary.failed}, timeouts ${timeouts}, watchdog ${watchdogRestarts}, recyclage ${recyclingRestarts}, ${(result.durationMs / 1000).toFixed(1)}s, résiduel ${residual.length}) ---\n`,
       );
-      return;
+      if (residual.length > 0) {
+        console.error(`ATTENTION : processus résiduel après le groupe ${i + 1} : ${residual.join(",")}`);
+      }
+      if (result.code !== 0 && summary.failed === 0) {
+        console.error(
+          `ATTENTION : groupe ${i + 1} sorti en échec (code ${result.code}) sans résumé de tests exploitable (crash à la collecte ?).`,
+        );
+      }
     }
-    const files = GROUPS[i].map(filePathFor);
-    console.log(`\n=== Groupe ${i + 1}/${GROUPS.length} (${files.length} fichiers) — serveur neuf ===\n`);
-    const result = await runGroup(files);
-    const summary = parseSummary(result.stdout);
-    const timeouts = (result.stdout.match(/Test timed out|Hook timed out/g) || []).length;
-    // INC-27 (INCIDENTS.md) : `redémarrage contrôlé n°` est désormais émis pour deux raisons
-    // distinctes par vitest.global-setup.ts — une panne réelle détectée par le contrôle de
-    // vivacité INC-3 ("INC-3 : serveur de test injoignable...") et un recyclage préventif
-    // bénin/attendu tous les 10 fichiers de test (`FILES_PER_RESTART`,
-    // src/__tests__/helpers/testServerRecycling.ts), possible dans tout groupe d'au moins 10
-    // fichiers. Comptées séparément pour ne jamais faire paraître un recyclage préventif normal
-    // comme une panne watchdog réelle dans ce résumé.
-    const watchdogRestarts = (result.stderr.match(/INC-3 : .*redémarrage contrôlé n°/g) || []).length;
-    const recyclingRestarts = (result.stderr.match(/INC-27 : .*redémarrage contrôlé n°/g) || []).length;
-
-    // Le code de sortie du process est la source de vérité : un crash à la collecte
-    // (erreur de syntaxe, exception hors test, "Tests  no tests") ne produit aucune
-    // ligne de résumé exploitable par parseSummary — s'appuyer uniquement sur
-    // summary.failed masquerait un échec réel dans le code de sortie agrégé.
-    if (result.code !== 0) anyGroupExitNonZero = true;
-
-    totalPassed += summary.passed;
-    totalFailed += summary.failed;
-    totalTests += summary.total;
-    totalTimeouts += timeouts;
-    totalWatchdogRestarts += watchdogRestarts;
-    totalRecyclingRestarts += recyclingRestarts;
-
-    // Le teardown de vitest.global-setup.ts attend déjà la sortie du process serveur
-    // (SIGTERM puis SIGKILL après 5s de grâce) avant que `vitest run` ne se termine —
-    // cette pause + vérification est une confirmation indépendante, pas le mécanisme
-    // d'arrêt lui-même.
-    await new Promise((r) => setTimeout(r, 1000));
-    const residual = await residualPids();
-    totalResidual += residual.length;
-
-    groupResults.push({
-      group: i + 1,
-      exitCode: result.code,
-      ...summary,
-      timeouts,
-      watchdogRestarts,
-      recyclingRestarts,
-      durationMs: result.durationMs,
-      residual: residual.length,
-    });
-
-    console.log(
-      `\n--- Groupe ${i + 1} : ${summary.passed}/${summary.total} (échecs ${summary.failed}, timeouts ${timeouts}, watchdog ${watchdogRestarts}, recyclage ${recyclingRestarts}, ${(result.durationMs / 1000).toFixed(1)}s, résiduel ${residual.length}) ---\n`,
-    );
-    if (residual.length > 0) {
-      console.error(`ATTENTION : processus résiduel après le groupe ${i + 1} : ${residual.join(",")}`);
-    }
-    if (result.code !== 0 && summary.failed === 0) {
-      console.error(
-        `ATTENTION : groupe ${i + 1} sorti en échec (code ${result.code}) sans résumé de tests exploitable (crash à la collecte ?).`,
-      );
-    }
+  } finally {
+    // Garanti pour une sortie normale, un `return` anticipé (arrêt demandé) ou toute exception
+    // levée dans la boucle. Ne couvre pas le chemin SIGINT/SIGTERM : `handleSignal()` (non
+    // modifié) appelle `process.exit()` directement, ce qui termine le process avant que cette
+    // promesse ne se résolve — la mort du process arrête alors le timer par elle-même.
+    clearInterval(heartbeatTimer);
+    heartbeat("=== ARRÊT DE LA BOUCLE (finally) ===");
   }
 
   const overallDurationMs = Date.now() - overallStart;
