@@ -66,6 +66,7 @@ jobs:
           AUTH_SECRET="${AUTH_SECRET_VALUE}"
           CRON_SECRET="${CRON_SECRET_VALUE}"
           MFA_ENCRYPTION_KEY="${MFA_KEY_VALUE}"
+          SUPER_ADMIN_EMAILS="@superadmin.test.local"
           EOF
 
       # Garde-fou strict : extrait uniquement l'hôte et le nom de base de DATABASE_URL (jamais

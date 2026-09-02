@@ -15,7 +15,17 @@ import { maybeRunScheduledAlertChecks } from "@/lib/scheduled-tasks";
 
 const runId = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
 const createdTenantIds: string[] = [];
-const CRON_SECRET = "test-cron-secret-do-not-use-in-prod";
+// Lu depuis .env.test (chargé par vitest.config.mts pour ce process ET par
+// vitest.global-setup.ts pour le process next dev de test — même fichier, même valeur des deux
+// côtés) plutôt qu'une chaîne codée en dur : une valeur fixe divergerait silencieusement du
+// secret réellement généré par le workflow CI (aléatoire à chaque run), provoquant un 401 au
+// lieu du 200 attendu.
+const CRON_SECRET = process.env.CRON_SECRET;
+if (!CRON_SECRET) {
+  throw new Error(
+    "CRON_SECRET absent de l'environnement de test (.env.test) — impossible d'exécuter scheduled-alerts-cron.test.ts.",
+  );
+}
 
 async function createTenantWithOverdueMaintenance(label: string): Promise<{
   admin: AuthenticatedTestUser;
