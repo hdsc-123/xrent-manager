@@ -16,7 +16,8 @@ import { readdirSync } from "node:fs";
 
 const GROUPS = [
   ["reservations", "permissions", "vehicle-mobility-alerts", "invoice-status-alerts", "reports", "db", "password-policy", "super-admin", "scheduled-alerts-cron", "responsive-layout", "mfa-encryption", "mfa", "mfa-lifecycle", "format"],
-  ["locations", "location-extension", "location-chains", "location-chain-balance", "dashboard-route-guards", "data-reset", "invoices", "audit-deletion", "auth", "login-throttle", "mfa-routes", "mfa-step-up-gating", "csv-export-sanitization", "csv-exports", "damages", "location-return", "request-guards"],
+  ["invoices", "locations", "csv-exports", "dashboard-route-guards", "location-chain-balance", "location-return"],
+  ["location-extension", "location-chains", "data-reset", "audit-deletion", "auth", "login-throttle", "mfa-routes", "mfa-step-up-gating", "csv-export-sanitization", "damages", "request-guards"],
   ["vehicles", "agencies", "audit", "ui", "e2e-full", "invitations", "location-return-route", "credit-notes-ui", "damage-invoices-ui", "icon-hydration"],
   ["users", "security-notifications", "maintenances", "clients", "vehicle-trips", "batch-pdf", "location-payment", "damages-route", "damage-invoices-route", "test-grouped-integrity"],
   ["cash-register", "vehicle-transfers", "payments", "alerts", "e2e", "tenants", "return-damages-ui", "maintenance-location-coordination", "vehicle-status", "test-tenant-cleanup", "delete-test-tenant", "env-guard", "security-headers"],
