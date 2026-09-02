@@ -10,15 +10,66 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: Lint, typecheck, build, test
+  build-and-check:
+    name: Lint, typecheck, build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Mesuré sur le run 33671092839 (tentative 2) : checkout + setup-node + npm ci (~49s)
+    # + lint (30s) + build (50s) + tsc --noEmit (20s) ≈ 2min34s au total. Ce job ne touche
+    # jamais Postgres — build/lint/typecheck ne dépendent pas de la base de test (le
+    # serveur des tests utilise `next dev`, jamais le build de production). Marge large
+    # (10 min) sans jamais se rapprocher du budget réel mesuré.
+    timeout-minutes: 10
 
-    # Conteneur PostgreSQL éphémère, propre à ce job : détruit avec le runner à la fin de
-    # l'exécution, jamais accessible depuis l'extérieur de ce job, jamais partagé avec xrent_dev
-    # ou un environnement de production (qui n'existe d'ailleurs pas encore — CLAUDE.md section 1).
-    # Base nommée "xrent_test" par convention avec ARCHITECTURE.md/scripts/env-guard.js.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies (lockfile-exact)
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+  test:
+    name: Test (groupe ${{ matrix.group }})
+    needs: build-and-check
+    runs-on: ubuntu-latest
+    # 519s (8min39s) est la durée la plus longue mesurée à ce jour pour un groupe qui
+    # termine normalement (run 33671092839, Groupe 2/6, 2 échecs fonctionnels réels, pas
+    # un blocage) — 15 min laisse ~6min21s de marge au-dessus de cette valeur avant de
+    # conclure à un blocage réel plutôt qu'une lenteur légitime. Propre à chaque entrée de
+    # matrice : un groupe qui dépasse ce budget échoue seul, sans jamais consommer le
+    # budget des cinq autres (voir `strategy.fail-fast` ci-dessous).
+    timeout-minutes: 15
+
+    strategy:
+      # Obligatoire : la valeur par défaut de GitHub Actions (`fail-fast: true`) annule
+      # automatiquement toutes les entrées de matrice encore en cours dès qu'une seule
+      # échoue — exactement le comportement à éviter ici (un groupe en échec/blocage ne
+      # doit jamais priver les cinq autres de leurs diagnostics).
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4, 5, 6]
+
+    # Conteneur PostgreSQL éphémère, propre à CETTE ENTRÉE DE MATRICE (donc à ce groupe) :
+    # détruit avec le runner à la fin de l'exécution, jamais accessible depuis l'extérieur
+    # de ce job, jamais partagé avec xrent_dev, un environnement de production (qui
+    # n'existe d'ailleurs pas encore — CLAUDE.md section 1), ni avec les cinq autres
+    # entrées de la matrice (chacune reçoit son propre runner et donc son propre service,
+    # jamais partagé — GitHub Actions n'exécute jamais deux entrées de matrice sur le même
+    # runner). Base nommée "xrent_test" par convention avec ARCHITECTURE.md/scripts/env-guard.js.
     services:
       postgres:
         image: postgres:16
@@ -52,7 +103,9 @@ jobs:
       # et ne servent qu'à faire démarrer l'application contre la base Postgres éphémère du
       # service ci-dessus — aucun secret réel, aucune valeur issue de GitHub Secrets. Elles ne
       # protègent rien de sensible : la base et le process qui les utilise n'existent plus une
-      # fois le job terminé.
+      # fois le job terminé. Générées indépendamment par chaque entrée de la matrice (jamais
+      # partagées entre groupes — aucun canal de communication entre jobs n'est nécessaire ni
+      # souhaitable ici).
       - name: Create ephemeral .env.test
         run: |
           AUTH_SECRET_VALUE="$(openssl rand -base64 32)"
@@ -121,29 +174,35 @@ jobs:
       - name: Apply database migrations (xrent_test only)
         run: npx prisma migrate deploy
 
-      - name: Lint
-        run: npm run lint
+      # `verifyGroupsMatchDirectory()` (scripts/test-grouped.mjs) s'exécute ici de façon
+      # inconditionnelle, y compris en mode `--group=N` : chaque entrée de la matrice relit
+      # donc indépendamment src/__tests__/ et échoue si GROUPS a dérivé du contenu réel du
+      # dossier. Coût négligeable (un seul readdir), exécuté six fois au total sur ce workflow
+      # (une fois par groupe) plutôt qu'une seule fois de façon centralisée — accepté
+      # délibérément : chaque job tourne sur un runner isolé sans état partagé, ce garde-fou
+      # protège justement contre toute dérive silencieuse, indépendamment de l'entrée de
+      # matrice qui l'exécute.
+      - name: "Test — groupe ${{ matrix.group }}"
+        run: node scripts/test-grouped.mjs --group=${{ matrix.group }}
 
-      - name: Build
-        run: npm run build
-
-      - name: Type check
-        run: npx tsc --noEmit
-
-      - name: Test
-        run: node scripts/test-grouped.mjs
-
-      # `always()` : documenté par GitHub Actions comme s'exécutant même après annulation du job
-      # (timeout-minutes inclus). Non garanti si le runner devient totalement injoignable pendant
-      # la fenêtre de grâce d'annulation (déjà observé une fois : logs natifs eux-mêmes non
-      # persistés dans ce cas) — cette étape réduit ce risque sans l'éliminer. N'exige aucune
-      # permission supplémentaire au-delà de `contents: read` déjà déclaré (upload-artifact
-      # utilise le jeton d'exécution fourni par le runner, pas les scopes GITHUB_TOKEN classiques).
+      # `always()` : documenté par GitHub Actions comme s'exécutant même après annulation du
+      # job (timeout-minutes inclus). Non garanti si le runner devient totalement injoignable
+      # pendant la fenêtre de grâce d'annulation (déjà observé deux fois : logs natifs eux-mêmes
+      # non persistés dans ce cas, voir run 33671092839) — cette étape réduit ce risque sans
+      # l'éliminer. Portée désormais limitée au SEUL groupe concerné : si cette fenêtre de grâce
+      # affecte l'upload du groupe en cause, les cinq autres groupes (jobs indépendants, chacun
+      # avec son propre `if: always()`) ne sont jamais concernés. N'exige aucune permission
+      # supplémentaire au-delà de `contents: read` déjà déclaré (upload-artifact utilise le
+      # jeton d'exécution fourni par le runner, pas les scopes GITHUB_TOKEN classiques). Nom
+      # d'artefact et chemin paramétrés par `matrix.group` : unique par groupe, jamais de
+      # collision entre les six uploads simultanés d'un même run. Chemin relatif à la racine du
+      # workspace (`GITHUB_WORKSPACE`), identique à celui écrit par
+      # scripts/test-grouped.mjs (HEARTBEAT_FILE = join(__dirname, "..", ...)).
       - name: Upload test heartbeat log (best-effort, even if Test is cancelled)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-grouped-heartbeat-log
-          path: test-grouped-heartbeat.log
+          name: test-heartbeat-group-${{ matrix.group }}
+          path: test-grouped-heartbeat-group-${{ matrix.group }}.log
           if-no-files-found: ignore
           retention-days: 5

@@ -9,7 +9,7 @@
  * redémarrage neuf + vérification de disponibilité demandés, sans toucher au watchdog
  * (conservé tel quel comme dernier filet de sécurité à l'intérieur de chaque groupe).
  *
- * Usage : node scripts/test-grouped.mjs [--no-file-parallelism]
+ * Usage : node scripts/test-grouped.mjs [--no-file-parallelism] [--group=N]
  */
 import { spawn } from "node:child_process";
 import { readdirSync, appendFileSync, writeFileSync, statSync } from "node:fs";
@@ -68,6 +68,42 @@ function verifyGroupsMatchDirectory() {
 
 const sequential = process.argv.includes("--no-file-parallelism");
 
+// Sprint CI — exécution d'un seul groupe depuis un job de matrice GitHub Actions
+// indépendant (voir .github/workflows/ci.yml, job `test`, `strategy.matrix.group`).
+// Format strict `--group=N`, 1-based, borné au nombre réel de groupes déclarés dans
+// GROUPS ci-dessus (jamais une valeur codée en dur séparément, pour ne jamais diverger
+// silencieusement si GROUPS gagne ou perd un groupe à l'avenir). Absence de cet argument :
+// comportement inchangé (boucle complète sur tous les groupes, comme avant ce changement).
+// `(.*)`, pas `(.+)` : capture aussi "--group=" (valeur vide) pour la faire tomber dans la
+// même validation numérique ci-dessous plutôt que de la laisser silencieusement ignorée
+// comme absence de l'argument (ce qui masquerait une erreur de invocation CI/locale).
+const GROUP_ARG_PATTERN = /^--group=(.*)$/;
+const rawArgs = process.argv.slice(2);
+
+if (rawArgs.includes("--group")) {
+  console.error(`[test-grouped] --group nécessite une valeur au format --group=N (1 à ${GROUPS.length}).`);
+  process.exit(1);
+}
+
+const groupArgs = rawArgs.filter((arg) => GROUP_ARG_PATTERN.test(arg));
+if (groupArgs.length > 1) {
+  console.error(`[test-grouped] --group fourni plusieurs fois (${groupArgs.join(", ")}) — une seule occurrence attendue.`);
+  process.exit(1);
+}
+
+let selectedGroupIndex = null;
+if (groupArgs.length === 1) {
+  const value = GROUP_ARG_PATTERN.exec(groupArgs[0])[1];
+  const parsed = Number(value);
+  if (!/^[1-9]\d*$/.test(value) || parsed > GROUPS.length) {
+    console.error(
+      `[test-grouped] --group invalide : "${value}" — attendu un entier entre 1 et ${GROUPS.length} (nombre de groupes actuellement déclarés dans GROUPS).`,
+    );
+    process.exit(1);
+  }
+  selectedGroupIndex = parsed - 1;
+}
+
 // Filet de sécurité pour Ctrl+C / SIGTERM : le child `npx vitest` reçoit normalement le
 // signal directement (même groupe de processus que ce script dans un terminal interactif),
 // et vitest.global-setup.ts arrête alors le serveur `next dev` détaché via son teardown.
@@ -115,7 +151,17 @@ process.on("SIGTERM", () => handleSignal("SIGTERM"));
 // courant d'exécution. `fileURLToPath`/`dirname` plutôt que `import.meta.dirname` : portable
 // sur toute version Node, pas seulement celles où cette propriété est disponible.
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const HEARTBEAT_FILE = join(__dirname, "..", "test-grouped-heartbeat.log");
+// Nom unique par groupe en mode `--group=N` (six jobs de matrice indépendants uploadent
+// chacun leur propre artefact en parallèle — voir .github/workflows/ci.yml — un nom de
+// fichier partagé provoquerait une collision d'écriture/d'upload entre eux). Mode boucle
+// complète (aucun `--group`) : nom inchangé, comportement local/historique préservé.
+const HEARTBEAT_FILE = join(
+  __dirname,
+  "..",
+  selectedGroupIndex !== null
+    ? `test-grouped-heartbeat-group-${selectedGroupIndex + 1}.log`
+    : "test-grouped-heartbeat.log",
+);
 const HEARTBEAT_INTERVAL_MS = 30_000;
 // Garde-fou de taille : le volume attendu (un tick/30s + 2 lignes par groupe + une ligne par
 // fichier réellement exécuté) reste de l'ordre de quelques dizaines de Ko sur une suite
@@ -241,6 +287,12 @@ async function residualPids() {
 async function main() {
   verifyGroupsMatchDirectory();
 
+  // Mode `--group=N` : un seul indice à traiter, identique par ailleurs à la boucle
+  // complète (même libellé "Groupe i+1/GROUPS.length", même heartbeat, même watchdog/
+  // recyclage/teardown — voir vitest.global-setup.ts, non modifié). Absence de `--group` :
+  // comportement inchangé, tous les indices dans l'ordre déclaré.
+  const groupIndices = selectedGroupIndex !== null ? [selectedGroupIndex] : GROUPS.map((_, idx) => idx);
+
   try {
     writeFileSync(HEARTBEAT_FILE, "");
   } catch {
@@ -265,14 +317,15 @@ async function main() {
   const groupResults = [];
 
   try {
-    for (let i = 0; i < GROUPS.length; i++) {
+    for (let pos = 0; pos < groupIndices.length; pos++) {
+      const i = groupIndices[pos];
       if (shuttingDown) {
         // Un signal a été reçu pendant/après le groupe précédent : ne pas démarrer de
         // nouveau groupe (donc pas de nouveau serveur) pendant que handleSignal() nettoie
         // encore — c'est exactement le scénario qui causait un EADDRINUSE (le groupe suivant
         // tentait de démarrer un serveur avant la fin du nettoyage du précédent).
         console.log(
-          `\n[test-grouped] Arrêt demandé — ${GROUPS.length - i} groupe(s) restant(s) non lancé(s).\n`,
+          `\n[test-grouped] Arrêt demandé — ${groupIndices.length - pos} groupe(s) restant(s) non lancé(s).\n`,
         );
         return;
       }
@@ -353,11 +406,15 @@ async function main() {
   }
 
   const overallDurationMs = Date.now() - overallStart;
-  const preventiveRestarts = GROUPS.length - 1;
+  const preventiveRestarts = groupIndices.length - 1;
 
   console.log("\n\n========== RÉSUMÉ AGRÉGÉ (recyclage préventif entre groupes) ==========");
-  console.log(`Mode : ${sequential ? "--no-file-parallelism" : "parallélisme par défaut"}`);
-  console.log(`Groupes : ${GROUPS.length}`);
+  console.log(
+    `Mode : ${sequential ? "--no-file-parallelism" : "parallélisme par défaut"}${
+      selectedGroupIndex !== null ? ` — groupe ${selectedGroupIndex + 1}/${GROUPS.length} uniquement` : ""
+    }`,
+  );
+  console.log(`Groupes : ${groupIndices.length}`);
   console.log(`Tests : ${totalPassed}/${totalTests} réussis (échecs : ${totalFailed})`);
   console.log(`Timeouts : ${totalTimeouts}`);
   console.log(`Redémarrages préventifs (entre groupes) : ${preventiveRestarts}`);
