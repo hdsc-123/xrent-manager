@@ -7,6 +7,9 @@ import {
   clearRestartRequest,
   FILES_PER_RESTART,
 } from "./src/__tests__/helpers/testServerRecycling";
+import fs from "node:fs";
+import net from "node:net";
+import path from "node:path";
 
 /**
  * Les routes app/api/** appellent NextAuth (`auth()`), qui utilise `next/headers` en
@@ -52,30 +55,104 @@ let stopped = false;
 let inFlightHealthCheck: AbortController | undefined;
 let restartPromise: Promise<void> | undefined;
 
+// ============================================================================================
+// DIAGNOSTIC TEMPORAIRE — À SUPPRIMER après analyse du prochain échec de redémarrage en CI.
+// Objet : capturer ce que la CI ne conserve pas aujourd'hui (voir diagnostic du run
+// 33751319195, 2026-09-03) — sortie brute Next/Turbopack pendant un redémarrage, PID, usage de
+// SIGTERM/SIGKILL, durées d'arrêt/démarrage, code de sortie, état du port 3811. Écrit dans un
+// fichier dédié (jamais dans stdout/stderr filtré — voir la logique déjà en place juste en
+// dessous, /error/i uniquement) pour ne rien perdre cette fois. N'affiche jamais de secret :
+// uniquement des métadonnées de process (PID, timings, événements), jamais le contenu de
+// .env.test. Ne modifie AUCUN comportement existant : purement additif, jamais dans le chemin
+// critique (écriture synchrone best-effort, jamais awaited dans le flux de contrôle réel ;
+// sonde de port fire-and-forget, non bloquante).
+// ============================================================================================
+const NEXT_SERVER_DIAG_FILE = path.join(process.cwd(), "next-server-diag.log");
+
+function diagLog(event: string, data: Record<string, unknown> = {}): void {
+  const line = { ts: new Date().toISOString(), event, ...data };
+  try {
+    fs.appendFileSync(NEXT_SERVER_DIAG_FILE, JSON.stringify(line) + "\n");
+  } catch {
+    // best-effort : ne doit jamais interrompre le cycle de vie réel du serveur.
+  }
+}
+
+/** Sonde TCP non bloquante, jamais attendue dans le flux réel (fire-and-forget) — indique
+ * uniquement si quelque chose écoute déjà sur le port au moment de l'appel. */
+function diagLogPortStatus(label: string): void {
+  const socket = net.connect({ port: TEST_PORT, host: "127.0.0.1", timeout: 1_000 });
+  socket.once("connect", () => {
+    diagLog("port-status", { label, port: TEST_PORT, status: "occupied" });
+    socket.destroy();
+  });
+  socket.once("timeout", () => {
+    diagLog("port-status", { label, port: TEST_PORT, status: "timeout (ni ouvert ni fermé sous 1s)" });
+    socket.destroy();
+  });
+  socket.once("error", (error: NodeJS.ErrnoException) => {
+    diagLog("port-status", {
+      label,
+      port: TEST_PORT,
+      status: error.code === "ECONNREFUSED" ? "free" : `error:${error.code}`,
+    });
+    socket.destroy();
+  });
+}
+// ============================================================================================
+// FIN DU BLOC DIAGNOSTIC TEMPORAIRE (suite : instrumentation ajoutée dans waitForServer(),
+// stopServer(), startServer() et restartServer() ci-dessous, chaque ajout marqué séparément)
+// ============================================================================================
+
 async function waitForServer(url: string, timeoutMs: number): Promise<void> {
   const start = Date.now();
+  let attempt = 0;
+  let lastError: unknown;
+  // DIAGNOSTIC TEMPORAIRE — voir le bloc en tête de fichier.
+  diagLog("waitForServer-start", { url, timeoutMs });
   while (Date.now() - start < timeoutMs) {
+    attempt += 1;
     try {
       const response = await fetch(url);
       if (response.status < 500) {
+        // DIAGNOSTIC TEMPORAIRE
+        diagLog("waitForServer-ready", { attempt, durationMs: Date.now() - start, status: response.status });
         return;
       }
-    } catch {
+      lastError = `HTTP ${response.status}`;
+    } catch (error) {
       // Le serveur n'écoute pas encore — on réessaie.
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    // DIAGNOSTIC TEMPORAIRE — un échantillon toutes les ~3s (10 tentatives à 300ms) plutôt que
+    // chaque tentative, pour rester lisible sur un délai pouvant aller jusqu'à 60-70s.
+    if (attempt === 1 || attempt % 10 === 0) {
+      diagLog("waitForServer-poll", { attempt, elapsedMs: Date.now() - start, lastError: String(lastError) });
     }
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
+  // DIAGNOSTIC TEMPORAIRE
+  diagLog("waitForServer-timeout", { attempts: attempt, durationMs: Date.now() - start, lastError: String(lastError) });
+  diagLogPortStatus("waitForServer-timeout");
   throw new Error(`Le serveur Next.js de test n'a pas démarré sous ${timeoutMs}ms.`);
 }
 
 async function stopServer(proc: ChildProcess): Promise<void> {
   if (!proc.pid) return;
   const pid = proc.pid;
+  // DIAGNOSTIC TEMPORAIRE
+  const stopStart = Date.now();
+  diagLog("stopServer-start", { pid });
   const exited = new Promise<void>((resolve) => {
-    proc.once("exit", () => resolve());
+    proc.once("exit", (code, signal) => {
+      // DIAGNOSTIC TEMPORAIRE
+      diagLog("stopServer-exited", { pid, code, signal, durationMs: Date.now() - stopStart });
+      resolve();
+    });
   });
   try {
     process.kill(-pid, "SIGTERM");
+    diagLog("stopServer-sigterm-sent", { pid }); // DIAGNOSTIC TEMPORAIRE
   } catch {
     return; // déjà arrêté
   }
@@ -85,6 +162,7 @@ async function stopServer(proc: ChildProcess): Promise<void> {
   ]);
   if (timedOut) {
     // Le serveur est bloqué (voir INC-3) et n'a pas réagi à SIGTERM à temps — arrêt forcé.
+    diagLog("stopServer-sigkill", { pid, afterMs: Date.now() - stopStart }); // DIAGNOSTIC TEMPORAIRE
     try {
       process.kill(-pid, "SIGKILL");
     } catch {
@@ -114,7 +192,10 @@ async function cleanupResidualTestServer(): Promise<void> {
 }
 
 async function startServer(): Promise<ChildProcess> {
+  // DIAGNOSTIC TEMPORAIRE
+  diagLogPortStatus("before-cleanup");
   await cleanupResidualTestServer();
+  diagLogPortStatus("after-cleanup"); // DIAGNOSTIC TEMPORAIRE
 
   const testEnv: Record<string, string> = {};
   loadDotenv({ path: ".env.test", processEnv: testEnv });
@@ -127,6 +208,7 @@ async function startServer(): Promise<ChildProcess> {
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });
+  diagLog("startServer-spawned", { pid: proc.pid }); // DIAGNOSTIC TEMPORAIRE
 
   // INC-3 (Sprint 13E tâche 2) — cause racine confirmée par profilage direct (`sample` sur le
   // process `next-server` gelé : thread principal bloqué en synchrone dans l'appel système
@@ -148,6 +230,7 @@ async function startServer(): Promise<ChildProcess> {
   // ne pas polluer la sortie des tests), sauf motif d'erreur explicite comme pour `stderr`.
   proc.stdout?.on("data", (chunk: Buffer) => {
     const text = chunk.toString();
+    diagLog("stdout", { pid: proc.pid, text }); // DIAGNOSTIC TEMPORAIRE — sortie brute complète, contrairement au filtre /error/i ci-dessous
     if (/error/i.test(text)) {
       process.stderr.write(`[next dev test server] ${text}`);
     }
@@ -155,9 +238,14 @@ async function startServer(): Promise<ChildProcess> {
 
   proc.stderr?.on("data", (chunk: Buffer) => {
     const text = chunk.toString();
+    diagLog("stderr", { pid: proc.pid, text }); // DIAGNOSTIC TEMPORAIRE — sortie brute complète, contrairement au filtre /error/i ci-dessous
     if (/error/i.test(text)) {
       process.stderr.write(`[next dev test server] ${text}`);
     }
+  });
+
+  proc.once("exit", (code, signal) => {
+    diagLog("startServer-process-exit", { pid: proc.pid, code, signal }); // DIAGNOSTIC TEMPORAIRE — détecte un crash précoce du process avant même waitForServer()
   });
 
   await waitForServer(`${TEST_BASE_URL}/`, 60_000);
@@ -168,6 +256,8 @@ async function restartServer(reason: string): Promise<void> {
   if (restarting || stopped) return;
   restarting = true;
   restartCount += 1;
+  const restartStart = Date.now(); // DIAGNOSTIC TEMPORAIRE
+  diagLog("restartServer-start", { restartCount, reason }); // DIAGNOSTIC TEMPORAIRE
   process.stderr.write(`[vitest.global-setup] ${reason} — redémarrage contrôlé n°${restartCount}.\n`);
   try {
     const previous = serverProcess;
@@ -176,8 +266,14 @@ async function restartServer(reason: string): Promise<void> {
     }
     serverProcess = await startServer();
     consecutiveFailures = 0;
+    diagLog("restartServer-success", { restartCount, totalDurationMs: Date.now() - restartStart }); // DIAGNOSTIC TEMPORAIRE
     process.stderr.write(`[vitest.global-setup] Serveur de test redémarré avec succès (n°${restartCount}).\n`);
   } catch (error) {
+    diagLog("restartServer-failure", {
+      restartCount,
+      totalDurationMs: Date.now() - restartStart,
+      error: String(error),
+    }); // DIAGNOSTIC TEMPORAIRE
     process.stderr.write(`[vitest.global-setup] Échec du redémarrage du serveur de test : ${String(error)}\n`);
   } finally {
     restarting = false;

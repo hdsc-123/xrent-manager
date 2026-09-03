@@ -234,3 +234,24 @@ jobs:
       - name: "[DIAGNOSTIC TEMPORAIRE] Clean up route-guard-diag.log"
         if: always()
         run: rm -f route-guard-diag.log
+
+      # DIAGNOSTIC TEMPORAIRE — voir vitest.global-setup.ts pour le contexte complet. À
+      # supprimer avec le reste de cette instrumentation (ce step inclus) après analyse du
+      # prochain échec de redémarrage. Produit par CHAQUE groupe (le serveur démarre au moins
+      # une fois par groupe, redémarrage ou non) — if-no-files-found: ignore reste une
+      # protection défensive, pas une attente de fichier absent dans le cas normal.
+      - name: "[DIAGNOSTIC TEMPORAIRE] Upload next-server-diag log"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-server-diag-group-${{ matrix.group }}
+          path: next-server-diag.log
+          if-no-files-found: ignore
+          retention-days: 5
+
+      # DIAGNOSTIC TEMPORAIRE — nettoyage best-effort, même principe et mêmes garanties que le
+      # nettoyage route-guard-diag.log déjà en place ci-dessus : ne peut jamais masquer un
+      # échec de test (if: always(), rm -f jamais en erreur si le fichier est absent).
+      - name: "[DIAGNOSTIC TEMPORAIRE] Clean up next-server-diag.log"
+        if: always()
+        run: rm -f next-server-diag.log
