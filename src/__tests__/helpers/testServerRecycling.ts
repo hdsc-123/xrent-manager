@@ -33,10 +33,14 @@ interface RecyclingState {
 
 const STATE_FILE = path.join(os.tmpdir(), `xrent-manager-vitest-server-recycle-${TEST_PORT}.json`);
 
-/** Nombre de fichiers de test traités entre deux redémarrages préventifs — volontairement proche
- * de la taille d'un groupe de `scripts/test-grouped.mjs` (5 groupes pour ~58 fichiers, soit
- * ~10-16 fichiers/groupe), plutôt conservateur pour rester sous le seuil de croissance mesuré. */
-export const FILES_PER_RESTART = 10;
+/** Nombre de fichiers de test traités entre deux redémarrages préventifs. Réduit de 10 à 5
+ * (diagnostic CI Groupe 4, run 33690805468, 2026-09-03) : les 10 fichiers de ce groupe passent
+ * tous individuellement, avec un serveur neuf chacun (aucun gel constaté en isolation), mais le
+ * groupe complet gèle de façon intermittente en CI — cohérent avec une dégradation cumulative
+ * du serveur partagé sur plusieurs fichiers consécutifs (même classe qu'INC-27), jamais
+ * reproduite en isolation. Un seuil plus bas réduit la fenêtre d'exposition avant recyclage,
+ * sans changer aucun timeout ni comportement de test. */
+export const FILES_PER_RESTART = 5;
 
 const POLL_INTERVAL_MS = 250;
 /** Borne large mais finie — un dépassement signale un défaut réel du mécanisme de recyclage
