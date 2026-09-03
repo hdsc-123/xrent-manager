@@ -94,18 +94,64 @@ function randomTestIp(): string {
   return `10.${octet()}.${octet()}.${octet()}`;
 }
 
+/**
+ * INC-3 (diagnostic run 33761658531, Groupe 4, 2026-09-03) : une requête *acceptée* par le
+ * serveur (donc hors du périmètre de `retryOnConnectionFailure` ci-dessus, qui ne couvre que
+ * l'échec de connexion pure) mais dont la réponse n'arrive jamais laissait un test bloqué
+ * indéfiniment — sans aucune trace de reporter Vitest observée avant le couperet CI de 15
+ * minutes, alors que `testTimeout`/`hookTimeout` (vitest.config.mts) auraient dû, en théorie,
+ * borner ce blocage à 20-60s. Borne explicite et volontairement DISTINCTE d'un échec de
+ * connexion : au-delà de ce délai, la requête est annulée et le test échoue immédiatement avec
+ * un message explicite, sans dépendre uniquement des timeouts internes de Vitest dont le
+ * déclenchement effectif n'a pas pu être confirmé dans ce scénario précis.
+ *
+ * Valeur choisie strictement sous `testTimeout` (20 000ms, vitest.config.mts) pour que ce
+ * message diagnostique apparaisse et échoue AVANT le timeout générique de Vitest, plutôt que
+ * d'être masqué par lui. Sur l'ensemble de la suite (51 fichiers appelant `apiFetch`), un seul
+ * test a jamais eu besoin de dépasser 20s (`csv-exports.test.ts`, 60 000ms) — dominé par un
+ * `prisma.vehicle.createMany` de plus de MAX_EXPORT_ROWS lignes, jamais par une réponse HTTP
+ * individuelle. Aucune requête `apiFetch` documentée n'a jamais approché cette borne.
+ */
+const REQUEST_TIMEOUT_MS = 15_000;
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  return retryOnConnectionFailure(() =>
-    fetch(`${TEST_BASE_URL}${path}`, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        Connection: "close",
-        "x-forwarded-for": randomTestIp(),
-        ...init.headers,
-      },
-    })
-  );
+  return retryOnConnectionFailure(async () => {
+    const timeoutController = new AbortController();
+    const timer = setTimeout(() => timeoutController.abort(), REQUEST_TIMEOUT_MS);
+    // Aucun appelant actuel (51 sites vérifiés) ne fournit `init.signal` — mais s'il en
+    // apparaissait un, il ne doit jamais être remplacé silencieusement par le nôtre :
+    // `AbortSignal.any()` (Node ≥ 20.3, disponible sur Node 22 utilisé par ce projet) combine
+    // les deux, chacun pouvant annuler la requête indépendamment de l'autre.
+    const signal = init.signal ? AbortSignal.any([init.signal, timeoutController.signal]) : timeoutController.signal;
+    try {
+      return await fetch(`${TEST_BASE_URL}${path}`, {
+        ...init,
+        headers: {
+          "Content-Type": "application/json",
+          Connection: "close",
+          "x-forwarded-for": randomTestIp(),
+          ...init.headers,
+        },
+        signal,
+      });
+    } catch (error) {
+      // N'attribue l'erreur à CE timeout que si c'est bien lui qui a déclenché l'abandon —
+      // un `init.signal` externe qui s'annule pour sa propre raison ne doit jamais être
+      // mal étiqueté comme un dépassement de délai applicatif.
+      if (isTimeoutError(error) && timeoutController.signal.aborted) {
+        throw new Error(
+          `[apiFetch] ${path} : aucune réponse reçue sous ${REQUEST_TIMEOUT_MS}ms (requête déjà acceptée par le serveur — délai applicatif dépassé, pas un échec de connexion).`,
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  });
 }
 
 /**
