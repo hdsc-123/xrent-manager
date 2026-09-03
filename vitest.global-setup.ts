@@ -10,6 +10,7 @@ import {
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 
 /**
  * Les routes app/api/** appellent NextAuth (`auth()`), qui utilise `next/headers` en
@@ -104,37 +105,102 @@ function diagLogPortStatus(label: string): void {
 // stopServer(), startServer() et restartServer() ci-dessous, chaque ajout marqué séparément)
 // ============================================================================================
 
-async function waitForServer(url: string, timeoutMs: number): Promise<void> {
+// Correctif ciblé (diagnostic CI Groupe 4, runs 33751319195/33757578715, 2026-09-03) — distinct
+// du bloc diagnostic temporaire ci-dessus : capture les dernières lignes stdout/stderr du
+// serveur en cours, pour les inclure dans l'erreur si le process meurt avant d'être prêt (voir
+// waitForServer() ci-dessous). Réinitialisé à chaque nouveau spawn (startServer()). Borné pour
+// rester lisible dans un message d'erreur, jamais destiné à remplacer next-server-diag.log
+// (bloc diagnostic ci-dessus, qui conserve tout, sans borne de lignes).
+const RECENT_OUTPUT_MAX_LINES = 20;
+let recentOutputLines: string[] = [];
+
+function recordRecentOutput(text: string): void {
+  for (const line of text.split("\n")) {
+    if (line.length === 0) continue;
+    recentOutputLines.push(line);
+  }
+  if (recentOutputLines.length > RECENT_OUTPUT_MAX_LINES) {
+    recentOutputLines = recentOutputLines.slice(-RECENT_OUTPUT_MAX_LINES);
+  }
+}
+
+/**
+ * Correctif ciblé (diagnostic CI Groupe 4, runs 33751319195/33757578715, 2026-09-03) : avant ce
+ * correctif, `waitForServer()` ignorait totalement la sortie du process qu'elle attendait — un
+ * panic Turbopack faisant sortir le process avec le code 0 après un « Ready » initial (observé
+ * directement, voir next-server-diag-group-4) n'était détecté qu'après épuisement complet de
+ * `timeoutMs` (jusqu'à 53s perdus à sonder un port déjà vide). Un unique `AbortController`
+ * relie maintenant le sondage HTTP, l'attente entre deux tentatives et la détection de sortie du
+ * process : dès que l'une des trois issues (prêt / mort / timeout) survient, les deux autres
+ * chemins sont annulés immédiatement — jamais de travail résiduel en arrière-plan. Ne change
+ * aucun délai existant : mêmes bornes (`timeoutMs`, intervalle de 300ms) qu'avant ce correctif.
+ */
+async function waitForServer(url: string, timeoutMs: number, proc: ChildProcess): Promise<void> {
   const start = Date.now();
   let attempt = 0;
   let lastError: unknown;
-  // DIAGNOSTIC TEMPORAIRE — voir le bloc en tête de fichier.
-  diagLog("waitForServer-start", { url, timeoutMs });
-  while (Date.now() - start < timeoutMs) {
-    attempt += 1;
-    try {
-      const response = await fetch(url);
-      if (response.status < 500) {
-        // DIAGNOSTIC TEMPORAIRE
-        diagLog("waitForServer-ready", { attempt, durationMs: Date.now() - start, status: response.status });
-        return;
+  let outcome: "died" | undefined;
+  let dieError: Error | undefined;
+  const controller = new AbortController();
+
+  const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+    outcome = "died";
+    const recentOutput = recentOutputLines.join("\n");
+    diagLog("waitForServer-process-died", { pid: proc.pid, code, signal, elapsedMs: Date.now() - start }); // DIAGNOSTIC TEMPORAIRE
+    dieError = new Error(
+      `Le serveur Next.js de test (pid=${proc.pid}) s'est arrêté avant d'être prêt — code=${code}, signal=${signal}.\n` +
+        `--- Dernières lignes stdout/stderr ---\n${recentOutput || "(aucune sortie capturée)"}`
+    );
+    controller.abort(); // annule immédiatement tout fetch()/attente en cours ci-dessous
+  };
+  proc.once("exit", onExit);
+
+  try {
+    // DIAGNOSTIC TEMPORAIRE — voir le bloc en tête de fichier.
+    diagLog("waitForServer-start", { url, timeoutMs, pid: proc.pid });
+    while (Date.now() - start < timeoutMs) {
+      if (controller.signal.aborted) break; // process déjà mort pendant l'attente précédente
+      attempt += 1;
+      try {
+        const response = await fetch(url, { signal: controller.signal });
+        if (response.status < 500) {
+          // DIAGNOSTIC TEMPORAIRE
+          diagLog("waitForServer-ready", { attempt, durationMs: Date.now() - start, status: response.status });
+          return;
+        }
+        lastError = `HTTP ${response.status}`;
+      } catch (error) {
+        if (controller.signal.aborted) break; // fetch annulé car le process vient de mourir
+        // Le serveur n'écoute pas encore — on réessaie.
+        lastError = error instanceof Error ? error.message : String(error);
       }
-      lastError = `HTTP ${response.status}`;
-    } catch (error) {
-      // Le serveur n'écoute pas encore — on réessaie.
-      lastError = error instanceof Error ? error.message : String(error);
+      // DIAGNOSTIC TEMPORAIRE — un échantillon toutes les ~3s (10 tentatives à 300ms) plutôt que
+      // chaque tentative, pour rester lisible sur un délai pouvant aller jusqu'à 60-70s.
+      if (attempt === 1 || attempt % 10 === 0) {
+        diagLog("waitForServer-poll", { attempt, elapsedMs: Date.now() - start, lastError: String(lastError) });
+      }
+      try {
+        await setTimeoutPromise(300, undefined, { signal: controller.signal });
+      } catch (error) {
+        if (controller.signal.aborted) break; // annulé pendant l'attente — process mort (voir onExit)
+        throw error; // toute autre erreur reste une vraie anomalie, jamais masquée
+      }
     }
-    // DIAGNOSTIC TEMPORAIRE — un échantillon toutes les ~3s (10 tentatives à 300ms) plutôt que
-    // chaque tentative, pour rester lisible sur un délai pouvant aller jusqu'à 60-70s.
-    if (attempt === 1 || attempt % 10 === 0) {
-      diagLog("waitForServer-poll", { attempt, elapsedMs: Date.now() - start, lastError: String(lastError) });
+
+    if (outcome === "died") {
+      throw dieError;
     }
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // DIAGNOSTIC TEMPORAIRE
+    diagLog("waitForServer-timeout", { attempts: attempt, durationMs: Date.now() - start, lastError: String(lastError) });
+    diagLogPortStatus("waitForServer-timeout");
+    throw new Error(`Le serveur Next.js de test n'a pas démarré sous ${timeoutMs}ms.`);
+  } finally {
+    // Nettoyage systématique, quel que soit le chemin de sortie (prêt / mort / timeout) :
+    // l'écouteur ne doit jamais se redéclencher plus tard lors de l'arrêt normal par
+    // stopServer(), et aucun fetch()/attente ne doit continuer à tourner en arrière-plan.
+    proc.removeListener("exit", onExit);
+    if (!controller.signal.aborted) controller.abort();
   }
-  // DIAGNOSTIC TEMPORAIRE
-  diagLog("waitForServer-timeout", { attempts: attempt, durationMs: Date.now() - start, lastError: String(lastError) });
-  diagLogPortStatus("waitForServer-timeout");
-  throw new Error(`Le serveur Next.js de test n'a pas démarré sous ${timeoutMs}ms.`);
 }
 
 async function stopServer(proc: ChildProcess): Promise<void> {
@@ -200,6 +266,11 @@ async function startServer(): Promise<ChildProcess> {
   const testEnv: Record<string, string> = {};
   loadDotenv({ path: ".env.test", processEnv: testEnv });
 
+  // Correctif ciblé — repart d'un historique vide à chaque nouveau spawn, pour que l'erreur
+  // de waitForServer() (si le process meurt avant d'être prêt) ne montre jamais la sortie
+  // d'un cycle de redémarrage précédent.
+  recentOutputLines = [];
+
   const proc = spawn("npx", ["next", "dev", "-p", String(TEST_PORT)], {
     // Les variables déjà présentes dans `env` ne sont jamais écrasées par le
     // chargement interne des fichiers .env de Next.js — la base de test et le
@@ -231,6 +302,7 @@ async function startServer(): Promise<ChildProcess> {
   proc.stdout?.on("data", (chunk: Buffer) => {
     const text = chunk.toString();
     diagLog("stdout", { pid: proc.pid, text }); // DIAGNOSTIC TEMPORAIRE — sortie brute complète, contrairement au filtre /error/i ci-dessous
+    recordRecentOutput(text); // Correctif ciblé — alimente le tampon utilisé par waitForServer()
     if (/error/i.test(text)) {
       process.stderr.write(`[next dev test server] ${text}`);
     }
@@ -239,6 +311,7 @@ async function startServer(): Promise<ChildProcess> {
   proc.stderr?.on("data", (chunk: Buffer) => {
     const text = chunk.toString();
     diagLog("stderr", { pid: proc.pid, text }); // DIAGNOSTIC TEMPORAIRE — sortie brute complète, contrairement au filtre /error/i ci-dessous
+    recordRecentOutput(text); // Correctif ciblé — alimente le tampon utilisé par waitForServer()
     if (/error/i.test(text)) {
       process.stderr.write(`[next dev test server] ${text}`);
     }
@@ -248,7 +321,7 @@ async function startServer(): Promise<ChildProcess> {
     diagLog("startServer-process-exit", { pid: proc.pid, code, signal }); // DIAGNOSTIC TEMPORAIRE — détecte un crash précoce du process avant même waitForServer()
   });
 
-  await waitForServer(`${TEST_BASE_URL}/`, 60_000);
+  await waitForServer(`${TEST_BASE_URL}/`, 60_000, proc);
   return proc;
 }
 
