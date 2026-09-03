@@ -275,7 +275,9 @@ async function startServer(): Promise<ChildProcess> {
     // Les variables déjà présentes dans `env` ne sont jamais écrasées par le
     // chargement interne des fichiers .env de Next.js — la base de test et le
     // secret associé restent donc bien ceux fournis ici.
-    env: { ...process.env, ...testEnv, PORT: String(TEST_PORT) },
+    // Voir next.config.ts (turbopackFileSystemCacheForDev) : désactive le cache disque
+    // Turbopack pour ce serveur uniquement.
+    env: { ...process.env, ...testEnv, PORT: String(TEST_PORT), XRENT_TEST_SERVER: "1" },
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });

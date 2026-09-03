@@ -111,6 +111,11 @@ const nextConfig: NextConfig = {
     // jamais chargé par le serveur de production `next start`/`next build`) — build de
     // production revérifié inchangé après ce réglage.
     devValidationWorker: false,
+    // Diagnostic Groupe 4 CI (2026-09-03, INCIDENTS.md) : désactive le cache disque Turbopack
+    // UNIQUEMENT pour le serveur `next dev` de test (XRENT_TEST_SERVER, injecté par
+    // vitest.global-setup.ts) — `npm run dev` en local n'est jamais concerné et conserve le
+    // cache persistant entre redémarrages.
+    turbopackFileSystemCacheForDev: !process.env.XRENT_TEST_SERVER,
   },
 };
 
