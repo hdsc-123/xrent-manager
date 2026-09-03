@@ -51,7 +51,7 @@ const POLL_INTERVAL_MS = 250;
  * sécurité au-dessus de ce maximum théorique (diagnostic CI Groupe 4, run 33747296858,
  * 2026-09-03 : un redémarrage a mis 63,7s à se confirmer, alors que 30s le signalaient déjà,
  * à tort, comme un échec). */
-const MAX_WAIT_MS = 70_000;
+export const MAX_WAIT_MS = 70_000;
 
 function readState(): RecyclingState {
   try {
