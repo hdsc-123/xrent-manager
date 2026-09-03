@@ -8,6 +8,11 @@ export default defineConfig(({ mode }) => ({
     setupFiles: ["./vitest.setup.ts"],
     globalSetup: ["./vitest.global-setup.ts"],
     env: loadEnv(mode, process.cwd(), ""),
+    // Diagnostic CI Groupe 4 (2026-09-03) — reporter additionnel (vitest.diag-reporter.ts),
+    // jamais un remplacement : "default" reste actif, sortie console/heartbeat de
+    // scripts/test-grouped.mjs inchangée. Journalise début/fin de chaque fichier dans le même
+    // fichier borné que vitest.global-setup.ts (voir src/__tests__/helpers/testServerDiag.ts).
+    reporters: ["default", "./vitest.diag-reporter.ts"],
     testTimeout: 20_000,
     hookTimeout: 60_000,
     maxWorkers: 4,
