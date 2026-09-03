@@ -31,6 +31,12 @@ export interface CreatedTenantAdmin {
  * l'ancienne route (tenant + premier ADMIN + groupes de permissions par défaut), même précédent
  * que `createAndLoginMember` ci-dessous qui crée déjà un MEMBER directement via Prisma.
  */
+// INC-3-DIAG (2026-09-03) — instrumentation temporaire, à retirer après diagnostic (voir
+// src/__tests__/helpers/http.ts, même tag, même convention de sortie sur stderr).
+function diagInc3(event: string, data: Record<string, unknown> = {}): void {
+  process.stderr.write(`[INC-3-DIAG] ${Date.now()} ${event} ${JSON.stringify(data)}\n`);
+}
+
 export async function createTenantAdmin(params: {
   tenantName: string;
   tenantSlug: string;
@@ -38,12 +44,21 @@ export async function createTenantAdmin(params: {
   email: string;
   password: string;
 }): Promise<CreatedTenantAdmin> {
-  const passwordHash = await bcrypt.hash(params.password, BCRYPT_COST);
+  diagInc3("createTenantAdmin:enter", { email: params.email });
 
+  diagInc3("bcrypt.hash:start", { email: params.email, cost: BCRYPT_COST });
+  const passwordHash = await bcrypt.hash(params.password, BCRYPT_COST);
+  diagInc3("bcrypt.hash:end", { email: params.email });
+
+  diagInc3("prisma.$transaction:start", { email: params.email });
   const { tenant, user } = await prisma.$transaction(async (tx) => {
+    diagInc3("prisma.tenant.create:start", { email: params.email, slug: params.tenantSlug });
     const tenant = await tx.tenant.create({
       data: { name: params.tenantName, slug: params.tenantSlug },
     });
+    diagInc3("prisma.tenant.create:end", { email: params.email, tenantId: tenant.id });
+
+    diagInc3("prisma.user.create:start", { email: params.email, tenantId: tenant.id });
     const user = await tx.user.create({
       data: {
         tenantId: tenant.id,
@@ -53,11 +68,16 @@ export async function createTenantAdmin(params: {
         role: "ADMIN",
       },
     });
+    diagInc3("prisma.user.create:end", { email: params.email, userId: user.id });
     return { tenant, user };
   });
+  diagInc3("prisma.$transaction:end", { email: params.email, tenantId: tenant.id, userId: user.id });
 
+  diagInc3("ensureDefaultGroups:start", { email: params.email, tenantId: tenant.id });
   await ensureDefaultGroups(tenant.id);
+  diagInc3("ensureDefaultGroups:end", { email: params.email, tenantId: tenant.id });
 
+  diagInc3("createTenantAdmin:exit", { email: params.email, tenantId: tenant.id, userId: user.id });
   return { tenantId: tenant.id, userId: user.id, email: params.email };
 }
 
@@ -72,12 +92,16 @@ export async function registerTenantAdmin(params: {
   email: string;
   password: string;
 }): Promise<AuthenticatedTestUser> {
+  diagInc3("registerTenantAdmin:enter", { email: params.email });
   const created = await createTenantAdmin(params);
+  diagInc3("registerTenantAdmin:createTenantAdmin-done", { email: params.email, tenantId: created.tenantId });
 
+  diagInc3("registerTenantAdmin:before-login-apiFetch", { email: params.email });
   const loginResponse = await apiFetch("/api/auth/login", {
     method: "POST",
     body: JSON.stringify({ email: params.email, password: params.password }),
   });
+  diagInc3("registerTenantAdmin:after-login-apiFetch", { email: params.email, status: loginResponse.status });
   const sessionCookie = extractSessionCookie(loginResponse);
 
   if (!sessionCookie) {

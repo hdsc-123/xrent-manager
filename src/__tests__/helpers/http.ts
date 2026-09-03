@@ -63,10 +63,20 @@ const RETRY_DELAYS_MS = [150, 500];
 async function retryOnConnectionFailure(doFetch: () => Promise<Response>): Promise<Response> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    process.stderr.write(`[INC-3-DIAG] ${Date.now()} retryOnConnectionFailure:attempt-start ${JSON.stringify({ attempt })}\n`);
     try {
-      return await doFetch();
+      const result = await doFetch();
+      process.stderr.write(
+        `[INC-3-DIAG] ${Date.now()} retryOnConnectionFailure:exit-success ${JSON.stringify({ attempt, status: result.status })}\n`,
+      );
+      return result;
     } catch (error) {
-      if (!isRetryableConnectionError(error)) throw error;
+      if (!isRetryableConnectionError(error)) {
+        process.stderr.write(
+          `[INC-3-DIAG] ${Date.now()} retryOnConnectionFailure:exit-nonretryable-throw ${JSON.stringify({ attempt, message: error instanceof Error ? error.message : String(error) })}\n`,
+        );
+        throw error;
+      }
       lastError = error;
       if (attempt >= RETRY_DELAYS_MS.length) break;
       process.stderr.write(
@@ -75,6 +85,9 @@ async function retryOnConnectionFailure(doFetch: () => Promise<Response>): Promi
       await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
     }
   }
+  process.stderr.write(
+    `[INC-3-DIAG] ${Date.now()} retryOnConnectionFailure:exit-exhausted-throw ${JSON.stringify({ message: lastError instanceof Error ? lastError.message : String(lastError) })}\n`,
+  );
   throw lastError;
 }
 
@@ -118,17 +131,35 @@ function isTimeoutError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
+// DIAGNOSTIC TEMPORAIRE (2026-09-03) — à retirer après analyse du blocage silencieux de
+// `agencies.test.ts` en beforeAll (run CI 33787235443, Groupe 4). Horodatage haute résolution
+// (Date.now(), pas besoin de plus) pour distinguer précisément : (a) le timer n'est jamais créé
+// ou jamais déclenché, (b) le timer se déclenche mais `fetch()` ne se règle jamais (ni resolve
+// ni reject) malgré `abort()`, (c) `fetch()` rejette bien mais avec une erreur non reconnue comme
+// timeout. Écrit sur stderr avec un tag dédié, jamais mêlé aux logs applicatifs normaux.
+function diag(event: string, data: Record<string, unknown> = {}): void {
+  process.stderr.write(`[INC-3-DIAG] ${Date.now()} ${event} ${JSON.stringify(data)}\n`);
+}
+
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const callId = `${path}#${Date.now()}#${Math.random().toString(36).slice(2, 8)}`;
+  diag("apiFetch:enter", { callId, path });
   return retryOnConnectionFailure(async () => {
     const timeoutController = new AbortController();
-    const timer = setTimeout(() => timeoutController.abort(), REQUEST_TIMEOUT_MS);
+    diag("apiFetch:timer-create", { callId });
+    const timer = setTimeout(() => {
+      diag("apiFetch:timer-FIRED", { callId });
+      timeoutController.abort();
+      diag("apiFetch:timer-abort-called", { callId, signalAborted: timeoutController.signal.aborted });
+    }, REQUEST_TIMEOUT_MS);
     // Aucun appelant actuel (51 sites vérifiés) ne fournit `init.signal` — mais s'il en
     // apparaissait un, il ne doit jamais être remplacé silencieusement par le nôtre :
     // `AbortSignal.any()` (Node ≥ 20.3, disponible sur Node 22 utilisé par ce projet) combine
     // les deux, chacun pouvant annuler la requête indépendamment de l'autre.
     const signal = init.signal ? AbortSignal.any([init.signal, timeoutController.signal]) : timeoutController.signal;
+    diag("apiFetch:before-fetch-call", { callId, hasInitSignal: Boolean(init.signal) });
     try {
-      return await fetch(`${TEST_BASE_URL}${path}`, {
+      const response = await fetch(`${TEST_BASE_URL}${path}`, {
         ...init,
         headers: {
           "Content-Type": "application/json",
@@ -138,7 +169,19 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
         },
         signal,
       });
+      diag("apiFetch:fetch-RESOLVED", { callId, status: response.status });
+      return response;
     } catch (error) {
+      diag("apiFetch:fetch-REJECTED", {
+        callId,
+        name: error instanceof Error ? error.name : typeof error,
+        message: error instanceof Error ? error.message : String(error),
+        code: (error as { code?: string } | undefined)?.code,
+        cause: (error as { cause?: unknown } | undefined)?.cause
+          ? String((error as { cause?: unknown }).cause)
+          : undefined,
+        signalAborted: timeoutController.signal.aborted,
+      });
       // N'attribue l'erreur à CE timeout que si c'est bien lui qui a déclenché l'abandon —
       // un `init.signal` externe qui s'annule pour sa propre raison ne doit jamais être
       // mal étiqueté comme un dépassement de délai applicatif.
@@ -150,6 +193,7 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
       throw error;
     } finally {
       clearTimeout(timer);
+      diag("apiFetch:finally-clearTimeout", { callId });
     }
   });
 }
