@@ -44,8 +44,14 @@ export const FILES_PER_RESTART = 5;
 
 const POLL_INTERVAL_MS = 250;
 /** Borne large mais finie — un dépassement signale un défaut réel du mécanisme de recyclage
- * lui-même (jamais une attente silencieuse indéfinie, voir le commentaire de garde ci-dessous). */
-const MAX_WAIT_MS = 30_000;
+ * lui-même (jamais une attente silencieuse indéfinie, voir le commentaire de garde ci-dessous).
+ * Alignée sur le budget réel de restartServer() (vitest.global-setup.ts) : jusqu'à
+ * GRACEFUL_SHUTDOWN_TIMEOUT_MS (5s, arrêt gracieux avant SIGKILL) + jusqu'à 60s pour
+ * waitForServer() au redémarrage, soit ~65s de budget légitime — 70s laisse une marge de
+ * sécurité au-dessus de ce maximum théorique (diagnostic CI Groupe 4, run 33747296858,
+ * 2026-09-03 : un redémarrage a mis 63,7s à se confirmer, alors que 30s le signalaient déjà,
+ * à tort, comme un échec). */
+const MAX_WAIT_MS = 70_000;
 
 function readState(): RecyclingState {
   try {
