@@ -39,10 +39,17 @@ describe("Rate limiting d'authentification", () => {
 
     for (let i = 0; i < 5; i++) {
       // IP différente à chaque tentative — seul l'email doit expliquer le verrouillage.
-      const response = await loginAttempt(email, `172.16.${i}.${i}`, "wrong-password-x");
+      // Chaque tentative échouée incrémente aussi la clé IP (POST /api/auth/login,
+      // recordFailedAttempt appelée sur les deux clés) — jamais nettoyée jusqu'ici, cette
+      // ligne IP fixe (non randomisée) persistait donc entre exécutions successives du
+      // fichier et pouvait accumuler assez d'échecs pour se verrouiller elle-même.
+      const ip = `172.16.${i}.${i}`;
+      usedThrottleKeys.push(ipThrottleKey(ip));
+      const response = await loginAttempt(email, ip, "wrong-password-x");
       expect(response.status).toBe(401);
     }
 
+    usedThrottleKeys.push(ipThrottleKey("172.16.99.99"));
     const lockedResponse = await loginAttempt(email, "172.16.99.99", "wrong-password-x");
     expect(lockedResponse.status).toBe(429);
 
@@ -83,10 +90,17 @@ describe("Rate limiting d'authentification", () => {
     usedThrottleKeys.push(emailThrottleKey(existingEmail), emailThrottleKey(nonExistentEmail));
 
     for (let i = 0; i < 5; i++) {
-      await loginAttempt(existingEmail, `198.51.100.${i}`, "wrong-password-x");
-      await loginAttempt(nonExistentEmail, `198.51.100.${100 + i}`, "wrong-password-x");
+      // Même remarque que le test précédent : ces IP fixes ne sont jamais randomisées,
+      // donc jamais nettoyées jusqu'ici, malgré l'incrément systématique de leur propre
+      // clé de throttle à chaque tentative échouée.
+      const existingIp = `198.51.100.${i}`;
+      const nonExistentIp = `198.51.100.${100 + i}`;
+      usedThrottleKeys.push(ipThrottleKey(existingIp), ipThrottleKey(nonExistentIp));
+      await loginAttempt(existingEmail, existingIp, "wrong-password-x");
+      await loginAttempt(nonExistentEmail, nonExistentIp, "wrong-password-x");
     }
 
+    usedThrottleKeys.push(ipThrottleKey("198.51.100.201"), ipThrottleKey("198.51.100.202"));
     const lockedExisting = await loginAttempt(existingEmail, "198.51.100.201", "wrong-password-x");
     const lockedNonExistent = await loginAttempt(nonExistentEmail, "198.51.100.202", "wrong-password-x");
 
