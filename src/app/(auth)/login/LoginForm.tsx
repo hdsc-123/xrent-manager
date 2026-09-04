@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { apiPost, ApiError } from "@/lib/api";
 import {
@@ -24,8 +24,21 @@ interface LoginResponse {
 
 export function LoginForm() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
+  // `useSearchParams()` rendait tout le sous-arbre dynamique (Suspense obligatoire côté
+  // Next.js), ce qui provoquait un bail-out vers le rendu client sous `next start` (page
+  // statique) : les champs du formulaire n'apparaissaient plus dans le HTML initial.
+  // `callbackUrl` n'est utilisé qu'à la soumission (jamais pendant le rendu, jamais interpolé
+  // dans le JSX) — un initialiseur paresseux `useState(() => ...)` lit `window.location.search`
+  // une seule fois, au premier rendu client (donc dès l'hydratation), sans provoquer de rendu
+  // en cascade (pas de setState dans un effet) ni de risque d'incohérence d'hydratation
+  // (la valeur n'affecte jamais le HTML produit). `typeof window !== "undefined"` protège
+  // uniquement l'évaluation côté serveur (jamais atteinte en pratique : ce composant ne rend
+  // que côté client, mais le composant peut être importé par un module partagé au build).
+  const [callbackUrl] = useState(() =>
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("callbackUrl") || "/dashboard"
+      : "/dashboard"
+  );
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
