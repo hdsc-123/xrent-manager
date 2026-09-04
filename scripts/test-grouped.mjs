@@ -122,11 +122,23 @@ if (groupArgs.length === 1) {
 let currentProc = null;
 let shuttingDown = false;
 
+// Expérience E (2026-09-04, INCIDENTS.md) — le Groupe 4 lance désormais `next start` au lieu de
+// `next dev` (voir vitest.global-setup.ts, XRENT_TEST_SERVER_MODE). Les deux motifs sont
+// toujours vérifiés, quel que soit le groupe : sans effet pour les groupes en mode dev (aucun
+// `next start` n'existe jamais pour eux), nécessaire pour détecter/nettoyer un résidu du
+// Groupe 4.
+const SERVER_PROCESS_PATTERNS = ["next dev.*-p 3811", "next start.*-p 3811"];
+
 async function killResidualNextDev() {
-  return new Promise((resolve) => {
-    const proc = spawn("pkill", ["-f", "next dev.*-p 3811"]);
-    proc.on("exit", () => resolve());
-  });
+  await Promise.all(
+    SERVER_PROCESS_PATTERNS.map(
+      (pattern) =>
+        new Promise((resolve) => {
+          const proc = spawn("pkill", ["-f", pattern]);
+          proc.on("exit", () => resolve());
+        }),
+    ),
+  );
 }
 
 async function handleSignal(signal) {
@@ -218,24 +230,40 @@ async function sampleProcesses() {
   if (samplingInFlight) return "échantillon précédent encore en cours (ignoré)";
   samplingInFlight = true;
   try {
-    const [nextDev, jestWorker, nextServer] = await Promise.all([
+    // `next_start` : toujours à 0 pour les groupes en mode dev (aucun `next start` n'existe
+    // pour eux) — ajout purement additif, ne change ni l'ordre ni le sens des champs existants.
+    const [nextDev, nextStart, jestWorker, nextServer] = await Promise.all([
       countProcesses("next dev"),
+      countProcesses("next start"),
       countProcesses("jest-worker"),
       countProcesses("next-server"),
     ]);
-    return `next_dev=${nextDev} jest_worker=${jestWorker} next_server=${nextServer}`;
+    return `next_dev=${nextDev} next_start=${nextStart} jest_worker=${jestWorker} next_server=${nextServer}`;
   } finally {
     samplingInFlight = false;
   }
 }
 
-function runGroup(files) {
+// Expérience E (2026-09-04, INCIDENTS.md) — Groupe 4 uniquement (index 3, 0-based). Remplace,
+// dans vitest.global-setup.ts et seulement pour ce groupe, le serveur `next dev` partagé par un
+// cycle `next build` (une fois) + `next start` borné, sans recyclage ni redémarrage
+// health-check, pour tester l'hypothèse Turbopack/jest-worker comme cause du gel CI observé
+// (silence total puis annulation externe du runner, jamais un timeout de job — confirmé
+// indépendant de location-return-route.test.ts, PR #4). Index 0-based, jamais codé en dur
+// séparément de la boucle principale : GROUPS[3] est le Groupe 4 tel que déclaré ci-dessus.
+const BUILD_MODE_GROUP_INDEX = 3;
+
+function runGroup(files, groupIndex) {
   return new Promise((resolve) => {
     const args = ["vitest", "run", ...files, ...(sequential ? ["--no-file-parallelism"] : [])];
     const start = Date.now();
     let stdout = "";
     let stderr = "";
-    const proc = spawn("npx", args, { stdio: ["ignore", "pipe", "pipe"] });
+    // Absent de tout autre groupe : `env` vaut alors `process.env` tel quel (référence
+    // inchangée), donc XRENT_TEST_SERVER_MODE n'est jamais transmis aux Groupes 1, 2, 3, 5, 6, 7.
+    const env =
+      groupIndex === BUILD_MODE_GROUP_INDEX ? { ...process.env, XRENT_TEST_SERVER_MODE: "build" } : process.env;
+    const proc = spawn("npx", args, { stdio: ["ignore", "pipe", "pipe"], env });
     currentProc = proc;
     // Buffer ligne par ligne : un chunk `data` ne correspond jamais forcément à une ligne
     // complète (coupure possible en plein milieu, ou plusieurs lignes dans un seul chunk).
@@ -284,12 +312,18 @@ function parseSummary(stdout) {
 }
 
 async function residualPids() {
-  return new Promise((resolve) => {
-    const proc = spawn("pgrep", ["-f", "next dev.*-p 3811"]);
-    let out = "";
-    proc.stdout.on("data", (c) => (out += c));
-    proc.on("exit", () => resolve(out.trim().split("\n").filter(Boolean)));
-  });
+  const results = await Promise.all(
+    SERVER_PROCESS_PATTERNS.map(
+      (pattern) =>
+        new Promise((resolve) => {
+          const proc = spawn("pgrep", ["-f", pattern]);
+          let out = "";
+          proc.stdout.on("data", (c) => (out += c));
+          proc.on("exit", () => resolve(out.trim().split("\n").filter(Boolean)));
+        }),
+    ),
+  );
+  return results.flat();
 }
 
 async function main() {
@@ -341,7 +375,7 @@ async function main() {
       currentGroupLabel = `Groupe ${i + 1}/${GROUPS.length} (${files.length} fichiers)`;
       heartbeat(`=== DÉBUT ${currentGroupLabel} ===`);
       console.log(`\n=== Groupe ${i + 1}/${GROUPS.length} (${files.length} fichiers) — serveur neuf ===\n`);
-      const result = await runGroup(files);
+      const result = await runGroup(files, i);
       heartbeat(`=== FIN ${currentGroupLabel} — ${(result.durationMs / 1000).toFixed(1)}s, code sortie ${result.code} ===`);
       const summary = parseSummary(result.stdout);
       const timeouts = (result.stdout.match(/Test timed out|Hook timed out/g) || []).length;

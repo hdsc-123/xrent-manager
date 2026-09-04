@@ -47,6 +47,21 @@ const HEALTH_CHECK_TIMEOUT_MS = 5_000;
 const CONSECUTIVE_FAILURES_BEFORE_RESTART = 9;
 const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 5_000;
 
+/**
+ * Expérience E (2026-09-04, INCIDENTS.md) — Groupe 4 uniquement. Le gel CI récurrent (silence
+ * total puis annulation externe du runner, jamais un timeout de job) survient systématiquement
+ * juste après agencies.test.ts, y compris après avoir isolé location-return-route.test.ts dans
+ * son propre groupe (PR #4) — le fichier suivant n'est donc pas en cause. Cette expérience teste
+ * la dernière piste applicative restante : le sous-système Turbopack/jest-worker de `next dev`
+ * (déjà documenté comme créant un process OS neuf à chaque rendu d'une page à segment
+ * dynamique, jamais réutilisé — voir plus bas). `next build` + `next start` ne chargent jamais
+ * ce sous-système. Positionné exclusivement par scripts/test-grouped.mjs pour --group=4 (jamais
+ * pour les autres groupes, jamais par défaut) — voir runGroup() dans ce fichier.
+ */
+const SERVER_MODE = process.env.XRENT_TEST_SERVER_MODE === "build" ? "build" : "dev";
+const BUILD_TIMEOUT_MS = 180_000;
+const BUILD_OUTPUT_MAX_LINES = 20;
+
 let serverProcess: ChildProcess | undefined;
 let healthCheckTimer: NodeJS.Timeout | undefined;
 let restarting = false;
@@ -240,17 +255,21 @@ async function stopServer(proc: ChildProcess): Promise<void> {
 
 async function cleanupResidualTestServer(): Promise<void> {
   // Un arrêt brutal de Vitest (SIGKILL, timeout externe, double interruption) ne laisse
-  // aucune chance au teardown de ce fichier de s'exécuter — le serveur `next dev` détaché
-  // (voir startServer plus bas) peut alors survivre indéfiniment et bloquer le port de test
-  // au prochain lancement (EADDRINUSE). Nettoyage préventif idempotent avant chaque spawn,
-  // pattern strictement borné au port de test (jamais le port 3000 de développement).
-  // Complémentaire au filet de sécurité déjà présent dans scripts/test-grouped.mjs, pas un
-  // remplacement.
-  await new Promise<void>((resolve) => {
-    const proc = spawn("pkill", ["-f", `next dev.*-p ${TEST_PORT}`]);
-    proc.on("exit", () => resolve());
-    proc.on("error", () => resolve());
-  });
+  // aucune chance au teardown de ce fichier de s'exécuter — le serveur `next dev` (ou, en
+  // mode build/Groupe 4, `next start`) détaché peut alors survivre indéfiniment et bloquer le
+  // port de test au prochain lancement (EADDRINUSE). Nettoyage préventif idempotent avant
+  // chaque spawn, pattern strictement borné au port de test (jamais le port 3000 de
+  // développement). Les deux motifs sont toujours vérifiés, quel que soit SERVER_MODE : sans
+  // effet pour les groupes en mode dev (aucun `next start` n'existe jamais pour eux) et
+  // nécessaire pour le Groupe 4 en mode build. Complémentaire au filet de sécurité déjà
+  // présent dans scripts/test-grouped.mjs, pas un remplacement.
+  for (const pattern of [`next dev.*-p ${TEST_PORT}`, `next start.*-p ${TEST_PORT}`]) {
+    await new Promise<void>((resolve) => {
+      const proc = spawn("pkill", ["-f", pattern]);
+      proc.on("exit", () => resolve());
+      proc.on("error", () => resolve());
+    });
+  }
   // pkill retourne dès l'envoi du signal, pas après la sortie effective du process ciblé —
   // cette pause laisse le temps à un éventuel résiduel de terminer sa sortie et de libérer
   // le port avant le spawn suivant.
@@ -325,6 +344,129 @@ async function startServer(): Promise<ChildProcess> {
   return proc;
 }
 
+// ============================================================================================
+// Expérience E (2026-09-04) — Groupe 4 uniquement (SERVER_MODE === "build"). buildApp() et
+// startProdServer() ne sont appelées que depuis setup() ci-dessous, jamais depuis un fichier de
+// test ni un worker Vitest forké (pool: "forks" — aucun fichier de test n'importe ce module).
+// ============================================================================================
+
+/**
+ * `next build` unique, borné, jamais avalé en cas d'échec. Capture stdout/stderr dans un
+ * tampon borné en mémoire (jamais d'écriture disque synchrone) pour un message d'erreur
+ * exploitable ; le journal des événements (build-start/build-end/build-failed/build-timeout)
+ * passe par `process.stderr.write`, un flux déjà consommé en continu par le process parent
+ * (scripts/test-grouped.mjs), jamais bloquant.
+ */
+async function buildApp(): Promise<void> {
+  process.stderr.write("[vitest.global-setup] build-start (mode build, Groupe 4) — npx next build\n");
+  const buildStart = Date.now();
+  const testEnv: Record<string, string> = {};
+  loadDotenv({ path: ".env.test", processEnv: testEnv });
+
+  const proc = spawn("npx", ["next", "build"], {
+    env: { ...process.env, ...testEnv },
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+  });
+
+  let output: string[] = [];
+  const recordOutput = (text: string) => {
+    for (const line of text.split("\n")) {
+      if (line.length === 0) continue;
+      output.push(line);
+    }
+    if (output.length > BUILD_OUTPUT_MAX_LINES) output = output.slice(-BUILD_OUTPUT_MAX_LINES);
+  };
+  proc.stdout?.on("data", (chunk: Buffer) => recordOutput(chunk.toString()));
+  proc.stderr?.on("data", (chunk: Buffer) => recordOutput(chunk.toString()));
+
+  const exitCode = new Promise<number | null>((resolve) => {
+    proc.once("exit", (code) => resolve(code));
+  });
+
+  const timedOut = await Promise.race([
+    exitCode.then(() => false),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(true), BUILD_TIMEOUT_MS)),
+  ]);
+
+  if (timedOut) {
+    // Borne dure : `stopServer()` (déjà défini plus haut, générique à tout ChildProcess
+    // détaché) envoie SIGTERM au groupe de processus entier (npx + next + workers de
+    // compilation éventuels — `detached: true` garantit que le signal négatif sur le pid
+    // atteint tout le groupe), puis SIGKILL après le délai de grâce existant si nécessaire —
+    // jamais de process de build résiduel après un timeout.
+    await stopServer(proc);
+    const tail = output.join("\n") || "(aucune sortie capturée)";
+    process.stderr.write(`[vitest.global-setup] build-timeout après ${BUILD_TIMEOUT_MS}ms\n`);
+    throw new Error(
+      `next build n'a pas terminé sous ${BUILD_TIMEOUT_MS}ms (mode build, Groupe 4).\n--- Dernières lignes stdout/stderr ---\n${tail}`
+    );
+  }
+
+  const code = await exitCode;
+  const durationMs = Date.now() - buildStart;
+  if (code !== 0) {
+    // Le process s'est déjà terminé de lui-même (exitCode résolu) — rien à tuer, seule
+    // l'erreur explicite doit remonter, jamais masquée.
+    const tail = output.join("\n") || "(aucune sortie capturée)";
+    process.stderr.write(`[vitest.global-setup] build-failed code=${code} après ${durationMs}ms\n`);
+    throw new Error(
+      `next build a échoué (code=${code}) après ${durationMs}ms.\n--- Dernières lignes stdout/stderr ---\n${tail}`
+    );
+  }
+  process.stderr.write(`[vitest.global-setup] build-end réussi en ${durationMs}ms\n`);
+}
+
+/** Démarre exactement un `next start -p 3811`, jamais `next dev`. Réutilise `waitForServer()`
+ * (délai identique, 60s) et `recordRecentOutput()` (tampon partagé, borné) sans aucune
+ * duplication. Un échec de démarrage tue explicitement le process avant de propager l'erreur —
+ * `waitForServer()` elle-même ne tue jamais le process qu'elle attend (comportement partagé
+ * avec le mode dev), donc ce nettoyage est nécessaire ici pour ne jamais laisser de `next
+ * start` résiduel derrière un démarrage raté. */
+async function startProdServer(): Promise<ChildProcess> {
+  await cleanupResidualTestServer();
+
+  const testEnv: Record<string, string> = {};
+  loadDotenv({ path: ".env.test", processEnv: testEnv });
+
+  recentOutputLines = [];
+
+  const proc = spawn("npx", ["next", "start", "-p", String(TEST_PORT)], {
+    env: { ...process.env, ...testEnv, PORT: String(TEST_PORT), XRENT_TEST_SERVER: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+  });
+  process.stderr.write(`[vitest.global-setup] server-start (mode build, Groupe 4) pid=${proc.pid}\n`);
+
+  proc.stdout?.on("data", (chunk: Buffer) => {
+    const text = chunk.toString();
+    recordRecentOutput(text);
+    if (/error/i.test(text)) {
+      process.stderr.write(`[next start test server] ${text}`);
+    }
+  });
+  proc.stderr?.on("data", (chunk: Buffer) => {
+    const text = chunk.toString();
+    recordRecentOutput(text);
+    if (/error/i.test(text)) {
+      process.stderr.write(`[next start test server] ${text}`);
+    }
+  });
+
+  proc.once("exit", (code, signal) => {
+    process.stderr.write(`[vitest.global-setup] server-exit pid=${proc.pid} code=${code} signal=${signal}\n`);
+  });
+
+  try {
+    await waitForServer(`${TEST_BASE_URL}/`, 60_000, proc);
+  } catch (error) {
+    await stopServer(proc);
+    throw error;
+  }
+  process.stderr.write(`[vitest.global-setup] server-ready (mode build, Groupe 4) pid=${proc.pid}\n`);
+  return proc;
+}
+
 async function restartServer(reason: string): Promise<void> {
   if (restarting || stopped) return;
   restarting = true;
@@ -361,11 +503,35 @@ function startHealthCheckLoop(): void {
     const timeout = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
     fetch(`${TEST_BASE_URL}/`, { signal: controller.signal })
       .then(() => {
+        // Réinitialisation correcte après un health check réussi, y compris en mode build :
+        // une panne transitoire déjà journalisée (ci-dessous) ne doit jamais s'accumuler avec
+        // une panne future sans rapport.
+        if (SERVER_MODE === "build" && consecutiveFailures > 0) {
+          process.stderr.write(
+            `[vitest.global-setup] health-check rétabli après ${consecutiveFailures} échec(s) (mode build, Groupe 4).\n`
+          );
+        }
         consecutiveFailures = 0;
       })
       .catch(() => {
         if (stopped) return;
         consecutiveFailures += 1;
+        if (SERVER_MODE === "build") {
+          // Sondages et diagnostics conservés à l'identique du mode dev — seule la tentative
+          // de récupération automatique (restartServer) est supprimée pour le Groupe 4.
+          process.stderr.write(
+            `[vitest.global-setup] health-check échec n°${consecutiveFailures} (mode build, Groupe 4).\n`
+          );
+          if (consecutiveFailures >= CONSECUTIVE_FAILURES_BEFORE_RESTART) {
+            process.stderr.write(
+              `[vitest.global-setup] serveur de production injoignable depuis ${(
+                (CONSECUTIVE_FAILURES_BEFORE_RESTART * HEALTH_CHECK_INTERVAL_MS) /
+                1000
+              ).toFixed(0)}s au moins — mode build (Groupe 4) : aucun redémarrage automatique, panne journalisée uniquement.\n`
+            );
+          }
+          return;
+        }
         if (consecutiveFailures >= CONSECUTIVE_FAILURES_BEFORE_RESTART) {
           restartPromise = restartServer(
             `INC-3 : serveur de test injoignable depuis ${(
@@ -402,8 +568,23 @@ let recyclingTimer: NodeJS.Timeout | undefined;
 
 function startRecyclingLoop(): void {
   recyclingTimer = setInterval(() => {
-    if (stopped || restarting) return;
+    if (stopped) return;
     if (!isRestartRequested()) return;
+    if (SERVER_MODE === "build") {
+      // Expérience E (2026-09-04, Groupe 4 uniquement) : aucun recyclage préventif en mode
+      // build — la demande est acquittée immédiatement (clearRestartRequest(), qui réinitialise
+      // aussi le compteur de fichiers pour le cycle suivant) pour ne jamais laisser le fichier
+      // de test appelant (recordFileCompletion(), testServerRecycling.ts) bloqué jusqu'à
+      // MAX_WAIT_MS avant de lever une erreur. Le serveur de production partagé n'est jamais
+      // redémarré. Ne modifie en rien le protocole pour les autres groupes (branche dev
+      // ci-dessous, inchangée).
+      process.stderr.write(
+        "[vitest.global-setup] recyclage-ignore (mode build, Groupe 4) — demande acquittée sans redémarrage.\n"
+      );
+      clearRestartRequest();
+      return;
+    }
+    if (restarting) return;
     restartPromise = restartServer(
       `INC-27 : recyclage préventif (${FILES_PER_RESTART} fichiers de test traités)`
     ).then(() => {
@@ -415,7 +596,15 @@ function startRecyclingLoop(): void {
 
 export default async function setup() {
   resetRecyclingState();
-  serverProcess = await startServer();
+  if (SERVER_MODE === "build") {
+    // Expérience E (2026-09-04) — Groupe 4 uniquement. Seul point d'appel à buildApp() dans
+    // tout ce fichier : un build unique par invocation Vitest (setup() est appelée exactement
+    // une fois par `vitest run`, jamais depuis un fichier de test ni un worker forké).
+    await buildApp();
+    serverProcess = await startProdServer();
+  } else {
+    serverProcess = await startServer();
+  }
   startHealthCheckLoop();
   startRecyclingLoop();
 
