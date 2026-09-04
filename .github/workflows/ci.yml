@@ -51,25 +51,27 @@ jobs:
     # un blocage) — 15 min laisse ~6min21s de marge au-dessus de cette valeur avant de
     # conclure à un blocage réel plutôt qu'une lenteur légitime. Propre à chaque entrée de
     # matrice : un groupe qui dépasse ce budget échoue seul, sans jamais consommer le
-    # budget des six autres (voir `strategy.fail-fast` ci-dessous).
+    # budget des sept autres (voir `strategy.fail-fast` ci-dessous).
     timeout-minutes: 15
 
     strategy:
       # Obligatoire : la valeur par défaut de GitHub Actions (`fail-fast: true`) annule
       # automatiquement toutes les entrées de matrice encore en cours dès qu'une seule
       # échoue — exactement le comportement à éviter ici (un groupe en échec/blocage ne
-      # doit jamais priver les six autres de leurs diagnostics).
+      # doit jamais priver les sept autres de leurs diagnostics).
       fail-fast: false
       matrix:
         # Groupe 7 (2026-09-04, diagnostic CI Groupe 4) : location-return-route.test.ts isolé
         # de l'ancien Groupe 4 — voir scripts/test-grouped.mjs GROUPS pour le détail complet de
-        # l'expérience. Ne change aucune autre entrée de matrice existante.
-        group: [1, 2, 3, 4, 5, 6, 7]
+        # l'expérience. Groupe 8 (2026-09-04, diagnostic CI Groupe 2) : dashboard-route-
+        # guards.test.ts isolé de l'ancien Groupe 2, même principe — voir scripts/test-
+        # grouped.mjs GROUPS. Ne change aucune autre entrée de matrice existante.
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
 
     # Conteneur PostgreSQL éphémère, propre à CETTE ENTRÉE DE MATRICE (donc à ce groupe) :
     # détruit avec le runner à la fin de l'exécution, jamais accessible depuis l'extérieur
     # de ce job, jamais partagé avec xrent_dev, un environnement de production (qui
-    # n'existe d'ailleurs pas encore — CLAUDE.md section 1), ni avec les six autres
+    # n'existe d'ailleurs pas encore — CLAUDE.md section 1), ni avec les sept autres
     # entrées de la matrice (chacune reçoit son propre runner et donc son propre service,
     # jamais partagé — GitHub Actions n'exécute jamais deux entrées de matrice sur le même
     # runner). Base nommée "xrent_test" par convention avec ARCHITECTURE.md/scripts/env-guard.js.
@@ -193,12 +195,12 @@ jobs:
       # pendant la fenêtre de grâce d'annulation (déjà observé deux fois : logs natifs eux-mêmes
       # non persistés dans ce cas, voir run 33671092839) — cette étape réduit ce risque sans
       # l'éliminer. Portée désormais limitée au SEUL groupe concerné : si cette fenêtre de grâce
-      # affecte l'upload du groupe en cause, les six autres groupes (jobs indépendants, chacun
+      # affecte l'upload du groupe en cause, les sept autres groupes (jobs indépendants, chacun
       # avec son propre `if: always()`) ne sont jamais concernés. N'exige aucune permission
       # supplémentaire au-delà de `contents: read` déjà déclaré (upload-artifact utilise le
       # jeton d'exécution fourni par le runner, pas les scopes GITHUB_TOKEN classiques). Nom
       # d'artefact et chemin paramétrés par `matrix.group` : unique par groupe, jamais de
-      # collision entre les sept uploads simultanés d'un même run. Chemin relatif à la racine du
+      # collision entre les huit uploads simultanés d'un même run. Chemin relatif à la racine du
       # workspace (`GITHUB_WORKSPACE`), identique à celui écrit par
       # scripts/test-grouped.mjs (HEARTBEAT_FILE = join(__dirname, "..", ...)).
       - name: Upload test heartbeat log (best-effort, even if Test is cancelled)
@@ -212,12 +214,12 @@ jobs:
 
       # DIAGNOSTIC TEMPORAIRE — voir src/lib/route-guards.ts et src/proxy.ts pour le contexte
       # complet. À supprimer avec le reste de cette instrumentation (ce step inclus) après
-      # analyse du run. Seul le Groupe 2 (dashboard-route-guards.test.ts) produit ce fichier ;
-      # les six autres groupes n'empruntent aucune des trois routes surveillées —
-      # `if-no-files-found: ignore` évite tout échec pour eux. Nom d'artefact paramétré par
-      # `matrix.group`, comme l'artefact heartbeat existant : unique par groupe, donc unique
-      # pour le Groupe 2 en particulier. Rétention courte (5 jours) : purement diagnostique,
-      # jamais destiné à être conservé.
+      # analyse du run. Seul le Groupe 8 (dashboard-route-guards.test.ts, isolé du Groupe 2 le
+      # 2026-09-04) produit ce fichier ; les sept autres groupes n'empruntent aucune des trois
+      # routes surveillées — `if-no-files-found: ignore` évite tout échec pour eux. Nom
+      # d'artefact paramétré par `matrix.group`, comme l'artefact heartbeat existant : unique
+      # par groupe, donc unique pour le Groupe 8 en particulier. Rétention courte (5 jours) :
+      # purement diagnostique, jamais destiné à être conservé.
       - name: "[DIAGNOSTIC TEMPORAIRE] Upload route-guard-diag log"
         if: always()
         uses: actions/upload-artifact@v4

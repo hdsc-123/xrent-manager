@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 
 const GROUPS = [
   ["reservations", "permissions", "vehicle-mobility-alerts", "invoice-status-alerts", "reports", "db", "password-policy", "super-admin", "scheduled-alerts-cron", "responsive-layout", "mfa-encryption", "mfa", "mfa-lifecycle", "format"],
-  ["invoices", "locations", "csv-exports", "dashboard-route-guards", "location-chain-balance", "location-return"],
+  ["invoices", "locations", "csv-exports", "location-chain-balance", "location-return"],
   ["location-extension", "location-chains", "data-reset", "audit-deletion", "auth", "login-throttle", "mfa-routes", "mfa-step-up-gating", "csv-export-sanitization", "damages", "request-guards"],
   ["vehicles", "agencies", "audit", "ui", "e2e-full", "invitations", "credit-notes-ui", "damage-invoices-ui", "icon-hydration"],
   ["users", "security-notifications", "maintenances", "clients", "vehicle-trips", "batch-pdf", "location-payment", "damages-route", "damage-invoices-route", "test-grouped-integrity"],
@@ -31,6 +31,13 @@ const GROUPS = [
   // fichier de ce groupe, volontairement — l'expérience porte sur ce fichier précis, pas sur
   // un nouveau regroupement arbitraire.
   ["location-return-route"],
+  // Groupe 8 — diagnostic CI Groupe 2 (2026-09-04) : dashboard-route-guards.test.ts isolé du
+  // Groupe 2 pour mesurer si sa durée (256,9s observée dans un run CI, contre quelques
+  // secondes en local) devient stable hors de la charge cumulée des 5 autres fichiers du
+  // Groupe 2 — ce groupe avait dépassé `timeout-minutes: 15` une fois sans qu'aucun test
+  // individuel n'échoue (heartbeats continus, aucun silence). Seul fichier de ce groupe,
+  // volontairement — même méthode que le Groupe 7.
+  ["dashboard-route-guards"],
 ];
 
 const UI_TSX_FILES = new Set(["ui", "credit-notes-ui", "damage-invoices-ui", "icon-hydration"]);
