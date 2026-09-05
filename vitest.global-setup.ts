@@ -7,9 +7,8 @@ import {
   clearRestartRequest,
   FILES_PER_RESTART,
 } from "./src/__tests__/helpers/testServerRecycling";
-import fs from "node:fs";
+import { diagLog, closeDiagLog } from "./src/__tests__/helpers/testServerDiag";
 import net from "node:net";
-import path from "node:path";
 import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 
 /**
@@ -72,27 +71,23 @@ let inFlightHealthCheck: AbortController | undefined;
 let restartPromise: Promise<void> | undefined;
 
 // ============================================================================================
-// DIAGNOSTIC TEMPORAIRE — À SUPPRIMER après analyse du prochain échec de redémarrage en CI.
-// Objet : capturer ce que la CI ne conserve pas aujourd'hui (voir diagnostic du run
-// 33751319195, 2026-09-03) — sortie brute Next/Turbopack pendant un redémarrage, PID, usage de
-// SIGTERM/SIGKILL, durées d'arrêt/démarrage, code de sortie, état du port 3811. Écrit dans un
-// fichier dédié (jamais dans stdout/stderr filtré — voir la logique déjà en place juste en
-// dessous, /error/i uniquement) pour ne rien perdre cette fois. N'affiche jamais de secret :
-// uniquement des métadonnées de process (PID, timings, événements), jamais le contenu de
-// .env.test. Ne modifie AUCUN comportement existant : purement additif, jamais dans le chemin
-// critique (écriture synchrone best-effort, jamais awaited dans le flux de contrôle réel ;
-// sonde de port fire-and-forget, non bloquante).
+// Diagnostic serveur de test partagé — capture ce que la CI ne conserve pas nativement : PID,
+// usage de SIGTERM/SIGKILL, durées d'arrêt/démarrage/health-check, code de sortie, état du port
+// 3811, timestamp début/fin de chaque redémarrage. Origine : diagnostic CI Groupe 4 (run
+// 33801946476, 2026-09-03), avant l'introduction de la branche `SERVER_MODE === "build"`
+// ci-dessous (« Expérience E », PR #5) — cette instrumentation couvre indifféremment les deux
+// modes (`dev`/`build`), aucune distinction n'étant faite au niveau de la journalisation
+// elle-même. N'affiche jamais de secret : uniquement des métadonnées de process (PID, timings,
+// événements), jamais le contenu de .env.test. `diagLog`/`closeDiagLog` (voir
+// `src/__tests__/helpers/testServerDiag.ts`) : écriture structurée, asynchrone
+// (`fs.createWriteStream`, jamais `fs.*Sync`) et plafonnée en taille — remplace l'ancien bloc
+// qui journalisait la sortie brute complète du serveur via un `fs.appendFileSync` synchrone à
+// chaque chunk stdout/stderr, sans plafond, identifié comme source plausible de blocage de
+// l'event loop sous charge soutenue (voir INCIDENTS.md). Ce changement de format réduit la
+// granularité disponible (plus de sortie brute complète, seuls des événements structurés) par
+// rapport aux artefacts `next-server-diag-group-N` collectés avant cette PR — voir INCIDENTS.md
+// (INC-40) pour la note de compatibilité correspondante.
 // ============================================================================================
-const NEXT_SERVER_DIAG_FILE = path.join(process.cwd(), "next-server-diag.log");
-
-function diagLog(event: string, data: Record<string, unknown> = {}): void {
-  const line = { ts: new Date().toISOString(), event, ...data };
-  try {
-    fs.appendFileSync(NEXT_SERVER_DIAG_FILE, JSON.stringify(line) + "\n");
-  } catch {
-    // best-effort : ne doit jamais interrompre le cycle de vie réel du serveur.
-  }
-}
 
 /** Sonde TCP non bloquante, jamais attendue dans le flux réel (fire-and-forget) — indique
  * uniquement si quelque chose écoute déjà sur le port au moment de l'appel. */
@@ -320,10 +315,15 @@ async function startServer(): Promise<ChildProcess> {
   // continu élimine la possibilité même que le tube se remplisse — la même primitive que celle
   // déjà en place pour `stderr` juste en dessous, jamais affichée (silencieuse par défaut, pour
   // ne pas polluer la sortie des tests), sauf motif d'erreur explicite comme pour `stderr`.
+  // Correctif ciblé (2026-09-03) : ce gestionnaire journalisait auparavant la sortie brute
+  // complète du serveur vers next-server-diag.log via un fs.appendFileSync synchrone à CHAQUE
+  // chunk — sous le volume de requêtes d'un groupe complet, un contributeur plausible de
+  // blocage de l'event loop (voir testServerDiag.ts). `recordRecentOutput` (tampon borné à 20
+  // lignes, déjà en place) reste la seule capture de la sortie elle-même, utilisée uniquement
+  // par le message d'erreur de waitForServer() en cas de mort prématurée du process.
   proc.stdout?.on("data", (chunk: Buffer) => {
     const text = chunk.toString();
-    diagLog("stdout", { pid: proc.pid, text }); // DIAGNOSTIC TEMPORAIRE — sortie brute complète, contrairement au filtre /error/i ci-dessous
-    recordRecentOutput(text); // Correctif ciblé — alimente le tampon utilisé par waitForServer()
+    recordRecentOutput(text);
     if (/error/i.test(text)) {
       process.stderr.write(`[next dev test server] ${text}`);
     }
@@ -331,8 +331,7 @@ async function startServer(): Promise<ChildProcess> {
 
   proc.stderr?.on("data", (chunk: Buffer) => {
     const text = chunk.toString();
-    diagLog("stderr", { pid: proc.pid, text }); // DIAGNOSTIC TEMPORAIRE — sortie brute complète, contrairement au filtre /error/i ci-dessous
-    recordRecentOutput(text); // Correctif ciblé — alimente le tampon utilisé par waitForServer()
+    recordRecentOutput(text);
     if (/error/i.test(text)) {
       process.stderr.write(`[next dev test server] ${text}`);
     }
@@ -503,6 +502,10 @@ function startHealthCheckLoop(): void {
     const controller = new AbortController();
     inFlightHealthCheck = controller;
     const timeout = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
+    // Correctif ciblé (2026-09-03) : durée de chaque health check journalisée (ok ou échec) —
+    // permet de distinguer a posteriori une dégradation progressive (durées croissantes avant
+    // rupture) d'un blocage total et soudain (dernière ligne juste avant un silence complet).
+    const checkStart = Date.now();
     fetch(`${TEST_BASE_URL}/`, { signal: controller.signal })
       .then(() => {
         // Réinitialisation correcte après un health check réussi, y compris en mode build :
@@ -514,10 +517,12 @@ function startHealthCheckLoop(): void {
           );
         }
         consecutiveFailures = 0;
+        diagLog("health-check", { ok: true, durationMs: Date.now() - checkStart });
       })
       .catch(() => {
         if (stopped) return;
         consecutiveFailures += 1;
+        diagLog("health-check", { ok: false, durationMs: Date.now() - checkStart, consecutiveFailures });
         if (SERVER_MODE === "build") {
           // Sondages et diagnostics conservés à l'identique du mode dev — seule la tentative
           // de récupération automatique (restartServer) est supprimée pour le Groupe 4.
@@ -535,6 +540,14 @@ function startHealthCheckLoop(): void {
           return;
         }
         if (consecutiveFailures >= CONSECUTIVE_FAILURES_BEFORE_RESTART) {
+          // Marqueur explicite et distinct du log restartServer-start qui suit immédiatement :
+          // signale sans ambiguïté qu'un blocage réel (INC-3) vient d'être détecté, avant même
+          // que la tentative de redémarrage ne commence — ne doit jamais être confondu avec un
+          // recyclage préventif bénin (INC-27, jamais précédé de cet événement).
+          diagLog("freeze-detected", {
+            consecutiveFailures,
+            unresponsiveForMs: CONSECUTIVE_FAILURES_BEFORE_RESTART * HEALTH_CHECK_INTERVAL_MS,
+          });
           restartPromise = restartServer(
             `INC-3 : serveur de test injoignable depuis ${(
               (CONSECUTIVE_FAILURES_BEFORE_RESTART * HEALTH_CHECK_INTERVAL_MS) /
@@ -620,5 +633,6 @@ export default async function setup() {
     // en arrière-plan ne serait jamais arrêté (fuite de processus).
     if (restartPromise) await restartPromise;
     if (serverProcess) await stopServer(serverProcess);
+    await closeDiagLog();
   };
 }
