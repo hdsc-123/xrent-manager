@@ -1481,3 +1481,38 @@ Formulaires/dialogues vérifiés : formulaire pleine page « Planifier une maint
 **Anomalies observées** : aucune anomalie bloquante confirmée sur les 6 pages et 3 dialogues/formulaires testés avec cette méthode. Ancien point de backlog (« défilement horizontal de toute la page sur les tableaux de données en mobile », section 5) : non reproduit dans les conditions disponibles et laissé en observation ; la résolution définitive reste à confirmer par un test réel à 390 px. Point ergonomique non bloquant, non corrigé (aucune autorisation demandée ni donnée pour une correction de code dans cette Phase 4) : sur `/dashboard/vehicles`, le menu d'actions (⋯) d'une ligne de table nécessite un défilement horizontal interne à la table pour être atteint — action non masquée (accessible après défilement, clic déclenchant un scroll automatique vers l'élément).
 
 **Aucune correction de code, migration, suppression de données/alerte/journal, commit ni push effectué pendant la Phase 4.**
+
+## 7. Rapport du 2026-09-05 — Réconciliation du décompte de tests (1678 → 1740 → 1756), correctif MFA (PR #14/#15)
+
+**Aucune commande de test n'a été exécutée pour produire cette entrée** (`npm test`/`npm run test`/`node scripts/test-grouped.mjs` : aucun lancé). Ce rapport reconcilie des chiffres déjà publiés ailleurs dans ce dépôt avec le dernier résultat de suite complète réellement exécuté par une session antérieure, par lecture de la documentation existante et par comparaison Git (`git diff`/`git ls-tree`, en lecture seule) — jamais par une nouvelle exécution.
+
+**Distinction impérative à conserver dans toute lecture de ce qui suit** :
+- **Résultat réellement exécuté** : une commande de test a réellement tourné, sa sortie a été observée. C'est le cas de **1756/1756** ci-dessous.
+- **Reconstitution statique (Git)** : un delta de tests déduit par comparaison de fichiers/commits (`git diff`, comptage de blocs `it(`/`test(`), sans faire tourner la suite. C'est le cas du **+8 (INC-39)** ci-dessous.
+- **Nombre actuel de fichiers de tests** : un comptage de fichiers (`git ls-tree`), qui n'atteste jamais du nombre de tests qu'ils contiennent ni de leur réussite.
+
+### Dernier résultat de suite complète réellement exécuté et documenté : **1756/1756**
+
+Exécuté par une session de travail antérieure (audit MFA puis correctif du contournement `authorize()`), **avant la fusion de PR #14** — la suite complète (`node scripts/test-grouped.mjs`, 8 groupes) a réellement tourné sur l'arbre de travail local, résultat observé : 1756 tests réussis sur 1756. Commit de référence : **`8280c1d`** (tête de la PR #14, `fix/mfa-login-bypass-authorize`, fusionnée ensuite par le merge commit `71f5cae5`) — l'arbre de travail testé n'a plus été modifié entre cette exécution et la création de ce commit dans la même session, ce qui permet de rattacher ce résultat précisément à ce commit. **Nature de la preuve : exécution réelle, observée directement (pas une reconstitution).**
+
+### Chaîne historique des décomptes publiés (reconstitution statique, jamais ré-exécutée pour ce rapport)
+
+| Décompte | Statut | Source / preuve |
+|---|---|---|
+| **1678/1678** | Publié | SECURITY.md section 49 (Phase 6.2, 2026-08-31/09-01) — état antérieur, exécuté à l'époque par la session qui l'a produit, non ré-exécuté ici. |
+| 1727 → 1732 (+5) | Publié | TESTREPORT.md ligne 1391 (clôture campagne QA, 2026-09-01) — segment **1678 → 1727 non retracé ligne à ligne dans ce rapport : à confirmer** si une réconciliation exhaustive de cet intervalle est un jour nécessaire (aucune preuve Git recomposée pour ce segment précis dans cette entrée). |
+| **1740/1740** | **Dernier décompte publié avant les changements récents** | HANDOFF.md/TESTREPORT.md ligne 400 (sprint correctif INC-37, commit `e278350`, 2026-09-01). |
+| +8 (INC-39) | Vérifié historiquement, **jamais publié comme nouvelle suite complète** | Reconstitution statique : `git diff f27cfa7^ f27cfa7 -- src/__tests__/invoices.test.ts` → +9/-1 blocs `it()` (net +8). Commit `f27cfa7` (2026-09-01, même jour que INC-37). Aucune commande de test n'a été relancée pour établir ce delta — comptage de diff uniquement. |
+| (+0 vérifié) | PR #4 à #13 (stabilisation CI, 2026-09-03/05) | Reconstitution statique : `git diff <commit>^ <commit> -- 'src/__tests__/*.test.ts'` sur chacun des commits `948a1bd`/`bd521a9`/`eca031e`/`9ac7af6`/`26cad7f`/`e74d274` → 0 bloc `it()`/`test()` net ajouté ou retiré (fixtures/regroupement CI uniquement). |
+| +8 (`mfa-login-bypass.test.ts`) | Réellement exécuté (voir ci-dessus) | Nouveau fichier de test, PR #14 — seul fichier ajouté entre le commit `09d0be5` (état de `main` en début de mission) et `origin/main` actuel (`git diff --name-only 09d0be5 origin/main -- src/__tests__` → un seul fichier). |
+| **1756/1756** | **Dernier résultat réellement exécuté** | Voir section précédente. |
+
+**Calcul de clôture (reconstitution statique, présentée comme telle)** : 1740 + 8 (INC-39) + 0 (PR #4-13) + 8 (mfa-login-bypass.test.ts) = **1756** — cohérent avec le résultat réellement exécuté ci-dessus, ce qui corrobore la reconstitution sans se substituer à elle.
+
+**Nombre actuel de fichiers de tests (comptage Git, pas une exécution)** : 64 fichiers (`src/__tests__/*.test.ts(x)`) au commit `e278350` (1740) et au commit `09d0be5` (aucun fichier ajouté/retiré entre les deux) ; **65 fichiers** sur `origin/main` actuel (un seul ajout : `src/__tests__/mfa-login-bypass.test.ts`).
+
+### PR #15 — sans impact sur le décompte de tests
+
+PR #15 (`docs/document-mfa-login-proof-invariant`, fusionnée par merge commit `791f111e`) ne modifie que `HANDOFF.md` et `SECURITY.md` — confirmé par `git diff --name-only` sur cette PR au moment de sa revue. **Aucun fichier de code ni de test modifié** : le nombre de tests n'a donc pas changé depuis 1756/1756 pour cette raison précise (une nouvelle exécution serait nécessaire pour le reconfirmer empiriquement, mais aucune modification de `src/__tests__/**` ne s'est produite depuis qui justifierait un delta).
+
+**Aucune suite de tests n'a été relancée pour produire cette entrée du rapport.**
