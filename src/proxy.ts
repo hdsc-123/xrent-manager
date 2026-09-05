@@ -5,7 +5,6 @@ import {
   evaluateDashboardRouteGuard,
   matchesDashboardRouteGuard,
   renderDashboardNotFoundHtml,
-  diagLogFinalOutcome,
 } from "@/lib/route-guards";
 
 /**
@@ -60,9 +59,6 @@ export default auth(async (req) => {
       // de session, comportement déjà existant, jamais un faux 404).
       if (user) {
         const outcome = await evaluateDashboardRouteGuard(pathname, user);
-        // DIAGNOSTIC TEMPORAIRE — voir src/lib/route-guards.ts (bloc en tête de fichier) pour
-        // le contexte complet. Filtre elle-même sur les 3 routes concernées ; no-op sinon.
-        diagLogFinalOutcome(pathname, outcome);
         if (outcome.kind === "block") {
           return new NextResponse(renderDashboardNotFoundHtml(), {
             status: 404,

@@ -15,9 +15,6 @@ import { getDamageInvoiceWithDetails } from "@/lib/damage-invoices";
 import { getReservationById } from "@/lib/reservations";
 import { getPermissionGroupById } from "@/lib/permissions";
 import { getUserById } from "@/lib/users";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
 /**
  * Correctif sprint soft 404 (2026-08-24, DOMAINRULES.md section 64, SECURITY.md section 35) —
@@ -66,60 +63,6 @@ interface RouteGuardDefinition {
 const ALLOW: RouteGuardOutcome = { kind: "allow" };
 const BLOCK: RouteGuardOutcome = { kind: "block" };
 const DASHBOARD_REDIRECT: RouteGuardOutcome = { kind: "redirect", to: "/dashboard" };
-
-// ============================================================================================
-// DIAGNOSTIC TEMPORAIRE — À SUPPRIMER après analyse du prochain run GitHub Actions. Objet :
-// isoler la cause des échecs 404 intermittents observés en CI (jamais reproduits en local,
-// 517/517 sur le Groupe 2 en local le 2026-09-02) sur /dashboard/locations/[id]/return,
-// /dashboard/reservations/[id]/edit et /dashboard/users/[id]/permissions. Écrit dans un
-// fichier dédié plutôt que stdout/stderr : le stderr du serveur `next dev` de test est filtré
-// par vitest.global-setup.ts (uniquement les lignes matchant /error/i sont transmises au log
-// du job — voir son commentaire), donc invisible dans les logs GitHub Actions sinon. N'affiche
-// JAMAIS de secret : role/tenantId/id sont déjà visibles dans l'URL/la session de l'appelant,
-// jamais un cookie, un mot de passe ou un jeton. Retiré par un simple revert de ce commit une
-// fois le run analysé.
-// ============================================================================================
-const DIAG_LOG_FILE = path.join(process.cwd(), "route-guard-diag.log");
-
-function diagLog(route: string, event: string, data: Record<string, unknown> = {}): void {
-  const mem = process.memoryUsage();
-  const line = {
-    ts: new Date().toISOString(),
-    route,
-    event,
-    pid: process.pid,
-    uptimeSec: Number(process.uptime().toFixed(1)),
-    rssMb: Number((mem.rss / 1024 / 1024).toFixed(1)),
-    loadavg: os.loadavg().map((n) => Number(n.toFixed(2))),
-    freememMb: Number((os.freemem() / 1024 / 1024).toFixed(0)),
-    ...data,
-  };
-  try {
-    fs.appendFileSync(DIAG_LOG_FILE, JSON.stringify(line) + "\n");
-  } catch {
-    // best-effort : ne doit jamais faire échouer une requête réelle.
-  }
-}
-
-const DIAG_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
-  { pattern: /^\/dashboard\/locations\/([^/]+)\/return$/, label: "/dashboard/locations/[id]/return" },
-  { pattern: /^\/dashboard\/reservations\/([^/]+)\/edit$/, label: "/dashboard/reservations/[id]/edit" },
-  { pattern: /^\/dashboard\/users\/([^/]+)\/permissions$/, label: "/dashboard/users/[id]/permissions" },
-];
-
-/** DIAGNOSTIC TEMPORAIRE — appelée depuis proxy.ts juste après `evaluateDashboardRouteGuard()`
- * pour journaliser le statut HTTP réellement décidé, corrélé aux événements internes ci-dessous
- * par `route`+`pid`+`ts`. */
-export function diagLogFinalOutcome(pathname: string, outcome: RouteGuardOutcome): void {
-  const match = DIAG_PATTERNS.find((d) => d.pattern.test(pathname));
-  if (!match) return;
-  const httpStatus = outcome.kind === "block" ? 404 : outcome.kind === "redirect" ? 307 : "allow-passthrough";
-  diagLog(match.label, "final-outcome", { kind: outcome.kind, httpStatus });
-}
-// ============================================================================================
-// FIN DU BLOC DIAGNOSTIC TEMPORAIRE (suite : voir les 3 `check` instrumentés ci-dessous, et
-// `diagLogFinalOutcome` appelée depuis src/proxy.ts)
-// ============================================================================================
 
 /** Fabrique pour les pages de création/import (Groupe A) : une seule permission requise,
  * aucune ressource par identifiant. */
@@ -201,25 +144,11 @@ const ROUTE_GUARDS: RouteGuardDefinition[] = [
   },
   {
     pattern: /^\/dashboard\/locations\/([^/]+)\/return$/,
-    // DIAGNOSTIC TEMPORAIRE (voir le bloc en tête de fichier) — restructuration
-    // comportementalement neutre du `if (!location || !(await canAccessLocationAgency(...)))`
-    // d'origine en deux branches distinctes, uniquement pour journaliser chacune séparément ;
-    // le court-circuit et le résultat final sont strictement identiques à avant.
     check: async (user, id) => {
-      const route = "/dashboard/locations/[id]/return";
-      const t0 = Date.now();
-      diagLog(route, "start", { role: user.role, tenantId: user.tenantId, id });
-      const permitted = await can(user, "locations.complete");
-      diagLog(route, "can:locations.complete", { permitted, ms: Date.now() - t0 });
-      if (!permitted) return BLOCK;
+      if (!(await can(user, "locations.complete"))) return BLOCK;
       if (!id) return BLOCK;
       const location = await getLocationById(user.tenantId, id);
-      diagLog(route, "getLocationById", { found: !!location, ms: Date.now() - t0 });
-      if (!location) return BLOCK;
-      const accessible = await canAccessLocationAgency(user, location);
-      diagLog(route, "canAccessLocationAgency", { accessible, ms: Date.now() - t0 });
-      if (!accessible) return BLOCK;
-      diagLog(route, "allow", { ms: Date.now() - t0 });
+      if (!location || !(await canAccessLocationAgency(user, location))) return BLOCK;
       return ALLOW;
     },
   },
@@ -246,31 +175,12 @@ const ROUTE_GUARDS: RouteGuardDefinition[] = [
   },
   {
     pattern: /^\/dashboard\/reservations\/([^/]+)\/edit$/,
-    // DIAGNOSTIC TEMPORAIRE (voir le bloc en tête de fichier) — même restructuration
-    // comportementalement neutre que /return ci-dessus, court-circuit et résultat final
-    // inchangés.
     check: async (user, id) => {
-      const route = "/dashboard/reservations/[id]/edit";
-      const t0 = Date.now();
-      diagLog(route, "start", { role: user.role, tenantId: user.tenantId, id });
-      const permitted = await can(user, "reservations.edit");
-      diagLog(route, "can:reservations.edit", { permitted, ms: Date.now() - t0 });
-      if (!permitted) return BLOCK;
+      if (!(await can(user, "reservations.edit"))) return BLOCK;
       if (!id) return BLOCK;
       const reservation = await getReservationById(user.tenantId, id);
-      diagLog(route, "getReservationById", {
-        found: !!reservation,
-        pickupAgencyId: reservation?.pickupAgencyId ?? null,
-        ms: Date.now() - t0,
-      });
-      if (!reservation) return BLOCK;
-      const accessible = await canAccessReservationAgencies(user, reservation);
-      diagLog(route, "canAccessReservationAgencies", { accessible, ms: Date.now() - t0 });
-      if (!accessible) return BLOCK;
-      const canEdit = await canEditReservationAgency(user, reservation);
-      diagLog(route, "canEditReservationAgency", { canEdit, ms: Date.now() - t0 });
-      if (!canEdit) return BLOCK;
-      diagLog(route, "allow", { ms: Date.now() - t0 });
+      if (!reservation || !(await canAccessReservationAgencies(user, reservation))) return BLOCK;
+      if (!(await canEditReservationAgency(user, reservation))) return BLOCK;
       return ALLOW;
     },
   },
@@ -322,21 +232,11 @@ const ROUTE_GUARDS: RouteGuardDefinition[] = [
   },
   {
     pattern: /^\/dashboard\/users\/([^/]+)\/permissions$/,
-    // DIAGNOSTIC TEMPORAIRE (voir le bloc en tête de fichier) — même restructuration
-    // comportementalement neutre, court-circuit et résultat final inchangés.
     check: async (user, id) => {
-      const route = "/dashboard/users/[id]/permissions";
-      const t0 = Date.now();
-      diagLog(route, "start", { role: user.role, tenantId: user.tenantId, id });
-      if (user.role !== "ADMIN") {
-        diagLog(route, "redirect:not-admin", { ms: Date.now() - t0 });
-        return DASHBOARD_REDIRECT;
-      }
+      if (user.role !== "ADMIN") return DASHBOARD_REDIRECT;
       if (!id) return BLOCK;
       const target = await getUserById(user.tenantId, id);
-      diagLog(route, "getUserById", { found: !!target, ms: Date.now() - t0 });
       if (!target) return BLOCK;
-      diagLog(route, "allow", { ms: Date.now() - t0 });
       return ALLOW;
     },
   },
