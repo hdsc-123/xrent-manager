@@ -19,7 +19,7 @@ Entrée la plus récente de cette section — à lire avant l'entrée « correct
 - `20260901204746_add_credit_note_number_counter`
 - `20260905210151_add_mfa_login_proof`
 
-**Ces migrations ne doivent pas être appliquées manuellement.** Toute application future nécessite : une décision explicite du propriétaire du projet, une sauvegarde vérifiée de `xrent_dev` au préalable, et une procédure de déploiement validée. La procédure prévue pour la production reste exclusivement `npx prisma migrate deploy` (décision déjà actée, ARCHITECTURE.md), exécutée de façon contrôlée et non interactive — jamais `migrate dev`/`db push` en production. **Cette note est strictement informative : elle ne constitue en aucun cas une autorisation d'exécution.**
+**Ces migrations ne doivent pas être appliquées manuellement.** Toute application future nécessite : une décision explicite du propriétaire du projet, une sauvegarde vérifiée de `xrent_dev` au préalable, et une procédure de déploiement validée. La procédure prévue pour la production reste exclusivement `npx prisma migrate deploy` (décision déjà actée, ARCHITECTURE.md), exécutée de façon contrôlée et non interactive — jamais `migrate dev`/`db push` en production. **Procédure détaillée (sauvegarde `pg_dump`/`pg_restore --list`, répétition sur base jetable, contrôles avant/après, restauration, critères de go/no-go) : voir ARCHITECTURE.md section 15bis (ajoutée le 2026-09-06).** **Cette note est strictement informative : elle ne constitue en aucun cas une autorisation d'exécution.**
 
 ### Mise à jour du 2026-09-05 (soir) — correctif du contournement MFA au login fusionné (PR #14, commit de merge `71f5cae5`)
 
