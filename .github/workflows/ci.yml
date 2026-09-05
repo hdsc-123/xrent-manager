@@ -212,34 +212,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 5
 
-      # DIAGNOSTIC TEMPORAIRE — voir src/lib/route-guards.ts et src/proxy.ts pour le contexte
-      # complet. À supprimer avec le reste de cette instrumentation (ce step inclus) après
-      # analyse du run. Seul le Groupe 8 (dashboard-route-guards.test.ts, isolé du Groupe 2 le
-      # 2026-09-04) produit ce fichier ; les sept autres groupes n'empruntent aucune des trois
-      # routes surveillées — `if-no-files-found: ignore` évite tout échec pour eux. Nom
-      # d'artefact paramétré par `matrix.group`, comme l'artefact heartbeat existant : unique
-      # par groupe, donc unique pour le Groupe 8 en particulier. Rétention courte (5 jours) :
-      # purement diagnostique, jamais destiné à être conservé.
-      - name: "[DIAGNOSTIC TEMPORAIRE] Upload route-guard-diag log"
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: route-guard-diag-group-${{ matrix.group }}
-          path: route-guard-diag.log
-          if-no-files-found: ignore
-          retention-days: 5
-
-      # DIAGNOSTIC TEMPORAIRE — nettoyage best-effort du fichier local une fois uploadé (il
-      # n'est de toute façon jamais commité — aucune étape de ce workflow n'exécute `git add`/
-      # `git commit` — mais le runner ne persiste pas entre jobs, donc ce nettoyage n'a d'autre
-      # rôle qu'une hygiène défensive du workspace pendant le job lui-même). `if: always()` +
-      # `rm -f` (jamais d'échec si le fichier est absent) : ne modifie jamais la conclusion du
-      # job, déjà déterminée par l'étape de test précédente — ce step ne peut jamais masquer un
-      # échec de test.
-      - name: "[DIAGNOSTIC TEMPORAIRE] Clean up route-guard-diag.log"
-        if: always()
-        run: rm -f route-guard-diag.log
-
       # DIAGNOSTIC TEMPORAIRE — voir vitest.global-setup.ts pour le contexte complet. À
       # supprimer avec le reste de cette instrumentation (ce step inclus) après analyse du
       # prochain échec de redémarrage. Produit par CHAQUE groupe (le serveur démarre au moins
@@ -254,9 +226,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 5
 
-      # DIAGNOSTIC TEMPORAIRE — nettoyage best-effort, même principe et mêmes garanties que le
-      # nettoyage route-guard-diag.log déjà en place ci-dessus : ne peut jamais masquer un
-      # échec de test (if: always(), rm -f jamais en erreur si le fichier est absent).
+      # DIAGNOSTIC TEMPORAIRE — nettoyage best-effort du fichier local une fois uploadé : ne
+      # peut jamais masquer un échec de test (if: always(), rm -f jamais en erreur si le
+      # fichier est absent).
       - name: "[DIAGNOSTIC TEMPORAIRE] Clean up next-server-diag.log"
         if: always()
         run: rm -f next-server-diag.log
