@@ -4,6 +4,7 @@ import { signIn, verifyLoginPassword } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { verifyTotpToken, verifyRecoveryCode } from "@/lib/mfa";
 import { decryptMfaSecret, MfaDecryptionError } from "@/lib/mfa-encryption";
+import { createLoginMfaProof } from "@/lib/mfa-login-proof";
 import {
   getClientIp,
   ipThrottleKey,
@@ -141,12 +142,20 @@ export async function POST(request: Request) {
     viaRecoveryCode = true;
   }
 
+  // Correctif audit MFA (2026-09-05) : mint une preuve de login à usage unique une fois le code
+  // TOTP/de récupération ci-dessus réellement validé — c'est cette preuve, jamais le code
+  // lui-même, qu'authorize() (src/lib/auth.ts) exige et consomme pour émettre le JWT (voir
+  // src/lib/mfa-login-proof.ts). Sans elle, un compte mfaEnabled ne peut plus obtenir de session
+  // via aucune route, y compris l'endpoint natif NextAuth appelé ci-dessous par signIn().
+  const mfaProof = await createLoginMfaProof(verifiedUser.id);
+
   try {
     await signIn("credentials", {
       email,
       password,
       rememberMe: String(rememberMe),
       tenantId: verifiedUser.tenantId,
+      mfaProof,
       redirect: false,
     });
   } catch (error) {

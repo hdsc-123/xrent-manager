@@ -6,6 +6,7 @@ import { PrismaAdapter } from "@auth/prisma-adapter";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { BCRYPT_COST } from "@/lib/bcrypt-cost";
+import { consumeLoginMfaProof } from "@/lib/mfa-login-proof";
 
 export { BCRYPT_COST };
 
@@ -194,6 +195,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         password: { label: "Password", type: "password" },
         tenantId: { label: "Tenant", type: "text" },
         rememberMe: { label: "Remember me", type: "text" },
+        // Correctif audit MFA (2026-09-05) : jamais un code TOTP/de récupération, jamais un champ
+        // exposé sur un formulaire (aucune page ne rend ce provider avec la page de signIn par
+        // défaut) — voir src/lib/mfa-login-proof.ts pour ce que cette valeur atteste réellement.
+        mfaProof: { label: "MFA Proof", type: "text" },
       },
       async authorize(credentials) {
         const email =
@@ -205,6 +210,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             ? credentials.tenantId
             : undefined;
         const rememberMe = credentials?.rememberMe === "true";
+        const mfaProof =
+          typeof credentials?.mfaProof === "string" ? credentials.mfaProof : undefined;
 
         if (!email || !password) {
           return null;
@@ -224,6 +231,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const isValidPassword = await bcrypt.compare(password, user.passwordHash);
 
         if (!isValidPassword) {
+          return null;
+        }
+
+        // Correctif audit MFA (2026-09-05, brief explicite du propriétaire du projet) : ferme le
+        // contournement trouvé le même jour — cette fonction est la SEULE source de vérité pour
+        // l'émission du JWT (voir le commentaire de verifyLoginPassword ci-dessus), qu'elle soit
+        // atteinte via signIn() (POST /api/auth/login, POST /api/auth/mfa/verify) ou directement
+        // via l'endpoint natif NextAuth POST /api/auth/callback/credentials (jamais couvert par
+        // src/proxy.ts, dont le matcher ne porte que sur /dashboard et /settings). Un compte
+        // mfaEnabled ne peut donc plus obtenir de session avec seulement email + mot de passe,
+        // quelle que soit la route empruntée pour y arriver — mfaProof doit correspondre à une
+        // preuve valide, non expirée, non consommée, mintée par POST /api/auth/mfa/verify après
+        // validation réelle d'un code TOTP/de récupération (voir src/lib/mfa-login-proof.ts). Un
+        // compte sans MFA (mfaEnabled: false) conserve exactement son comportement actuel —
+        // aucune preuve n'est jamais exigée pour lui.
+        if (user.mfaEnabled && !(await consumeLoginMfaProof(user.id, mfaProof))) {
           return null;
         }
 
