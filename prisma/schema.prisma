@@ -172,6 +172,8 @@ model User {
   // Phase 3A MFA (2026-08-29) : voir modèles MfaRecoveryCode/MfaStepUpProof ci-dessous.
   mfaRecoveryCodes            MfaRecoveryCode[]
   mfaStepUpProofs             MfaStepUpProof[]
+  // Correctif audit MFA (2026-09-05) : voir modèle MfaLoginProof ci-dessous.
+  mfaLoginProofs              MfaLoginProof[]
   // Politique MFA (2026-08-30) : voir modèle SecurityNotification ci-dessous.
   securityNotifications       SecurityNotification[]
 
@@ -1587,6 +1589,37 @@ model MfaStepUpProof {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, sessionId])
+  @@index([expiresAt])
+}
+
+// Correctif audit MFA (2026-09-05, brief explicite du propriétaire du projet) : ferme le
+// contournement trouvé lors de l'audit du même jour — `authorize()` (src/lib/auth.ts, provider
+// Credentials NextAuth) n'a jamais vérifié `User.mfaEnabled`, si bien qu'un appel direct à
+// l'endpoint natif NextAuth `POST /api/auth/callback/credentials` (jamais couvert par
+// `src/proxy.ts`, dont le matcher ne porte que sur `/dashboard`/`/settings`) obtenait une session
+// complète avec seulement email + mot de passe, même sur un compte MFA activée — contournant
+// entièrement `POST /api/auth/mfa/verify`.
+//
+// Preuve opaque, à usage unique, extrêmement courte (`MFA_LOGIN_PROOF_VALIDITY_MS`,
+// src/lib/mfa-login-proof.ts) — jamais le code TOTP/de récupération lui-même, jamais un simple
+// champ client non authentifié : elle n'est mintée que par `POST /api/auth/mfa/verify` *après*
+// que ce code ait déjà été validé par les primitives existantes (verifyTotpToken/
+// verifyRecoveryCode, src/lib/mfa.ts), puis transmise à `signIn()` (jamais posée par le client
+// lui-même) pour que `authorize()` l'exige et la consomme de façon atomique (CAS `updateMany`,
+// même principe que les compteurs de tentative/`LoginThrottle`) avant d'émettre le JWT. Seul le
+// hash (SHA-256, valeur non secrète en soi — la protection réelle vient de l'aléa/l'usage
+// unique/la fraîcheur, pas d'un pepper) est persisté, jamais la valeur en clair.
+model MfaLoginProof {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
   @@index([expiresAt])
 }
 
