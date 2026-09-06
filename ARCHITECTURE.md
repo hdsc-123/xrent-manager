@@ -93,6 +93,46 @@ Aucun de ces environnements (hormis le développement local) n'est actuellement 
 - **Interdit en production, sans exception** : `npx prisma migrate dev`, `npx prisma db push`, `npx prisma db seed`.
 - Cette procédure est **documentée ici comme exigence à respecter lors du déploiement** ; elle n'a pas été exécutée dans le cadre de ce cadrage documentaire, conformément à la contrainte de ne lancer aucune migration.
 
+## 15bis. Procédure d'application des migrations en attente sur `xrent_dev` (2026-09-06, stratégie validée pour documentation — application réelle non encore autorisée)
+
+**Statut au moment de la rédaction** : trois migrations additives sont en attente sur `xrent_dev` (`prisma migrate status`, vérifié en lecture seule) — `xrent_test` les a déjà toutes les trois :
+1. `20260901193933_add_invoice_number_counter` — nouvelle table `InvoiceNumberCounter` (clé `tenantId`+`year`), FK vers `Tenant` en `ON DELETE RESTRICT`.
+2. `20260901204746_add_credit_note_number_counter` — nouvelle table `CreditNoteNumberCounter`, même patron.
+3. `20260905210151_add_mfa_login_proof` — nouvelle table `MfaLoginProof`, FK vers `User` en `ON DELETE CASCADE` (voir SECURITY.md section 50).
+
+**Caractère additif confirmé** (lecture directe des trois `migration.sql`) : chacune ne contient que `CREATE TABLE`/`CREATE INDEX`/`ADD FOREIGN KEY` — **aucun `ALTER`/`DROP` sur une table ou colonne existante**, aucune donnée déjà présente n'est modifiée ou supprimée par leur application.
+
+**Stratégie à respecter, sans exception** : **inspection → sauvegarde vérifiée → préproduction → validation → production contrôlée**. Cette section documente la procédure ; **elle n'autorise en elle-même aucune exécution** — voir « Autorisation obligatoire » ci-dessous.
+
+**Commandes autorisées, à tout moment, sans autorisation supplémentaire** (lecture seule, jamais destructrices) :
+- `npx prisma migrate status` (contre n'importe quel environnement).
+
+**Commandes interdites sans autorisation explicite du propriétaire du projet, pour cette action précise** :
+- `npx prisma migrate deploy` (même si c'est la procédure prévue — l'exécution reste soumise à autorisation à chaque fois, jamais automatique).
+- `npx prisma migrate dev`, `npx prisma db push`, `npx prisma migrate reset` — interdites sans exception sur `xrent_dev` comme en production (section 15).
+
+**Contrôles avant migration** :
+1. `npx prisma migrate status` contre `xrent_dev` — confirmer que ce sont bien ces trois migrations, et seulement elles, qui sont en attente.
+2. Confirmer que `DATABASE_URL` de l'environnement d'exécution pointe exactement sur `xrent_dev` (jamais `xrent_test` ni une autre base) — voir le piège déjà documenté en SECURITY.md section 8/`scripts/env-guard.js`.
+3. **Sauvegarde** : `pg_dump -Fc` de `xrent_dev` vers un emplacement horodaté, hors du dépôt Git.
+4. **Vérification de la sauvegarde** : `pg_restore --list` sur l'archive produite — confirme la lisibilité et la structure (table des matières cohérente), pas encore une restauration complète.
+5. **Répétition sur une base jetable** : restaurer la sauvegarde (`pg_restore`) sur une base PostgreSQL locale temporaire, y exécuter `npx prisma migrate deploy`, puis `npx prisma migrate status` → doit afficher *« Database schema is up to date! »* sans erreur. Sert de palliatif à l'absence d'environnement de préproduction réel (voir section 14).
+
+**Contrôles après migration** (sur `xrent_dev`, une fois l'application réelle autorisée et effectuée) :
+- `npx prisma migrate status` → *« Database schema is up to date! »*.
+- `npx tsc --noEmit` → confirme l'accord entre le schéma appliqué et le client Prisma généré.
+- Comptage avant/après sur les tables sensibles (`Tenant`, `User`, `Invoice`, `CreditNote`) — doit être strictement identique (migrations additives : aucune ligne existante ne doit changer).
+
+**Procédure en cas d'échec** : arrêt immédiat, ne jamais relancer la commande en boucle. Lire le message d'erreur Prisma exact (ex. désaccord de checksum type INC-24/INC-38, déjà rencontré par le passé — voir INCIDENTS.md) avant toute action corrective. Escalader au propriétaire du projet avant toute tentative de correction (`migrate resolve`, etc.).
+
+**Procédure de restauration** : en cas d'anomalie confirmée après application, `pg_restore` de la sauvegarde prise à l'étape « Contrôles avant migration » sur `xrent_dev` (ou une base de secours), puis `npx prisma migrate status` pour confirmer l'état retrouvé. Migrations additives uniquement : un simple `DROP TABLE` manuel et ciblé sur la table nouvellement créée reste une alternative plus légère à une restauration complète, si l'anomalie est strictement localisée à cette table et qu'aucune donnée préexistante n'a été affectée.
+
+**Critères de go/no-go** :
+- **Go** uniquement si : sauvegarde prise et vérifiée (`pg_restore --list`) **et** répétition réussie sur base jetable (`migrate status` à jour sans erreur) **et** autorisation explicite du propriétaire du projet obtenue pour cette exécution précise.
+- **No-go** si l'une de ces conditions manque, ou si `migrate status` signale une anomalie non expliquée sur `xrent_dev` avant même de commencer.
+
+**Autorisation obligatoire** : cette section documente une procédure — **elle ne constitue en aucun cas une autorisation d'exécution**. Toute application réelle de `npx prisma migrate deploy` (ou toute autre commande de migration) contre `xrent_dev` reste soumise à une autorisation explicite du propriétaire du projet, donnée séparément pour cette action précise (CLAUDE.md règle 12).
+
 ## 16. Hébergement de production — options validées, choix final non arrêté
 
 **Statut : options validées, choix final non arrêté** (décision de périmètre validée par le propriétaire du projet, 2026-08-24) : l'hébergeur cible est **Render ou Railway** — catégorie PaaS à conteneur long-running. **Aucun des deux n'est retenu de façon définitive** : le choix final doit être départagé par une comparaison documentée portant sur le prix réel, la région disponible, la latence depuis le Maroc, la qualité du PostgreSQL managé, les sauvegardes proposées, la facilité de restauration, la gestion du CRON, les limites de l'offre retenue, et la compatibilité avec le budget maximal (section 19). Cette comparaison reste à réaliser et à documenter avant toute création d'environnement.
