@@ -36,6 +36,9 @@ yarn-error.log*
 # heartbeat d'observabilité CI (scripts/test-grouped.mjs), généré à l'exécution
 test-grouped-heartbeat.log
 
+# diagnostic serveur de test (vitest.global-setup.ts, lié à INC-3/INC-40), généré à l'exécution
+next-server-diag.log
+
 # vercel
 .vercel
 
