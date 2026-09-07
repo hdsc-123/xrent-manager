@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { apiPost, ApiError } from "@/lib/api";
+import { sanitizeInternalRedirect } from "@/lib/safe-redirect";
 import {
   Button,
   Card,
@@ -34,10 +35,17 @@ export function LoginForm() {
   // (la valeur n'affecte jamais le HTML produit). `typeof window !== "undefined"` protège
   // uniquement l'évaluation côté serveur (jamais atteinte en pratique : ce composant ne rend
   // que côté client, mais le composant peut être importé par un module partagé au build).
+  //
+  // Audit de sécurité (2026-09-06) : ce paramètre de requête n'est pas fiable (fourni par
+  // quiconque compose l'URL de connexion, jamais authentifié à ce stade) — `sanitizeInternalRedirect`
+  // (src/lib/safe-redirect.ts) le réduit systématiquement à un chemin interne relatif avant tout
+  // usage, pour fermer la redirection ouverte trouvée lors de l'audit (router.push(callbackUrl)
+  // ci-dessous déclenchait auparavant une navigation navigateur complète vers n'importe quelle
+  // origine externe fournie dans ce paramètre).
   const [callbackUrl] = useState(() =>
-    typeof window !== "undefined"
-      ? new URLSearchParams(window.location.search).get("callbackUrl") || "/dashboard"
-      : "/dashboard"
+    sanitizeInternalRedirect(
+      typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("callbackUrl") : null
+    )
   );
 
   const [email, setEmail] = useState("");
