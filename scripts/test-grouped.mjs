@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const GROUPS = [
-  ["reservations", "permissions", "vehicle-mobility-alerts", "invoice-status-alerts", "reports", "db", "password-policy", "super-admin", "scheduled-alerts-cron", "responsive-layout", "mfa-encryption", "mfa", "mfa-lifecycle", "format"],
+  ["reservations", "permissions", "vehicle-mobility-alerts", "invoice-status-alerts", "reports", "db", "password-policy", "safe-redirect", "super-admin", "scheduled-alerts-cron", "responsive-layout", "mfa-encryption", "mfa", "mfa-lifecycle", "format"],
   ["invoices", "locations", "csv-exports", "location-chain-balance", "location-return"],
   ["location-extension", "location-chains", "data-reset", "audit-deletion", "auth", "login-throttle", "mfa-routes", "mfa-step-up-gating", "mfa-login-bypass", "csv-export-sanitization", "damages", "request-guards"],
   ["vehicles", "agencies", "audit", "ui", "e2e-full", "invitations", "credit-notes-ui", "damage-invoices-ui", "icon-hydration"],
