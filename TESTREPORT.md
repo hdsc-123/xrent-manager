@@ -1516,3 +1516,41 @@ Exécuté par une session de travail antérieure (audit MFA puis correctif du co
 PR #15 (`docs/document-mfa-login-proof-invariant`, fusionnée par merge commit `791f111e`) ne modifie que `HANDOFF.md` et `SECURITY.md` — confirmé par `git diff --name-only` sur cette PR au moment de sa revue. **Aucun fichier de code ni de test modifié** : le nombre de tests n'a donc pas changé depuis 1756/1756 pour cette raison précise (une nouvelle exécution serait nécessaire pour le reconfirmer empiriquement, mais aucune modification de `src/__tests__/**` ne s'est produite depuis qui justifierait un delta).
 
 **Aucune suite de tests n'a été relancée pour produire cette entrée du rapport.**
+
+## 8. Rapport du 2026-09-16 — Suite complète réellement exécutée après fusion de la PR #22 : **1768/1768**
+
+**Contexte** : dépôt temporairement public (runners GitHub-hosted gratuits, brief explicite du propriétaire du projet), PR #22 (politique MFA/récupération de compte, documentation uniquement) fusionnée sur `main` (commit de merge `db9403b`), nettoyage des branches distantes/locales obsolètes effectué séparément (sans impact sur le code). Cette entrée documente la première exécution réelle de la suite complète depuis le dernier résultat réellement exécuté connu (1756/1756, commit `8280c1d`, voir section 7 ci-dessus).
+
+**Commit testé** : `db9403bad88a926dabe1adc98946a57eadb7a0ed` (`main`, HEAD au moment de l'exécution — identique à `origin/main`, aucune divergence).
+
+**Commande exécutée** : `node scripts/test-grouped.mjs` (registre `GROUPS`, exécution groupée en 8 lots séquentiels, même mécanisme que la CI GitHub Actions — recyclage préventif du serveur de test partagé entre groupes, INC-27). Aucune commande Prisma lancée manuellement par cette session ; les migrations/le client Prisma sont gérés par le harness de test existant (`vitest.global-setup.ts`), inchangé par cette exécution.
+
+**Base utilisée** : `xrent_test` locale (`localhost:5432`), chargée via `.env.test` (fichier local non suivi par Git, jamais affiché) — **jamais `xrent_dev`, jamais une base de production** (qui n'existe toujours pas à ce jour). Contrairement au conteneur Postgres éphémère de la CI (détruit à chaque run), il s'agit de la base de test locale déjà existante et persistante entre sessions — les tests restent isolés par leurs propres mécanismes de nettoyage (tenants créés/détruits par test), pas par une base neuve à chaque exécution.
+
+**Horodatage** : début `2026-09-16T11:53:19Z`, fin `2026-09-16T11:57:42Z` (UTC) — durée totale **262,7 s (~4 min 23 s)**.
+
+**Résultat global** : **1768 tests réussis sur 1768, 0 échec, 0 timeout, 0 redémarrage watchdog (blocage réel), 0 processus résiduel.** 10 redémarrages préventifs INC-27 (comportement normal documenté, tous les 5 fichiers de test — bénin, sans rapport avec un défaut).
+
+| Groupe | Fichiers | Tests | Résultat | Durée | Recyclage INC-27 |
+|---|---|---|---|---|---|
+| 1 | 15 | 374 | 374/374 | 44,1 s | 3 |
+| 2 | 5 | 431 | 431/431 | 41,3 s | 1 |
+| 3 | 12 | 197 | 197/197 | 33,6 s | 2 |
+| 4 (mode `next build`) | 9 | 188 | 188/188 | 21,8 s | 0 |
+| 5 | 10 | 198 | 198/198 | 33,1 s | 2 |
+| 6 | 13 | 284 | 284/284 | 45,1 s | 2 |
+| 7 | 1 | 10 | 10/10 | 10,6 s | 0 |
+| 8 | 1 | 86 | 86/86 | 24,9 s | 0 |
+
+**Échecs, flakes ou tests ignorés : aucun.** 8 groupes verts, 66 fichiers de test couverts (vérifié explicitement par `src/__tests__/test-grouped-integrity.test.ts`, qui confirme que le registre `GROUPS` de `scripts/test-grouped.mjs` correspond exactement au contenu réel de `src/__tests__/` — aucun fichier oublié ni orphelin).
+
+**Bruit de console non lié à un échec, clarifié pour éviter toute confusion à la lecture des logs bruts** :
+- Groupe 2 (`invoices.test.ts`, 207 tests, tous verts) : trace `InvalidCashEntryAmountError` — rejet volontaire testé par un cas de test qui vérifie précisément ce refus, comportement attendu et déjà documenté comme tel (HANDOFF.md, Partie 21).
+- Groupe 5 (`location-payment.test.ts`, 8 tests, tous verts) : trace `PaymentExceedsRemainingBalanceError` — même nature, un test « Finding F » vérifie explicitement le rollback complet d'un paiement mixte dont la deuxième ligne dépasse le solde restant ; l'erreur journalisée est le comportement recherché par le test, pas un défaut.
+- Groupe 4 (mode `next build`) : avertissement Vitest *« close timed out after 10000ms — Tests closed successfully but something prevents Vite server from exiting »* après la fin du groupe (188/188 déjà acquis, code de sortie 0) — le serveur de test en mode build a été arrêté explicitement par le harness (`server-exit … code=143 signal=null`, un arrêt contrôlé SIGTERM, pas un blocage). Sans conséquence sur le résultat du groupe.
+
+**Réconciliation avec le dernier décompte réellement exécuté (section 7, 1756/1756)** : deux fichiers de test ajoutés depuis ce point de référence, confirmés par `git diff --name-only --diff-filter=A 09d0be5 HEAD -- 'src/__tests__/*.test.ts' 'src/__tests__/*.test.tsx'` — `mfa-login-bypass.test.ts` (déjà compté dans les 1756) et `safe-redirect.test.ts` (12 tests, section 51 de SECURITY.md, non encore compté). **1756 + 12 = 1768** — exactement le résultat observé, confirmant que le décompte est resté cohérent sur toute la période sans zone d'ombre. Nombre de fichiers de test : **66** (`git ls-tree -r --name-only HEAD -- src/__tests__ | grep -E '\.test\.tsx?$'`), contre 65 au moment du rapport de la section 7.
+
+**Aucun secret, mot de passe, jeton, adresse personnelle ou donnée réelle** dans les logs de cette exécution — vérifié par relecture complète de la sortie brute avant rédaction de cette entrée (uniquement des chaînes de test synthétiques `@fictif.test`/`@test.local`/montants MAD fictifs).
+
+**Décision recommandée** : suite verte à 100 %, commit `db9403b` (`main`) validé pour la reprise du travail — aucune action de suivi requise sur cette exécution précise.
