@@ -6,6 +6,7 @@ import { getPendingAlerts } from "@/lib/alerts";
 import { maybeRunScheduledAlertChecks } from "@/lib/scheduled-tasks";
 import { can, getEffectivePermissions } from "@/lib/permissions";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import { StepUpProvider } from "@/components/step-up/StepUpProvider";
 
 export default async function DashboardRootLayout({
   children,
@@ -52,14 +53,16 @@ export default async function DashboardRootLayout({
 
   return (
     <SessionProvider>
-      <DashboardLayout
-        tenantName={tenant?.name ?? ""}
-        user={user}
-        pendingAlertCount={visiblePendingAlertCount}
-        permissions={permissions}
-      >
-        {children}
-      </DashboardLayout>
+      <StepUpProvider>
+        <DashboardLayout
+          tenantName={tenant?.name ?? ""}
+          user={user}
+          pendingAlertCount={visiblePendingAlertCount}
+          permissions={permissions}
+        >
+          {children}
+        </DashboardLayout>
+      </StepUpProvider>
     </SessionProvider>
   );
 }

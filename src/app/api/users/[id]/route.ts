@@ -13,7 +13,7 @@ import {
 } from "@/lib/users";
 import { validatePassword } from "@/lib/password-policy";
 import { logAction } from "@/lib/audit";
-import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
+import { stepUpRequiredAndMissing, stepUpRequiredResponse } from "@/lib/mfa-session";
 import { createSecurityNotification } from "@/lib/security-notifications";
 
 interface RouteParams {
@@ -102,7 +102,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   // bundlé dans la même requête pendant qu'un changement de rôle est bloqué (aucune mutation
   // partielle). Un compte sans MFA garde le comportement actuel (opt-in, src/lib/mfa-session.ts).
   if (body.role !== undefined && body.role !== target.role && (await stepUpRequiredAndMissing(user))) {
-    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
+    return stepUpRequiredResponse();
   }
 
   try {

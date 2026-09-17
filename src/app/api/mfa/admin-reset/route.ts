@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { getUserById } from "@/lib/users";
-import { hasValidStepUp, purgeMfaAndRevokeSessions, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
+import { hasValidStepUp, purgeMfaAndRevokeSessions, stepUpRequiredResponse } from "@/lib/mfa-session";
 import { isSuperAdminEmail } from "@/lib/super-admin";
 import { mfaAdminResetThrottleKey, isLocked, recordFailedAttempt, resetThrottle } from "@/lib/login-throttle";
 import { logAction } from "@/lib/audit";
@@ -91,7 +91,7 @@ export async function POST(request: Request) {
 
   if (!actor.sessionId || !(await hasValidStepUp(actor.id, actor.sessionId))) {
     await recordFailedAttempt(throttleKey);
-    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
+    return stepUpRequiredResponse();
   }
 
   // Cible résolue côté serveur, strictement scopée au tenant de l'acteur (IDOR) — jamais un

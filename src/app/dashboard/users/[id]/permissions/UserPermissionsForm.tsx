@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { apiPatch, ApiError } from "@/lib/api";
+import { useStepUpRetry } from "@/lib/step-up-retry";
 import { Button, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui";
 import { PermissionCheckboxGrid, type PermissionDef } from "../../../permission-groups/PermissionCheckboxGrid";
 
@@ -32,6 +33,7 @@ export function UserPermissionsForm({
   permissions,
 }: UserPermissionsFormProps) {
   const router = useRouter();
+  const withStepUpRetry = useStepUpRetry();
   const [groupId, setGroupId] = useState(initialGroupId ?? "");
   const [selected, setSelected] = useState<Set<string>>(new Set(initialIndividualPermissions));
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -55,10 +57,12 @@ export function UserPermissionsForm({
     setError(null);
     setIsSubmitting(true);
     try {
-      await apiPatch(`/api/users/${userId}/permissions`, {
-        permissionGroupId: groupId || null,
-        individualPermissions: Array.from(selected),
-      });
+      await withStepUpRetry(() =>
+        apiPatch(`/api/users/${userId}/permissions`, {
+          permissionGroupId: groupId || null,
+          individualPermissions: Array.from(selected),
+        })
+      );
       toast.success("Permissions mises à jour.");
       router.refresh();
     } catch (err) {

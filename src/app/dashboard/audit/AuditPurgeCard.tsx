@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { useStepUpRetry } from "@/lib/step-up-retry";
 import {
   Button,
   Card,
@@ -38,6 +39,7 @@ interface PurgeSummary {
  */
 export function AuditPurgeCard() {
   const router = useRouter();
+  const withStepUpRetry = useStepUpRetry();
   const [open, setOpen] = useState(false);
   const [summary, setSummary] = useState<PurgeSummary | null>(null);
   const [isLoadingSummary, setIsLoadingSummary] = useState(false);
@@ -67,9 +69,11 @@ export function AuditPurgeCard() {
   async function handlePurge() {
     setIsPurging(true);
     try {
-      const result = await apiPost<{ success: boolean; deleted: number }>("/api/audit/purge", {
-        confirmTenantName: confirmText,
-      });
+      const result = await withStepUpRetry(() =>
+        apiPost<{ success: boolean; deleted: number }>("/api/audit/purge", {
+          confirmTenantName: confirmText,
+        })
+      );
       toast.success(`Journal d'audit purgé (${result.deleted} entrée(s) supprimée(s)).`);
       setOpen(false);
       setConfirmText("");

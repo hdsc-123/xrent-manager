@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import type { Prisma } from "@prisma/client";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -66,6 +67,27 @@ export function generateMfaSecurityStamp(): string {
  * hasValidStepUp() ci-dessus, qui les traite déjà identiquement).
  */
 export const STEP_UP_REQUIRED_MESSAGE = "Vérification de sécurité supplémentaire (MFA) requise pour cette action.";
+
+/**
+ * Code machine-lisible stable accompagnant STEP_UP_REQUIRED_MESSAGE (2026-09-17, câblage UI du
+ * step-up, brief explicite du propriétaire du projet) — permet au client de distinguer ce refus
+ * précis d'un 403 ordinaire sans jamais changer le message affiché ni révéler la cause exacte :
+ * preuve absente, expirée, ou liée à une autre session restent indiscernables entre elles, comme
+ * avant l'introduction de ce code (voir hasValidStepUp ci-dessus, qui les traite déjà
+ * identiquement). Le serveur reste seul juge : ce code n'est jamais accepté en entrée nulle
+ * part, uniquement renvoyé en sortie par stepUpRequiredResponse() ci-dessous.
+ */
+export const STEP_UP_REQUIRED_CODE = "STEP_UP_REQUIRED";
+
+/**
+ * Réponse 403 unique pour tout refus de step-up — centralise un corps JSON jusqu'ici dupliqué à
+ * l'identique dans 11 fichiers de routes (12 occurrences, `cash-register/[id]` en comptant deux).
+ * Toujours le même statut, le même message, le même code — aucune route ne doit reconstruire ce
+ * corps à la main.
+ */
+export function stepUpRequiredResponse(): NextResponse {
+  return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE, code: STEP_UP_REQUIRED_CODE }, { status: 403 });
+}
 
 /**
  * Gate à appeler par chacune des routes sensibles (avant toute mutation, après les contrôles de

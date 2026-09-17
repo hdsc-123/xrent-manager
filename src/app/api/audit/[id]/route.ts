@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { deleteAuditLogEntry, AuditLogNotFoundError } from "@/lib/audit";
-import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
+import { stepUpRequiredAndMissing, stepUpRequiredResponse } from "@/lib/mfa-session";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -30,7 +30,7 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
 
   // Phase 3C MFA : step-up requis avant toute mutation (opt-in, voir src/lib/mfa-session.ts).
   if (await stepUpRequiredAndMissing(user)) {
-    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
+    return stepUpRequiredResponse();
   }
 
   const { id } = await params;

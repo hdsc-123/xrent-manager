@@ -6,6 +6,7 @@ import { MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { formatMoney } from "@/lib/format";
 import { apiPatch, apiDelete, ApiError } from "@/lib/api";
+import { useStepUpRetry } from "@/lib/step-up-retry";
 import { DataTable, type DataTableColumn } from "@/components/layout/DataTable";
 import {
   Button,
@@ -51,6 +52,7 @@ export function ExpensesTable({
   canDelete?: boolean;
 }) {
   const router = useRouter();
+  const withStepUpRetry = useStepUpRetry();
   const [editing, setEditing] = useState<ExpenseRow | null>(null);
   const [editCategory, setEditCategory] = useState("");
   const [editAmount, setEditAmount] = useState("");
@@ -78,11 +80,13 @@ export function ExpensesTable({
     setIsSaving(true);
     setEditError(null);
     try {
-      await apiPatch(`/api/cash-register/${editing.id}`, {
-        category: editCategory,
-        amount: Math.round(amountMad * 100),
-        description: editDescription,
-      });
+      await withStepUpRetry(() =>
+        apiPatch(`/api/cash-register/${editing.id}`, {
+          category: editCategory,
+          amount: Math.round(amountMad * 100),
+          description: editDescription,
+        })
+      );
       toast.success("Dépense mise à jour.");
       setEditing(null);
       router.refresh();
@@ -97,7 +101,7 @@ export function ExpensesTable({
     if (!pendingDelete) return;
     setIsDeleting(true);
     try {
-      await apiDelete(`/api/cash-register/${pendingDelete.id}`);
+      await withStepUpRetry(() => apiDelete(`/api/cash-register/${pendingDelete.id}`));
       toast.success("Dépense supprimée.");
       setPendingDelete(null);
       router.refresh();

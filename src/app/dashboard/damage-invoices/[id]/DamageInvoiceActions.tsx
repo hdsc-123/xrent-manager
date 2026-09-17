@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { apiPost, ApiError } from "@/lib/api";
+import { useStepUpRetry } from "@/lib/step-up-retry";
 import { formatMoney } from "@/lib/format";
 import {
   Button,
@@ -62,6 +63,7 @@ export function DamageInvoiceActions({
   canCancel = false,
 }: DamageInvoiceActionsProps) {
   const router = useRouter();
+  const withStepUpRetry = useStepUpRetry();
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
   const [mixed, setMixed] = useState(false);
   const [amount, setAmount] = useState((remainingBalance / 100).toFixed(2));
@@ -134,7 +136,7 @@ export function DamageInvoiceActions({
     }
     setIsCancelling(true);
     try {
-      await apiPost(`/api/damage-invoices/${id}/cancel`, { reason: cancelReason });
+      await withStepUpRetry(() => apiPost(`/api/damage-invoices/${id}/cancel`, { reason: cancelReason }));
       toast.success("Facture de dégâts annulée.");
       setShowCancelDialog(false);
       router.refresh();

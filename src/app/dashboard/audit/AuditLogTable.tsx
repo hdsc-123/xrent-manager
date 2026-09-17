@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { apiDelete, apiPost, ApiError } from "@/lib/api";
+import { useStepUpRetry } from "@/lib/step-up-retry";
 import {
   Button,
   Checkbox,
@@ -37,6 +38,7 @@ export interface AuditLogRow {
  */
 export function AuditLogTable({ logs, canDelete }: { logs: AuditLogRow[]; canDelete: boolean }) {
   const router = useRouter();
+  const withStepUpRetry = useStepUpRetry();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<AuditLogRow | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -62,7 +64,7 @@ export function AuditLogTable({ logs, canDelete }: { logs: AuditLogRow[]; canDel
     if (!pendingDelete) return;
     setIsDeleting(true);
     try {
-      await apiDelete(`/api/audit/${pendingDelete.id}`);
+      await withStepUpRetry(() => apiDelete(`/api/audit/${pendingDelete.id}`));
       toast.success("Entrée d'audit supprimée.");
       const deletedId = pendingDelete.id;
       setPendingDelete(null);
@@ -84,7 +86,9 @@ export function AuditLogTable({ logs, canDelete }: { logs: AuditLogRow[]; canDel
     if (ids.length === 0) return;
     setIsBulkDeleting(true);
     try {
-      const result = await apiPost<{ deleted: number }>("/api/audit/bulk-delete", { ids });
+      const result = await withStepUpRetry(() =>
+        apiPost<{ deleted: number }>("/api/audit/bulk-delete", { ids })
+      );
       toast.success(`${result.deleted} entrée(s) supprimée(s).`);
       setSelectedIds(new Set());
       setIsBulkDeleteOpen(false);

@@ -3,7 +3,7 @@ import { getSessionUser, type SessionUser } from "@/lib/authz";
 import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { getAuditLogCount, purgeAuditLog, logAction } from "@/lib/audit";
-import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
+import { stepUpRequiredAndMissing, stepUpRequiredResponse } from "@/lib/mfa-session";
 import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 /**
@@ -60,7 +60,7 @@ export async function POST(request: Request) {
   // uniquement sur POST (la purge elle-même), jamais sur GET ci-dessus (simple aperçu en lecture,
   // aucune mutation).
   if (await stepUpRequiredAndMissing(user)) {
-    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
+    return stepUpRequiredResponse();
   }
 
   let body: PurgeAuditLogBody;

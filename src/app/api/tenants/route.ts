@@ -7,7 +7,7 @@ import { validatePassword } from "@/lib/password-policy";
 import { ensureDefaultGroups } from "@/lib/permissions";
 import { BCRYPT_COST } from "@/lib/bcrypt-cost";
 import { logAction } from "@/lib/audit";
-import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
+import { stepUpRequiredAndMissing, stepUpRequiredResponse } from "@/lib/mfa-session";
 import { isRequestBodyTooLarge, requestBodyTooLargeResponse, MAX_AUTHENTICATED_JSON_BODY_BYTES } from "@/lib/request-guards";
 
 /**
@@ -105,7 +105,7 @@ export async function POST(request: Request) {
   // puisque mfaEnabled est garanti true par le contrôle ci-dessus (stepUpRequiredAndMissing
   // reste par ailleurs opt-in pour les routes qui n'imposent pas mfaEnabled).
   if (await stepUpRequiredAndMissing(user)) {
-    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
+    return stepUpRequiredResponse();
   }
 
   let body: CreateTenantBody;

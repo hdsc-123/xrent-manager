@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 const GROUPS = [
   ["reservations", "permissions", "vehicle-mobility-alerts", "invoice-status-alerts", "reports", "db", "password-policy", "safe-redirect", "super-admin", "scheduled-alerts-cron", "responsive-layout", "mfa-encryption", "mfa", "mfa-lifecycle", "format"],
   ["invoices", "locations", "csv-exports", "location-chain-balance", "location-return"],
-  ["location-extension", "location-chains", "data-reset", "audit-deletion", "auth", "login-throttle", "mfa-routes", "mfa-step-up-gating", "mfa-login-bypass", "csv-export-sanitization", "damages", "request-guards"],
+  ["location-extension", "location-chains", "data-reset", "audit-deletion", "auth", "login-throttle", "mfa-routes", "mfa-step-up-gating", "single-flight-guard", "mfa-login-bypass", "csv-export-sanitization", "damages", "request-guards"],
   ["vehicles", "agencies", "audit", "ui", "e2e-full", "invitations", "credit-notes-ui", "damage-invoices-ui", "icon-hydration"],
   ["users", "security-notifications", "maintenances", "clients", "vehicle-trips", "batch-pdf", "location-payment", "damages-route", "damage-invoices-route", "test-grouped-integrity"],
   ["cash-register", "vehicle-transfers", "payments", "alerts", "e2e", "tenants", "return-damages-ui", "maintenance-location-coordination", "vehicle-status", "test-tenant-cleanup", "delete-test-tenant", "env-guard", "security-headers"],

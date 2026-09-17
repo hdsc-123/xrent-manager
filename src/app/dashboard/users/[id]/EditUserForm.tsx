@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import { apiPatch, apiDelete, ApiError } from "@/lib/api";
+import { useStepUpRetry } from "@/lib/step-up-retry";
 import {
   Button,
   Card,
@@ -50,6 +51,7 @@ export function EditUserForm({
   permissionGroupName,
 }: EditUserFormProps) {
   const router = useRouter();
+  const withStepUpRetry = useStepUpRetry();
   const [role, setRole] = useState(initialRole);
   const [password, setPassword] = useState("");
   const [agencyIds, setAgencyIds] = useState<Set<string>>(new Set(initialAgencyIds));
@@ -83,7 +85,7 @@ export function EditUserForm({
       if (password) {
         body.password = password;
       }
-      await apiPatch(`/api/users/${id}`, body);
+      await withStepUpRetry(() => apiPatch(`/api/users/${id}`, body));
       toast.success("Utilisateur mis à jour.");
       setPassword("");
       router.refresh();

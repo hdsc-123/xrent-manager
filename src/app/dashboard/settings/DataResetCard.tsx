@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { useStepUpRetry } from "@/lib/step-up-retry";
 import {
   Button,
   Card,
@@ -67,6 +68,7 @@ function totalToDelete(counts: DataResetCounts): number {
 
 export function DataResetCard({ tenantName }: { tenantName: string }) {
   const router = useRouter();
+  const withStepUpRetry = useStepUpRetry();
   const [open, setOpen] = useState(false);
   const [summary, setSummary] = useState<DataResetSummary | null>(null);
   const [isLoadingSummary, setIsLoadingSummary] = useState(false);
@@ -98,10 +100,12 @@ export function DataResetCard({ tenantName }: { tenantName: string }) {
   async function handleReset() {
     setIsResetting(true);
     try {
-      const result = await apiPost<{ success: boolean; deleted: DataResetCounts }>("/api/data-reset", {
-        confirmTenantName: confirmText,
-        includeAuditLog,
-      });
+      const result = await withStepUpRetry(() =>
+        apiPost<{ success: boolean; deleted: DataResetCounts }>("/api/data-reset", {
+          confirmTenantName: confirmText,
+          includeAuditLog,
+        })
+      );
       const total = totalToDelete(result.deleted);
       toast.success(`Données réinitialisées (${total} enregistrement${total > 1 ? "s" : ""} supprimé${total > 1 ? "s" : ""}).`);
       setOpen(false);

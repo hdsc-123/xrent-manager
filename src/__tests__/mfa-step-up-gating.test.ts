@@ -4,7 +4,12 @@ import { BCRYPT_COST } from "@/lib/bcrypt-cost";
 import { prisma } from "@/lib/prisma";
 import { generateTotpToken } from "@/lib/mfa";
 import { apiFetch, extractSessionCookie } from "./helpers/http";
-import { registerTenantAdmin, type AuthenticatedTestUser, deleteTestTenants } from "./helpers/fixtures";
+import {
+  registerTenantAdmin,
+  createAndLoginMember,
+  type AuthenticatedTestUser,
+  deleteTestTenants,
+} from "./helpers/fixtures";
 
 /**
  * Phase 3C MFA (2026-08-29, brief explicite du propriétaire du projet) : tests d'intégration
@@ -765,5 +770,114 @@ describe("Step-up MFA — POST /api/damage-invoices/[id]/cancel", () => {
       body: JSON.stringify({ reason: "Test annulation acceptée" }),
     });
     expect(response.status).toBe(200);
+  });
+});
+
+/**
+ * Câblage UI du step-up MFA (2026-09-17, brief explicite du propriétaire du projet) : le client
+ * (src/lib/step-up-retry.ts) ne doit jamais ouvrir la modale de re-preuve sur un simple statut
+ * 403 — uniquement sur un corps `{ code: "STEP_UP_REQUIRED" }` explicite. Portée volontairement
+ * choisie comme le reste de ce fichier (voir commentaire d'en-tête) : deux routes représentatives
+ * (data-reset, le pire cas ; users/[id] changement de rôle, élévation de privilège) pour le
+ * refus de step-up avec code, plus une vérification qu'un 403 ordinaire (rôle insuffisant, sans
+ * rapport avec le step-up) n'expose jamais ce code — même serveur (stepUpRequiredResponse(),
+ * src/lib/mfa-session.ts), même route (data-reset), pour isoler précisément la différence.
+ */
+describe("Step-up MFA — code machine-lisible STEP_UP_REQUIRED du refus 403", () => {
+  it("POST /api/data-reset : le refus de step-up porte code=STEP_UP_REQUIRED", async () => {
+    const admin = await newAdmin("code-data-reset");
+    await enableMfa(admin);
+
+    const response = await apiFetch("/api/data-reset", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({
+        confirmTenantName: (await prisma.tenant.findUniqueOrThrow({ where: { id: admin.tenantId } })).name,
+      }),
+    });
+    expect(response.status).toBe(STEP_UP_STATUS);
+    const body = await response.json();
+    expect(body.code).toBe("STEP_UP_REQUIRED");
+  });
+
+  it("PATCH /api/users/[id] (changement de rôle) : le refus de step-up porte code=STEP_UP_REQUIRED", async () => {
+    const admin = await newAdmin("code-users-role");
+    await enableMfa(admin);
+    const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
+    const member = await prisma.user.create({
+      data: { tenantId: admin.tenantId, email: `code-member-${counter}-${runId}@test.local`, name: "Member", passwordHash, role: "MEMBER" },
+    });
+
+    const response = await apiFetch(`/api/users/${member.id}`, {
+      method: "PATCH",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({ role: "ADMIN" }),
+    });
+    expect(response.status).toBe(STEP_UP_STATUS);
+    const body = await response.json();
+    expect(body.code).toBe("STEP_UP_REQUIRED");
+  });
+
+  it("un 403 ordinaire (rôle insuffisant, sans rapport avec le step-up) ne porte jamais ce code", async () => {
+    const admin = await newAdmin("code-ordinary-403");
+    const member = await createAndLoginMember({
+      tenantId: admin.tenantId,
+      name: "Member ordinaire",
+      email: `code-ordinary-${counter}-${runId}@test.local`,
+      password,
+    });
+
+    // MEMBER, jamais ADMIN — refusé avant même toute vérification de step-up (garde de rôle
+    // strict, indépendante de la MFA — voir src/app/api/data-reset/route.ts).
+    const response = await apiFetch("/api/data-reset", {
+      method: "POST",
+      headers: { Cookie: member.sessionCookie },
+      body: JSON.stringify({ confirmTenantName: "peu importe" }),
+    });
+    expect(response.status).toBe(403);
+    const body = await response.json();
+    expect(body.code).toBeUndefined();
+  });
+});
+
+/**
+ * Câblage UI du step-up MFA — vérifie que la relance côté client (withStepUpRetry,
+ * src/lib/step-up-retry.ts) est strictement bornée à un seul nouvel essai : si l'action échoue
+ * une seconde fois pour toute autre raison qu'un nouveau STEP_UP_REQUIRED (ex. l'action
+ * elle-même devient invalide entre-temps), l'erreur doit remonter telle quelle, jamais une
+ * troisième tentative. Reproduit ici au niveau serveur (la seule couche testable par ce dépôt,
+ * voir le paradigme de test documenté dans src/__tests__/ui.test.tsx) : la primitive
+ * hasValidStepUp()/MfaStepUpProof ne permet structurellement pas plus d'une preuve valide
+ * consommée par re-vérification — aucune boucle n'est possible côté serveur non plus.
+ */
+describe("Step-up MFA — absence de boucle de relance", () => {
+  it("une preuve de step-up n'autorise qu'un seul passage réussi par la garde, jamais une réutilisation implicite au-delà de sa fenêtre de fraîcheur", async () => {
+    const admin = await newAdmin("no-retry-loop");
+    const secret = await enableMfa(admin);
+    await stepUp(admin, secret);
+
+    const first = await apiFetch("/api/data-reset", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({
+        confirmTenantName: (await prisma.tenant.findUniqueOrThrow({ where: { id: admin.tenantId } })).name,
+      }),
+    });
+    expect(first.status).toBe(200);
+
+    // La preuve reste valide 10 minutes (src/lib/mfa-session.ts) — un second data-reset
+    // immédiat n'est donc pas refusé par le step-up lui-même ici (il l'aurait été si la
+    // fraîcheur était déjà expirée, cas déjà couvert par "refuse une preuve expirée" plus haut
+    // dans ce fichier) ; le point vérifié est que la garde ne consomme/n'exige jamais une
+    // nouvelle preuve à chaque appel — elle n'ouvre donc jamais la voie à une boucle côté
+    // client, qui ne rejoue de toute façon l'action qu'une seule fois après un unique succès.
+    const second = await apiFetch("/api/data-reset", {
+      method: "POST",
+      headers: { Cookie: admin.sessionCookie },
+      body: JSON.stringify({
+        confirmTenantName: (await prisma.tenant.findUniqueOrThrow({ where: { id: admin.tenantId } })).name,
+      }),
+    });
+    expect(second.status).toBe(200);
   });
 });

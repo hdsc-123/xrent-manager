@@ -19,7 +19,7 @@ import {
 } from "@/lib/invoices";
 import { prisma } from "@/lib/prisma";
 import { logAction } from "@/lib/audit";
-import { stepUpRequiredAndMissing, STEP_UP_REQUIRED_MESSAGE } from "@/lib/mfa-session";
+import { stepUpRequiredAndMissing, stepUpRequiredResponse } from "@/lib/mfa-session";
 
 // Sprint 13E tâche 3, corrigé sous-phase 2c2-D : CREDIT_NOTE volontairement absente de cette
 // liste — un avoir est créé exclusivement via POST /api/invoices/[id]/credit-notes
@@ -194,7 +194,7 @@ export async function DELETE(_request: Request, { params }: RouteParams) {
 
   // Phase 3C MFA : step-up requis avant toute mutation (opt-in, voir src/lib/mfa-session.ts).
   if (await stepUpRequiredAndMissing(user)) {
-    return NextResponse.json({ error: STEP_UP_REQUIRED_MESSAGE }, { status: 403 });
+    return stepUpRequiredResponse();
   }
 
   try {
