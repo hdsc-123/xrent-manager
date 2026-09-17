@@ -22,7 +22,7 @@ const GROUPS = [
   ["location-extension", "location-chains", "data-reset", "audit-deletion", "auth", "login-throttle", "mfa-routes", "mfa-step-up-gating", "single-flight-guard", "mfa-login-bypass", "csv-export-sanitization", "damages", "request-guards"],
   ["vehicles", "agencies", "audit", "ui", "e2e-full", "invitations", "credit-notes-ui", "damage-invoices-ui", "icon-hydration"],
   ["users", "security-notifications", "maintenances", "clients", "vehicle-trips", "batch-pdf", "location-payment", "damages-route", "damage-invoices-route", "test-grouped-integrity"],
-  ["cash-register", "vehicle-transfers", "payments", "alerts", "e2e", "tenants", "return-damages-ui", "maintenance-location-coordination", "vehicle-status", "test-tenant-cleanup", "delete-test-tenant", "env-guard", "security-headers"],
+  ["cash-register", "vehicle-transfers", "payments", "alerts", "e2e", "tenants", "return-damages-ui", "maintenance-location-coordination", "vehicle-status", "test-tenant-cleanup", "delete-test-tenant", "env-guard", "reset-test-user-password", "security-headers"],
   // Groupe 7 — diagnostic CI Groupe 4 (2026-09-04) : location-return-route.test.ts isolé du
   // Groupe 4 pour tester l'hypothèse confirmée par le tri par défaut de Vitest
   // (BaseSequencer.sort, tri par taille de fichier décroissante en l'absence de cache de
